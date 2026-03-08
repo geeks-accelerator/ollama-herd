@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from fleet_manager.common.discovery import FleetServiceAdvertiser
+from fleet_manager.common.logging_config import setup_logging
 from fleet_manager.models.config import ServerSettings
 from fleet_manager.server.latency_store import LatencyStore
 from fleet_manager.server.queue_manager import QueueManager
@@ -26,6 +27,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Startup: register mDNS, init stores, start monitors. Shutdown: cleanup."""
     settings: ServerSettings = app.state.settings
+
+    # Set up structured JSONL logging to ~/.fleet-manager/logs/
+    setup_logging(data_dir=settings.data_dir)
 
     # Initialize components
     registry = NodeRegistry(settings)

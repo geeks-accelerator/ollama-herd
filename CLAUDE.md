@@ -43,6 +43,7 @@ Single Python package (`fleet_manager`), two CLI entry points:
 | `node/agent.py` | Main loop: mDNS discovery, heartbeat, SIGTERM drain |
 | `node/collector.py` | Assembles HeartbeatPayload from psutil + Ollama |
 | `common/discovery.py` | AsyncZeroconf mDNS advertise + browse |
+| `common/logging_config.py` | JSONL structured logging to `~/.fleet-manager/logs/` |
 
 ### Request flow
 

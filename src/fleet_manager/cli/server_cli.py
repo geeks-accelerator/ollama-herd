@@ -42,6 +42,7 @@ def start(
     typer.echo(f"  Fleet Status:  http://localhost:{port}/fleet/status")
     typer.echo(f"  Dashboard:     http://localhost:{port}/dashboard")
     typer.echo(f"  Models:        http://localhost:{port}/v1/models")
+    typer.echo("  Logs (JSONL):  ~/.fleet-manager/logs/herd.jsonl")
     typer.echo("")
 
     uvicorn.run(application, host=host, port=port, log_level=log_level.lower())

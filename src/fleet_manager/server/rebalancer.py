@@ -65,7 +65,11 @@ class Rebalancer:
                 f"Pre-warm triggered: {model} on {runner_up.node_id} "
                 f"(winner {results[0].node_id} queue depth: {depth})"
             )
-            asyncio.create_task(self._do_pre_warm(lock_key, runner_up.node_id, model))
+            from fleet_manager.server.streaming import _create_logged_task
+            _create_logged_task(
+                self._do_pre_warm(lock_key, runner_up.node_id, model),
+                name=f"pre-warm-{model}-{runner_up.node_id}",
+            )
 
     async def _do_pre_warm(self, lock_key: str, node_id: str, model: str):
         """Execute pre-warm and release lock when done."""
@@ -116,3 +120,8 @@ class Rebalancer:
                         f"Rebalanced {moved} requests: {key} → {result.queue_key}"
                     )
                 break  # One rebalance per overloaded queue per cycle
+            else:
+                logger.debug(
+                    f"Queue {key} overloaded ({pending} pending) but no suitable "
+                    f"rebalance target found for {model}"
+                )

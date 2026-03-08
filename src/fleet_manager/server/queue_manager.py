@@ -71,10 +71,15 @@ class QueueManager:
         response_future = loop.create_future()
 
         await q.pending.put((entry, response_future, process_fn))
+        logger.debug(
+            f"Enqueued {entry.request.request_id[:8]} to {queue_key} "
+            f"(depth={q.pending.qsize() + len(q.in_flight)})"
+        )
 
         # Ensure worker is running
         if q.worker_task is None or q.worker_task.done():
             q.worker_task = asyncio.create_task(self._worker(q))
+            logger.debug(f"Started worker for queue {queue_key}")
 
         return response_future
 
@@ -112,6 +117,7 @@ class QueueManager:
             if entry in q.in_flight:
                 q.in_flight.remove(entry)
             q.completed_count += 1
+            logger.debug(f"Completed {entry.request.request_id[:8]} on {queue_key}")
 
     def mark_failed(self, queue_key: str, entry: QueueEntry):
         """Remove an entry from in-flight and mark failed."""
@@ -122,6 +128,7 @@ class QueueManager:
             if entry in q.in_flight:
                 q.in_flight.remove(entry)
             q.failed_count += 1
+            logger.warning(f"Failed {entry.request.request_id[:8]} on {queue_key}")
 
     async def move_pending(self, source_key: str, target_key: str, count: int) -> int:
         """Move up to `count` pending requests from source queue to target queue.

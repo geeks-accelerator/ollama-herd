@@ -31,8 +31,11 @@ def start(
         handlers=[RichHandler(rich_tracebacks=True, show_time=True)],
     )
 
+    from fleet_manager.common.logging_config import setup_logging
     from fleet_manager.models.config import NodeSettings
     from fleet_manager.node.agent import NodeAgent
+
+    setup_logging()
 
     settings = NodeSettings(
         node_id=node_id,

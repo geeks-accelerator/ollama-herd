@@ -80,8 +80,8 @@ class NodeAgent:
                     f"{self.router_url}/heartbeat",
                     json={"node_id": self.node_id, "draining": True},
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to send drain signal to router: {e}")
         self._running = False
         await self.ollama.close()
         if self._http:

@@ -293,12 +293,14 @@ class TraceStore:
             try:
                 breakdown = json.loads(row[5])
             except json.JSONDecodeError:
+                logger.debug(f"Corrupt scores_breakdown JSON in trace {row[0]}")
                 breakdown = row[5]
         excluded = None
         if row[13]:
             try:
                 excluded = json.loads(row[13])
             except json.JSONDecodeError:
+                logger.debug(f"Corrupt excluded_nodes JSON in trace {row[0]}")
                 excluded = row[13]
         return {
             "request_id": row[0],
@@ -324,3 +326,4 @@ class TraceStore:
     async def close(self):
         if self._db:
             await self._db.close()
+            logger.debug("Trace store closed")

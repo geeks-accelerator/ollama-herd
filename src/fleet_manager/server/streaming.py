@@ -17,6 +17,21 @@ from fleet_manager.server.registry import NodeRegistry
 logger = logging.getLogger(__name__)
 
 
+def _create_logged_task(coro, *, name: str = "background"):
+    """Create an asyncio task that logs exceptions instead of silently dropping them."""
+    task = asyncio.create_task(coro, name=name)
+
+    def _on_done(t: asyncio.Task):
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc:
+            logger.error(f"Background task '{name}' failed: {exc}", exc_info=exc)
+
+    task.add_done_callback(_on_done)
+    return task
+
+
 class StreamingProxy:
     def __init__(self, registry: NodeRegistry, latency_store=None, trace_store=None):
         self._registry = registry
@@ -67,7 +82,7 @@ class StreamingProxy:
                 yield chunk
         except GeneratorExit:
             # Consumer stopped consuming (e.g., non-streaming accumulated enough)
-            pass
+            logger.debug(f"Stream consumer stopped early for {entry.request.request_id[:8]}")
         except Exception as e:
             error_occurred = True
             queue_manager.mark_failed(queue_key, entry)
@@ -95,14 +110,15 @@ class StreamingProxy:
                 )
                 # Record latency + tokens for dashboard and Signal 4
                 if self._latency_store:
-                    asyncio.create_task(
+                    _create_logged_task(
                         self._latency_store.record(
                             entry.assigned_node,
                             entry.request.model,
                             elapsed_ms,
                             prompt_tokens=prompt_tokens,
                             completion_tokens=completion_tokens,
-                        )
+                        ),
+                        name=f"latency-record-{entry.request.request_id[:8]}",
                     )
                 # Record completed trace
                 self._record_trace(
@@ -132,7 +148,7 @@ class StreamingProxy:
         prompt_tokens, completion_tokens = self._request_tokens.get(
             entry.request.request_id, (None, None)
         )
-        asyncio.create_task(
+        _create_logged_task(
             self._trace_store.record_trace(
                 request_id=entry.request.request_id,
                 model=entry.request.model,
@@ -150,7 +166,8 @@ class StreamingProxy:
                 excluded_nodes=entry.excluded_nodes if entry.excluded_nodes else None,
                 original_format=entry.request.original_format.value,
                 error_message=error_message,
-            )
+            ),
+            name=f"trace-record-{entry.request.request_id[:8]}",
         )
 
     @staticmethod
@@ -278,14 +295,15 @@ class StreamingProxy:
                     f"(prompt={prompt_tokens}, completion={completion_tokens})"
                 )
                 if self._latency_store:
-                    asyncio.create_task(
+                    _create_logged_task(
                         self._latency_store.record(
                             current_node,
                             entry.request.model,
                             elapsed_ms,
                             prompt_tokens=prompt_tokens,
                             completion_tokens=completion_tokens,
-                        )
+                        ),
+                        name=f"latency-record-{entry.request.request_id[:8]}",
                     )
                 self._record_trace(
                     entry, current_node, start_time, first_token_time, "completed"
@@ -305,6 +323,12 @@ class StreamingProxy:
             endpoint = "/api/generate"
 
         async with client.stream("POST", endpoint, json=ollama_body) as response:
+            if response.status_code >= 400:
+                body = await response.aread()
+                logger.error(
+                    f"Ollama {node_id} returned {response.status_code} for "
+                    f"{request.model}: {body.decode(errors='replace')[:500]}"
+                )
             response.raise_for_status()
             async for line in response.aiter_lines():
                 if not line:
@@ -320,7 +344,9 @@ class StreamingProxy:
                             completion_tok,
                         )
                 except json.JSONDecodeError:
-                    pass
+                    logger.warning(
+                        f"Malformed JSON from Ollama on {node_id}: {line[:200]}"
+                    )
                 # Yield in the appropriate format
                 if request.original_format == RequestFormat.OPENAI:
                     yield self._ollama_to_openai_sse(line, request.model)
@@ -378,6 +404,7 @@ class StreamingProxy:
         try:
             data = json.loads(ollama_json_line)
         except json.JSONDecodeError:
+            logger.warning(f"Malformed JSON in OpenAI SSE conversion: {ollama_json_line[:200]}")
             return ""
 
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
@@ -412,3 +439,4 @@ class StreamingProxy:
         for client in self._clients.values():
             await client.aclose()
         self._clients.clear()
+        logger.debug("StreamingProxy closed all HTTP clients")

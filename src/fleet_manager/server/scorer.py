@@ -82,25 +82,38 @@ class ScoringEngine:
     def _eliminate(self, model: str) -> list[NodeState]:
         """Stage 1: hard elimination — remove nodes that cannot serve the request."""
         survivors = []
-        for node in self._registry.get_all_nodes():
+        all_nodes = self._registry.get_all_nodes()
+        for node in all_nodes:
             if node.status == NodeStatus.OFFLINE:
+                logger.debug(f"Eliminated {node.node_id}: offline")
                 continue
             if node.ollama is None:
+                logger.debug(f"Eliminated {node.node_id}: no Ollama state")
                 continue
             if node.memory and node.memory.pressure == MemoryPressure.CRITICAL:
+                logger.debug(f"Eliminated {node.node_id}: critical memory pressure")
                 continue
 
             loaded_names = [m.name for m in node.ollama.models_loaded]
             if model not in loaded_names and model not in node.ollama.models_available:
+                logger.debug(f"Eliminated {node.node_id}: model '{model}' not available")
                 continue
 
             # Check memory can fit if model needs loading
             if model not in loaded_names:
                 model_size = self._estimate_model_size(model, node)
                 if node.memory and node.memory.available_gb < model_size:
+                    logger.debug(
+                        f"Eliminated {node.node_id}: insufficient memory "
+                        f"({node.memory.available_gb:.1f}GB avail < {model_size:.1f}GB needed)"
+                    )
                     continue
 
             survivors.append(node)
+
+        if not survivors and all_nodes:
+            logger.warning(f"All {len(all_nodes)} nodes eliminated for model '{model}'")
+
         return survivors
 
     def _score_thermal(self, node: NodeState, model: str) -> float:
@@ -215,4 +228,5 @@ class ScoringEngine:
             return 1.0
         if "embed" in name_lower:
             return 0.3
+        logger.debug(f"Model size unknown for '{model}', defaulting to 10.0GB")
         return 10.0

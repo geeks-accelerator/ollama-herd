@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 
@@ -12,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.routes.routing import get_all_fleet_models, score_with_fallbacks
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["openai"])
 
 
@@ -52,6 +54,8 @@ async def chat_completions(request: Request):
             content={"error": {"message": "model is required", "type": "invalid_request_error"}},
         )
 
+    logger.info(f"OpenAI request: model={model} stream={body.get('stream', False)}")
+
     inference_req = InferenceRequest(
         model=model,
         original_model=model,
@@ -77,6 +81,9 @@ async def chat_completions(request: Request):
 
     if not results:
         # Build error listing all attempted models
+        logger.warning(
+            f"No nodes for model={model} fallbacks={inference_req.fallback_models}"
+        )
         models_tried = [model] + inference_req.fallback_models
         all_fleet_models = get_all_fleet_models(registry)
         any_exists = any(m in all_fleet_models for m in models_tried)
@@ -162,8 +169,8 @@ async def chat_completions(request: Request):
                     data = json.loads(chunk[6:])
                     delta = data.get("choices", [{}])[0].get("delta", {})
                     full_content += delta.get("content", "")
-                except (json.JSONDecodeError, IndexError):
-                    pass
+                except (json.JSONDecodeError, IndexError) as e:
+                    logger.debug(f"Skipping malformed SSE chunk: {e}")
 
         # Retrieve real token counts extracted from Ollama response
         tokens = proxy._request_tokens.pop(inference_req.request_id, (None, None))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -10,6 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.routes.routing import get_all_fleet_models, score_with_fallbacks
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["ollama"])
 
 
@@ -120,6 +122,7 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
     registry = request.app.state.registry
     settings = request.app.state.settings
     model = inference_req.original_model or inference_req.model
+    logger.info(f"Ollama request: model={model} stream={inference_req.stream}")
 
     # Score with fallback support
     results, actual_model = await score_with_fallbacks(
@@ -127,6 +130,9 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
     )
 
     if not results:
+        logger.warning(
+            f"No nodes for model={model} fallbacks={inference_req.fallback_models}"
+        )
         models_tried = [model] + inference_req.fallback_models
         all_fleet_models = get_all_fleet_models(registry)
         any_exists = any(m in all_fleet_models for m in models_tried)
@@ -205,8 +211,8 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
                     full_response += data.get("response", "")
                     if data.get("done"):
                         final_data = data
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as e:
+                    logger.debug(f"Skipping malformed Ollama chunk: {e}")
 
         # Clean up token tracking
         proxy._request_tokens.pop(inference_req.request_id, None)

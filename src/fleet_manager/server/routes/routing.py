@@ -29,6 +29,7 @@ async def score_with_fallbacks(
     models_to_try = [inference_req.model] + inference_req.fallback_models
 
     deadline = time.time() + HOLD_TIMEOUT
+    hold_logged = False
     while time.time() < deadline:
         for model in models_to_try:
             queue_depths = queue_mgr.get_queue_depths()
@@ -55,9 +56,23 @@ async def score_with_fallbacks(
                 break
 
         if not any_exists:
+            logger.debug(f"None of models {models_to_try} exist on any node, stopping hold")
             break  # None of the models exist at all
+
+        if not hold_logged:
+            logger.info(
+                f"Holding request for {inference_req.model}: model exists but no node "
+                f"available, will retry for up to {HOLD_TIMEOUT}s"
+            )
+            hold_logged = True
+
         await asyncio.sleep(HOLD_RETRY_INTERVAL)
 
+    if hold_logged:
+        logger.warning(
+            f"Holding queue timeout: no node became available for "
+            f"{inference_req.model} within {HOLD_TIMEOUT}s"
+        )
     return [], ""
 
 

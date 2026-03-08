@@ -25,7 +25,8 @@ class OllamaClient:
         try:
             resp = await self._client.get("/")
             return resp.status_code == 200
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Ollama health check failed: {e}")
             return False
 
     async def get_running_models(self) -> list[LoadedModel]:

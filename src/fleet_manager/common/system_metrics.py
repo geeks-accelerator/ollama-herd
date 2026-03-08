@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import platform
 import subprocess
 
 import psutil
 
 from fleet_manager.models.node import CpuMetrics, MemoryMetrics, MemoryPressure
+
+logger = logging.getLogger(__name__)
 
 
 def get_cpu_metrics() -> CpuMetrics:
@@ -47,7 +50,8 @@ def _get_memory_pressure() -> MemoryPressure:
         if "warn" in output:
             return MemoryPressure.WARN
         return MemoryPressure.NORMAL
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Could not read memory pressure (defaulting to NORMAL): {e}")
         return MemoryPressure.NORMAL
 
 
@@ -61,5 +65,6 @@ def get_local_ip() -> str:
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Could not determine LAN IP (defaulting to 127.0.0.1): {e}")
         return "127.0.0.1"

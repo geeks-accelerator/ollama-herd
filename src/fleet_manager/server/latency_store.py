@@ -41,8 +41,11 @@ class LatencyStore:
                 await self._db.execute(
                     f"ALTER TABLE latency_observations ADD COLUMN {col}"
                 )
-            except Exception:
-                pass  # Column already exists
+            except Exception as e:
+                if "duplicate column" in str(e).lower():
+                    pass  # Column already exists — expected
+                else:
+                    logger.warning(f"Migration error adding column {col}: {e}")
         # Indexes for time-range dashboard queries
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_latency_timestamp
@@ -256,7 +259,9 @@ class LatencyStore:
             p75 = await self.get_percentile(node_id, model_name, 75)
             if p75 is not None:
                 self._percentile_cache[f"{node_id}:{model_name}"] = p75
+        logger.info(f"Loaded p75 latency cache for {len(self._percentile_cache)} node:model pairs")
 
     async def close(self):
         if self._db:
             await self._db.close()
+            logger.debug("Latency store closed")
