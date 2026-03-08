@@ -76,6 +76,37 @@ class TraceStore:
             "CREATE INDEX IF NOT EXISTS idx_traces_tags "
             "ON request_traces(tags)"
         )
+
+        # Benchmark runs table
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS benchmark_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL UNIQUE,
+                timestamp REAL NOT NULL,
+                duration_s REAL NOT NULL,
+                total_requests INTEGER NOT NULL,
+                total_failures INTEGER NOT NULL,
+                total_prompt_tokens INTEGER NOT NULL,
+                total_completion_tokens INTEGER NOT NULL,
+                requests_per_sec REAL,
+                tokens_per_sec REAL,
+                latency_p50_ms REAL,
+                latency_p95_ms REAL,
+                latency_p99_ms REAL,
+                ttft_p50_ms REAL,
+                ttft_p95_ms REAL,
+                ttft_p99_ms REAL,
+                fleet_snapshot TEXT,
+                per_model_results TEXT,
+                per_node_results TEXT,
+                peak_utilization TEXT
+            )
+        """)
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_benchmark_runs_timestamp "
+            "ON benchmark_runs(timestamp)"
+        )
+
         await self._db.commit()
         logger.info(f"Trace store initialized at {self._db_path}")
 
@@ -409,6 +440,110 @@ class TraceStore:
             }
             for row in rows
         ]
+
+    # -- Benchmark runs --
+
+    async def save_benchmark_run(self, data: dict):
+        """Insert a benchmark run record."""
+        if not self._db:
+            return
+        await self._db.execute(
+            "INSERT OR REPLACE INTO benchmark_runs "
+            "(run_id, timestamp, duration_s, total_requests, total_failures, "
+            "total_prompt_tokens, total_completion_tokens, requests_per_sec, "
+            "tokens_per_sec, latency_p50_ms, latency_p95_ms, latency_p99_ms, "
+            "ttft_p50_ms, ttft_p95_ms, ttft_p99_ms, fleet_snapshot, "
+            "per_model_results, per_node_results, peak_utilization) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                data["run_id"],
+                data.get("timestamp", time.time()),
+                data["duration_s"],
+                data["total_requests"],
+                data["total_failures"],
+                data["total_prompt_tokens"],
+                data["total_completion_tokens"],
+                data.get("requests_per_sec"),
+                data.get("tokens_per_sec"),
+                data.get("latency_p50_ms"),
+                data.get("latency_p95_ms"),
+                data.get("latency_p99_ms"),
+                data.get("ttft_p50_ms"),
+                data.get("ttft_p95_ms"),
+                data.get("ttft_p99_ms"),
+                json.dumps(data.get("fleet_snapshot")) if data.get("fleet_snapshot") else None,
+                json.dumps(data.get("per_model_results")) if data.get("per_model_results") else None,
+                json.dumps(data.get("per_node_results")) if data.get("per_node_results") else None,
+                json.dumps(data.get("peak_utilization")) if data.get("peak_utilization") else None,
+            ),
+        )
+        await self._db.commit()
+
+    async def get_benchmark_runs(self, limit: int = 50) -> list[dict]:
+        """Return benchmark runs, newest first."""
+        if not self._db:
+            return []
+        cursor = await self._db.execute(
+            "SELECT run_id, timestamp, duration_s, total_requests, total_failures, "
+            "total_prompt_tokens, total_completion_tokens, requests_per_sec, "
+            "tokens_per_sec, latency_p50_ms, latency_p95_ms, latency_p99_ms, "
+            "ttft_p50_ms, ttft_p95_ms, ttft_p99_ms, fleet_snapshot, "
+            "per_model_results, per_node_results, peak_utilization "
+            "FROM benchmark_runs ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [self._benchmark_row_to_dict(row) for row in rows]
+
+    async def get_benchmark_run(self, run_id: str) -> dict | None:
+        """Return a single benchmark run by run_id."""
+        if not self._db:
+            return None
+        cursor = await self._db.execute(
+            "SELECT run_id, timestamp, duration_s, total_requests, total_failures, "
+            "total_prompt_tokens, total_completion_tokens, requests_per_sec, "
+            "tokens_per_sec, latency_p50_ms, latency_p95_ms, latency_p99_ms, "
+            "ttft_p50_ms, ttft_p95_ms, ttft_p99_ms, fleet_snapshot, "
+            "per_model_results, per_node_results, peak_utilization "
+            "FROM benchmark_runs WHERE run_id = ?",
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._benchmark_row_to_dict(row)
+
+    def _benchmark_row_to_dict(self, row) -> dict:
+        """Convert a benchmark_runs row to dict with JSON parsing."""
+        def _parse_json(val):
+            if val is None:
+                return None
+            try:
+                return json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                return val
+
+        return {
+            "run_id": row[0],
+            "timestamp": row[1],
+            "duration_s": row[2],
+            "total_requests": row[3],
+            "total_failures": row[4],
+            "total_prompt_tokens": row[5],
+            "total_completion_tokens": row[6],
+            "requests_per_sec": row[7],
+            "tokens_per_sec": row[8],
+            "latency_p50_ms": row[9],
+            "latency_p95_ms": row[10],
+            "latency_p99_ms": row[11],
+            "ttft_p50_ms": row[12],
+            "ttft_p95_ms": row[13],
+            "ttft_p99_ms": row[14],
+            "fleet_snapshot": _parse_json(row[15]),
+            "per_model_results": _parse_json(row[16]),
+            "per_node_results": _parse_json(row[17]),
+            "peak_utilization": _parse_json(row[18]),
+        }
 
     def _row_to_dict(self, row) -> dict:
         """Convert a SELECT row into a dict with JSON parsing."""

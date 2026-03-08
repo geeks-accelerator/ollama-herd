@@ -128,10 +128,10 @@ class NodeRegistry:
         """
         from urllib.parse import urlparse
 
-        # If heartbeat came from localhost, the node is on this machine
-        is_local = request_ip in ("127.0.0.1", "::1", "") or request_ip == payload.lan_ip
+        # If heartbeat came from loopback, the node is on this machine
+        is_local = request_ip in ("127.0.0.1", "::1", "")
         if is_local:
-            # Check if ollama_host points to localhost — use it directly
+            # Node on same machine — localhost is reachable
             parsed = urlparse(payload.ollama_host)
             if parsed.hostname in ("localhost", "127.0.0.1", "::1"):
                 return payload.ollama_host

@@ -13,7 +13,7 @@ uv run herd-node --router-url http://localhost:11435  # explicit router URL
 
 ```bash
 uv pip install "pytest>=8.0" "pytest-asyncio>=0.24.0"  # install test deps (first time only)
-uv run pytest                    # run all tests (~4s)
+uv run pytest                    # run all 212 tests (~4s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run pytest -v                 # verbose output
@@ -36,16 +36,17 @@ Single Python package (`fleet_manager`), two CLI entry points:
 | `server/queue_manager.py` | Per `node:model` queues with dynamic concurrent workers |
 | `server/streaming.py` | httpx proxy to Ollama + format conversion (NDJSON ↔ SSE) + auto-retry |
 | `server/latency_store.py` | aiosqlite persistence at `~/.fleet-manager/latency.db` |
-| `server/trace_store.py` | Per-request trace log + usage stats in SQLite |
+| `server/trace_store.py` | Per-request trace log + usage stats + benchmark results in SQLite |
 | `server/routes/routing.py` | Shared scoring logic with model fallback + holding queue + tag extraction |
 | `server/rebalancer.py` | Background queue rebalancer + pre-warm trigger |
 | `server/routes/openai_compat.py` | `/v1/chat/completions`, `/v1/models` |
 | `server/routes/ollama_compat.py` | `/api/chat`, `/api/generate`, `/api/tags`, `/api/ps` |
 | `server/routes/fleet.py` | `/fleet/status` — full fleet state |
 | `server/routes/heartbeat.py` | `/heartbeat` — node agent heartbeat receiver |
-| `server/routes/dashboard.py` | Real-time web dashboard at `/dashboard` with SSE updates |
-| `node/agent.py` | Main loop: mDNS discovery, heartbeat, Ollama auto-start, SIGTERM drain |
-| `node/collector.py` | Assembles HeartbeatPayload from psutil + Ollama |
+| `server/routes/dashboard.py` | Real-time web dashboard at `/dashboard` with SSE updates + benchmarks tab |
+| `node/agent.py` | Main loop: mDNS discovery, heartbeat, Ollama auto-start, LAN proxy, SIGTERM drain |
+| `node/collector.py` | Assembles HeartbeatPayload from psutil + Ollama, rewrites localhost to LAN IP |
+| `node/ollama_proxy.py` | TCP reverse proxy: bridges LAN IP → localhost Ollama (auto-started) |
 | `node/capacity_learner.py` | 168-slot behavioral model, availability score, dynamic memory ceiling |
 | `node/meeting_detector.py` | macOS camera/microphone detection → hard pause |
 | `node/app_fingerprint.py` | Resource signature classification (idle/light/moderate/heavy/intensive) |

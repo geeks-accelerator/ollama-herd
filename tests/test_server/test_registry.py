@@ -115,9 +115,8 @@ class TestNodeRegistry:
             ollama_host="http://localhost:11434",
         )
         node = await registry.update_from_heartbeat(hb, request_ip="192.168.1.200")
-        # Remote node should get URL built from LAN IP
-        # When request_ip == lan_ip it's treated as local
-        assert node.ollama_base_url is not None
+        # Remote node should get URL rewritten to LAN IP, not localhost
+        assert node.ollama_base_url == "http://192.168.1.200:11434"
 
     async def test_heartbeat_resets_status(self, registry):
         hb = make_heartbeat(node_id="studio")

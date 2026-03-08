@@ -73,6 +73,7 @@ grep '"level": "ERROR"' ~/.fleet-manager/logs/herd.jsonl | \
 | Streaming proxy | ERROR | Background task failures (latency recording, trace recording) |
 | Rebalancer | DEBUG | Pre-warm triggers, rebalance decisions |
 | Holding queue | INFO | Request entering hold, hold timeout |
+| Node agent | INFO | LAN proxy start/stop, Ollama LAN reachability |
 | Node agent | WARNING | Router connection failures, Ollama health failures |
 | Capacity learner | INFO | Mode changes, availability score transitions |
 
@@ -248,6 +249,44 @@ Each failed attempt is recorded as a `retried` trace. The successful attempt is 
 
 ---
 
+## LAN Proxy (Automatic Ollama LAN Bridging)
+
+Ollama defaults to listening on `localhost:11434` only, which means the router can't reach it over the network. The node agent solves this automatically.
+
+### How it works
+
+1. After Ollama is confirmed healthy, the agent checks if Ollama is reachable on the node's LAN IP
+2. If not (i.e., Ollama is localhost-only), the agent starts a lightweight TCP reverse proxy
+3. The proxy listens on `<LAN_IP>:11434` and forwards all traffic to `localhost:11434`
+4. The heartbeat reports the LAN-reachable URL to the router
+
+This is completely transparent — the router connects to `http://<LAN_IP>:11434` and the proxy pipes bytes back and forth.
+
+### When the proxy is NOT started
+
+- Ollama is already bound to `0.0.0.0` (reachable on LAN IP directly)
+- The node's LAN IP can't be determined
+- The proxy port is already in use (e.g., another instance)
+
+### Verifying
+
+Check the node agent logs on startup:
+
+```
+Ollama LAN proxy: 10.0.0.141:11434 -> 127.0.0.1:11434
+LAN proxy active: router can reach Ollama at http://10.0.0.141:11434
+```
+
+Or if Ollama is already LAN-accessible:
+
+```
+Ollama already reachable on LAN at 10.0.0.141:11434, no proxy needed
+```
+
+The proxy is stopped cleanly during graceful drain (SIGTERM/SIGINT).
+
+---
+
 ## Ollama Auto-Start and Health Recovery
 
 The node agent automatically manages the local Ollama process.
@@ -370,7 +409,7 @@ All persistent data lives in `~/.fleet-manager/` (configurable via `FLEET_DATA_D
 
 ```
 ~/.fleet-manager/
-  latency.db          # SQLite: latency history + request traces + usage stats
+  latency.db          # SQLite: latency history + request traces + usage stats + benchmark runs
   logs/
     herd.jsonl        # Structured logs (daily rotation, 30-day retention)
   capacity-learner-{node-id}.json  # Learned behavioral data (per node)

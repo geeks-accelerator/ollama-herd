@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlparse
 
 from fleet_manager.common.ollama_client import OllamaClient
 from fleet_manager.common.system_metrics import get_cpu_metrics, get_local_ip, get_memory_metrics
 from fleet_manager.models.node import CapacityMetrics, HeartbeatPayload, OllamaMetrics
 
 logger = logging.getLogger(__name__)
+
+
+def _make_lan_reachable_url(ollama_host: str, lan_ip: str) -> str:
+    """Replace localhost in ollama_host with the LAN IP so the router can reach us."""
+    parsed = urlparse(ollama_host)
+    if parsed.hostname in ("localhost", "127.0.0.1", "::1") and lan_ip and lan_ip != "127.0.0.1":
+        port = parsed.port or 11434
+        return f"http://{lan_ip}:{port}"
+    return ollama_host
 
 
 async def collect_heartbeat(
@@ -52,6 +62,8 @@ async def collect_heartbeat(
             days_observed=cap_info.days_observed,
         )
 
+    lan_ip = get_local_ip()
+
     return HeartbeatPayload(
         node_id=node_id,
         cpu=cpu,
@@ -61,7 +73,7 @@ async def collect_heartbeat(
             models_available=models_available,
             requests_active=requests_active,
         ),
-        ollama_host=ollama_host,
-        lan_ip=get_local_ip(),
+        ollama_host=_make_lan_reachable_url(ollama_host, lan_ip),
+        lan_ip=lan_ip,
         capacity=capacity,
     )

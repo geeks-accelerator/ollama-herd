@@ -337,3 +337,100 @@ class TestTagAnalytics:
         assert tags_map["project-x"]["total_requests"] == 2
         assert "staging" in tags_map
         assert tags_map["staging"]["total_requests"] == 1
+
+
+class TestBenchmarkRuns:
+    @pytest.mark.asyncio
+    async def test_save_and_get_benchmark_run(self, store):
+        data = {
+            "run_id": "bench-001",
+            "timestamp": time.time(),
+            "duration_s": 60.0,
+            "total_requests": 25,
+            "total_failures": 3,
+            "total_prompt_tokens": 1000,
+            "total_completion_tokens": 5000,
+            "requests_per_sec": 0.42,
+            "tokens_per_sec": 83.3,
+            "latency_p50_ms": 4200.0,
+            "latency_p95_ms": 8100.0,
+            "latency_p99_ms": 9500.0,
+            "ttft_p50_ms": 850.0,
+            "ttft_p95_ms": 1200.0,
+            "ttft_p99_ms": 1400.0,
+            "fleet_snapshot": {
+                "nodes": [
+                    {"node_id": "mac-studio", "cores": 32, "memory_total_gb": 512},
+                ],
+                "models": [
+                    {"name": "llama3:70b", "size_gb": 40, "concurrency": 4},
+                ],
+            },
+            "per_model_results": [
+                {"model": "llama3:70b", "requests": 25, "tok_s": 83.3, "avg_latency_ms": 4200},
+            ],
+            "per_node_results": [
+                {"node_id": "mac-studio", "requests": 25, "pct": 100, "tok_s": 83.3, "tokens": 5000},
+            ],
+            "peak_utilization": [
+                {"node_id": "mac-studio", "cpu_peak": 80.0, "mem_peak": 65.0, "active_peak": 4},
+            ],
+        }
+        await store.save_benchmark_run(data)
+
+        run = await store.get_benchmark_run("bench-001")
+        assert run is not None
+        assert run["run_id"] == "bench-001"
+        assert run["duration_s"] == 60.0
+        assert run["total_requests"] == 25
+        assert run["total_failures"] == 3
+        assert run["tokens_per_sec"] == 83.3
+        assert run["latency_p50_ms"] == 4200.0
+        assert run["fleet_snapshot"]["nodes"][0]["node_id"] == "mac-studio"
+        assert run["per_model_results"][0]["model"] == "llama3:70b"
+        assert run["per_node_results"][0]["tokens"] == 5000
+        assert run["peak_utilization"][0]["cpu_peak"] == 80.0
+
+    @pytest.mark.asyncio
+    async def test_get_benchmark_runs_list(self, store):
+        for i in range(3):
+            await store.save_benchmark_run({
+                "run_id": f"bench-{i:03d}",
+                "timestamp": time.time() + i,
+                "duration_s": 60.0,
+                "total_requests": 10 + i,
+                "total_failures": 0,
+                "total_prompt_tokens": 500,
+                "total_completion_tokens": 2000,
+                "requests_per_sec": 0.5,
+                "tokens_per_sec": 50.0,
+            })
+        runs = await store.get_benchmark_runs(limit=50)
+        assert len(runs) == 3
+        # Newest first
+        assert runs[0]["run_id"] == "bench-002"
+        assert runs[2]["run_id"] == "bench-000"
+
+    @pytest.mark.asyncio
+    async def test_benchmark_run_not_found(self, store):
+        run = await store.get_benchmark_run("nonexistent")
+        assert run is None
+
+    @pytest.mark.asyncio
+    async def test_save_benchmark_without_initialize(self):
+        store = TraceStore(data_dir="/tmp/nonexistent")
+        await store.save_benchmark_run({
+            "run_id": "x",
+            "timestamp": time.time(),
+            "duration_s": 10,
+            "total_requests": 0,
+            "total_failures": 0,
+            "total_prompt_tokens": 0,
+            "total_completion_tokens": 0,
+        })
+        # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_get_benchmark_runs_empty(self, store):
+        runs = await store.get_benchmark_runs()
+        assert runs == []

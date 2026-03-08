@@ -232,6 +232,37 @@ async def dashboard_apps_daily_data(request: Request, days: int = 7):
     return {"days": days, "data": data}
 
 
+@router.post("/dashboard/api/benchmarks")
+async def save_benchmark(request: Request):
+    """Save benchmark results from the benchmark script."""
+    data = await request.json()
+    trace_store = getattr(request.app.state, "trace_store", None)
+    if not trace_store:
+        return {"error": "trace store not available"}
+    await trace_store.save_benchmark_run(data)
+    return {"status": "saved", "run_id": data.get("run_id")}
+
+
+@router.get("/dashboard/api/benchmarks")
+async def get_benchmarks(request: Request, limit: int = 50):
+    """List benchmark runs, newest first."""
+    trace_store = getattr(request.app.state, "trace_store", None)
+    if not trace_store:
+        return {"data": []}
+    data = await trace_store.get_benchmark_runs(limit=limit)
+    return {"data": data}
+
+
+@router.get("/dashboard/api/benchmarks/{run_id}")
+async def get_benchmark_detail(request: Request, run_id: str):
+    """Get a single benchmark run detail."""
+    trace_store = getattr(request.app.state, "trace_store", None)
+    if not trace_store:
+        return {"data": None}
+    data = await trace_store.get_benchmark_run(run_id)
+    return {"data": data}
+
+
 # ---------------------------------------------------------------------------
 # HTML pages
 # ---------------------------------------------------------------------------
@@ -272,6 +303,17 @@ async def dashboard_apps_page():
         "Apps",
         "apps",
         _APPS_BODY,
+        extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>',
+    )
+
+
+@router.get("/dashboard/benchmarks", response_class=HTMLResponse)
+async def dashboard_benchmarks_page():
+    """Benchmarks — historical benchmark runs and capacity growth tracking."""
+    return _dashboard_page(
+        "Benchmarks",
+        "benchmarks",
+        _BENCHMARKS_BODY,
         extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>',
     )
 
@@ -550,6 +592,7 @@ def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str
         ("trends", "Trends", "/dashboard/trends"),
         ("models", "Model Insights", "/dashboard/models"),
         ("apps", "Apps", "/dashboard/apps"),
+        ("benchmarks", "Benchmarks", "/dashboard/benchmarks"),
     ]
     nav_html = "".join(
         f'<a href="{href}" class="nav-tab {"active" if key == active_tab else ""}">{label}</a>'
@@ -1400,5 +1443,251 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 loadApps();
+</script>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Benchmarks page body
+# ---------------------------------------------------------------------------
+
+_BENCHMARKS_BODY = """
+<style>
+.bench-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.bench-stat { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; text-align: center; }
+.bench-stat .value { font-size: 28px; font-weight: 700; color: var(--accent); }
+.bench-stat .label { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+.bench-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.bench-table th { text-align: left; padding: 10px 12px; border-bottom: 2px solid var(--border); color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.bench-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.bench-table tr:hover { background: rgba(108,99,255,0.05); }
+.bench-table tr { cursor: pointer; }
+.bench-detail { display: none; }
+.bench-detail.open { display: table-row; }
+.bench-detail td { padding: 12px 16px; background: rgba(108,99,255,0.03); }
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.detail-section h5 { margin: 0 0 8px 0; font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.detail-table { width: 100%; font-size: 12px; border-collapse: collapse; }
+.detail-table th, .detail-table td { padding: 4px 8px; text-align: left; }
+.detail-table th { color: var(--text-dim); font-weight: 500; border-bottom: 1px solid var(--border); }
+.detail-table td { border-bottom: 1px solid rgba(255,255,255,0.03); }
+.empty-state { text-align: center; padding: 60px 20px; color: var(--text-dim); }
+.empty-state h3 { color: var(--text); margin-bottom: 8px; }
+.empty-state code { background: rgba(108,99,255,0.15); padding: 2px 8px; border-radius: 4px; font-size: 13px; }
+@media (max-width: 768px) {
+  .detail-grid { grid-template-columns: 1fr; }
+  .bench-summary { grid-template-columns: 1fr 1fr; }
+}
+</style>
+
+<div class="main">
+  <div class="bench-summary" id="bench-summary"></div>
+
+  <div style="display:flex;gap:16px;margin-bottom:20px">
+    <div class="chart-card" style="flex:2;position:relative;height:300px">
+      <h4 style="margin:0 0 12px 0;font-size:14px;color:var(--text-dim)">Capacity Growth</h4>
+      <div style="position:relative;height:calc(100% - 30px)">
+        <canvas id="capacity-chart"></canvas>
+      </div>
+    </div>
+    <div class="chart-card" style="flex:1;position:relative;height:300px">
+      <h4 style="margin:0 0 12px 0;font-size:14px;color:var(--text-dim)">Throughput Trend</h4>
+      <div style="position:relative;height:calc(100% - 30px)">
+        <canvas id="throughput-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden">
+    <table class="bench-table" id="bench-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Duration</th>
+          <th>Nodes</th>
+          <th>Models</th>
+          <th>Requests</th>
+          <th>Tok/s</th>
+          <th>Latency p50</th>
+          <th>TTFT p50</th>
+        </tr>
+      </thead>
+      <tbody id="bench-tbody"></tbody>
+    </table>
+    <div class="empty-state" id="empty-state" style="display:none">
+      <h3>No benchmark runs yet</h3>
+      <p>Run your first benchmark:</p>
+      <p><code>python scripts/benchmark.py --duration 60</code></p>
+    </div>
+  </div>
+</div>
+
+<script>
+const cs = getComputedStyle(document.documentElement);
+const C = {
+  accent: cs.getPropertyValue('--accent').trim(),
+  blue: cs.getPropertyValue('--blue').trim(),
+  green: cs.getPropertyValue('--green').trim() || '#22c55e',
+  text: cs.getPropertyValue('--text').trim(),
+  dim: cs.getPropertyValue('--text-dim').trim(),
+  grid: cs.getPropertyValue('--border').trim(),
+};
+const chartDefaults = {
+  responsive: true,
+  maintainAspectRatio: false,
+  scales: {
+    x: { grid: { color: C.grid + '33' }, ticks: { color: C.dim, font: { size: 11 } } },
+    y: { grid: { color: C.grid + '33' }, ticks: { color: C.dim, font: { size: 11 } } },
+  },
+  plugins: { legend: { labels: { color: C.dim, font: { size: 11 } } } },
+};
+
+let capacityChart, throughputChart;
+
+function fmtDate(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+function fmtShortDate(ts) {
+  return new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+function fmtDuration(s) {
+  if (s < 60) return s.toFixed(0) + 's';
+  return (s / 60).toFixed(1) + 'm';
+}
+function fmtNum(n) { return n != null ? n.toLocaleString('en-US', { maximumFractionDigits: 1 }) : '-'; }
+function fmtMs(ms) { return ms != null ? (ms / 1000).toFixed(1) + 's' : '-'; }
+
+async function loadBenchmarks() {
+  const resp = await fetch('/dashboard/api/benchmarks?limit=100');
+  const { data } = await resp.json();
+
+  const tbody = document.getElementById('bench-tbody');
+  const empty = document.getElementById('empty-state');
+  const summary = document.getElementById('bench-summary');
+
+  if (!data || data.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    summary.innerHTML = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  // Summary cards
+  const bestTokS = Math.max(...data.map(d => d.tokens_per_sec || 0));
+  const latestNodes = data[0].fleet_snapshot ? data[0].fleet_snapshot.nodes || [] : [];
+  const totalRuns = data.length;
+  const totalTokens = data.reduce((s, d) => s + (d.total_prompt_tokens || 0) + (d.total_completion_tokens || 0), 0);
+
+  summary.innerHTML = `
+    <div class="bench-stat"><div class="value">${totalRuns}</div><div class="label">Total Runs</div></div>
+    <div class="bench-stat"><div class="value">${fmtNum(bestTokS)}</div><div class="label">Best tok/s</div></div>
+    <div class="bench-stat"><div class="value">${latestNodes.length}</div><div class="label">Fleet Nodes</div></div>
+    <div class="bench-stat"><div class="value">${totalTokens.toLocaleString()}</div><div class="label">Total Tokens</div></div>
+  `;
+
+  // Table rows
+  let rows = '';
+  data.forEach((run, i) => {
+    const fleet = run.fleet_snapshot || {};
+    const nodes = fleet.nodes || [];
+    const models = fleet.models || [];
+    rows += `<tr onclick="toggleDetail(${i})">
+      <td>${fmtDate(run.timestamp)}</td>
+      <td>${fmtDuration(run.duration_s)}</td>
+      <td>${nodes.length}</td>
+      <td>${models.length}</td>
+      <td>${run.total_requests}</td>
+      <td>${fmtNum(run.tokens_per_sec)}</td>
+      <td>${fmtMs(run.latency_p50_ms)}</td>
+      <td>${fmtMs(run.ttft_p50_ms)}</td>
+    </tr>`;
+
+    // Detail row
+    let modelHtml = '', nodeHtml = '', utilHtml = '';
+    const mr = run.per_model_results || [];
+    if (mr.length) {
+      modelHtml = '<table class="detail-table"><thead><tr><th>Model</th><th>Requests</th><th>tok/s</th><th>Avg Latency</th><th>Avg TTFT</th></tr></thead><tbody>';
+      mr.forEach(m => { modelHtml += `<tr><td>${m.model}</td><td>${m.requests}</td><td>${fmtNum(m.tok_s)}</td><td>${fmtMs(m.avg_latency_ms)}</td><td>${fmtMs(m.avg_ttft_ms)}</td></tr>`; });
+      modelHtml += '</tbody></table>';
+    }
+    const nr = run.per_node_results || [];
+    if (nr.length) {
+      nodeHtml = '<table class="detail-table"><thead><tr><th>Node</th><th>Requests</th><th>Share</th><th>tok/s</th><th>Tokens</th></tr></thead><tbody>';
+      nr.forEach(n => { nodeHtml += `<tr><td>${n.node_id}</td><td>${n.requests}</td><td>${fmtNum(n.pct)}%</td><td>${fmtNum(n.tok_s)}</td><td>${(n.tokens || 0).toLocaleString()}</td></tr>`; });
+      nodeHtml += '</tbody></table>';
+    }
+    const pu = run.peak_utilization || [];
+    if (pu.length) {
+      utilHtml = '<table class="detail-table"><thead><tr><th>Node</th><th>CPU Peak</th><th>MEM Peak</th><th>Active Peak</th></tr></thead><tbody>';
+      pu.forEach(u => { utilHtml += `<tr><td>${u.node_id}</td><td>${fmtNum(u.cpu_peak)}%</td><td>${fmtNum(u.mem_peak)}%</td><td>${u.active_peak || 0}</td></tr>`; });
+      utilHtml += '</tbody></table>';
+    }
+
+    rows += `<tr class="bench-detail" id="detail-${i}"><td colspan="8">
+      <div class="detail-grid">
+        <div class="detail-section"><h5>Per Model</h5>${modelHtml || '<em>No data</em>'}</div>
+        <div class="detail-section"><h5>Per Node</h5>${nodeHtml || '<em>No data</em>'}</div>
+      </div>
+      ${utilHtml ? '<div class="detail-section" style="margin-top:12px"><h5>Peak Utilization</h5>' + utilHtml + '</div>' : ''}
+    </td></tr>`;
+  });
+  tbody.innerHTML = rows;
+
+  // Charts — chronological order (oldest first)
+  const sorted = [...data].reverse();
+  const labels = sorted.map(d => fmtShortDate(d.timestamp));
+  const tokS = sorted.map(d => d.tokens_per_sec || 0);
+  const reqS = sorted.map(d => d.requests_per_sec || 0);
+  const nodeCount = sorted.map(d => (d.fleet_snapshot && d.fleet_snapshot.nodes) ? d.fleet_snapshot.nodes.length : 0);
+
+  if (capacityChart) capacityChart.destroy();
+  if (throughputChart) throughputChart.destroy();
+
+  capacityChart = new Chart(document.getElementById('capacity-chart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'tok/s', data: tokS, borderColor: C.accent, backgroundColor: C.accent + '22', fill: true, tension: 0.3, pointRadius: 4, yAxisID: 'y' },
+        { label: 'Nodes', data: nodeCount, borderColor: C.green, backgroundColor: C.green + '22', fill: false, tension: 0, pointRadius: 4, stepped: true, yAxisID: 'y1' },
+      ],
+    },
+    options: {
+      ...chartDefaults,
+      scales: {
+        ...chartDefaults.scales,
+        y: { ...chartDefaults.scales.y, title: { display: true, text: 'Tokens/sec', color: C.dim } },
+        y1: { position: 'right', grid: { drawOnChartArea: false }, ticks: { color: C.dim, stepSize: 1, font: { size: 11 } }, title: { display: true, text: 'Nodes', color: C.dim } },
+      },
+    },
+  });
+
+  throughputChart = new Chart(document.getElementById('throughput-chart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'req/s', data: reqS, backgroundColor: C.blue + '88', borderColor: C.blue, borderWidth: 1 },
+      ],
+    },
+    options: { ...chartDefaults, plugins: { ...chartDefaults.plugins, legend: { display: false } } },
+  });
+}
+
+function toggleDetail(i) {
+  const row = document.getElementById('detail-' + i);
+  if (row) row.classList.toggle('open');
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  const dot = document.getElementById('sse-dot');
+  const st = document.getElementById('sse-status');
+  if (dot) dot.className = 'status-dot online';
+  if (st) st.textContent = 'API';
+});
+
+loadBenchmarks();
 </script>
 """

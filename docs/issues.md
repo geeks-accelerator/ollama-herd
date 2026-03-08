@@ -105,7 +105,7 @@ The SSE `event_stream()` function re-fetches `request.app.state` on every tick (
 **File:** `src/fleet_manager/server/routes/dashboard.py`
 **Severity:** Low (for now)
 
-The dashboard is ~1,300+ lines of inline HTML/CSS/JS in Python strings. This is pragmatic for a single-file deployment but will become painful as more dashboard features are added (e.g., tag filtering on Trends/Models views).
+The dashboard is a large amount of inline HTML/CSS/JS in Python strings across 5 pages (Fleet Overview, Trends, Model Insights, Apps, Benchmarks). This is pragmatic for a single-file deployment but will become painful as more dashboard features are added (e.g., tag filtering on Trends/Models views).
 
 **Fix:** When the dashboard grows further, extract to Jinja2 templates or a separate frontend build.
 

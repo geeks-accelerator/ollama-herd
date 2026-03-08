@@ -368,6 +368,7 @@ Receives heartbeats from node agents. Internal endpoint — not intended for ext
 | `GET /dashboard/trends` | Historical charts — requests/hour, average latency, token throughput |
 | `GET /dashboard/models` | Model Insights — per-model latency, tokens/sec, usage comparison |
 | `GET /dashboard/apps` | Apps — per-tag analytics with latency, tokens, errors, daily trends |
+| `GET /dashboard/benchmarks` | Benchmarks — capacity growth charts, per-run results |
 
 ### SSE Stream
 
@@ -600,6 +601,84 @@ Per-tag, per-day breakdown for trend charts.
     }
   ]
 }
+```
+
+---
+
+#### `GET /dashboard/api/benchmarks`
+
+List stored benchmark runs.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | integer | `50` | Maximum number of runs to return |
+
+**Response:**
+
+```json
+{
+  "data": [
+    {
+      "run_id": "bench-1772966095",
+      "timestamp": 1710000000.0,
+      "duration_s": 300.0,
+      "total_requests": 150,
+      "total_failures": 0,
+      "total_prompt_tokens": 18750,
+      "total_completion_tokens": 52500,
+      "requests_per_sec": 0.5,
+      "tokens_per_sec": 175.0,
+      "latency_p50_ms": 2100.0,
+      "latency_p95_ms": 4500.0,
+      "latency_p99_ms": 6200.0,
+      "ttft_p50_ms": 450.0,
+      "ttft_p95_ms": 1200.0,
+      "ttft_p99_ms": 1800.0,
+      "fleet_snapshot": "{...}",
+      "per_model_results": "[...]",
+      "per_node_results": "[...]",
+      "peak_utilization": "[...]"
+    }
+  ]
+}
+```
+
+---
+
+#### `POST /dashboard/api/benchmarks`
+
+Save benchmark results from the benchmark script.
+
+**Request body:**
+
+```json
+{
+  "run_id": "bench-1772966095",
+  "timestamp": 1710000000.0,
+  "duration_s": 300.0,
+  "total_requests": 150,
+  "total_failures": 0,
+  "total_prompt_tokens": 18750,
+  "total_completion_tokens": 52500,
+  "requests_per_sec": 0.5,
+  "tokens_per_sec": 175.0,
+  "latency_p50_ms": 2100.0,
+  "latency_p95_ms": 4500.0,
+  "latency_p99_ms": 6200.0,
+  "ttft_p50_ms": 450.0,
+  "ttft_p95_ms": 1200.0,
+  "ttft_p99_ms": 1800.0,
+  "fleet_snapshot": "{}",
+  "per_model_results": "[]",
+  "per_node_results": "[]",
+  "peak_utilization": "[]"
+}
+```
+
+**Response:**
+
+```json
+{"status": "saved", "run_id": "bench-1772966095"}
 ```
 
 ---

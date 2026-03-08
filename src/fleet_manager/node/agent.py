@@ -14,8 +14,10 @@ import psutil
 
 from fleet_manager.common.discovery import FleetServiceDiscoverer
 from fleet_manager.common.ollama_client import OllamaClient
+from fleet_manager.common.system_metrics import get_local_ip
 from fleet_manager.models.config import NodeSettings
 from fleet_manager.node.collector import collect_heartbeat
+from fleet_manager.node.ollama_proxy import OllamaProxy
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,7 @@ class NodeAgent:
         self._running = False
         self._capacity_learner = None
         self._ollama_process: subprocess.Popen | None = None
+        self._ollama_proxy: OllamaProxy | None = None
 
     async def _ensure_ollama(self) -> bool:
         """Check if Ollama is running; if not, try to start it.
@@ -57,15 +60,23 @@ class NodeAgent:
             )
             return False
 
-        # Start 'ollama serve' as a detached background process
+        # Start 'ollama serve' as a detached background process.
+        # Bind to 0.0.0.0 so the router can reach us over the LAN.
+        import os
+        env = os.environ.copy()
+        env.setdefault("OLLAMA_HOST", "0.0.0.0:11434")
         try:
             self._ollama_process = subprocess.Popen(
                 [ollama_bin, "serve"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
+                env=env,
             )
-            logger.info(f"Started ollama serve (pid={self._ollama_process.pid})")
+            logger.info(
+                f"Started ollama serve (pid={self._ollama_process.pid}, "
+                f"OLLAMA_HOST={env['OLLAMA_HOST']})"
+            )
         except Exception as e:
             logger.error(f"Failed to start Ollama: {e}")
             return False
@@ -117,6 +128,9 @@ class NodeAgent:
             logger.info(f"Found router at {self.router_url}")
         else:
             logger.info(f"Using configured router at {self.router_url}")
+
+        # Auto-start LAN proxy if Ollama is only on localhost
+        await self._ensure_lan_proxy()
 
         # Install signal handlers for graceful drain
         loop = asyncio.get_running_loop()
@@ -187,6 +201,50 @@ class NodeAgent:
 
             await asyncio.sleep(self.settings.heartbeat_interval)
 
+    async def _ensure_lan_proxy(self):
+        """Start a LAN proxy if Ollama is only listening on localhost.
+
+        This makes Ollama reachable by the router over the network without
+        requiring manual OLLAMA_HOST configuration on each node.
+        """
+        from urllib.parse import urlparse
+
+        parsed = urlparse(self.settings.ollama_host)
+        ollama_port = parsed.port or 11434
+
+        lan_ip = get_local_ip()
+        if not lan_ip or lan_ip == "127.0.0.1":
+            return  # Can't determine LAN IP
+
+        # Test if Ollama is already reachable on the LAN IP
+        try:
+            async with httpx.AsyncClient() as test:
+                resp = await test.get(
+                    f"http://{lan_ip}:{ollama_port}/", timeout=2
+                )
+                if resp.status_code == 200:
+                    logger.info(
+                        f"Ollama already reachable on LAN at "
+                        f"{lan_ip}:{ollama_port}, no proxy needed"
+                    )
+                    return
+        except Exception:
+            pass  # Not reachable — need the proxy
+
+        self._ollama_proxy = OllamaProxy(
+            listen_host=lan_ip,
+            listen_port=ollama_port,
+            target_host=parsed.hostname or "127.0.0.1",
+            target_port=ollama_port,
+        )
+        if await self._ollama_proxy.start():
+            logger.info(
+                f"LAN proxy active: router can reach Ollama at "
+                f"http://{lan_ip}:{ollama_port}"
+            )
+        else:
+            self._ollama_proxy = None
+
     async def _send_heartbeat(self, payload):
         resp = await self._http.post(
             f"{self.router_url}/heartbeat",
@@ -213,6 +271,8 @@ class NodeAgent:
             except Exception as e:
                 logger.warning(f"Failed to send drain signal to router: {e}")
         self._running = False
+        if self._ollama_proxy:
+            await self._ollama_proxy.stop()
         await self.ollama.close()
         if self._http:
             await self._http.aclose()

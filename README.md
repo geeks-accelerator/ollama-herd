@@ -133,12 +133,13 @@ Enable with `FLEET_NODE_ENABLE_CAPACITY_LEARNING=true`. See [Adaptive Capacity L
 
 ## Dashboard
 
-The built-in dashboard at `/dashboard` provides four views:
+The built-in dashboard at `/dashboard` provides five views:
 
 - **Fleet Overview** — live node status, CPU/memory metrics, loaded models, and request queue depths via Server-Sent Events
 - **Trends** — historical charts for requests per hour, average latency, and token throughput (prompt + completion) with selectable time ranges (24h–7d)
 - **Model Insights** — per-model comparison of latency, tokens/sec, and usage; token distribution doughnut chart; clickable rows for daily breakdown
 - **Apps** — per-tag analytics with request volume, latency, tokens, error rates, and daily trends; tag your requests to see per-application breakdowns
+- **Benchmarks** — capacity growth over time with per-run throughput, latency percentiles, per-model and per-node breakdowns
 
 All powered by Chart.js and a SQLite-backed latency store. No external database required.
 
@@ -171,6 +172,9 @@ See [Operations Guide](docs/operations-guide.md) for log queries, trace access, 
 | `GET /dashboard/api/apps` | Per-tag aggregated stats (JSON) |
 | `GET /dashboard/api/apps/daily` | Per-tag daily breakdown (JSON) |
 | `GET /dashboard/api/traces` | Recent request traces (JSON) |
+| `GET /dashboard/api/benchmarks` | Benchmark run history (JSON) |
+| `POST /dashboard/api/benchmarks` | Save benchmark results (JSON) |
+| `GET /dashboard/benchmarks` | Benchmarks dashboard page |
 
 Full request/response schemas: [API Reference](docs/api-reference.md).
 
@@ -238,8 +242,8 @@ Six principles shape every decision in this project:
 │  Herd Node A     │       │  Herd Node B     │
 │  (agent + Ollama)│       │  (agent + Ollama)│
 │  ┌────────────┐  │       │  ┌────────────┐  │
-│  │  Capacity  │  │       │  │  Meeting    │  │
-│  │  Learner   │  │       │  │  Detector   │  │
+│  │  Capacity  │  │       │  │  LAN Proxy  │  │
+│  │  Learner   │  │       │  │  (auto TCP) │  │
 │  └────────────┘  │       └──└────────────┘──┘
 └──────────────────┘
 ```
@@ -280,7 +284,7 @@ uv sync                              # install deps
 uv run herd                          # start router
 uv run herd-node                     # start node agent
 
-uv run pytest -v                     # run all 203 tests
+uv run pytest -v                     # run all 212 tests (~4s)
 uv run ruff check src/               # lint
 uv run ruff format src/              # format
 ```
@@ -318,7 +322,7 @@ See [Agentic Router Vision](docs/agentic-router-vision.md) for the full design.
 
 - Python 3.11+
 - [Ollama](https://ollama.com) running on each device
-- For multi-device setups: Ollama bound to `0.0.0.0` (`OLLAMA_HOST=0.0.0.0`)
+- Multi-device setups work automatically — the node agent starts a LAN proxy if Ollama is only listening on localhost
 
 ## License
 

@@ -349,20 +349,30 @@ class TestDashboard:
         assert "Apps" in resp.text
         assert "X-Herd-Tags" in resp.text  # Usage instructions
 
+    def test_benchmarks_page_html(self, client):
+        resp = client.get("/dashboard/benchmarks")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "chart.js" in resp.text
+        assert "Benchmarks" in resp.text
+        assert "Capacity Growth" in resp.text
+
     def test_all_pages_have_nav(self, client):
         """All dashboard pages include navigation links to all tabs."""
-        for path in ("/dashboard", "/dashboard/trends", "/dashboard/models", "/dashboard/apps"):
+        for path in ("/dashboard", "/dashboard/trends", "/dashboard/models", "/dashboard/apps", "/dashboard/benchmarks"):
             resp = client.get(path)
             assert resp.status_code == 200
             assert "/dashboard" in resp.text
             assert "/dashboard/trends" in resp.text
             assert "/dashboard/models" in resp.text
             assert "/dashboard/apps" in resp.text
+            assert "/dashboard/benchmarks" in resp.text
             # Nav tab labels
             assert "Dashboard" in resp.text
             assert "Trends" in resp.text
             assert "Model Insights" in resp.text
             assert "Apps" in resp.text
+            assert "Benchmarks" in resp.text
 
 
 class TestDashboardAPI:
@@ -532,6 +542,54 @@ class TestUsageAndTracesAPI:
         assert "data" in data
         assert "summary" in data
         assert "days" in data
+
+    def test_benchmarks_api_empty(self, client):
+        """Benchmarks API returns empty list when no trace store."""
+        resp = client.get("/dashboard/api/benchmarks")
+        assert resp.status_code == 200
+        assert resp.json()["data"] == []
+
+    def test_benchmarks_api_save_and_list(self, client_with_store):
+        """POST and GET benchmark results."""
+        bench = {
+            "run_id": "test-bench-001",
+            "timestamp": 1700000000,
+            "duration_s": 60,
+            "total_requests": 10,
+            "total_failures": 1,
+            "total_prompt_tokens": 500,
+            "total_completion_tokens": 2000,
+            "requests_per_sec": 0.17,
+            "tokens_per_sec": 33.3,
+        }
+        resp = client_with_store.post("/dashboard/api/benchmarks", json=bench)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "saved"
+
+        resp = client_with_store.get("/dashboard/api/benchmarks")
+        assert resp.status_code == 200
+        runs = resp.json()["data"]
+        assert len(runs) == 1
+        assert runs[0]["run_id"] == "test-bench-001"
+
+    def test_benchmarks_api_detail(self, client_with_store):
+        """GET single benchmark by run_id."""
+        bench = {
+            "run_id": "detail-test",
+            "timestamp": 1700000000,
+            "duration_s": 30,
+            "total_requests": 5,
+            "total_failures": 0,
+            "total_prompt_tokens": 200,
+            "total_completion_tokens": 1000,
+        }
+        client_with_store.post("/dashboard/api/benchmarks", json=bench)
+        resp = client_with_store.get("/dashboard/api/benchmarks/detail-test")
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data is not None
+        assert data["run_id"] == "detail-test"
+        assert data["total_requests"] == 5
 
 
 class TestTagExtraction:

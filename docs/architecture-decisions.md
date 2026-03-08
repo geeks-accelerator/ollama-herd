@@ -148,6 +148,23 @@ score = (historical_baseline × 0.4) + (current_state × 0.4) + (trend × 0.2)
 
 ---
 
+## LAN Proxy: Automatic Ollama Network Bridging
+
+**Decision:** Auto-start a TCP reverse proxy on the node's LAN IP when Ollama is only listening on localhost, rather than requiring users to manually set `OLLAMA_HOST=0.0.0.0`.
+
+**Why a proxy?**
+- Zero-config — users shouldn't need to know about `OLLAMA_HOST` to get multi-device routing working
+- Non-invasive — doesn't modify Ollama's configuration or restart it
+- Transparent — the proxy is a simple byte-pipe, no protocol awareness needed
+- Automatic detection — the agent checks if Ollama is already LAN-reachable and skips the proxy if so
+
+**Why not just set `OLLAMA_HOST=0.0.0.0` when auto-starting Ollama?**
+The agent does set `OLLAMA_HOST=0.0.0.0` when it starts Ollama itself. But if Ollama is already running (the common case — started by the system or user), we can't change its bind address without restarting it. The proxy handles this case without disruption.
+
+**Trade-off:** Adds one extra hop for LAN traffic. In practice, the TCP proxy on the same machine adds negligible latency (<1ms) since it's just piping bytes between two local sockets.
+
+---
+
 ## Dashboard: Inline HTML in Python
 
 **Decision:** Embed all dashboard HTML/CSS/JS directly in Python string constants in `routes/dashboard.py`.
@@ -156,9 +173,9 @@ score = (historical_baseline × 0.4) + (current_state × 0.4) + (trend × 0.2)
 - Zero build step — no webpack, no npm, no frontend toolchain
 - Single-file deployment — everything is in the Python package
 - Chart.js via CDN — the only external dependency
-- Pragmatic for the current scope (4 pages, ~1,300 lines)
+- Pragmatic for the current scope (5 pages)
 
-**When to extract:** When the dashboard grows beyond ~5-6 pages or needs interactive features like tag-based filtering on the Trends/Models views, it should be extracted to either Jinja2 templates or a separate React/Vue frontend with its own build.
+**When to extract:** When the dashboard grows beyond ~6-7 pages or needs interactive features like tag-based filtering on the Trends/Models views, it should be extracted to either Jinja2 templates or a separate React/Vue frontend with its own build.
 
 ---
 

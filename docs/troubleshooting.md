@@ -49,7 +49,7 @@ You should see at least one node in the `nodes` array with `"status": "online"`.
 
 2. **Firewall blocking the port** — macOS may prompt to allow incoming connections when `herd` first starts. Check System Settings → Network → Firewall.
 
-3. **Ollama not bound to all interfaces** — Ollama defaults to `localhost:11434`. For LAN access, Ollama must bind to `0.0.0.0`:
+3. **Ollama not bound to all interfaces** — Ollama defaults to `localhost:11434`. The node agent handles this automatically by starting a TCP reverse proxy on the LAN IP that forwards to localhost. If the proxy can't start (e.g., port conflict), you can manually bind Ollama to all interfaces:
 
    ```bash
    OLLAMA_HOST=0.0.0.0 ollama serve
