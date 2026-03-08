@@ -25,8 +25,15 @@ async def collect_heartbeat(
         models_loaded = await ollama.get_running_models()
         models_available = await ollama.get_available_models()
         requests_active = sum(m.requests_active for m in models_loaded)
+        logger.debug(
+            f"Ollama state: {len(models_loaded)} loaded, "
+            f"{len(models_available)} available, "
+            f"{requests_active} active requests"
+        )
     except Exception as e:
-        logger.debug(f"Ollama not reachable: {e}")
+        logger.warning(
+            f"Ollama not reachable at {ollama_host}: {type(e).__name__}: {e}"
+        )
         models_loaded = []
         models_available = []
         requests_active = 0

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import AsyncIterator
 
@@ -25,8 +24,14 @@ class OllamaClient:
         try:
             resp = await self._client.get("/")
             return resp.status_code == 200
+        except httpx.ConnectError:
+            logger.debug(f"Ollama health check: connection refused at {self._base_url}")
+            return False
+        except httpx.ConnectTimeout:
+            logger.debug(f"Ollama health check: connection timed out at {self._base_url}")
+            return False
         except Exception as e:
-            logger.debug(f"Ollama health check failed: {e}")
+            logger.debug(f"Ollama health check failed: {type(e).__name__}: {e}")
             return False
 
     async def get_running_models(self) -> list[LoadedModel]:
@@ -42,8 +47,11 @@ class OllamaClient:
                 name = m.get("model", m.get("name", "unknown"))
                 models.append(LoadedModel(name=name, size_gb=size_gb))
             return models
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Ollama /api/ps returned HTTP {e.response.status_code}")
+            return []
         except Exception as e:
-            logger.debug(f"Failed to get running models: {e}")
+            logger.debug(f"Failed to get running models: {type(e).__name__}: {e}")
             return []
 
     async def get_available_models(self) -> list[str]:
@@ -53,8 +61,11 @@ class OllamaClient:
             resp.raise_for_status()
             data = resp.json()
             return [m.get("model", m.get("name", "")) for m in data.get("models", [])]
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Ollama /api/tags returned HTTP {e.response.status_code}")
+            return []
         except Exception as e:
-            logger.debug(f"Failed to get available models: {e}")
+            logger.debug(f"Failed to get available models: {type(e).__name__}: {e}")
             return []
 
     async def chat_stream(self, body: dict) -> AsyncIterator[bytes]:
