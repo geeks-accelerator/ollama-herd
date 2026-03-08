@@ -1,4 +1,4 @@
-"""Queue Manager — per node:model queues with async workers."""
+"""Queue Manager — per node:model queues with dynamic concurrent workers."""
 
 from __future__ import annotations
 
@@ -11,6 +11,28 @@ from fleet_manager.models.request import QueueEntry, RequestStatus
 
 logger = logging.getLogger(__name__)
 
+# Estimated KV cache memory per concurrent request (GB).
+# Conservative: large models need more, small models less, but 2GB is a
+# reasonable middle ground that prevents over-subscription.
+_KV_CACHE_PER_REQUEST_GB = 2.0
+
+# Bounds for auto-calculated concurrency per queue.
+_MIN_CONCURRENCY = 1
+_MAX_CONCURRENCY = 8
+
+
+def compute_concurrency(available_memory_gb: float, model_size_gb: float) -> int:
+    """Calculate how many concurrent requests a node can handle for a model.
+
+    Uses the memory headroom after the model is loaded divided by an estimated
+    per-request KV cache cost.  Clamped to [1, 8].
+    """
+    headroom = available_memory_gb - model_size_gb
+    if headroom <= 0:
+        return _MIN_CONCURRENCY
+    slots = int(headroom / _KV_CACHE_PER_REQUEST_GB)
+    return max(_MIN_CONCURRENCY, min(_MAX_CONCURRENCY, slots))
+
 
 @dataclass
 class DeviceModelQueue:
@@ -18,15 +40,17 @@ class DeviceModelQueue:
     model: str
     pending: asyncio.Queue = field(default_factory=asyncio.Queue)
     in_flight: list[QueueEntry] = field(default_factory=list)
-    worker_task: asyncio.Task | None = None
+    worker_tasks: list[asyncio.Task] = field(default_factory=list)
+    concurrency: int = _MIN_CONCURRENCY
     completed_count: int = 0
     failed_count: int = 0
 
 
 class QueueManager:
-    def __init__(self):
+    def __init__(self, registry=None):
         self._queues: dict[str, DeviceModelQueue] = {}
         self._lock = asyncio.Lock()
+        self._registry = registry
 
     def get_queue_depths(self) -> dict[str, int]:
         """Return current depth (pending + in_flight) for all queues."""
@@ -46,8 +70,55 @@ class QueueManager:
                 "in_flight": len(q.in_flight),
                 "completed": q.completed_count,
                 "failed": q.failed_count,
+                "concurrency": q.concurrency,
             }
         return info
+
+    def _compute_queue_concurrency(self, node_id: str, model: str) -> int:
+        """Determine concurrency for a queue based on live node metrics."""
+        if self._registry is None:
+            return _MIN_CONCURRENCY
+
+        node = self._registry.get_node(node_id)
+        if node is None or node.memory is None or node.ollama is None:
+            return _MIN_CONCURRENCY
+
+        available_gb = node.memory.available_gb
+
+        # Find the model's loaded size, fall back to 0 (small model on disk)
+        model_size_gb = 0.0
+        for m in node.ollama.models_loaded:
+            if m.name == model:
+                model_size_gb = m.size_gb
+                break
+
+        # If capacity learning is active, respect the ceiling
+        if node.capacity and node.capacity.ceiling_gb > 0:
+            available_gb = min(available_gb, node.capacity.ceiling_gb)
+
+        concurrency = compute_concurrency(available_gb, model_size_gb)
+        return concurrency
+
+    def _ensure_workers(self, q: DeviceModelQueue, queue_key: str):
+        """Ensure the right number of workers are running for a queue."""
+        # Recalculate concurrency from live node data
+        target = self._compute_queue_concurrency(q.node_id, q.model)
+        q.concurrency = target
+
+        # Clean up finished workers
+        q.worker_tasks = [t for t in q.worker_tasks if not t.done()]
+
+        # Spawn more workers if needed
+        while len(q.worker_tasks) < target:
+            worker_id = len(q.worker_tasks)
+            task = asyncio.create_task(self._worker(q, worker_id))
+            q.worker_tasks.append(task)
+
+        if target > 1:
+            logger.debug(
+                f"Queue {queue_key}: {len(q.worker_tasks)} workers "
+                f"(target={target})"
+            )
 
     async def enqueue(
         self,
@@ -76,14 +147,12 @@ class QueueManager:
             f"(depth={q.pending.qsize() + len(q.in_flight)})"
         )
 
-        # Ensure worker is running
-        if q.worker_task is None or q.worker_task.done():
-            q.worker_task = asyncio.create_task(self._worker(q))
-            logger.debug(f"Started worker for queue {queue_key}")
+        # Ensure correct number of workers are running
+        self._ensure_workers(q, queue_key)
 
         return response_future
 
-    async def _worker(self, q: DeviceModelQueue):
+    async def _worker(self, q: DeviceModelQueue, worker_id: int = 0):
         """Worker loop for a single queue."""
         while True:
             try:
@@ -91,7 +160,7 @@ class QueueManager:
                     q.pending.get(), timeout=300.0
                 )
             except asyncio.TimeoutError:
-                logger.debug(f"Queue {q.node_id}:{q.model} idle, stopping worker")
+                logger.debug(f"Queue {q.node_id}:{q.model} worker {worker_id} idle, stopping")
                 break
 
             entry.status = RequestStatus.IN_FLIGHT
@@ -147,7 +216,6 @@ class QueueManager:
             target = self._queues[target_key]
 
         moved = 0
-        temp = []
         # Drain pending items from source
         while not source.pending.empty() and moved < count:
             try:
@@ -161,14 +229,15 @@ class QueueManager:
             except asyncio.QueueEmpty:
                 break
 
-        # Ensure target worker is running
-        if moved > 0 and (target.worker_task is None or target.worker_task.done()):
-            target.worker_task = asyncio.create_task(self._worker(target))
+        # Ensure target workers are running
+        if moved > 0:
+            self._ensure_workers(target, target_key)
 
         return moved
 
     async def shutdown(self):
         """Cancel all worker tasks."""
         for q in self._queues.values():
-            if q.worker_task and not q.worker_task.done():
-                q.worker_task.cancel()
+            for task in q.worker_tasks:
+                if not task.done():
+                    task.cancel()

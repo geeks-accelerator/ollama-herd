@@ -490,6 +490,24 @@ body {
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 12px;
 }
+/* Responsive */
+@media (max-width: 768px) {
+  .header { padding: 12px 16px; flex-wrap: wrap; gap: 8px; }
+  .header h1 { font-size: 16px; margin-right: 12px; }
+  .nav-tab { padding: 5px 10px; font-size: 12px; }
+  .header-stats { gap: 12px; }
+  .header-stat .value { font-size: 18px; }
+  .main { padding: 16px; gap: 16px; }
+  .footer { padding: 12px 16px; flex-wrap: wrap; gap: 4px; font-size: 11px; }
+  .charts-row { grid-template-columns: 1fr; }
+  .summary-cards { grid-template-columns: repeat(2, 1fr); }
+  .summary-card .sc-value { font-size: 22px; }
+  .model-table th, .model-table td { padding: 6px 8px; font-size: 12px; }
+}
+@media (max-width: 480px) {
+  .header-stats { display: none; }
+  .summary-cards { grid-template-columns: 1fr 1fr; }
+}
 """
 
 
@@ -542,7 +560,7 @@ _OVERVIEW_BODY = """
 <style>
 .nodes-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr));
   gap: 16px;
 }
 .card-header {
@@ -576,7 +594,7 @@ _OVERVIEW_BODY = """
 .model-chip .size { color: var(--text-dim); font-size: 11px; }
 .queues-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: 12px;
 }
 .queue-card {
@@ -588,6 +606,12 @@ _OVERVIEW_BODY = """
 .queue-stat { text-align: center; }
 .queue-stat .num { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .queue-stat .lbl { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
+@media (max-width: 768px) {
+  .metrics-row { flex-wrap: wrap; gap: 10px; }
+  .metric { min-width: calc(50% - 10px); }
+  .queue-card { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .queue-stats { flex-wrap: wrap; gap: 10px; }
+}
 </style>
 
 <div class="main">
@@ -726,7 +750,7 @@ function renderQueues(queues) {
         <div class="queue-name">${key}</div>
         <div class="queue-stats">
           <div class="queue-stat"><div class="num" style="color:${pendingColor}">${q.pending}</div><div class="lbl">Pending</div></div>
-          <div class="queue-stat"><div class="num" style="color:${inflightColor}">${q.in_flight}</div><div class="lbl">In-Flight</div></div>
+          <div class="queue-stat"><div class="num" style="color:${inflightColor}">${q.in_flight}/${q.concurrency || 1}</div><div class="lbl">In-Flight</div></div>
           <div class="queue-stat"><div class="num" style="color:var(--green)">${q.completed}</div><div class="lbl">Done</div></div>
           <div class="queue-stat"><div class="num" style="color:var(--red)">${q.failed || 0}</div><div class="lbl">Failed</div></div>
         </div>
