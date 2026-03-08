@@ -34,7 +34,7 @@ class Rebalancer:
     async def _check_pre_warm(self):
         """Trigger pre-warm on runner-up nodes when winner's queue is deep."""
         queue_info = self._queue_mgr.get_queue_info()
-        for key, info in queue_info.items():
+        for _key, info in queue_info.items():
             depth = info["pending"] + info["in_flight"]
             if depth < self._s.pre_warm_threshold:
                 continue
@@ -66,6 +66,7 @@ class Rebalancer:
                 f"(winner {results[0].node_id} queue depth: {depth})"
             )
             from fleet_manager.server.streaming import _create_logged_task
+
             _create_logged_task(
                 self._do_pre_warm(lock_key, runner_up.node_id, model),
                 name=f"pre-warm-{model}-{runner_up.node_id}",
@@ -116,9 +117,7 @@ class Rebalancer:
 
                 moved = await self._queue_mgr.move_pending(key, result.queue_key, count)
                 if moved > 0:
-                    logger.info(
-                        f"Rebalanced {moved} requests: {key} → {result.queue_key}"
-                    )
+                    logger.info(f"Rebalanced {moved} requests: {key} → {result.queue_key}")
                 break  # One rebalance per overloaded queue per cycle
             else:
                 logger.debug(

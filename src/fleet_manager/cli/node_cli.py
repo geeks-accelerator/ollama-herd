@@ -18,9 +18,7 @@ app = typer.Typer(
 @app.callback(invoke_without_command=True)
 def start(
     node_id: str = typer.Option("", help="Node identifier (default: hostname)"),
-    ollama_host: str = typer.Option(
-        "http://localhost:11434", help="Local Ollama URL"
-    ),
+    ollama_host: str = typer.Option("http://localhost:11434", help="Local Ollama URL"),
     router_url: str = typer.Option("", help="Router URL (auto-discovered via mDNS if empty)"),
     learn_capacity: bool = typer.Option(
         False, "--learn-capacity", help="Enable adaptive capacity learning (for work machines)"

@@ -73,11 +73,11 @@ class FleetServiceDiscoverer:
 
         try:
             await asyncio.wait_for(found.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError as err:
             raise TimeoutError(
                 f"Could not discover Fleet Manager router via mDNS within {timeout}s. "
                 "Use --router-url to specify manually."
-            )
+            ) from err
         finally:
             await self.stop()
 

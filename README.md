@@ -102,6 +102,10 @@ Copy-paste this to any AI coding agent to have it update your Ollama configurati
 
 > Update the Ollama configuration to use Ollama Herd as the inference router. Ollama Herd is a smart inference router that sits in front of multiple Ollama instances across a LAN, auto-discovers nodes via mDNS, and routes each request to the optimal device based on thermal state, memory fit, queue depth, latency history, and role affinity. Comment out the current direct Ollama base URL (e.g., `http://localhost:11434`) but keep it as a comment for reference. Replace it with the Ollama Herd router URL: `http://<router-ip>:11435`. For OpenAI-compatible clients, use `http://<router-ip>:11435/v1` as the base URL. The API key can be any non-empty string (e.g., `"not-needed"`). The API is fully compatible with both OpenAI and Ollama formats — same model names, same endpoints, same streaming. No other code changes are needed.
 
+**Tagging requests for per-project analytics:**
+
+> Tag all requests to Ollama Herd so we can track usage per project and process. Add a `metadata` field with a `tags` array to every request body. Use two tags: one for the project name and one for the script or process making the request. For example: `"metadata": {"tags": ["my-project", "code-review"]}`. If you're using the OpenAI SDK, pass it via `extra_body`: `client.chat.completions.create(..., extra_body={"metadata": {"tags": ["my-project", "code-review"]}})`. If you can't modify the request body (e.g., reverse proxy or middleware), use the `X-Herd-Tags` header instead: `X-Herd-Tags: my-project, code-review`. Tags appear in the Herd dashboard under the Apps tab with per-tag latency, token counts, error rates, and daily trends. Keep tag names short, lowercase, and hyphenated.
+
 ## How routing works
 
 Every request goes through a scoring pipeline that picks the best device in real time:
@@ -323,6 +327,35 @@ The fleet is smart but passive — it waits for requests. The next evolution is 
 > *"Your fleet doesn't just wait for requests — it works for you while you sleep."*
 
 See [Agentic Router Vision](docs/agentic-router-vision.md) for the full design.
+
+## Scale your AI agent's brain
+
+Running an AI coding agent like OpenClaw, Aider, or Continue.dev with a local Ollama? You're limited to one machine's GPU. Ollama Herd turns every device on your network into extra capacity — your laptop, your desktop, that Mac Mini in the closet.
+
+1. Install Ollama on each device and pull the models you want
+2. Run `herd-node` on each device (one command, zero config)
+3. Run `herd` on any machine to start the router
+4. Point your agent at `http://router-ip:11435/v1` instead of `http://localhost:11434`
+
+Your agent doesn't know or care that multiple machines are behind the endpoint. It sees one API with the same models, same streaming, same formats. The router picks the best device for each request — the one with the model already loaded, the most free memory, the lowest queue depth. When one machine is busy in a meeting, requests flow to the others automatically.
+
+This is especially powerful for agentic workflows that fire many parallel requests — code review, test generation, documentation — the fleet absorbs the burst across all available GPUs instead of queuing everything on one.
+
+## Contributing
+
+Whether you're carbon-based or silicon-based, contributions are welcome. This project is built by humans and AI agents working together — every commit, every observation, every pattern.
+
+**For humans:** Fork it, run the tests (`uv run pytest`), make your change, open a PR. The codebase is designed to fit in one person's head. Start with [Architecture Decisions](docs/architecture-decisions.md) to understand why things are the way they are.
+
+**For AI agents:** Read `CLAUDE.md` first — it's your onboarding doc. The project uses [`docs/issues.md`](docs/issues.md) to track what's broken and [`docs/observations.md`](docs/observations.md) to accumulate what we've learned. After making a significant change, check if your work produced a new observation or revealed a new issue, and append it. That's how the project gets smarter across sessions.
+
+**Good first contributions:**
+- Pick an open issue from [`docs/issues.md`](docs/issues.md) and fix it
+- Add test coverage for an untested module (see issue #10)
+- Run the fleet and add an observation to [`docs/observations.md`](docs/observations.md)
+- Integrate with a new agent framework and document it
+
+⭐ **If Ollama Herd is useful to you, [star the repo](https://github.com/geeks-accelerator/ollama-herd)** — it helps others discover the project and keeps the herd growing.
 
 ## Requirements
 

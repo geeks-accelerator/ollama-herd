@@ -76,8 +76,7 @@ async def score_with_fallbacks(
             if results:
                 if model != inference_req.model:
                     logger.info(
-                        f"Fallback: '{inference_req.model}' unavailable, "
-                        f"using '{model}' instead"
+                        f"Fallback: '{inference_req.model}' unavailable, using '{model}' instead"
                     )
                 return results, model
 
@@ -86,8 +85,7 @@ async def score_with_fallbacks(
         for model in models_to_try:
             model_exists = any(
                 model in (n.ollama.models_available if n.ollama else [])
-                or model
-                in [m.name for m in (n.ollama.models_loaded if n.ollama else [])]
+                or model in [m.name for m in (n.ollama.models_loaded if n.ollama else [])]
                 for n in registry.get_all_nodes()
             )
             if model_exists:

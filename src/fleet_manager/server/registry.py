@@ -8,13 +8,10 @@ import time
 
 from fleet_manager.models.config import ServerSettings
 from fleet_manager.models.node import (
-    CpuMetrics,
     HardwareProfile,
     HeartbeatPayload,
-    MemoryMetrics,
     NodeState,
     NodeStatus,
-    OllamaMetrics,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,7 +23,9 @@ class NodeRegistry:
         self._nodes: dict[str, NodeState] = {}
         self._lock = asyncio.Lock()
 
-    async def update_from_heartbeat(self, payload: HeartbeatPayload, request_ip: str = "") -> NodeState:
+    async def update_from_heartbeat(
+        self, payload: HeartbeatPayload, request_ip: str = ""
+    ) -> NodeState:
         """Process an incoming heartbeat. Creates or updates node state."""
         async with self._lock:
             if payload.node_id not in self._nodes:
@@ -112,12 +111,19 @@ class NodeRegistry:
                         if node.status != NodeStatus.OFFLINE:
                             node.status = NodeStatus.OFFLINE
                             node.missed_heartbeats += 1
-                            logger.warning(f"Node {node.node_id} marked OFFLINE (no heartbeat for {elapsed:.0f}s)")
-                    elif elapsed > self._settings.heartbeat_timeout:
-                        if node.status != NodeStatus.DEGRADED:
-                            node.status = NodeStatus.DEGRADED
-                            node.missed_heartbeats += 1
-                            logger.info(f"Node {node.node_id} marked DEGRADED (no heartbeat for {elapsed:.0f}s)")
+                            logger.warning(
+                                f"Node {node.node_id} marked OFFLINE "
+                                f"(no heartbeat for {elapsed:.0f}s)"
+                            )
+                    elif (
+                        elapsed > self._settings.heartbeat_timeout
+                        and node.status != NodeStatus.DEGRADED
+                    ):
+                        node.status = NodeStatus.DEGRADED
+                        node.missed_heartbeats += 1
+                        logger.info(
+                            f"Node {node.node_id} marked DEGRADED (no heartbeat for {elapsed:.0f}s)"
+                        )
 
     def _build_ollama_url(self, payload: HeartbeatPayload, request_ip: str = "") -> str:
         """Build the network-reachable Ollama URL from the heartbeat.

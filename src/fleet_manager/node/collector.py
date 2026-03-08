@@ -41,9 +41,7 @@ async def collect_heartbeat(
             f"{requests_active} active requests"
         )
     except Exception as e:
-        logger.warning(
-            f"Ollama not reachable at {ollama_host}: {type(e).__name__}: {e}"
-        )
+        logger.warning(f"Ollama not reachable at {ollama_host}: {type(e).__name__}: {e}")
         models_loaded = []
         models_available = []
         requests_active = 0
@@ -51,7 +49,10 @@ async def collect_heartbeat(
     # Run capacity learner observation if enabled
     capacity = None
     if capacity_learner is not None:
-        cap_info = capacity_learner.observe(cpu.utilization_pct, memory.used_gb / memory.total_gb * 100 if memory.total_gb > 0 else 0)
+        cap_info = capacity_learner.observe(
+            cpu.utilization_pct,
+            memory.used_gb / memory.total_gb * 100 if memory.total_gb > 0 else 0,
+        )
         capacity = CapacityMetrics(
             mode=cap_info.mode.value,
             ceiling_gb=cap_info.ceiling_gb,

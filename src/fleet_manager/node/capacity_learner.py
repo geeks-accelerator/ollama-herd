@@ -31,7 +31,7 @@ import logging
 import math
 import os
 import time
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from fleet_manager.node.app_fingerprint import AppFingerprinter
@@ -52,7 +52,7 @@ BOOTSTRAP_DAYS = 7
 MIN_SAMPLES_FOR_CONFIDENCE = 5
 
 
-class CapacityMode(str, Enum):
+class CapacityMode(StrEnum):
     """Current capacity mode of the node."""
 
     FULL = "full"  # Full capacity, no restrictions
@@ -158,10 +158,7 @@ class SlotData:
 
 def _get_slot_index(timestamp: float | None = None) -> int:
     """Get the 0–167 slot index for a given timestamp (or now)."""
-    if timestamp is None:
-        t = time.localtime()
-    else:
-        t = time.localtime(timestamp)
+    t = time.localtime() if timestamp is None else time.localtime(timestamp)
     return t.tm_wday * 24 + t.tm_hour
 
 

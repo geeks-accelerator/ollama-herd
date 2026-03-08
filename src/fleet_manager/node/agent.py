@@ -48,8 +48,7 @@ class NodeAgent:
             return True
 
         logger.warning(
-            f"Ollama is not reachable at {self.settings.ollama_host}, "
-            f"attempting to start it..."
+            f"Ollama is not reachable at {self.settings.ollama_host}, attempting to start it..."
         )
 
         ollama_bin = shutil.which("ollama")
@@ -63,6 +62,7 @@ class NodeAgent:
         # Start 'ollama serve' as a detached background process.
         # Bind to 0.0.0.0 so the router can reach us over the LAN.
         import os
+
         env = os.environ.copy()
         env.setdefault("OLLAMA_HOST", "0.0.0.0:11434")
         try:
@@ -109,6 +109,7 @@ class NodeAgent:
             mem = psutil.virtual_memory()
             total_gb = mem.total / (1024**3)
             from fleet_manager.node.capacity_learner import AdaptiveCapacityLearner
+
             self._capacity_learner = AdaptiveCapacityLearner(
                 total_memory_gb=total_gb,
                 data_dir=self.settings.data_dir,
@@ -151,7 +152,9 @@ class NodeAgent:
         while self._running:
             try:
                 payload = await collect_heartbeat(
-                    self.node_id, self.ollama, self.settings.ollama_host,
+                    self.node_id,
+                    self.ollama,
+                    self.settings.ollama_host,
                     capacity_learner=self._capacity_learner,
                 )
                 await self._send_heartbeat(payload)
@@ -171,9 +174,7 @@ class NodeAgent:
                     )
 
             except httpx.ConnectError as e:
-                logger.warning(
-                    f"Cannot reach router at {self.router_url}: {e}"
-                )
+                logger.warning(f"Cannot reach router at {self.router_url}: {e}")
             except httpx.ConnectTimeout:
                 logger.warning(
                     f"Connection to router timed out at {self.router_url} "
@@ -219,9 +220,7 @@ class NodeAgent:
         # Test if Ollama is already reachable on the LAN IP
         try:
             async with httpx.AsyncClient() as test:
-                resp = await test.get(
-                    f"http://{lan_ip}:{ollama_port}/", timeout=2
-                )
+                resp = await test.get(f"http://{lan_ip}:{ollama_port}/", timeout=2)
                 if resp.status_code == 200:
                     logger.info(
                         f"Ollama already reachable on LAN at "
@@ -239,8 +238,7 @@ class NodeAgent:
         )
         if await self._ollama_proxy.start():
             logger.info(
-                f"LAN proxy active: router can reach Ollama at "
-                f"http://{lan_ip}:{ollama_port}"
+                f"LAN proxy active: router can reach Ollama at http://{lan_ip}:{ollama_port}"
             )
         else:
             self._ollama_proxy = None
@@ -251,10 +249,7 @@ class NodeAgent:
             json=payload.model_dump(),
         )
         if resp.status_code != 200:
-            logger.warning(
-                f"Heartbeat response: HTTP {resp.status_code} "
-                f"body={resp.text[:200]}"
-            )
+            logger.warning(f"Heartbeat response: HTTP {resp.status_code} body={resp.text[:200]}")
             resp.raise_for_status()
 
     async def _drain(self):

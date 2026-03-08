@@ -247,7 +247,9 @@ class ScoringEngine:
 
         # Higher availability = more bonus points (max +10)
         # This naturally prioritizes highly-available nodes
-        return min(self._s.score_availability_trend_max, score * self._s.score_availability_trend_max)
+        return min(
+            self._s.score_availability_trend_max, score * self._s.score_availability_trend_max
+        )
 
     def _estimate_model_size(self, model: str, node: NodeState) -> float:
         """Estimate model size in GB. Check loaded models first, then all nodes."""

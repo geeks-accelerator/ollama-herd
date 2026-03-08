@@ -54,10 +54,7 @@ class QueueManager:
 
     def get_queue_depths(self) -> dict[str, int]:
         """Return current depth (pending + in_flight) for all queues."""
-        return {
-            key: q.pending.qsize() + len(q.in_flight)
-            for key, q in self._queues.items()
-        }
+        return {key: q.pending.qsize() + len(q.in_flight) for key, q in self._queues.items()}
 
     def get_queue_info(self) -> dict[str, dict]:
         """Return detailed queue information for the fleet status endpoint."""
@@ -115,10 +112,7 @@ class QueueManager:
             q.worker_tasks.append(task)
 
         if target > 1:
-            logger.debug(
-                f"Queue {queue_key}: {len(q.worker_tasks)} workers "
-                f"(target={target})"
-            )
+            logger.debug(f"Queue {queue_key}: {len(q.worker_tasks)} workers (target={target})")
 
     async def enqueue(
         self,
@@ -156,10 +150,8 @@ class QueueManager:
         """Worker loop for a single queue."""
         while True:
             try:
-                entry, future, process_fn = await asyncio.wait_for(
-                    q.pending.get(), timeout=300.0
-                )
-            except asyncio.TimeoutError:
+                entry, future, process_fn = await asyncio.wait_for(q.pending.get(), timeout=300.0)
+            except TimeoutError:
                 logger.debug(f"Queue {q.node_id}:{q.model} worker {worker_id} idle, stopping")
                 break
 

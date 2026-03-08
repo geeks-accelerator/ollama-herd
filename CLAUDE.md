@@ -19,6 +19,7 @@ uv run pytest tests/test_models/ # run model tests only
 uv run pytest -v                 # verbose output
 uv run ruff check src/           # lint
 uv run ruff format src/          # format
+./scripts/health.sh              # full project health check
 ```
 
 ## Architecture
@@ -82,6 +83,7 @@ All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix 
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Common issues, LAN debugging, operational gotchas |
 | [`docs/architecture-decisions.md`](docs/architecture-decisions.md) | Port selection, design trade-offs, rationale |
 | [`docs/issues.md`](docs/issues.md) | Known issues, improvements, test coverage gaps |
+| [`docs/observations.md`](docs/observations.md) | Patterns and insights extracted from operating the fleet |
 | [`docs/project-status-and-strategy.md`](docs/project-status-and-strategy.md) | Competitive landscape and agent framework matrix |
 | [`docs/agentic-router-vision.md`](docs/agentic-router-vision.md) | Vision: proactive fleet intelligence, task backlogs, agentic decomposition |
 
@@ -102,10 +104,25 @@ No opaque binary formats. JSONL logs you can `grep`. SQLite you can query with s
 Every component — scoring, queuing, retry, fallback, capacity learning, meeting detection — exists to serve one thing: getting the best response to the user's request as fast as possible on the best available machine. If a feature doesn't serve that, it doesn't belong. Tooling serves the artifact, not the other way around.
 
 ### AI as resident, not visitor
-`CLAUDE.md` is institutional memory that makes AI agents productive from message one. The trace store, JSONL logs, and capacity learner state files are accumulated knowledge — they survive restarts, compound over time, and make the system smarter the longer it runs. AI isn't a tool you invoke; it's a collaborator that accumulates understanding across sessions.
+`CLAUDE.md` is institutional memory that makes AI agents productive from message one. The trace store, JSONL logs, and capacity learner state files are accumulated knowledge — they survive restarts, compound over time, and make the system smarter the longer it runs. [`docs/observations.md`](docs/observations.md) closes the loop: raw data → extracted patterns → transferable insights. [`docs/issues.md`](docs/issues.md) tracks what's broken. Observations track what we've learned. AI isn't a tool you invoke; it's a collaborator that accumulates understanding across sessions.
 
 ### Shared DNA, not shared code
 The scoring pipeline pattern (eliminate → score → rank → select), the heartbeat-based coordination pattern, the adaptive capacity learning pattern (observe → model → predict → constrain) — these are transferable DNA. They cross-pollinate to other distributed systems. But Ollama Herd doesn't try to be a framework. It's a specific tool with transferable patterns, not a generic platform.
+
+## Issues & Observations
+
+Two living docs track the project's accumulated knowledge:
+
+- **[`docs/issues.md`](docs/issues.md)** — What's broken or needs improvement. Add issues when you find bugs, performance problems, test gaps, or code quality concerns. Each issue has a file reference, severity, and proposed fix. Mark issues `FIXED` when resolved — don't delete them.
+
+- **[`docs/observations.md`](docs/observations.md)** — What we've learned from operating the fleet. Add observations when you notice patterns in the trace data, discover why something behaves unexpectedly, or extract a transferable insight. Each observation has a date, evidence (query output, log lines, metrics), and the extracted insight. Observations are never deleted — they compound.
+
+**When to write an issue vs. an observation:**
+- Something is wrong and needs fixing → **issue**
+- Something worked (or failed) and we learned why → **observation**
+- A workaround reveals a deeper pattern → **both** (issue for the fix, observation for the insight)
+
+**AI agents:** After completing a significant code change, check if the work produced a new observation (a pattern, a surprise, a lesson). If it did, append it to `docs/observations.md`. After debugging a problem, check if it revealed a new issue. If it did, append it to `docs/issues.md`. This is how the project accumulates intelligence across sessions.
 
 ## Conventions
 

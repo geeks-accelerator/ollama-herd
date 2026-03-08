@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import time
 import uuid
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class RequestFormat(str, Enum):
+class RequestFormat(StrEnum):
     OPENAI = "openai"
     OLLAMA = "ollama"
 
 
-class RequestStatus(str, Enum):
+class RequestStatus(StrEnum):
     PENDING = "pending"
     IN_FLIGHT = "in_flight"
     COMPLETED = "completed"

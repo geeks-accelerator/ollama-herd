@@ -7,7 +7,7 @@ import json
 import logging
 import time
 import uuid
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -61,9 +61,7 @@ class StreamingProxy:
 
         def process(entry: QueueEntry) -> AsyncIterator[str]:
             if scorer and settings and getattr(settings, "max_retries", 0) > 0:
-                return proxy._stream_with_retry(
-                    entry, queue_key, queue_manager, scorer, settings
-                )
+                return proxy._stream_with_retry(entry, queue_key, queue_manager, scorer, settings)
             return proxy._stream_with_tracking(entry, queue_key, queue_manager)
 
         return process
@@ -90,8 +88,12 @@ class StreamingProxy:
             # Record failed trace
             elapsed_ms = (time.time() - start_time) * 1000
             self._record_trace(
-                entry, entry.assigned_node, start_time, first_token_time,
-                "failed", error_message=str(e),
+                entry,
+                entry.assigned_node,
+                start_time,
+                first_token_time,
+                "failed",
+                error_message=str(e),
             )
             raise
         finally:
@@ -122,7 +124,10 @@ class StreamingProxy:
                     )
                 # Record completed trace
                 self._record_trace(
-                    entry, entry.assigned_node, start_time, first_token_time,
+                    entry,
+                    entry.assigned_node,
+                    start_time,
+                    first_token_time,
                     "completed",
                 )
             else:
@@ -142,9 +147,7 @@ class StreamingProxy:
         if not self._trace_store:
             return
         elapsed_ms = (time.time() - start_time) * 1000
-        ttft_ms = (
-            (first_token_time - start_time) * 1000 if first_token_time else None
-        )
+        ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else None
         prompt_tokens, completion_tokens = self._request_tokens.get(
             entry.request.request_id, (None, None)
         )
@@ -185,9 +188,7 @@ class StreamingProxy:
             ),
         ):
             return True
-        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code >= 500:
-            return True
-        return False
+        return isinstance(e, httpx.HTTPStatusError) and e.response.status_code >= 500
 
     async def _stream_with_retry(
         self,
@@ -216,17 +217,19 @@ class StreamingProxy:
                     yield chunk
             except GeneratorExit:
                 queue_manager.mark_completed(current_queue_key, entry)
-                self._record_trace(
-                    entry, current_node, start_time, first_token_time, "completed"
-                )
+                self._record_trace(entry, current_node, start_time, first_token_time, "completed")
                 return
             except Exception as e:
                 if first_chunk_sent or not self._is_retryable_error(e):
                     # Cannot retry after chunks sent, or non-retryable error
                     queue_manager.mark_failed(current_queue_key, entry)
                     self._record_trace(
-                        entry, current_node, start_time, first_token_time,
-                        "failed", error_message=str(e),
+                        entry,
+                        current_node,
+                        start_time,
+                        first_token_time,
+                        "failed",
+                        error_message=str(e),
                     )
                     if first_chunk_sent:
                         logger.error(
@@ -234,9 +237,7 @@ class StreamingProxy:
                             f"for {entry.request.request_id[:8]}: {e}"
                         )
                     else:
-                        logger.error(
-                            f"Non-retryable error for {entry.request.request_id[:8]}: {e}"
-                        )
+                        logger.error(f"Non-retryable error for {entry.request.request_id[:8]}: {e}")
                     raise
 
                 # Retryable pre-first-chunk failure
@@ -252,8 +253,12 @@ class StreamingProxy:
 
                 # Record "retried" trace for the failed attempt
                 self._record_trace(
-                    entry, current_node, start_time, None,
-                    "retried", error_message=str(e),
+                    entry,
+                    current_node,
+                    start_time,
+                    None,
+                    "retried",
+                    error_message=str(e),
                 )
 
                 if attempt > max_retries:
@@ -306,14 +311,10 @@ class StreamingProxy:
                         ),
                         name=f"latency-record-{entry.request.request_id[:8]}",
                     )
-                self._record_trace(
-                    entry, current_node, start_time, first_token_time, "completed"
-                )
+                self._record_trace(entry, current_node, start_time, first_token_time, "completed")
                 return
 
-    async def stream_from_node(
-        self, node_id: str, request: InferenceRequest
-    ) -> AsyncIterator[str]:
+    async def stream_from_node(self, node_id: str, request: InferenceRequest) -> AsyncIterator[str]:
         """Stream response from a node's Ollama, converting format if needed."""
         client = self._get_client(node_id)
         ollama_body = self._build_ollama_body(request)
@@ -345,9 +346,7 @@ class StreamingProxy:
                             completion_tok,
                         )
                 except json.JSONDecodeError:
-                    logger.warning(
-                        f"Malformed JSON from Ollama on {node_id}: {line[:200]}"
-                    )
+                    logger.warning(f"Malformed JSON from Ollama on {node_id}: {line[:200]}")
                 # Yield in the appropriate format
                 if request.original_format == RequestFormat.OPENAI:
                     yield self._ollama_to_openai_sse(line, request.model)

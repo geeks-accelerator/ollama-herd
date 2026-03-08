@@ -38,9 +38,7 @@ class LatencyStore:
         # Migration: add token tracking columns
         for col in ("prompt_tokens INTEGER", "completion_tokens INTEGER"):
             try:
-                await self._db.execute(
-                    f"ALTER TABLE latency_observations ADD COLUMN {col}"
-                )
+                await self._db.execute(f"ALTER TABLE latency_observations ADD COLUMN {col}")
             except Exception as e:
                 if "duplicate column" in str(e).lower():
                     pass  # Column already exists — expected
@@ -76,7 +74,15 @@ class LatencyStore:
             "(node_id, model_name, latency_ms, tokens_generated, "
             "prompt_tokens, completion_tokens, timestamp) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (node_id, model_name, latency_ms, tokens, prompt_tokens, completion_tokens, time.time()),
+            (
+                node_id,
+                model_name,
+                latency_ms,
+                tokens,
+                prompt_tokens,
+                completion_tokens,
+                time.time(),
+            ),
         )
         await self._db.commit()
         # Update cache for this pair

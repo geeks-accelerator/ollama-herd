@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 
 from fleet_manager.common.discovery import FleetServiceAdvertiser
 from fleet_manager.common.logging_config import setup_logging
@@ -66,14 +66,10 @@ async def lifespan(app: FastAPI):
     # Shutdown
     monitor_task.cancel()
     rebalancer_task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await monitor_task
-    except asyncio.CancelledError:
-        pass
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await rebalancer_task
-    except asyncio.CancelledError:
-        pass
     await queue_mgr.shutdown()
     await streaming_proxy.close()
     await advertiser.stop()
@@ -95,7 +91,13 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     app.state.settings = settings
 
     # Register routes
-    from fleet_manager.server.routes import dashboard, fleet, heartbeat, ollama_compat, openai_compat
+    from fleet_manager.server.routes import (
+        dashboard,
+        fleet,
+        heartbeat,
+        ollama_compat,
+        openai_compat,
+    )
 
     app.include_router(heartbeat.router)
     app.include_router(openai_compat.router)
@@ -106,6 +108,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     @app.get("/")
     async def root():
         from fastapi.responses import RedirectResponse
+
         return RedirectResponse(url="/dashboard")
 
     return app

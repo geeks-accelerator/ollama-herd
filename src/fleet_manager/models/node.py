@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import time
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class MemoryPressure(str, Enum):
+class MemoryPressure(StrEnum):
     NORMAL = "normal"
     WARN = "warn"
     CRITICAL = "critical"
 
 
-class NodeStatus(str, Enum):
+class NodeStatus(StrEnum):
     ONLINE = "online"
     DEGRADED = "degraded"
     OFFLINE = "offline"
@@ -48,6 +48,7 @@ class OllamaMetrics(BaseModel):
 
 class CapacityMetrics(BaseModel):
     """Adaptive capacity state from the node's capacity learner."""
+
     mode: str = "full"
     ceiling_gb: float = 0.0
     availability_score: float = 1.0

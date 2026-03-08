@@ -113,12 +113,14 @@ async def ollama_ps(request: Request):
         if not node.ollama:
             continue
         for m in node.ollama.models_loaded:
-            models.append({
-                "name": m.name,
-                "model": m.name,
-                "size": int(m.size_gb * (1024**3)),
-                "fleet_node": node.node_id,
-            })
+            models.append(
+                {
+                    "name": m.name,
+                    "model": m.name,
+                    "size": int(m.size_gb * (1024**3)),
+                    "fleet_node": node.node_id,
+                }
+            )
     return {"models": models}
 
 
@@ -133,14 +135,10 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
     logger.info(f"Ollama request: model={model} stream={inference_req.stream}")
 
     # Score with fallback support
-    results, actual_model = await score_with_fallbacks(
-        inference_req, scorer, queue_mgr, registry
-    )
+    results, actual_model = await score_with_fallbacks(inference_req, scorer, queue_mgr, registry)
 
     if not results:
-        logger.warning(
-            f"No nodes for model={model} fallbacks={inference_req.fallback_models}"
-        )
+        logger.warning(f"No nodes for model={model} fallbacks={inference_req.fallback_models}")
         models_tried = [model] + inference_req.fallback_models
         all_fleet_models = get_all_fleet_models(registry)
         any_exists = any(m in all_fleet_models for m in models_tried)
@@ -179,9 +177,7 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
     )
     queue_key = winner.queue_key
 
-    process_fn = proxy.make_process_fn(
-        queue_key, queue_mgr, scorer=scorer, settings=settings
-    )
+    process_fn = proxy.make_process_fn(queue_key, queue_mgr, scorer=scorer, settings=settings)
     response_future = await queue_mgr.enqueue(entry, process_fn)
     stream = await response_future
 
@@ -196,6 +192,7 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         headers["X-Fleet-Retries"] = str(entry.retry_count)
 
     if inference_req.stream:
+
         async def _stream_and_cleanup():
             async for chunk in stream:
                 yield chunk

@@ -49,33 +49,25 @@ class TraceStore:
             )
         """)
         await self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_traces_request_id "
-            "ON request_traces(request_id)"
+            "CREATE INDEX IF NOT EXISTS idx_traces_request_id ON request_traces(request_id)"
         )
         await self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_traces_timestamp "
-            "ON request_traces(timestamp)"
+            "CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON request_traces(timestamp)"
         )
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_traces_model_timestamp "
             "ON request_traces(model, timestamp)"
         )
         await self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_traces_node_model "
-            "ON request_traces(node_id, model)"
+            "CREATE INDEX IF NOT EXISTS idx_traces_node_model ON request_traces(node_id, model)"
         )
         # Schema migration: add tags column if it doesn't exist
         try:
-            await self._db.execute(
-                "ALTER TABLE request_traces ADD COLUMN tags TEXT"
-            )
+            await self._db.execute("ALTER TABLE request_traces ADD COLUMN tags TEXT")
             logger.info("Added 'tags' column to request_traces")
         except Exception:
             pass  # Column already exists
-        await self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_traces_tags "
-            "ON request_traces(tags)"
-        )
+        await self._db.execute("CREATE INDEX IF NOT EXISTS idx_traces_tags ON request_traces(tags)")
 
         # Benchmark runs table
         await self._db.execute("""
@@ -103,8 +95,7 @@ class TraceStore:
             )
         """)
         await self._db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_benchmark_runs_timestamp "
-            "ON benchmark_runs(timestamp)"
+            "CREATE INDEX IF NOT EXISTS idx_benchmark_runs_timestamp ON benchmark_runs(timestamp)"
         )
 
         await self._db.commit()
@@ -472,7 +463,9 @@ class TraceStore:
                 data.get("ttft_p95_ms"),
                 data.get("ttft_p99_ms"),
                 json.dumps(data.get("fleet_snapshot")) if data.get("fleet_snapshot") else None,
-                json.dumps(data.get("per_model_results")) if data.get("per_model_results") else None,
+                json.dumps(data.get("per_model_results"))
+                if data.get("per_model_results")
+                else None,
                 json.dumps(data.get("per_node_results")) if data.get("per_node_results") else None,
                 json.dumps(data.get("peak_utilization")) if data.get("peak_utilization") else None,
             ),
@@ -515,6 +508,7 @@ class TraceStore:
 
     def _benchmark_row_to_dict(self, row) -> dict:
         """Convert a benchmark_runs row to dict with JSON parsing."""
+
         def _parse_json(val):
             if val is None:
                 return None

@@ -84,15 +84,11 @@ async def chat_completions(request: Request):
     settings = request.app.state.settings
 
     # Score with fallback support
-    results, actual_model = await score_with_fallbacks(
-        inference_req, scorer, queue_mgr, registry
-    )
+    results, actual_model = await score_with_fallbacks(inference_req, scorer, queue_mgr, registry)
 
     if not results:
         # Build error listing all attempted models
-        logger.warning(
-            f"No nodes for model={model} fallbacks={inference_req.fallback_models}"
-        )
+        logger.warning(f"No nodes for model={model} fallbacks={inference_req.fallback_models}")
         models_tried = [model] + inference_req.fallback_models
         all_fleet_models = get_all_fleet_models(registry)
         any_exists = any(m in all_fleet_models for m in models_tried)
@@ -137,9 +133,7 @@ async def chat_completions(request: Request):
     )
     queue_key = winner.queue_key
 
-    process_fn = proxy.make_process_fn(
-        queue_key, queue_mgr, scorer=scorer, settings=settings
-    )
+    process_fn = proxy.make_process_fn(queue_key, queue_mgr, scorer=scorer, settings=settings)
     response_future = await queue_mgr.enqueue(entry, process_fn)
     stream = await response_future
 
@@ -156,6 +150,7 @@ async def chat_completions(request: Request):
         headers["X-Fleet-Retries"] = str(entry.retry_count)
 
     if inference_req.stream:
+
         async def _stream_and_cleanup():
             """Yield all chunks, then clean up token tracking."""
             async for chunk in stream:

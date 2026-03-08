@@ -43,9 +43,7 @@ async def _handle_connection(
 ):
     """Proxy a single TCP connection to the target."""
     try:
-        upstream_reader, upstream_writer = await asyncio.open_connection(
-            target_host, target_port
-        )
+        upstream_reader, upstream_writer = await asyncio.open_connection(target_host, target_port)
     except Exception as e:
         logger.debug(f"Proxy: cannot connect to {target_host}:{target_port}: {e}")
         client_writer.close()
@@ -77,9 +75,7 @@ class OllamaProxy:
         """Start the proxy server. Returns True if successful."""
         try:
             self._server = await asyncio.start_server(
-                lambda r, w: _handle_connection(
-                    r, w, self.target_host, self.target_port
-                ),
+                lambda r, w: _handle_connection(r, w, self.target_host, self.target_port),
                 self.listen_host,
                 self.listen_port,
             )
@@ -90,8 +86,7 @@ class OllamaProxy:
             return True
         except OSError as e:
             logger.warning(
-                f"Could not start Ollama proxy on "
-                f"{self.listen_host}:{self.listen_port}: {e}"
+                f"Could not start Ollama proxy on {self.listen_host}:{self.listen_port}: {e}"
             )
             return False
 

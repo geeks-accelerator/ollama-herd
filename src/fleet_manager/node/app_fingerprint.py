@@ -17,14 +17,14 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
-from enum import Enum
+from enum import StrEnum
 
 import psutil
 
 logger = logging.getLogger(__name__)
 
 
-class WorkloadType(str, Enum):
+class WorkloadType(StrEnum):
     """Classified workload intensity levels."""
 
     IDLE = "idle"
@@ -137,10 +137,7 @@ class AppFingerprinter:
         # Network bandwidth (bytes/sec average)
         total_net = sum(s.net_bytes_sent + s.net_bytes_recv for s in self._snapshots)
         window_duration = self._snapshots[-1].timestamp - self._snapshots[0].timestamp
-        if window_duration > 0:
-            avg_net_bps = total_net / window_duration
-        else:
-            avg_net_bps = 0
+        avg_net_bps = total_net / window_duration if window_duration > 0 else 0
 
         # Classification logic based on resource signatures
         if avg_cpu > 85:
