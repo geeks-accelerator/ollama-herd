@@ -58,18 +58,54 @@ curl http://router-ip:11435/api/chat -d '{
 
 Both formats support streaming and non-streaming. Responses include real token usage counts.
 
+### Model Fallbacks
+
+Specify backup models in case the primary isn't available:
+
+```bash
+curl http://router-ip:11435/v1/chat/completions -d '{
+  "model": "llama3.3:70b",
+  "fallback_models": ["qwen2.5:32b", "qwen2.5:7b"],
+  "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+
+The router tries each model in order. If one is unavailable, it seamlessly falls back to the next. See [Operations Guide](docs/operations-guide.md#model-fallbacks).
+
 ## How routing works
 
 Every request goes through a scoring pipeline that picks the best device in real time:
 
 1. **Elimination** — offline nodes, missing models, insufficient memory, and critical memory pressure are filtered out
-2. **Thermal state** — models already loaded in GPU memory ("hot") score highest; recently unloaded ("warm") get a partial bonus
-3. **Memory fit** — nodes with more available headroom score higher
-4. **Queue depth** — busy nodes get penalized (capped so no node is starved)
-5. **Latency history** — past p75 latency from SQLite informs expected wait time
-6. **Role affinity** — large models prefer big machines, small models prefer small ones
+2. **Thermal state** (+50 pts) — models already loaded in GPU memory ("hot") score highest; recently unloaded ("warm") get a partial bonus
+3. **Memory fit** (+20 pts) — nodes with more available headroom score higher
+4. **Queue depth** (−30 pts) — busy nodes get penalized (capped so no node is starved)
+5. **Latency history** (−25 pts) — past p75 latency from SQLite informs expected wait time
+6. **Role affinity** (+15 pts) — large models prefer big machines, small models prefer small ones
 
 The highest-scoring node wins. If no node is available, the request enters a holding queue and retries until one frees up or times out.
+
+For full details on the scoring algorithm, pre-warm triggers, and rebalancer: [Fleet Manager Routing Engine](docs/fleet-manager-routing-engine.md).
+
+## Resilience
+
+- **Auto-retry** — if a node fails before the first response chunk, the router re-scores and retries on the next-best node (up to 2 retries)
+- **Model fallbacks** — clients specify backup models; the router tries alternatives when the primary model has no available nodes
+- **Holding queue** — requests wait (up to 30s) when all nodes are busy rather than immediately failing
+- **Graceful drain** — when a node shuts down, in-flight requests finish and pending requests are redistributed
+
+See [Operations Guide](docs/operations-guide.md) for details.
+
+## Adaptive Capacity Learning
+
+Laptops aren't servers — their owners use them for meetings, coding, and browsing. The adaptive capacity system learns when each device has spare compute:
+
+- **168-slot behavioral model** — learns your weekly usage patterns (7 days × 24 hours)
+- **Meeting detection** — camera/mic active → hard pause (macOS)
+- **App fingerprinting** — classifies workload intensity from resource signatures, privacy-first (no app name reading)
+- **Dynamic memory ceiling** — availability score maps to how much RAM the router can use for Ollama
+
+Enable with `FLEET_NODE_ENABLE_CAPACITY_LEARNING=true`. See [Adaptive Capacity Learning](docs/adaptive-capacity.md).
 
 ## Dashboard
 
@@ -80,6 +116,14 @@ The built-in dashboard at `/dashboard` provides three views:
 - **Model Insights** — per-model comparison of latency, tokens/sec, and usage; token distribution doughnut chart; clickable rows for daily breakdown
 
 All powered by Chart.js and a SQLite-backed latency store. No external database required.
+
+## Observability
+
+- **Per-request traces** — every routing decision is recorded with scores, node selection, latency, tokens, retry/fallback status
+- **Usage stats** — per-node, per-model, per-day aggregates via `/dashboard/api/usage`
+- **JSONL structured logging** — daily rotation to `~/.fleet-manager/logs/herd.jsonl`, 30-day retention
+
+See [Operations Guide](docs/operations-guide.md) for log queries, trace access, and debugging.
 
 ## API endpoints
 
@@ -93,11 +137,33 @@ All powered by Chart.js and a SQLite-backed latency store. No external database 
 | `GET /api/ps` | Running models across all nodes |
 | `GET /fleet/status` | Herd state: nodes, queues, metrics |
 | `GET /dashboard` | Real-time web dashboard |
-| `GET /dashboard/trends` | Historical trends page |
-| `GET /dashboard/models` | Model insights page |
+| `GET /dashboard/events` | SSE stream for live fleet updates |
 | `GET /dashboard/api/trends` | Hourly aggregated stats (JSON) |
 | `GET /dashboard/api/models` | Per-model daily stats (JSON) |
 | `GET /dashboard/api/overview` | Summary totals (JSON) |
+| `GET /dashboard/api/usage` | Per-node per-model usage (JSON) |
+| `GET /dashboard/api/traces` | Recent request traces (JSON) |
+
+Full request/response schemas: [API Reference](docs/api-reference.md).
+
+## Agent Framework Integration
+
+Every major agent framework supports custom `base_url` — point it at Herd and your agents run across your entire device fleet:
+
+```python
+# LangChain
+llm = ChatOpenAI(base_url="http://router-ip:11435/v1", model="llama3.3:70b", api_key="none")
+
+# CrewAI
+llm = LLM(model="ollama/llama3.3:70b", base_url="http://router-ip:11435")
+
+# OpenHands
+export LLM_BASE_URL=http://router-ip:11435/v1
+```
+
+Compatible with: OpenClaw, LangChain, CrewAI, AutoGen, LlamaIndex, Haystack, smolagents, OpenHands, Aider, Cline, Continue.dev, Bolt.diy, and any OpenAI-compatible client.
+
+See [OpenClaw Integration Guide](docs/openclaw-integration.md) and [Project Strategy](docs/project-status-and-strategy.md#agent-framework-integration) for the full compatibility matrix.
 
 ## Architecture
 
@@ -117,23 +183,33 @@ All powered by Chart.js and a SQLite-backed latency store. No external database 
 │  │  Latency   │ │  Rebal-  │ │  Dashboard +      │  │
 │  │  Store     │ │  ancer   │ │  SSE + Charts     │  │
 │  └────────────┘ └──────────┘ └───────────────────┘  │
+│  ┌────────────┐ ┌──────────┐                        │
+│  │  Trace     │ │  Pre-    │                        │
+│  │  Store     │ │  Warm    │                        │
+│  └────────────┘ └──────────┘                        │
 └──────────┬──────────────────────────┬───────────────┘
            │ heartbeats               │ inference
            ▼                          ▼
 ┌──────────────────┐       ┌──────────────────┐
 │  Herd Node A     │       │  Herd Node B     │
 │  (agent + Ollama)│       │  (agent + Ollama)│
-└──────────────────┘       └──────────────────┘
+│  ┌────────────┐  │       │  ┌────────────┐  │
+│  │  Capacity  │  │       │  │  Meeting    │  │
+│  │  Learner   │  │       │  │  Detector   │  │
+│  └────────────┘  │       └──└────────────┘──┘
+└──────────────────┘
 ```
 
 Two CLI entry points, one Python package:
 
-- **`herd`** — FastAPI server with scoring, queues, streaming proxy, and dashboard
-- **`herd-node`** — lightweight agent that collects system metrics and sends heartbeats
+- **`herd`** — FastAPI server with scoring, queues, streaming proxy, trace store, and dashboard
+- **`herd-node`** — lightweight agent that collects system metrics, sends heartbeats, and optionally learns capacity patterns
 
 ## Configuration
 
-All settings via environment variables:
+All settings via environment variables. See [Configuration Reference](docs/configuration-reference.md) for the complete list of 29+ variables with tuning guidance.
+
+### Common variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -142,6 +218,8 @@ All settings via environment variables:
 | `FLEET_HEARTBEAT_INTERVAL` | `5.0` | Heartbeat check interval (seconds) |
 | `FLEET_HEARTBEAT_TIMEOUT` | `15.0` | Mark node degraded after (seconds) |
 | `FLEET_HEARTBEAT_OFFLINE` | `30.0` | Mark node offline after (seconds) |
+| `FLEET_MAX_RETRIES` | `2` | Auto-retry attempts on node failure |
+| `FLEET_LOG_LEVEL` | `DEBUG` | JSONL log file level |
 
 Node settings use the `FLEET_NODE_` prefix:
 
@@ -149,6 +227,7 @@ Node settings use the `FLEET_NODE_` prefix:
 |----------|---------|-------------|
 | `FLEET_NODE_OLLAMA_HOST` | `http://localhost:11434` | Local Ollama URL |
 | `FLEET_NODE_ROUTER_URL` | *(auto-discover)* | Router URL (skips mDNS) |
+| `FLEET_NODE_ENABLE_CAPACITY_LEARNING` | `false` | Enable adaptive capacity system |
 
 ## Development
 
@@ -157,10 +236,22 @@ uv sync                              # install deps
 uv run herd                          # start router
 uv run herd-node                     # start node agent
 
-uv run pytest -v                     # run all 107 tests (~0.6s)
+uv run pytest -v                     # run all 145 tests (~0.8s)
 uv run ruff check src/               # lint
 uv run ruff format src/              # format
 ```
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [API Reference](docs/api-reference.md) | All endpoints with request/response schemas |
+| [Configuration Reference](docs/configuration-reference.md) | All 29+ environment variables with tuning guidance |
+| [Operations Guide](docs/operations-guide.md) | Logging, traces, fallbacks, retry, drain, pre-warm, streaming |
+| [Adaptive Capacity](docs/adaptive-capacity.md) | Capacity learner, meeting detection, app fingerprinting |
+| [Routing Engine](docs/fleet-manager-routing-engine.md) | 5-stage scoring pipeline deep dive |
+| [OpenClaw Integration](docs/openclaw-integration.md) | Setup guide for OpenClaw agents |
+| [Project Strategy](docs/project-status-and-strategy.md) | Competitive landscape and agent framework matrix |
 
 ## Requirements
 
