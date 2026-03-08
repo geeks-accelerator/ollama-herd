@@ -263,6 +263,41 @@ Two CLI entry points, one Python package:
 - **`herd`** — FastAPI server with scoring, queues, streaming proxy, trace store, and dashboard
 - **`herd-node`** — lightweight agent that collects system metrics, sends heartbeats, and optionally learns capacity patterns
 
+## Optimize Ollama for your hardware
+
+Ollama's defaults are conservative. On machines with lots of memory, you're probably leaving performance on the table. These settings tell Ollama to actually use the hardware you paid for:
+
+```bash
+# Keep models loaded permanently (default: 5m — unloads after 5 minutes of idle!)
+# On a 512GB Mac Studio, there's zero reason to unload a model after 5 minutes
+launchctl setenv OLLAMA_KEEP_ALIVE "-1"
+
+# Allow multiple models in memory simultaneously (default: auto, but often conservative)
+# Set to -1 for unlimited — let Ollama load as many as fit in memory
+launchctl setenv OLLAMA_MAX_LOADED_MODELS "-1"
+
+# Restart Ollama app after changing these (⌘Q and reopen)
+```
+
+**Herd handles this automatically for routed requests** — every request proxied through the router includes `keep_alive: -1`, so models loaded via Herd stay loaded regardless of Ollama's server-side default. But you should still set the env var to cover models loaded directly (e.g., `ollama run`) and to prevent Ollama from evicting idle models between requests.
+
+| Setting | Default | Recommended | Why |
+|---------|---------|-------------|-----|
+| `OLLAMA_KEEP_ALIVE` | `5m` | `-1` (forever) | Don't unload models from memory when you have RAM to spare |
+| `OLLAMA_MAX_LOADED_MODELS` | auto | `-1` (unlimited) | Let multiple models stay hot simultaneously |
+| `OLLAMA_NUM_PARALLEL` | auto | Leave default | Ollama auto-calculates from available memory per model |
+
+**Quick check** — run `ollama ps` and look at the "Until" column:
+```
+NAME              SIZE     UNTIL
+gpt-oss:120b      88 GB    Forever     ← good: model stays loaded
+qwen3.5:122b      87 GB    Forever     ← good: both hot, no thrashing
+```
+
+If you see a timestamp instead of "Forever", your keep-alive is too short.
+
+> **macOS note:** `launchctl setenv` sets the variable for the GUI session. For `ollama serve` from the terminal, use `export OLLAMA_KEEP_ALIVE=-1` instead. On Linux, add it to your systemd service file or shell profile.
+
 ## Configuration
 
 All settings via environment variables. See [Configuration Reference](docs/configuration-reference.md) for the complete list of 29+ variables with tuning guidance.

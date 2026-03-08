@@ -362,7 +362,7 @@ class StreamingProxy:
             client = self._get_client(node_id)
             resp = await client.post(
                 "/api/generate",
-                json={"model": model, "prompt": "", "keep_alive": "10m"},
+                json={"model": model, "prompt": "", "keep_alive": -1},
                 timeout=120.0,
             )
             if resp.status_code == 200:
@@ -380,11 +380,15 @@ class StreamingProxy:
             # Strip tagging fields that Ollama doesn't understand
             body.pop("metadata", None)
             body.pop("fallback_models", None)
+            # Keep models loaded permanently — the router manages model lifecycle,
+            # not Ollama's idle timeout. Prevents costly cold loads on high-memory machines.
+            body.setdefault("keep_alive", -1)
             return body
 
         body = {
             "model": request.model,
             "stream": True,
+            "keep_alive": -1,
         }
 
         if request.messages:

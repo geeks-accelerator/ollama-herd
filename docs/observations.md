@@ -38,6 +38,14 @@ sqlite3 ~/.fleet-manager/latency.db \
 # Hourly request patterns (when is the fleet busiest)
 sqlite3 ~/.fleet-manager/latency.db \
   "SELECT CAST((timestamp % 86400) / 3600 AS INTEGER) as hour, COUNT(*) as requests FROM request_traces GROUP BY hour ORDER BY hour"
+
+# Cold model loads (TTFT > 40s = model was loaded from disk, not hot in memory)
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT model, node_id, COUNT(*) as cold_loads, ROUND(AVG(time_to_first_token_ms)/1000,1) as avg_load_sec FROM request_traces WHERE time_to_first_token_ms > 40000 GROUP BY model, node_id ORDER BY cold_loads DESC"
+
+# Model thrashing detection (alternating cold loads = models evicting each other)
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT datetime(timestamp, 'unixepoch', 'localtime') as time, model, ROUND(time_to_first_token_ms/1000,1) as ttft_sec FROM request_traces WHERE time_to_first_token_ms > 40000 ORDER BY timestamp DESC LIMIT 20"
 ```
 
 Check capacity learner state:
@@ -96,6 +104,26 @@ When you see a pattern, add it below with the date and evidence.
 **Insight:** Benchmarks are observations about fleet health. They belong in the trace store alongside request traces — same SQLite DB, same query patterns, same dashboard. Added `benchmark_runs` table and a Benchmarks dashboard tab. Now you can see performance trends across runs.
 
 **Pattern:** If you're generating data that informs decisions, persist it. Console output is ephemeral. SQLite is permanent and queryable.
+
+---
+
+### 2026-03-08 — OLLAMA_KEEP_ALIVE=16s caused catastrophic model thrashing on 512GB machine
+
+**Evidence:** Mac Studio with 512 GB RAM, only using 118 GB. Two models (`gpt-oss:120b` at 83 GB and `qwen3.5:122b` at 87 GB) were alternating cold loads every 1-2 minutes — 50-190 second TTFT on every swap. Trace data showed 58 cold loads (TTFT >40s) in a single day. Root cause: `OLLAMA_KEEP_ALIVE` was set to `16` (seconds). Both models would easily fit simultaneously in memory with 337 GB to spare.
+
+```sql
+-- Query that exposed the pattern
+SELECT model, COUNT(*) as cold_loads,
+       ROUND(AVG(time_to_first_token_ms)/1000, 1) as avg_load_sec
+FROM request_traces
+WHERE timestamp > strftime('%s', 'now') - 86400
+  AND time_to_first_token_ms > 40000
+GROUP BY model ORDER BY cold_loads DESC;
+```
+
+**Insight:** Ollama's defaults prioritize memory conservation over performance. On high-memory machines, this is exactly backwards — the cost of unloading a model (50-190s cold load) vastly exceeds the cost of keeping it loaded (82-87 GB of memory you're not using anyway). Fix: `OLLAMA_KEEP_ALIVE=-1` (never unload). Both models now stay hot at "Forever" with TTFT dropping from 50-190s to 0.5-3s.
+
+**Pattern:** Default configs are tuned for the average user, not your hardware. When operating distributed systems, always audit the knobs that control resource lifecycle — keepalive timeouts, connection pools, cache eviction. The default is almost never right for your specific deployment. This is the same class of issue as TCP keepalive defaults causing spurious disconnects or database connection pool sizes limiting throughput.
 
 ---
 

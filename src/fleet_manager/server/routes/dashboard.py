@@ -263,6 +263,19 @@ async def get_benchmark_detail(request: Request, run_id: str):
     return {"data": data}
 
 
+@router.get("/dashboard/api/health")
+async def dashboard_health_data(request: Request):
+    """Fleet health analysis with actionable recommendations."""
+    from fleet_manager.server.health_engine import HealthEngine
+
+    registry = request.app.state.registry
+    trace_store = getattr(request.app.state, "trace_store", None)
+
+    engine = HealthEngine()
+    report = await engine.analyze(registry, trace_store)
+    return report.model_dump()
+
+
 # ---------------------------------------------------------------------------
 # HTML pages
 # ---------------------------------------------------------------------------
@@ -316,6 +329,12 @@ async def dashboard_benchmarks_page():
         _BENCHMARKS_BODY,
         extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>',
     )
+
+
+@router.get("/dashboard/health", response_class=HTMLResponse)
+async def dashboard_health_page():
+    """Fleet health — recommendations and vitals."""
+    return _dashboard_page("Health", "health", _HEALTH_BODY)
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +612,7 @@ def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str
         ("models", "Model Insights", "/dashboard/models"),
         ("apps", "Apps", "/dashboard/apps"),
         ("benchmarks", "Benchmarks", "/dashboard/benchmarks"),
+        ("health", "Health", "/dashboard/health"),
     ]
     nav_html = "".join(
         f'<a href="{href}" class="nav-tab {"active" if key == active_tab else ""}">{label}</a>'
@@ -1689,5 +1709,145 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 loadBenchmarks();
+</script>
+"""
+
+# ---------------------------------------------------------------------------
+# Health page body
+# ---------------------------------------------------------------------------
+
+_HEALTH_BODY = """
+<style>
+.health-header { display:flex; align-items:center; gap:20px; margin-bottom:24px; }
+.health-score { width:80px; height:80px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:28px; font-weight:700; border:3px solid var(--green); color:var(--green); }
+.health-score.warning { border-color:var(--yellow); color:var(--yellow); }
+.health-score.critical { border-color:var(--red); color:var(--red); }
+.health-title { font-size:20px; font-weight:600; }
+.health-subtitle { font-size:13px; color:var(--text-dim); margin-top:4px; }
+.vitals-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:12px; margin-bottom:24px; }
+.vital-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; text-align:center; }
+.vital-card .v-value { font-size:24px; font-weight:700; font-variant-numeric:tabular-nums; }
+.vital-card .v-label { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-top:4px; }
+.section-label { font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-dim); margin-bottom:12px; }
+.recs-list { display:flex; flex-direction:column; gap:12px; }
+.rec-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px 20px; display:flex; gap:16px; align-items:flex-start; }
+.rec-severity { width:8px; min-height:40px; border-radius:4px; flex-shrink:0; }
+.rec-severity.critical { background:var(--red); }
+.rec-severity.warning { background:var(--yellow); }
+.rec-severity.info { background:var(--blue); }
+.rec-content { flex:1; }
+.rec-title { font-size:14px; font-weight:600; margin-bottom:4px; }
+.rec-desc { font-size:13px; color:var(--text-dim); margin-bottom:8px; line-height:1.5; }
+.rec-fix { font-size:12px; background:rgba(108,99,255,0.08); border:1px solid rgba(108,99,255,0.2); border-radius:6px; padding:8px 12px; font-family:'SF Mono','Fira Code',monospace; line-height:1.5; }
+.rec-badge { font-size:11px; padding:2px 8px; border-radius:4px; font-weight:500; flex-shrink:0; }
+.rec-badge.critical { background:rgba(239,68,68,0.15); color:var(--red); }
+.rec-badge.warning { background:rgba(234,179,8,0.15); color:var(--yellow); }
+.rec-badge.info { background:rgba(59,130,246,0.15); color:var(--blue); }
+.all-clear { text-align:center; padding:60px 20px; color:var(--text-dim); }
+.all-clear h3 { color:var(--green); margin-bottom:8px; font-size:18px; }
+@media (max-width:768px) { .health-header{flex-direction:column;align-items:flex-start;} .vitals-grid{grid-template-columns:repeat(2,1fr);} }
+</style>
+
+<div class="main">
+  <div class="health-header" id="health-header">
+    <div class="health-score" id="health-score">--</div>
+    <div>
+      <div class="health-title" id="health-title">Analyzing fleet health...</div>
+      <div class="health-subtitle" id="health-subtitle">Checking nodes, traces, and configuration</div>
+    </div>
+  </div>
+
+  <div class="section-label">Fleet Vitals</div>
+  <div class="vitals-grid" id="vitals-grid"></div>
+
+  <div class="section-label">Recommendations</div>
+  <div class="recs-list" id="recs-list">
+    <div style="text-align:center;padding:40px;color:var(--text-dim)">Loading...</div>
+  </div>
+</div>
+
+<script>
+let refreshTimer;
+
+function scoreClass(score) {
+  if (score >= 80) return '';
+  if (score >= 50) return 'warning';
+  return 'critical';
+}
+
+function renderHealth(report) {
+  const v = report.vitals;
+  const recs = report.recommendations || [];
+
+  const scoreEl = document.getElementById('health-score');
+  scoreEl.textContent = v.health_score;
+  scoreEl.className = 'health-score ' + scoreClass(v.health_score);
+
+  const titleEl = document.getElementById('health-title');
+  const subtitleEl = document.getElementById('health-subtitle');
+  if (recs.length === 0) {
+    titleEl.textContent = 'Fleet is healthy';
+    subtitleEl.textContent = 'No issues detected. All systems operating normally.';
+  } else {
+    const critCount = recs.filter(r => r.severity === 'critical').length;
+    const warnCount = recs.filter(r => r.severity === 'warning').length;
+    const infoCount = recs.filter(r => r.severity === 'info').length;
+    const parts = [];
+    if (critCount) parts.push(critCount + ' critical');
+    if (warnCount) parts.push(warnCount + ' warning' + (warnCount > 1 ? 's' : ''));
+    if (infoCount) parts.push(infoCount + ' suggestion' + (infoCount > 1 ? 's' : ''));
+    titleEl.textContent = parts.join(', ');
+    subtitleEl.textContent = 'Last checked ' + new Date().toLocaleTimeString();
+  }
+
+  const vg = document.getElementById('vitals-grid');
+  const onlineColor = v.nodes_online > 0 ? 'var(--green)' : 'var(--text-dim)';
+  const errorColor = v.overall_error_rate_pct > 5 ? 'var(--red)' : v.overall_error_rate_pct > 1 ? 'var(--yellow)' : 'var(--green)';
+  const coldColor = v.cold_loads_24h > 5 ? 'var(--red)' : v.cold_loads_24h > 0 ? 'var(--yellow)' : 'var(--green)';
+  vg.innerHTML =
+    '<div class="vital-card"><div class="v-value" style="color:' + onlineColor + '">' + v.nodes_online + '/' + v.nodes_total + '</div><div class="v-label">Nodes Online</div></div>' +
+    '<div class="vital-card"><div class="v-value">' + v.total_requests_24h.toLocaleString() + '</div><div class="v-label">Requests (24h)</div></div>' +
+    '<div class="vital-card"><div class="v-value" style="color:' + errorColor + '">' + v.overall_error_rate_pct.toFixed(1) + '%</div><div class="v-label">Error Rate (24h)</div></div>' +
+    '<div class="vital-card"><div class="v-value" style="color:' + coldColor + '">' + v.cold_loads_24h + '</div><div class="v-label">Cold Loads (24h)</div></div>' +
+    '<div class="vital-card"><div class="v-value">' + (v.avg_ttft_ms != null ? (v.avg_ttft_ms / 1000).toFixed(1) + 's' : '-') + '</div><div class="v-label">Avg TTFT (24h)</div></div>' +
+    '<div class="vital-card"><div class="v-value">' + v.total_retries_24h + '</div><div class="v-label">Retries (24h)</div></div>';
+
+  const rl = document.getElementById('recs-list');
+  if (recs.length === 0) {
+    rl.innerHTML = '<div class="all-clear"><h3>All Clear</h3><p>No issues or recommendations at this time.</p></div>';
+    return;
+  }
+  rl.innerHTML = recs.map(function(r) {
+    return '<div class="rec-card">' +
+      '<div class="rec-severity ' + r.severity + '"></div>' +
+      '<div class="rec-content">' +
+        '<div class="rec-title">' + r.title + '</div>' +
+        '<div class="rec-desc">' + r.description + '</div>' +
+        '<div class="rec-fix">' + r.fix + '</div>' +
+      '</div>' +
+      '<span class="rec-badge ' + r.severity + '">' + r.severity + '</span>' +
+    '</div>';
+  }).join('');
+}
+
+async function loadHealth() {
+  try {
+    const resp = await fetch('/dashboard/api/health');
+    const data = await resp.json();
+    renderHealth(data);
+  } catch (err) {
+    console.error('Health load error:', err);
+  }
+}
+
+window.addEventListener('DOMContentLoaded', function() {
+  const dot = document.getElementById('sse-dot');
+  const st = document.getElementById('sse-status');
+  if (dot) dot.className = 'status-dot online';
+  if (st) st.textContent = 'API';
+});
+
+loadHealth();
+refreshTimer = setInterval(loadHealth, 15000);
 </script>
 """

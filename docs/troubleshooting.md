@@ -158,13 +158,42 @@ Meeting detection is disabled by default — it only activates when `FLEET_NODE_
 
 **Possible causes:**
 
-1. **Cold model loading** — if the model isn't loaded in memory ("hot"), Ollama needs to load it first. This can take 10-60+ seconds depending on model size. The dashboard shows model thermal state (hot/warm/cold).
+1. **Cold model loading (most common)** — if the model isn't loaded in memory ("hot"), Ollama needs to load it first. This can take 10-190+ seconds depending on model size. The dashboard shows model thermal state (hot/warm/cold).
 
-2. **Queue congestion** — check the dashboard for queue depths. If one node has a deep queue, the rebalancer should redistribute, but you may want to add more nodes.
+   **The #1 fix:** Check your `OLLAMA_KEEP_ALIVE` setting. The default is `5m` — Ollama unloads models after just 5 minutes of idle. On machines with lots of memory, set it to never unload:
 
-3. **Memory pressure** — if a node is under memory pressure, the scoring engine penalizes it. Check the dashboard for memory metrics.
+   ```bash
+   # macOS (GUI Ollama app)
+   launchctl setenv OLLAMA_KEEP_ALIVE "-1"
+   # Then restart Ollama (⌘Q and reopen)
 
-4. **KV cache contention** — concurrent requests share KV cache memory. Dynamic concurrency is calculated as `(available_memory - model_size) / 2GB`, clamped to 1-8. Large models with limited headroom may only allow 1-2 concurrent requests.
+   # Linux / terminal
+   export OLLAMA_KEEP_ALIVE=-1
+   ```
+
+   **How to tell if this is your problem:** Run `ollama ps` — if the "Until" column shows a timestamp instead of "Forever", models are being evicted. Also check your traces for high TTFT:
+
+   ```bash
+   # Find cold loads (TTFT > 40 seconds) in the last 24 hours
+   sqlite3 ~/.fleet-manager/latency.db "
+     SELECT model, COUNT(*) as cold_loads,
+            ROUND(AVG(time_to_first_token_ms)/1000, 1) as avg_load_sec
+     FROM request_traces
+     WHERE timestamp > strftime('%s', 'now') - 86400
+       AND time_to_first_token_ms > 40000
+     GROUP BY model ORDER BY cold_loads DESC;
+   "
+   ```
+
+   See [Optimize Ollama for your hardware](../README.md#optimize-ollama-for-your-hardware) in the README for the full tuning guide.
+
+2. **Model thrashing** — if two or more models alternate requests on the same node and keep-alive is short, they evict each other in a loop. Symptoms: every request has 50-190s TTFT, `ollama ps` only ever shows one model loaded despite having memory for several. Fix: `OLLAMA_KEEP_ALIVE=-1` and `OLLAMA_MAX_LOADED_MODELS=-1`.
+
+3. **Queue congestion** — check the dashboard for queue depths. If one node has a deep queue, the rebalancer should redistribute, but you may want to add more nodes.
+
+4. **Memory pressure** — if a node is under memory pressure, the scoring engine penalizes it. Check the dashboard for memory metrics.
+
+5. **KV cache contention** — concurrent requests share KV cache memory. Dynamic concurrency is calculated as `(available_memory - model_size) / 2GB`, clamped to 1-8. Large models with limited headroom may only allow 1-2 concurrent requests.
 
 ---
 

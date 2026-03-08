@@ -434,3 +434,78 @@ class TestBenchmarkRuns:
     async def test_get_benchmark_runs_empty(self, store):
         runs = await store.get_benchmark_runs()
         assert runs == []
+
+
+class TestHealthQueries:
+    @pytest.mark.asyncio
+    async def test_get_cold_loads_24h(self, store):
+        # Insert a cold load (TTFT > 40s)
+        await store.record_trace(
+            request_id="cold-1",
+            model="llama3:70b",
+            original_model="llama3:70b",
+            node_id="node-a",
+            status="completed",
+            latency_ms=45000.0,
+            time_to_first_token_ms=42000.0,
+        )
+        # Insert a normal trace (TTFT < 40s)
+        await store.record_trace(
+            request_id="warm-1",
+            model="phi4:14b",
+            original_model="phi4:14b",
+            node_id="node-a",
+            status="completed",
+            latency_ms=2000.0,
+            time_to_first_token_ms=500.0,
+        )
+        result = await store.get_cold_loads_24h(ttft_threshold_ms=40000)
+        assert result["total_count"] == 1
+        assert result["by_node"]["node-a"] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_cold_loads_empty(self, store):
+        result = await store.get_cold_loads_24h()
+        assert result["total_count"] == 0
+        assert result["by_node"] == {}
+
+    @pytest.mark.asyncio
+    async def test_get_error_rates_24h(self, store):
+        await _seed_traces(store)
+        rates = await store.get_error_rates_24h()
+        assert len(rates) > 0
+        node_a = next(r for r in rates if r["node_id"] == "node-a")
+        assert node_a["total"] == 2
+        assert node_a["failed"] == 1
+        assert node_a["error_rate_pct"] == 50.0
+
+    @pytest.mark.asyncio
+    async def test_get_error_rates_empty(self, store):
+        rates = await store.get_error_rates_24h()
+        assert rates == []
+
+    @pytest.mark.asyncio
+    async def test_get_retry_stats_24h(self, store):
+        await _seed_traces(store)
+        stats = await store.get_retry_stats_24h()
+        assert stats["total_requests"] == 3
+        assert stats["total_retries"] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_retry_stats_empty(self, store):
+        stats = await store.get_retry_stats_24h()
+        assert stats["total_requests"] == 0
+        assert stats["total_retries"] == 0
+
+    @pytest.mark.asyncio
+    async def test_get_overall_stats_24h(self, store):
+        await _seed_traces(store)
+        stats = await store.get_overall_stats_24h()
+        assert stats["total_requests"] == 3
+        assert stats["error_rate_pct"] > 0
+        assert stats["total_retries"] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_overall_stats_empty(self, store):
+        stats = await store.get_overall_stats_24h()
+        assert stats["total_requests"] == 0

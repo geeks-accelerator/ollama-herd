@@ -357,9 +357,17 @@ class TestDashboard:
         assert "Benchmarks" in resp.text
         assert "Capacity Growth" in resp.text
 
+    def test_health_page_html(self, client):
+        resp = client.get("/dashboard/health")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "Health" in resp.text
+        assert "Fleet Vitals" in resp.text
+        assert "Recommendations" in resp.text
+
     def test_all_pages_have_nav(self, client):
         """All dashboard pages include navigation links to all tabs."""
-        for path in ("/dashboard", "/dashboard/trends", "/dashboard/models", "/dashboard/apps", "/dashboard/benchmarks"):
+        for path in ("/dashboard", "/dashboard/trends", "/dashboard/models", "/dashboard/apps", "/dashboard/benchmarks", "/dashboard/health"):
             resp = client.get(path)
             assert resp.status_code == 200
             assert "/dashboard" in resp.text
@@ -367,12 +375,14 @@ class TestDashboard:
             assert "/dashboard/models" in resp.text
             assert "/dashboard/apps" in resp.text
             assert "/dashboard/benchmarks" in resp.text
+            assert "/dashboard/health" in resp.text
             # Nav tab labels
             assert "Dashboard" in resp.text
             assert "Trends" in resp.text
             assert "Model Insights" in resp.text
             assert "Apps" in resp.text
             assert "Benchmarks" in resp.text
+            assert "Health" in resp.text
 
 
 class TestDashboardAPI:
@@ -445,6 +455,36 @@ class TestDashboardAPI:
         assert data["total_completion_tokens"] == 1000
         assert data["total_tokens"] == 1210
         assert data["models_count"] == 2
+
+    def test_health_api_empty(self, client):
+        """Health API returns a valid report even with no data."""
+        resp = client.get("/dashboard/api/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "vitals" in data
+        assert "recommendations" in data
+        assert data["vitals"]["health_score"] <= 100
+        assert isinstance(data["recommendations"], list)
+
+    def test_health_api_with_node(self, client):
+        """Health API detects issues when a node is registered."""
+        from tests.conftest import make_heartbeat
+
+        hb = make_heartbeat(
+            node_id="studio",
+            memory_total=128.0,
+            memory_used=20.0,
+            loaded_models=[("phi4:14b", 9.0)],
+        ).model_dump()
+        client.post("/heartbeat", json=hb)
+
+        resp = client.get("/dashboard/api/health")
+        data = resp.json()
+        assert data["vitals"]["nodes_total"] == 1
+        assert data["vitals"]["nodes_online"] == 1
+        # With 108GB free and only 1 model, should get underutilized memory info
+        check_ids = [r["check_id"] for r in data["recommendations"]]
+        assert "underutilized_memory" in check_ids
 
 
 class TestFallbackRoutes:

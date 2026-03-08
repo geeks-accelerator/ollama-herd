@@ -432,6 +432,113 @@ class TraceStore:
             for row in rows
         ]
 
+    # -- Health analysis queries --
+
+    async def get_cold_loads_24h(self, ttft_threshold_ms: float = 40_000) -> dict:
+        """Count cold model loads (TTFT > threshold) by node in the last 24h."""
+        if not self._db:
+            return {"total_count": 0, "by_node": {}}
+        cutoff = time.time() - 86400
+        cursor = await self._db.execute(
+            """
+            SELECT node_id, COUNT(*) AS cold_count
+            FROM request_traces
+            WHERE timestamp >= ?
+              AND time_to_first_token_ms > ?
+              AND status = 'completed'
+            GROUP BY node_id
+            """,
+            (cutoff, ttft_threshold_ms),
+        )
+        rows = await cursor.fetchall()
+        by_node = {row[0]: row[1] for row in rows}
+        total = sum(by_node.values())
+        return {"total_count": total, "by_node": by_node}
+
+    async def get_error_rates_24h(self) -> list[dict]:
+        """Per-node error rates for the last 24 hours."""
+        if not self._db:
+            return []
+        cutoff = time.time() - 86400
+        cursor = await self._db.execute(
+            """
+            SELECT
+                node_id,
+                COUNT(*) AS total,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+            FROM request_traces
+            WHERE timestamp >= ?
+            GROUP BY node_id
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "node_id": row[0],
+                "total": row[1],
+                "failed": row[2],
+                "error_rate_pct": round((row[2] / row[1]) * 100, 1) if row[1] > 0 else 0,
+            }
+            for row in rows
+        ]
+
+    async def get_retry_stats_24h(self) -> dict:
+        """Fleet-wide retry stats for the last 24 hours."""
+        if not self._db:
+            return {"total_requests": 0, "total_retries": 0}
+        cutoff = time.time() - 86400
+        cursor = await self._db.execute(
+            """
+            SELECT COUNT(*) AS total, SUM(retry_count) AS retries
+            FROM request_traces
+            WHERE timestamp >= ?
+            """,
+            (cutoff,),
+        )
+        row = await cursor.fetchone()
+        return {
+            "total_requests": row[0] if row else 0,
+            "total_retries": row[1] if row and row[1] else 0,
+        }
+
+    async def get_overall_stats_24h(self) -> dict:
+        """Overall request stats for the last 24 hours: count, error rate, avg TTFT."""
+        if not self._db:
+            return {
+                "total_requests": 0,
+                "error_rate_pct": 0,
+                "avg_ttft_ms": None,
+                "total_retries": 0,
+            }
+        cutoff = time.time() - 86400
+        cursor = await self._db.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                AVG(time_to_first_token_ms) AS avg_ttft,
+                SUM(retry_count) AS retries
+            FROM request_traces
+            WHERE timestamp >= ?
+            """,
+            (cutoff,),
+        )
+        row = await cursor.fetchone()
+        if not row or row[0] == 0:
+            return {
+                "total_requests": 0,
+                "error_rate_pct": 0,
+                "avg_ttft_ms": None,
+                "total_retries": 0,
+            }
+        return {
+            "total_requests": row[0],
+            "error_rate_pct": round((row[1] / row[0]) * 100, 1),
+            "avg_ttft_ms": round(row[2], 1) if row[2] else None,
+            "total_retries": row[3] or 0,
+        }
+
     # -- Benchmark runs --
 
     async def save_benchmark_run(self, data: dict):
