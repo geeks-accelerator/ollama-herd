@@ -107,9 +107,12 @@ def make_node(
 def make_inference_request(
     model: str = "llama3.3:70b",
     fmt: RequestFormat = RequestFormat.OPENAI,
+    fallback_models: list[str] | None = None,
 ) -> InferenceRequest:
     return InferenceRequest(
         model=model,
+        original_model=model,
+        fallback_models=fallback_models or [],
         messages=[{"role": "user", "content": "Hello"}],
         original_format=fmt,
         raw_body={"model": model, "messages": [{"role": "user", "content": "Hello"}]},

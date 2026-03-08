@@ -208,6 +208,42 @@ class LatencyStore:
             for row in rows
         ]
 
+    async def get_node_model_daily_stats(self, days: int = 7) -> list[dict]:
+        """Per-node, per-model, per-day aggregated stats."""
+        if not self._db:
+            return []
+        cutoff = time.time() - (days * 86400)
+        cursor = await self._db.execute(
+            """
+            SELECT
+                node_id,
+                model_name,
+                CAST(timestamp / 86400 AS INTEGER) * 86400 AS day_bucket,
+                COUNT(*) AS request_count,
+                AVG(latency_ms) AS avg_latency_ms,
+                SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
+                SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens
+            FROM latency_observations
+            WHERE timestamp >= ?
+            GROUP BY node_id, model_name, day_bucket
+            ORDER BY node_id, model_name, day_bucket
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "node_id": row[0],
+                "model_name": row[1],
+                "day_bucket": row[2],
+                "request_count": row[3],
+                "avg_latency_ms": round(row[4], 1),
+                "total_prompt_tokens": row[5],
+                "total_completion_tokens": row[6],
+            }
+            for row in rows
+        ]
+
     async def _refresh_cache(self):
         """Pre-populate the percentile cache from all existing data."""
         if not self._db:

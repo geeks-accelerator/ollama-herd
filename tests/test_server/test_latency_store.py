@@ -226,3 +226,26 @@ class TestLatencyStore:
         assert len(summary) == 1
         assert summary[0]["total_prompt_tokens"] == 50
         await store2.close()
+
+    async def test_node_model_daily_stats(self, tmp_path):
+        """get_node_model_daily_stats groups by node_id, model, day."""
+        store = LatencyStore(data_dir=str(tmp_path))
+        await store.initialize()
+        # Add records for different nodes and models
+        await store.record("node-a", "phi4:14b", 500.0, prompt_tokens=50, completion_tokens=200)
+        await store.record("node-a", "phi4:14b", 600.0, prompt_tokens=60, completion_tokens=300)
+        await store.record("node-b", "phi4:14b", 700.0, prompt_tokens=70, completion_tokens=400)
+        await store.record("node-a", "llama3:8b", 300.0, prompt_tokens=30, completion_tokens=100)
+
+        data = await store.get_node_model_daily_stats(days=7)
+        assert len(data) >= 3  # 3 unique node:model combos
+        # Check node-a phi4:14b has 2 requests
+        node_a_phi = [d for d in data if d["node_id"] == "node-a" and d["model_name"] == "phi4:14b"]
+        assert len(node_a_phi) == 1
+        assert node_a_phi[0]["request_count"] == 2
+        assert node_a_phi[0]["total_prompt_tokens"] == 110
+        # Check node-b phi4:14b has 1 request
+        node_b_phi = [d for d in data if d["node_id"] == "node-b" and d["model_name"] == "phi4:14b"]
+        assert len(node_b_phi) == 1
+        assert node_b_phi[0]["request_count"] == 1
+        await store.close()

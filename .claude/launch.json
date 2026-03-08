@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "herd",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "herd"],
+      "port": 8080
+    }
+  ]
+}

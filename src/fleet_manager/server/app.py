@@ -17,6 +17,7 @@ from fleet_manager.server.rebalancer import Rebalancer
 from fleet_manager.server.registry import NodeRegistry
 from fleet_manager.server.scorer import ScoringEngine
 from fleet_manager.server.streaming import StreamingProxy
+from fleet_manager.server.trace_store import TraceStore
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,11 @@ async def lifespan(app: FastAPI):
     registry = NodeRegistry(settings)
     latency_store = LatencyStore(settings.data_dir)
     await latency_store.initialize()
+    trace_store = TraceStore(settings.data_dir)
+    await trace_store.initialize()
     scorer = ScoringEngine(settings, registry, latency_store)
     queue_mgr = QueueManager()
-    streaming_proxy = StreamingProxy(registry, latency_store)
+    streaming_proxy = StreamingProxy(registry, latency_store, trace_store)
     rebalancer = Rebalancer(settings, registry, scorer, queue_mgr, streaming_proxy)
 
     # Store on app state
@@ -41,6 +44,7 @@ async def lifespan(app: FastAPI):
     app.state.queue_mgr = queue_mgr
     app.state.streaming_proxy = streaming_proxy
     app.state.latency_store = latency_store
+    app.state.trace_store = trace_store
     app.state.rebalancer = rebalancer
 
     # Start mDNS advertisement
@@ -69,6 +73,7 @@ async def lifespan(app: FastAPI):
     await queue_mgr.shutdown()
     await streaming_proxy.close()
     await advertiser.stop()
+    await trace_store.close()
     await latency_store.close()
     logger.info("Ollama Herd shut down")
 

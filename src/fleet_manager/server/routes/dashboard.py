@@ -181,6 +181,26 @@ async def dashboard_overview_data(request: Request):
     }
 
 
+@router.get("/dashboard/api/usage")
+async def dashboard_usage_data(request: Request, days: int = 7):
+    """Per-node, per-model, per-day usage stats from request traces."""
+    trace_store = getattr(request.app.state, "trace_store", None)
+    if not trace_store:
+        return {"days": days, "data": []}
+    data = await trace_store.get_usage_by_node_model_day(days=days)
+    return {"days": days, "data": data}
+
+
+@router.get("/dashboard/api/traces")
+async def dashboard_traces(request: Request, limit: int = 50):
+    """Recent request traces for debugging and observability."""
+    trace_store = getattr(request.app.state, "trace_store", None)
+    if not trace_store:
+        return {"traces": []}
+    traces = await trace_store.get_recent_traces(limit=limit)
+    return {"traces": traces}
+
+
 # ---------------------------------------------------------------------------
 # HTML pages
 # ---------------------------------------------------------------------------

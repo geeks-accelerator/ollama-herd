@@ -25,6 +25,7 @@ from fleet_manager.server.queue_manager import QueueManager
 from fleet_manager.server.registry import NodeRegistry
 from fleet_manager.server.scorer import ScoringEngine
 from fleet_manager.server.streaming import StreamingProxy
+from fleet_manager.server.trace_store import TraceStore
 
 from tests.conftest import make_heartbeat
 
@@ -102,11 +103,16 @@ def create_test_app(tmp_path=None) -> FastAPI:
             store = LatencyStore(data_dir=str(tmp_path))
             await store.initialize()
             app.state.latency_store = store
+            trace_store = TraceStore(data_dir=str(tmp_path))
+            await trace_store.initialize()
+            app.state.trace_store = trace_store
 
         yield
 
         if tmp_path is not None and hasattr(app.state, "latency_store"):
             await app.state.latency_store.close()
+        if tmp_path is not None and hasattr(app.state, "trace_store"):
+            await app.state.trace_store.close()
         await queue_mgr.shutdown()
         await streaming_proxy.close()
 
@@ -419,3 +425,76 @@ class TestDashboardAPI:
         assert data["total_completion_tokens"] == 1000
         assert data["total_tokens"] == 1210
         assert data["models_count"] == 2
+
+
+class TestFallbackRoutes:
+    """Test model fallback behavior through the route layer."""
+
+    def test_fallback_models_field_optional(self, client):
+        """Requests without fallback_models still work (backward compat)."""
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"model": "nonexistent:99b", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        # Should get 404 (model not found), not a crash
+        assert resp.status_code == 404
+
+    def test_no_fallback_all_missing_404(self, client):
+        """When primary + fallback models all missing, return 404."""
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "nonexistent:99b",
+                "fallback_models": ["also-gone:99b"],
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 404
+        assert "nonexistent:99b" in resp.json()["error"]["message"]
+        assert "also-gone:99b" in resp.json()["error"]["message"]
+
+    def test_ollama_fallback_all_missing_404(self, client):
+        """Ollama endpoint also returns 404 listing all tried models."""
+        resp = client.post(
+            "/api/chat",
+            json={
+                "model": "gone:99b",
+                "fallback_models": ["also-gone:99b"],
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 404
+        assert "gone:99b" in resp.json()["error"]
+
+
+class TestUsageAndTracesAPI:
+    """Test the new /dashboard/api/usage and /dashboard/api/traces endpoints."""
+
+    def test_usage_api_empty(self, client):
+        """Usage API returns empty data when no trace store."""
+        resp = client.get("/dashboard/api/usage")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["data"] == []
+
+    def test_traces_api_empty(self, client):
+        """Traces API returns empty list when no trace store."""
+        resp = client.get("/dashboard/api/traces")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["traces"] == []
+
+    def test_usage_api_with_store(self, client_with_store):
+        """Usage API returns data structure when store exists."""
+        resp = client_with_store.get("/dashboard/api/usage?days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "days" in data
+        assert "data" in data
+
+    def test_traces_api_with_store(self, client_with_store):
+        """Traces API returns data structure when store exists."""
+        resp = client_with_store.get("/dashboard/api/traces?limit=10")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "traces" in data

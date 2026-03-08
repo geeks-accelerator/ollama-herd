@@ -31,6 +31,9 @@ class InferenceRequest(BaseModel):
     original_format: RequestFormat = RequestFormat.OPENAI
     raw_body: dict = Field(default_factory=dict)
     created_at: float = Field(default_factory=time.time)
+    # Fallback & trace fields
+    original_model: str = ""
+    fallback_models: list[str] = Field(default_factory=list)
 
 
 class QueueEntry(BaseModel):
@@ -40,6 +43,12 @@ class QueueEntry(BaseModel):
     enqueued_at: float = Field(default_factory=time.time)
     started_at: float | None = None
     completed_at: float | None = None
+    # Routing context for traces
+    routing_score: float | None = None
+    routing_breakdown: dict[str, float] | None = None
+    retry_count: int = 0
+    fallback_used: bool = False
+    excluded_nodes: list[str] = Field(default_factory=list)
 
 
 class RoutingResult(BaseModel):

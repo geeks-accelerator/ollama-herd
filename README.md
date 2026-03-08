@@ -30,6 +30,8 @@ That's it. The node discovers the router via mDNS and starts sending heartbeats.
 
 ## Usage
 
+> **Already using Ollama or the OpenAI SDK?** Just swap your base URL to the router. No code changes needed — same model names, same API, same streaming. The router handles picking the best machine.
+
 Point any OpenAI-compatible client at the router:
 
 ```python

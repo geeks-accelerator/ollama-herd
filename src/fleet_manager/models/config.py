@@ -37,6 +37,9 @@ class ServerSettings(BaseSettings):
     pre_warm_threshold: int = 3
     pre_warm_min_availability: float = 0.60
 
+    # Retry
+    max_retries: int = 2
+
     model_config = {"env_prefix": "FLEET_"}
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 import uuid
@@ -11,11 +10,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
+from fleet_manager.server.routes.routing import get_all_fleet_models, score_with_fallbacks
 
 router = APIRouter(tags=["openai"])
-
-HOLD_TIMEOUT = 30.0  # Max seconds to wait for a node to become available
-HOLD_RETRY_INTERVAL = 2.0
 
 
 @router.get("/v1/models")
@@ -57,6 +54,8 @@ async def chat_completions(request: Request):
 
     inference_req = InferenceRequest(
         model=model,
+        original_model=model,
+        fallback_models=body.get("fallback_models", []),
         messages=body.get("messages", []),
         stream=body.get("stream", False),
         temperature=body.get("temperature", 0.7),
@@ -69,39 +68,27 @@ async def chat_completions(request: Request):
     queue_mgr = request.app.state.queue_mgr
     proxy = request.app.state.streaming_proxy
     registry = request.app.state.registry
+    settings = request.app.state.settings
 
-    # Holding queue: retry scoring until a node becomes available
-    results = None
-    deadline = time.time() + HOLD_TIMEOUT
-    while time.time() < deadline:
-        queue_depths = queue_mgr.get_queue_depths()
-        results = scorer.score_request(inference_req.model, queue_depths)
-        if results:
-            break
-        # Check if the model exists anywhere (even offline nodes)
-        model_exists = any(
-            model in (n.ollama.models_available if n.ollama else [])
-            or model in [m.name for m in (n.ollama.models_loaded if n.ollama else [])]
-            for n in registry.get_all_nodes()
-        )
-        if not model_exists:
-            break  # Model doesn't exist at all, no point waiting
-        await asyncio.sleep(HOLD_RETRY_INTERVAL)
+    # Score with fallback support
+    results, actual_model = await score_with_fallbacks(
+        inference_req, scorer, queue_mgr, registry
+    )
 
     if not results:
-        # Check if model exists on any node (including offline)
-        all_models = set()
-        for n in registry.get_all_nodes():
-            if n.ollama:
-                all_models.update(m.name for m in n.ollama.models_loaded)
-                all_models.update(n.ollama.models_available)
-        if model not in all_models:
+        # Build error listing all attempted models
+        models_tried = [model] + inference_req.fallback_models
+        all_fleet_models = get_all_fleet_models(registry)
+        any_exists = any(m in all_fleet_models for m in models_tried)
+
+        if not any_exists:
+            models_str = "', '".join(models_tried)
             return JSONResponse(
                 status_code=404,
                 content={
                     "error": {
-                        "message": f"Model '{model}' is not available on any node. "
-                        f"Run 'ollama pull {model}' on a fleet device, then try again.",
+                        "message": f"Model(s) '{models_str}' not available on any node. "
+                        f"Run 'ollama pull <model>' on a fleet device, then try again.",
                         "type": "model_not_found",
                     }
                 },
@@ -117,13 +104,40 @@ async def chat_completions(request: Request):
             },
         )
 
+    # Apply fallback if a different model was selected
+    fallback_used = actual_model != model
+    if fallback_used:
+        inference_req.model = actual_model
+        if "model" in inference_req.raw_body:
+            inference_req.raw_body["model"] = actual_model
+
     winner = results[0]
-    entry = QueueEntry(request=inference_req, assigned_node=winner.node_id)
+    entry = QueueEntry(
+        request=inference_req,
+        assigned_node=winner.node_id,
+        routing_score=winner.score,
+        routing_breakdown=winner.scores_breakdown,
+        fallback_used=fallback_used,
+    )
     queue_key = winner.queue_key
 
-    process_fn = proxy.make_process_fn(queue_key, queue_mgr)
+    process_fn = proxy.make_process_fn(
+        queue_key, queue_mgr, scorer=scorer, settings=settings
+    )
     response_future = await queue_mgr.enqueue(entry, process_fn)
     stream = await response_future
+
+    # Build response headers
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Fleet-Node": winner.node_id,
+        "X-Fleet-Score": str(int(winner.score)),
+    }
+    if fallback_used:
+        headers["X-Fleet-Fallback"] = actual_model
+    if entry.retry_count > 0:
+        headers["X-Fleet-Retries"] = str(entry.retry_count)
 
     if inference_req.stream:
         async def _stream_and_cleanup():
@@ -137,12 +151,7 @@ async def chat_completions(request: Request):
         return StreamingResponse(
             _stream_and_cleanup(),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Fleet-Node": winner.node_id,
-                "X-Fleet-Score": str(int(winner.score)),
-            },
+            headers=headers,
         )
     else:
         # Non-streaming: accumulate full response
@@ -165,7 +174,7 @@ async def chat_completions(request: Request):
             "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
             "object": "chat.completion",
             "created": int(time.time()),
-            "model": model,
+            "model": actual_model,
             "choices": [
                 {
                     "index": 0,

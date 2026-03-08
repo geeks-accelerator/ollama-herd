@@ -1,0 +1,326 @@
+"""SQLite-backed per-request trace log for routing decisions and request outcomes."""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from pathlib import Path
+
+import aiosqlite
+
+logger = logging.getLogger(__name__)
+
+
+class TraceStore:
+    """Records and queries per-request trace data in the same SQLite DB as LatencyStore."""
+
+    def __init__(self, data_dir: str = "~/.fleet-manager"):
+        self._db_path = Path(data_dir).expanduser() / "latency.db"
+        self._db: aiosqlite.Connection | None = None
+
+    async def initialize(self):
+        """Create connection and request_traces table if it doesn't exist."""
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._db = await aiosqlite.connect(str(self._db_path))
+        # Enable WAL mode for concurrent readers/writers
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS request_traces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                original_model TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                score REAL,
+                scores_breakdown TEXT,
+                status TEXT NOT NULL,
+                latency_ms REAL,
+                time_to_first_token_ms REAL,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                retry_count INTEGER DEFAULT 0,
+                fallback_used INTEGER DEFAULT 0,
+                excluded_nodes TEXT,
+                client_ip TEXT,
+                original_format TEXT,
+                error_message TEXT,
+                timestamp REAL NOT NULL
+            )
+        """)
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traces_request_id "
+            "ON request_traces(request_id)"
+        )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traces_timestamp "
+            "ON request_traces(timestamp)"
+        )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traces_model_timestamp "
+            "ON request_traces(model, timestamp)"
+        )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traces_node_model "
+            "ON request_traces(node_id, model)"
+        )
+        await self._db.commit()
+        logger.info(f"Trace store initialized at {self._db_path}")
+
+    async def record_trace(
+        self,
+        request_id: str,
+        model: str,
+        original_model: str,
+        node_id: str,
+        score: float | None = None,
+        scores_breakdown: dict | None = None,
+        status: str = "completed",
+        latency_ms: float | None = None,
+        time_to_first_token_ms: float | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        retry_count: int = 0,
+        fallback_used: bool = False,
+        excluded_nodes: list[str] | None = None,
+        client_ip: str = "",
+        original_format: str = "",
+        error_message: str | None = None,
+    ):
+        """Insert a single trace record."""
+        if not self._db:
+            return
+        await self._db.execute(
+            "INSERT INTO request_traces "
+            "(request_id, model, original_model, node_id, score, scores_breakdown, "
+            "status, latency_ms, time_to_first_token_ms, prompt_tokens, completion_tokens, "
+            "retry_count, fallback_used, excluded_nodes, client_ip, original_format, "
+            "error_message, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                request_id,
+                model,
+                original_model,
+                node_id,
+                score,
+                json.dumps(scores_breakdown) if scores_breakdown else None,
+                status,
+                latency_ms,
+                time_to_first_token_ms,
+                prompt_tokens,
+                completion_tokens,
+                retry_count,
+                int(fallback_used),
+                json.dumps(excluded_nodes) if excluded_nodes else None,
+                client_ip,
+                original_format,
+                error_message,
+                time.time(),
+            ),
+        )
+        await self._db.commit()
+
+    async def get_recent_traces(self, limit: int = 100) -> list[dict]:
+        """Return the most recent traces, newest first."""
+        if not self._db:
+            return []
+        cursor = await self._db.execute(
+            "SELECT request_id, model, original_model, node_id, score, "
+            "scores_breakdown, status, latency_ms, time_to_first_token_ms, "
+            "prompt_tokens, completion_tokens, retry_count, fallback_used, "
+            "excluded_nodes, client_ip, original_format, error_message, timestamp "
+            "FROM request_traces ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    async def get_trace_by_request_id(self, request_id: str) -> list[dict]:
+        """Look up all trace entries for a given request (may have retries)."""
+        if not self._db:
+            return []
+        cursor = await self._db.execute(
+            "SELECT request_id, model, original_model, node_id, score, "
+            "scores_breakdown, status, latency_ms, time_to_first_token_ms, "
+            "prompt_tokens, completion_tokens, retry_count, fallback_used, "
+            "excluded_nodes, client_ip, original_format, error_message, timestamp "
+            "FROM request_traces WHERE request_id = ? ORDER BY timestamp",
+            (request_id,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    # -- Usage stats queries --
+
+    async def get_usage_by_node_model_day(self, days: int = 7) -> list[dict]:
+        """Per-node, per-model, per-day aggregated stats from request_traces."""
+        if not self._db:
+            return []
+        cutoff = time.time() - (days * 86400)
+        cursor = await self._db.execute(
+            """
+            SELECT
+                node_id,
+                model,
+                CAST(timestamp / 86400 AS INTEGER) * 86400 AS day_bucket,
+                COUNT(*) AS request_count,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                AVG(latency_ms) AS avg_latency_ms,
+                AVG(time_to_first_token_ms) AS avg_ttft_ms,
+                SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
+                SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens,
+                SUM(retry_count) AS total_retries,
+                SUM(fallback_used) AS total_fallbacks
+            FROM request_traces
+            WHERE timestamp >= ?
+            GROUP BY node_id, model, day_bucket
+            ORDER BY day_bucket DESC, node_id, model
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "node_id": row[0],
+                "model": row[1],
+                "day_bucket": row[2],
+                "request_count": row[3],
+                "completed_count": row[4],
+                "failed_count": row[5],
+                "avg_latency_ms": round(row[6], 1) if row[6] else 0,
+                "avg_ttft_ms": round(row[7], 1) if row[7] else None,
+                "total_prompt_tokens": row[8],
+                "total_completion_tokens": row[9],
+                "total_retries": row[10],
+                "total_fallbacks": row[11],
+            }
+            for row in rows
+        ]
+
+    async def get_node_summary(self) -> list[dict]:
+        """Per-node all-time aggregate stats."""
+        if not self._db:
+            return []
+        cursor = await self._db.execute(
+            """
+            SELECT
+                node_id,
+                COUNT(*) AS total_requests,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                AVG(latency_ms) AS avg_latency_ms,
+                SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
+                SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens,
+                SUM(retry_count) AS total_retries,
+                MIN(timestamp) AS first_seen,
+                MAX(timestamp) AS last_seen
+            FROM request_traces
+            GROUP BY node_id
+            ORDER BY total_requests DESC
+            """
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "node_id": row[0],
+                "total_requests": row[1],
+                "completed_count": row[2],
+                "failed_count": row[3],
+                "avg_latency_ms": round(row[4], 1) if row[4] else 0,
+                "total_prompt_tokens": row[5],
+                "total_completion_tokens": row[6],
+                "total_retries": row[7],
+                "first_seen": row[8],
+                "last_seen": row[9],
+            }
+            for row in rows
+        ]
+
+    async def get_usage_overview(self) -> dict:
+        """Global overview: total requests, tokens, errors, retries."""
+        if not self._db:
+            return {
+                "total_requests": 0,
+                "completed_count": 0,
+                "failed_count": 0,
+                "total_prompt_tokens": 0,
+                "total_completion_tokens": 0,
+                "total_tokens": 0,
+                "total_retries": 0,
+                "total_fallbacks": 0,
+            }
+        cursor = await self._db.execute(
+            """
+            SELECT
+                COUNT(*) AS total_requests,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
+                SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens,
+                SUM(retry_count) AS total_retries,
+                SUM(fallback_used) AS total_fallbacks
+            FROM request_traces
+            """
+        )
+        row = await cursor.fetchone()
+        if not row or row[0] == 0:
+            return {
+                "total_requests": 0,
+                "completed_count": 0,
+                "failed_count": 0,
+                "total_prompt_tokens": 0,
+                "total_completion_tokens": 0,
+                "total_tokens": 0,
+                "total_retries": 0,
+                "total_fallbacks": 0,
+            }
+        return {
+            "total_requests": row[0],
+            "completed_count": row[1],
+            "failed_count": row[2],
+            "total_prompt_tokens": row[3],
+            "total_completion_tokens": row[4],
+            "total_tokens": row[3] + row[4],
+            "total_retries": row[5],
+            "total_fallbacks": row[6],
+        }
+
+    def _row_to_dict(self, row) -> dict:
+        """Convert a SELECT row into a dict with JSON parsing."""
+        breakdown = None
+        if row[5]:
+            try:
+                breakdown = json.loads(row[5])
+            except json.JSONDecodeError:
+                breakdown = row[5]
+        excluded = None
+        if row[13]:
+            try:
+                excluded = json.loads(row[13])
+            except json.JSONDecodeError:
+                excluded = row[13]
+        return {
+            "request_id": row[0],
+            "model": row[1],
+            "original_model": row[2],
+            "node_id": row[3],
+            "score": row[4],
+            "scores_breakdown": breakdown,
+            "status": row[6],
+            "latency_ms": row[7],
+            "time_to_first_token_ms": row[8],
+            "prompt_tokens": row[9],
+            "completion_tokens": row[10],
+            "retry_count": row[11],
+            "fallback_used": bool(row[12]),
+            "excluded_nodes": excluded,
+            "client_ip": row[14],
+            "original_format": row[15],
+            "error_message": row[16],
+            "timestamp": row[17],
+        }
+
+    async def close(self):
+        if self._db:
+            await self._db.close()
