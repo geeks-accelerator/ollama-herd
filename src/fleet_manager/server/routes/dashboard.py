@@ -1743,6 +1743,8 @@ _HEALTH_BODY = """
 .rec-badge.critical { background:rgba(239,68,68,0.15); color:var(--red); }
 .rec-badge.warning { background:rgba(234,179,8,0.15); color:var(--yellow); }
 .rec-badge.info { background:rgba(59,130,246,0.15); color:var(--blue); }
+.rec-card.resolved { opacity:0.6; }
+.rec-badge.resolved { background:rgba(34,197,94,0.15); color:var(--green); }
 .all-clear { text-align:center; padding:60px 20px; color:var(--text-dim); }
 .all-clear h3 { color:var(--green); margin-bottom:8px; font-size:18px; }
 @media (max-width:768px) { .health-header{flex-direction:column;align-items:flex-start;} .vitals-grid{grid-template-columns:repeat(2,1fr);} }
@@ -1818,14 +1820,18 @@ function renderHealth(report) {
     return;
   }
   rl.innerHTML = recs.map(function(r) {
-    return '<div class="rec-card">' +
+    var isResolved = r.data && r.data.resolved;
+    var cardClass = 'rec-card' + (isResolved ? ' resolved' : '');
+    var badgeClass = isResolved ? 'rec-badge resolved' : 'rec-badge ' + r.severity;
+    var badgeText = isResolved ? 'resolved' : r.severity;
+    return '<div class="' + cardClass + '">' +
       '<div class="rec-severity ' + r.severity + '"></div>' +
       '<div class="rec-content">' +
         '<div class="rec-title">' + r.title + '</div>' +
         '<div class="rec-desc">' + r.description + '</div>' +
         '<div class="rec-fix">' + r.fix + '</div>' +
       '</div>' +
-      '<span class="rec-badge ' + r.severity + '">' + r.severity + '</span>' +
+      '<span class="' + badgeClass + '">' + badgeText + '</span>' +
     '</div>';
   }).join('');
 }

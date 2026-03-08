@@ -434,11 +434,13 @@ class TraceStore:
 
     # -- Health analysis queries --
 
-    async def get_cold_loads_24h(self, ttft_threshold_ms: float = 40_000) -> dict:
-        """Count cold model loads (TTFT > threshold) by node in the last 24h."""
+    async def get_cold_loads_24h(
+        self, ttft_threshold_ms: float = 40_000, lookback_s: int = 86400
+    ) -> dict:
+        """Count cold model loads (TTFT > threshold) by node in the given window."""
         if not self._db:
             return {"total_count": 0, "by_node": {}}
-        cutoff = time.time() - 86400
+        cutoff = time.time() - lookback_s
         cursor = await self._db.execute(
             """
             SELECT node_id, COUNT(*) AS cold_count
@@ -455,11 +457,11 @@ class TraceStore:
         total = sum(by_node.values())
         return {"total_count": total, "by_node": by_node}
 
-    async def get_error_rates_24h(self) -> list[dict]:
-        """Per-node error rates for the last 24 hours."""
+    async def get_error_rates_24h(self, lookback_s: int = 86400) -> list[dict]:
+        """Per-node error rates for the given window (default 24h)."""
         if not self._db:
             return []
-        cutoff = time.time() - 86400
+        cutoff = time.time() - lookback_s
         cursor = await self._db.execute(
             """
             SELECT

@@ -158,6 +158,7 @@ class TestTraceChecks:
 
     @pytest.mark.asyncio
     async def test_model_thrashing_detected(self, store):
+        """Cold loads within the last hour → active warning."""
         engine = HealthEngine()
         for i in range(5):
             await store.record_trace(
@@ -173,6 +174,7 @@ class TestTraceChecks:
         report = await engine.analyze(FakeRegistry([node]), store)
         thrashing = [r for r in report.recommendations if r.check_id == "model_thrashing"]
         assert len(thrashing) == 1
+        assert thrashing[0].severity == Severity.WARNING
         assert "OLLAMA_KEEP_ALIVE" in thrashing[0].fix
 
     @pytest.mark.asyncio
@@ -193,6 +195,63 @@ class TestTraceChecks:
         report = await engine.analyze(FakeRegistry([node]), store)
         thrashing = [r for r in report.recommendations if r.check_id == "model_thrashing"]
         assert len(thrashing) == 0
+
+    @pytest.mark.asyncio
+    async def test_model_thrashing_resolved_when_no_recent_cold_loads(self, store):
+        """Cold loads only in the distant past (>1h ago) → resolved info."""
+        engine = HealthEngine()
+        # Insert cold loads backdated to 6 hours ago
+        old_ts = time.time() - 6 * 3600
+        for i in range(10):
+            await store._db.execute(
+                "INSERT INTO request_traces "
+                "(request_id, model, original_model, node_id, status, "
+                "latency_ms, time_to_first_token_ms, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (f"old-cold-{i}", "llama3:70b", "llama3:70b", "studio",
+                 "completed", 50000.0, 45000.0, old_ts + i),
+            )
+        await store._db.commit()
+        node = make_node("studio", memory_total=128.0, memory_used=40.0)
+        report = await engine.analyze(FakeRegistry([node]), store)
+        thrashing = [r for r in report.recommendations if r.check_id == "model_thrashing"]
+        assert len(thrashing) == 1
+        assert thrashing[0].severity == Severity.INFO
+        assert "resolved" in thrashing[0].title.lower()
+        assert thrashing[0].data.get("resolved") is True
+
+    @pytest.mark.asyncio
+    async def test_error_rate_resolved_when_recent_is_clean(self, store):
+        """High error rate in 24h but clean recent window → resolved info."""
+        engine = HealthEngine()
+        # Insert old failures (6h ago)
+        old_ts = time.time() - 6 * 3600
+        for i in range(5):
+            await store._db.execute(
+                "INSERT INTO request_traces "
+                "(request_id, model, original_model, node_id, status, "
+                "latency_ms, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (f"old-fail-{i}", "phi4:14b", "phi4:14b", "flaky",
+                 "failed", 500.0, old_ts + i),
+            )
+        # Insert recent successes (within last hour)
+        for i in range(5):
+            await store.record_trace(
+                request_id=f"recent-ok-{i}",
+                model="phi4:14b",
+                original_model="phi4:14b",
+                node_id="flaky",
+                status="completed",
+                latency_ms=1000.0,
+            )
+        await store._db.commit()
+        node = make_node("flaky")
+        report = await engine.analyze(FakeRegistry([node]), store)
+        errors = [r for r in report.recommendations if r.check_id == "high_error_rate"]
+        assert len(errors) == 1
+        assert errors[0].severity == Severity.INFO
+        assert "recovered" in errors[0].title.lower()
+        assert errors[0].data.get("resolved") is True
 
     @pytest.mark.asyncio
     async def test_high_error_rate_detected(self, store):

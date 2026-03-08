@@ -69,6 +69,7 @@ class HealthEngine:
     ERROR_RATE_THRESHOLD_PCT = 5.0
     MEMORY_UNDERUTIL_PCT = 50.0
     RETRY_RATE_THRESHOLD = 0.3  # avg retries per request
+    RECENT_WINDOW_S = 3600  # 1 hour — used to detect if issues are still active
 
     async def analyze(self, registry, trace_store) -> HealthReport:
         """Run all health checks and return a complete report."""
@@ -90,14 +91,28 @@ class HealthEngine:
             retry_stats = await trace_store.get_retry_stats_24h()
             overall_24h = await trace_store.get_overall_stats_24h()
 
+            # Recent window — used to detect if issues are still active
+            recent_cold = await trace_store.get_cold_loads_24h(
+                lookback_s=self.RECENT_WINDOW_S
+            )
+            recent_errors = await trace_store.get_error_rates_24h(
+                lookback_s=self.RECENT_WINDOW_S
+            )
+
             vitals.cold_loads_24h = cold_loads["total_count"]
             vitals.total_requests_24h = overall_24h["total_requests"]
             vitals.total_retries_24h = overall_24h["total_retries"]
             vitals.overall_error_rate_pct = overall_24h["error_rate_pct"]
             vitals.avg_ttft_ms = overall_24h["avg_ttft_ms"]
 
-            recommendations.extend(self._check_model_thrashing(cold_loads["by_node"], nodes))
-            recommendations.extend(self._check_error_rates(error_rates))
+            recommendations.extend(
+                self._check_model_thrashing(
+                    cold_loads["by_node"], recent_cold["by_node"], nodes
+                )
+            )
+            recommendations.extend(
+                self._check_error_rates(error_rates, recent_errors)
+            )
             recommendations.extend(self._check_retry_rates(retry_stats))
 
         # Compute health score
@@ -229,7 +244,9 @@ class HealthEngine:
     # Trace-based checks
     # ------------------------------------------------------------------
 
-    def _check_model_thrashing(self, cold_loads_by_node, nodes) -> list[Recommendation]:
+    def _check_model_thrashing(
+        self, cold_loads_by_node, recent_cold_by_node, nodes
+    ) -> list[Recommendation]:
         """Cross-reference cold loads with node memory to detect thrashing."""
         recs = []
         node_map = {n.node_id: n for n in nodes}
@@ -238,14 +255,21 @@ class HealthEngine:
                 continue  # occasional cold load is fine
             node = node_map.get(node_id)
             has_free_memory = node and node.memory and node.memory.available_gb > 4.0
-            if has_free_memory:
+            if not has_free_memory:
+                continue
+
+            recent_count = recent_cold_by_node.get(node_id, 0)
+            still_active = recent_count >= 1
+
+            if still_active:
                 recs.append(
                     Recommendation(
                         check_id="model_thrashing",
                         severity=Severity.WARNING,
                         title=f"Model thrashing on {node_id}",
                         description=(
-                            f"{count} cold loads (TTFT > 40s) in the last 24h, "
+                            f"{count} cold loads (TTFT > 40s) in the last 24h "
+                            f"({recent_count} in the last hour), "
                             f"but {node.memory.available_gb:.1f} GB memory is free. "
                             f"Models are being unloaded and reloaded unnecessarily."
                         ),
@@ -256,16 +280,45 @@ class HealthEngine:
                         node_id=node_id,
                         data={
                             "cold_loads_24h": count,
+                            "cold_loads_1h": recent_count,
                             "available_gb": round(node.memory.available_gb, 1),
+                        },
+                    )
+                )
+            else:
+                recs.append(
+                    Recommendation(
+                        check_id="model_thrashing",
+                        severity=Severity.INFO,
+                        title=f"Model thrashing resolved on {node_id}",
+                        description=(
+                            f"{count} cold loads in the last 24h, but none in the "
+                            f"last hour — fix appears to be working."
+                        ),
+                        fix="No action needed. This will clear as historical data ages out.",
+                        node_id=node_id,
+                        data={
+                            "cold_loads_24h": count,
+                            "cold_loads_1h": 0,
+                            "available_gb": round(node.memory.available_gb, 1),
+                            "resolved": True,
                         },
                     )
                 )
         return recs
 
-    def _check_error_rates(self, error_rates) -> list[Recommendation]:
+    def _check_error_rates(self, error_rates, recent_errors) -> list[Recommendation]:
         recs = []
+        recent_map = {e["node_id"]: e for e in recent_errors}
         for entry in error_rates:
-            if entry["error_rate_pct"] >= self.ERROR_RATE_THRESHOLD_PCT:
+            if entry["error_rate_pct"] < self.ERROR_RATE_THRESHOLD_PCT:
+                continue
+
+            recent = recent_map.get(entry["node_id"])
+            recent_rate = recent["error_rate_pct"] if recent else 0.0
+            still_active = recent_rate >= self.ERROR_RATE_THRESHOLD_PCT
+
+            if still_active:
                 recs.append(
                     Recommendation(
                         check_id="high_error_rate",
@@ -284,6 +337,27 @@ class HealthEngine:
                             "error_rate_pct": entry["error_rate_pct"],
                             "failed": entry["failed"],
                             "total": entry["total"],
+                        },
+                    )
+                )
+            else:
+                recs.append(
+                    Recommendation(
+                        check_id="high_error_rate",
+                        severity=Severity.INFO,
+                        title=f"Error rate recovered on {entry['node_id']}",
+                        description=(
+                            f"{entry['error_rate_pct']:.1f}% error rate in the last 24h, "
+                            f"but {recent_rate:.1f}% in the last hour — recovering."
+                        ),
+                        fix="No action needed. This will clear as historical data ages out.",
+                        node_id=entry["node_id"],
+                        data={
+                            "error_rate_pct": entry["error_rate_pct"],
+                            "recent_error_rate_pct": recent_rate,
+                            "failed": entry["failed"],
+                            "total": entry["total"],
+                            "resolved": True,
                         },
                     )
                 )
