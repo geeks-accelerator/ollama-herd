@@ -582,7 +582,7 @@ _OVERVIEW_BODY = """
 
 <div class="main">
   <div>
-    <div class="section-title">Fleet Nodes</div>
+    <div class="section-title">Herd Nodes</div>
     <div class="nodes-grid" id="nodes-container">
       <div class="empty-state">Waiting for nodes...</div>
     </div>

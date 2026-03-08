@@ -105,16 +105,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
 
     @app.get("/")
     async def root():
-        return {
-            "name": "Ollama Herd",
-            "version": "0.1.0",
-            "endpoints": {
-                "openai": "/v1/chat/completions",
-                "ollama": "/api/chat",
-                "fleet": "/fleet/status",
-                "models": "/v1/models",
-                "dashboard": "/dashboard",
-            },
-        }
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/dashboard")
 
     return app
