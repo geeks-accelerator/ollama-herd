@@ -96,6 +96,12 @@ curl -H "X-Herd-Tags: my-app, production" \
 
 Tags appear in the **Apps** dashboard tab with per-tag latency, tokens, error rates, and daily trends. See [Request Tagging](docs/request-tagging.md) for the full guide including competitive landscape and framework integration examples.
 
+### Switching your AI agent to Herd
+
+Copy-paste this to any AI coding agent to have it update your Ollama configuration:
+
+> Update the Ollama configuration to use Ollama Herd as the inference router. Ollama Herd is a smart inference router that sits in front of multiple Ollama instances across a LAN, auto-discovers nodes via mDNS, and routes each request to the optimal device based on thermal state, memory fit, queue depth, latency history, and role affinity. Comment out the current direct Ollama base URL (e.g., `http://localhost:11434`) but keep it as a comment for reference. Replace it with the Ollama Herd router URL: `http://<router-ip>:11435`. For OpenAI-compatible clients, use `http://<router-ip>:11435/v1` as the base URL. The API key can be any non-empty string (e.g., `"not-needed"`). The API is fully compatible with both OpenAI and Ollama formats — same model names, same endpoints, same streaming. No other code changes are needed.
+
 ## How routing works
 
 Every request goes through a scoring pipeline that picks the best device in real time:
