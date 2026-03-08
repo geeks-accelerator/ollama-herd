@@ -370,6 +370,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 .header h1 {
   font-size: 18px;
@@ -380,10 +382,14 @@ body {
 .header-left {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
 }
 .nav-tabs {
   display: flex;
   gap: 4px;
+  flex-wrap: wrap;
 }
 .nav-tab {
   padding: 6px 16px;
@@ -405,6 +411,7 @@ body {
 .header-stats {
   display: flex;
   gap: 24px;
+  flex-shrink: 0;
 }
 .header-stat {
   text-align: center;
