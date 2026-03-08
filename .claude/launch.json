@@ -5,7 +5,7 @@
       "name": "herd",
       "runtimeExecutable": "uv",
       "runtimeArgs": ["run", "herd"],
-      "port": 4373
+      "port": 11435
     }
   ]
 }
