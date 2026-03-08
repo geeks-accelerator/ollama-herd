@@ -234,3 +234,106 @@ class TestUsageStats:
     async def test_usage_overview_empty(self, store):
         overview = await store.get_usage_overview()
         assert overview["total_requests"] == 0
+
+
+class TestTagAnalytics:
+    @pytest.mark.asyncio
+    async def test_record_trace_with_tags(self, store):
+        await store.record_trace(
+            request_id="tagged-1",
+            model="phi4:14b",
+            original_model="phi4:14b",
+            node_id="node-a",
+            status="completed",
+            latency_ms=1000.0,
+            tags=["my-app", "production"],
+        )
+        traces = await store.get_recent_traces(limit=1)
+        assert len(traces) == 1
+        assert traces[0]["tags"] == ["my-app", "production"]
+
+    @pytest.mark.asyncio
+    async def test_record_trace_without_tags(self, store):
+        await store.record_trace(
+            request_id="no-tags",
+            model="phi4:14b",
+            original_model="phi4:14b",
+            node_id="node-a",
+            status="completed",
+            latency_ms=500.0,
+        )
+        traces = await store.get_recent_traces(limit=1)
+        assert traces[0]["tags"] is None
+
+    @pytest.mark.asyncio
+    async def test_get_usage_by_tag(self, store):
+        await store.record_trace(
+            request_id="t1", model="phi4:14b", original_model="phi4:14b",
+            node_id="node-a", status="completed", latency_ms=1000.0,
+            prompt_tokens=50, completion_tokens=100,
+            tags=["app-a", "prod"],
+        )
+        await store.record_trace(
+            request_id="t2", model="phi4:14b", original_model="phi4:14b",
+            node_id="node-a", status="completed", latency_ms=2000.0,
+            prompt_tokens=60, completion_tokens=200,
+            tags=["app-a"],
+        )
+        await store.record_trace(
+            request_id="t3", model="llama3:8b", original_model="llama3:8b",
+            node_id="node-b", status="failed", latency_ms=500.0,
+            tags=["app-b"],
+        )
+        data = await store.get_usage_by_tag(days=7)
+        tags_map = {d["tag"]: d for d in data}
+
+        assert "app-a" in tags_map
+        assert tags_map["app-a"]["request_count"] == 2
+        assert tags_map["app-a"]["completed_count"] == 2
+        assert tags_map["app-a"]["total_prompt_tokens"] == 110
+        assert tags_map["app-a"]["total_completion_tokens"] == 300
+
+        assert "prod" in tags_map
+        assert tags_map["prod"]["request_count"] == 1
+
+        assert "app-b" in tags_map
+        assert tags_map["app-b"]["request_count"] == 1
+        assert tags_map["app-b"]["failed_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_usage_by_tag_empty(self, store):
+        data = await store.get_usage_by_tag(days=7)
+        assert data == []
+
+    @pytest.mark.asyncio
+    async def test_get_tag_daily_stats(self, store):
+        await store.record_trace(
+            request_id="d1", model="phi4:14b", original_model="phi4:14b",
+            node_id="node-a", status="completed", latency_ms=1000.0,
+            prompt_tokens=50, completion_tokens=100,
+            tags=["my-app"],
+        )
+        data = await store.get_tag_daily_stats(days=7)
+        assert len(data) >= 1
+        assert data[0]["tag"] == "my-app"
+        assert data[0]["request_count"] == 1
+        assert data[0]["total_tokens"] == 150
+
+    @pytest.mark.asyncio
+    async def test_get_tag_summary(self, store):
+        await store.record_trace(
+            request_id="s1", model="phi4:14b", original_model="phi4:14b",
+            node_id="node-a", status="completed", latency_ms=1000.0,
+            tags=["project-x"],
+        )
+        await store.record_trace(
+            request_id="s2", model="phi4:14b", original_model="phi4:14b",
+            node_id="node-a", status="completed", latency_ms=2000.0,
+            tags=["project-x", "staging"],
+        )
+        summary = await store.get_tag_summary()
+        tags_map = {s["tag"]: s for s in summary}
+        assert "project-x" in tags_map
+        assert tags_map["project-x"]["total_requests"] == 2
+        assert "staging" in tags_map
+        assert tags_map["staging"]["total_requests"] == 1

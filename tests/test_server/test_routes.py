@@ -341,18 +341,28 @@ class TestDashboard:
         assert "chart.js" in resp.text
         assert "Model Insights" in resp.text
 
+    def test_apps_page_html(self, client):
+        resp = client.get("/dashboard/apps")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "chart.js" in resp.text
+        assert "Apps" in resp.text
+        assert "X-Herd-Tags" in resp.text  # Usage instructions
+
     def test_all_pages_have_nav(self, client):
-        """All dashboard pages include navigation links to all 3 tabs."""
-        for path in ("/dashboard", "/dashboard/trends", "/dashboard/models"):
+        """All dashboard pages include navigation links to all tabs."""
+        for path in ("/dashboard", "/dashboard/trends", "/dashboard/models", "/dashboard/apps"):
             resp = client.get(path)
             assert resp.status_code == 200
             assert "/dashboard" in resp.text
             assert "/dashboard/trends" in resp.text
             assert "/dashboard/models" in resp.text
+            assert "/dashboard/apps" in resp.text
             # Nav tab labels
             assert "Dashboard" in resp.text
             assert "Trends" in resp.text
             assert "Model Insights" in resp.text
+            assert "Apps" in resp.text
 
 
 class TestDashboardAPI:
@@ -498,3 +508,84 @@ class TestUsageAndTracesAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert "traces" in data
+
+    def test_apps_api_empty(self, client):
+        """Apps API returns empty data when no trace store."""
+        resp = client.get("/dashboard/api/apps")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["data"] == []
+        assert data["summary"] == []
+
+    def test_apps_daily_api_empty(self, client):
+        """Apps daily API returns empty data when no trace store."""
+        resp = client.get("/dashboard/api/apps/daily")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["data"] == []
+
+    def test_apps_api_with_store(self, client_with_store):
+        """Apps API returns data structure when store exists."""
+        resp = client_with_store.get("/dashboard/api/apps?days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "data" in data
+        assert "summary" in data
+        assert "days" in data
+
+
+class TestTagExtraction:
+    """Test the extract_tags helper function."""
+
+    def test_tags_from_metadata_body(self):
+        from fleet_manager.server.routes.routing import extract_tags
+
+        tags = extract_tags({"metadata": {"tags": ["app-1", "prod"]}})
+        assert tags == ["app-1", "prod"]
+
+    def test_tags_from_header(self):
+        from fleet_manager.server.routes.routing import extract_tags
+
+        class FakeHeaders:
+            def get(self, key, default=""):
+                if key == "x-herd-tags":
+                    return "app-1, staging"
+                return default
+
+        tags = extract_tags({}, FakeHeaders())
+        assert tags == ["app-1", "staging"]
+
+    def test_tags_from_user_field(self):
+        from fleet_manager.server.routes.routing import extract_tags
+
+        tags = extract_tags({"user": "alice"})
+        assert tags == ["user:alice"]
+
+    def test_tags_merged_and_deduplicated(self):
+        from fleet_manager.server.routes.routing import extract_tags
+
+        class FakeHeaders:
+            def get(self, key, default=""):
+                if key == "x-herd-tags":
+                    return "app-1, extra"
+                return default
+
+        body = {
+            "metadata": {"tags": ["app-1", "prod"]},
+            "user": "bob",
+        }
+        tags = extract_tags(body, FakeHeaders())
+        # app-1 from body, prod from body, extra from header (app-1 deduped), user:bob
+        assert tags == ["app-1", "prod", "extra", "user:bob"]
+
+    def test_tags_empty_when_no_sources(self):
+        from fleet_manager.server.routes.routing import extract_tags
+
+        tags = extract_tags({"model": "phi4:14b", "messages": []})
+        assert tags == []
+
+    def test_tags_with_invalid_metadata(self):
+        from fleet_manager.server.routes.routing import extract_tags
+
+        tags = extract_tags({"metadata": "not-a-dict"})
+        assert tags == []

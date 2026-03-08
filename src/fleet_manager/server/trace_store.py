@@ -64,6 +64,18 @@ class TraceStore:
             "CREATE INDEX IF NOT EXISTS idx_traces_node_model "
             "ON request_traces(node_id, model)"
         )
+        # Schema migration: add tags column if it doesn't exist
+        try:
+            await self._db.execute(
+                "ALTER TABLE request_traces ADD COLUMN tags TEXT"
+            )
+            logger.info("Added 'tags' column to request_traces")
+        except Exception:
+            pass  # Column already exists
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traces_tags "
+            "ON request_traces(tags)"
+        )
         await self._db.commit()
         logger.info(f"Trace store initialized at {self._db_path}")
 
@@ -86,6 +98,7 @@ class TraceStore:
         client_ip: str = "",
         original_format: str = "",
         error_message: str | None = None,
+        tags: list[str] | None = None,
     ):
         """Insert a single trace record."""
         if not self._db:
@@ -95,8 +108,8 @@ class TraceStore:
             "(request_id, model, original_model, node_id, score, scores_breakdown, "
             "status, latency_ms, time_to_first_token_ms, prompt_tokens, completion_tokens, "
             "retry_count, fallback_used, excluded_nodes, client_ip, original_format, "
-            "error_message, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "error_message, tags, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 request_id,
                 model,
@@ -115,6 +128,7 @@ class TraceStore:
                 client_ip,
                 original_format,
                 error_message,
+                json.dumps(tags) if tags else None,
                 time.time(),
             ),
         )
@@ -128,7 +142,7 @@ class TraceStore:
             "SELECT request_id, model, original_model, node_id, score, "
             "scores_breakdown, status, latency_ms, time_to_first_token_ms, "
             "prompt_tokens, completion_tokens, retry_count, fallback_used, "
-            "excluded_nodes, client_ip, original_format, error_message, timestamp "
+            "excluded_nodes, client_ip, original_format, error_message, timestamp, tags "
             "FROM request_traces ORDER BY timestamp DESC LIMIT ?",
             (limit,),
         )
@@ -143,7 +157,7 @@ class TraceStore:
             "SELECT request_id, model, original_model, node_id, score, "
             "scores_breakdown, status, latency_ms, time_to_first_token_ms, "
             "prompt_tokens, completion_tokens, retry_count, fallback_used, "
-            "excluded_nodes, client_ip, original_format, error_message, timestamp "
+            "excluded_nodes, client_ip, original_format, error_message, timestamp, tags "
             "FROM request_traces WHERE request_id = ? ORDER BY timestamp",
             (request_id,),
         )
@@ -286,6 +300,116 @@ class TraceStore:
             "total_fallbacks": row[6],
         }
 
+    # -- Tag analytics queries --
+
+    async def get_usage_by_tag(self, days: int = 7) -> list[dict]:
+        """Per-tag aggregated stats using SQLite json_each() to explode tags."""
+        if not self._db:
+            return []
+        cutoff = time.time() - (days * 86400)
+        cursor = await self._db.execute(
+            """
+            SELECT
+                j.value AS tag,
+                COUNT(*) AS request_count,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                AVG(latency_ms) AS avg_latency_ms,
+                AVG(time_to_first_token_ms) AS avg_ttft_ms,
+                SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
+                SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens
+            FROM request_traces, json_each(request_traces.tags) AS j
+            WHERE timestamp >= ? AND tags IS NOT NULL
+            GROUP BY j.value
+            ORDER BY request_count DESC
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "tag": row[0],
+                "request_count": row[1],
+                "completed_count": row[2],
+                "failed_count": row[3],
+                "avg_latency_ms": round(row[4], 1) if row[4] else 0,
+                "avg_ttft_ms": round(row[5], 1) if row[5] else None,
+                "total_prompt_tokens": row[6],
+                "total_completion_tokens": row[7],
+            }
+            for row in rows
+        ]
+
+    async def get_tag_daily_stats(self, days: int = 7) -> list[dict]:
+        """Per-tag, per-day breakdown for charting."""
+        if not self._db:
+            return []
+        cutoff = time.time() - (days * 86400)
+        cursor = await self._db.execute(
+            """
+            SELECT
+                j.value AS tag,
+                CAST(timestamp / 86400 AS INTEGER) * 86400 AS day_bucket,
+                COUNT(*) AS request_count,
+                AVG(latency_ms) AS avg_latency_ms,
+                SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)) AS total_tokens
+            FROM request_traces, json_each(request_traces.tags) AS j
+            WHERE timestamp >= ? AND tags IS NOT NULL
+            GROUP BY j.value, day_bucket
+            ORDER BY day_bucket ASC, tag
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "tag": row[0],
+                "day_bucket": row[1],
+                "request_count": row[2],
+                "avg_latency_ms": round(row[3], 1) if row[3] else 0,
+                "total_tokens": row[4],
+            }
+            for row in rows
+        ]
+
+    async def get_tag_summary(self) -> list[dict]:
+        """All-time per-tag aggregates."""
+        if not self._db:
+            return []
+        cursor = await self._db.execute(
+            """
+            SELECT
+                j.value AS tag,
+                COUNT(*) AS total_requests,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                AVG(latency_ms) AS avg_latency_ms,
+                SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
+                SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens,
+                MIN(timestamp) AS first_seen,
+                MAX(timestamp) AS last_seen
+            FROM request_traces, json_each(request_traces.tags) AS j
+            WHERE tags IS NOT NULL
+            GROUP BY j.value
+            ORDER BY total_requests DESC
+            """
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "tag": row[0],
+                "total_requests": row[1],
+                "completed_count": row[2],
+                "failed_count": row[3],
+                "avg_latency_ms": round(row[4], 1) if row[4] else 0,
+                "total_prompt_tokens": row[5],
+                "total_completion_tokens": row[6],
+                "first_seen": row[7],
+                "last_seen": row[8],
+            }
+            for row in rows
+        ]
+
     def _row_to_dict(self, row) -> dict:
         """Convert a SELECT row into a dict with JSON parsing."""
         breakdown = None
@@ -302,6 +426,13 @@ class TraceStore:
             except json.JSONDecodeError:
                 logger.debug(f"Corrupt excluded_nodes JSON in trace {row[0]}")
                 excluded = row[13]
+        tags = None
+        if len(row) > 18 and row[18]:
+            try:
+                tags = json.loads(row[18])
+            except json.JSONDecodeError:
+                logger.debug(f"Corrupt tags JSON in trace {row[0]}")
+                tags = row[18]
         return {
             "request_id": row[0],
             "model": row[1],
@@ -321,6 +452,7 @@ class TraceStore:
             "original_format": row[15],
             "error_message": row[16],
             "timestamp": row[17],
+            "tags": tags,
         }
 
     async def close(self):

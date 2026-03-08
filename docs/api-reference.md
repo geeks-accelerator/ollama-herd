@@ -22,7 +22,9 @@ OpenAI-compatible chat completions with streaming and non-streaming support.
   "stream": true,
   "temperature": 0.7,
   "max_tokens": 1024,
-  "fallback_models": ["qwen2.5:32b", "qwen2.5:7b"]
+  "fallback_models": ["qwen2.5:32b", "qwen2.5:7b"],
+  "metadata": {"tags": ["my-app", "production"]},
+  "user": "alice"
 }
 ```
 
@@ -34,6 +36,16 @@ OpenAI-compatible chat completions with streaming and non-streaming support.
 | `temperature` | float | `0.7` | Sampling temperature |
 | `max_tokens` | integer | `null` | Maximum tokens to generate |
 | `fallback_models` | array | `[]` | Backup models to try if primary unavailable |
+| `metadata.tags` | array | `[]` | Tags for per-app analytics (e.g., `["my-app", "prod"]`) |
+| `user` | string | `null` | User identifier — stored as `user:<value>` tag |
+
+**Request headers:**
+
+| Header | Description |
+|--------|-------------|
+| `X-Herd-Tags` | Comma-separated tags (alternative to `metadata.tags` in body) |
+
+Tags from all sources (body, header, user field) are merged and deduplicated. See [Request Tagging](request-tagging.md) for details.
 
 **Streaming response** (`stream: true`):
 
@@ -133,7 +145,8 @@ Ollama-compatible chat endpoint. Streaming is enabled by default (matches Ollama
     "temperature": 0.7,
     "num_predict": 1024
   },
-  "fallback_models": ["qwen2.5:32b"]
+  "fallback_models": ["qwen2.5:32b"],
+  "metadata": {"tags": ["my-app"]}
 }
 ```
 
@@ -145,6 +158,10 @@ Ollama-compatible chat endpoint. Streaming is enabled by default (matches Ollama
 | `options.temperature` | float | `0.7` | Sampling temperature |
 | `options.num_predict` | integer | `null` | Max tokens |
 | `fallback_models` | array | `[]` | Backup models |
+| `metadata.tags` | array | `[]` | Tags for per-app analytics |
+| `user` | string | `null` | User identifier — stored as `user:<value>` tag |
+
+The `metadata` and `fallback_models` fields are stripped before proxying to Ollama. The `X-Herd-Tags` header is also supported (same as OpenAI endpoint).
 
 **Streaming response** (NDJSON, one JSON object per line):
 
@@ -184,6 +201,8 @@ Ollama-compatible generate endpoint. Uses `prompt` instead of `messages`.
   }
 }
 ```
+
+Supports the same `metadata.tags`, `user`, and `X-Herd-Tags` header as `/api/chat`.
 
 Response format is the same as `/api/chat`.
 
@@ -348,6 +367,7 @@ Receives heartbeats from node agents. Internal endpoint — not intended for ext
 | `GET /dashboard` | Fleet Overview — live node status, CPU/memory, loaded models, queue depths |
 | `GET /dashboard/trends` | Historical charts — requests/hour, average latency, token throughput |
 | `GET /dashboard/models` | Model Insights — per-model latency, tokens/sec, usage comparison |
+| `GET /dashboard/apps` | Apps — per-tag analytics with latency, tokens, errors, daily trends |
 
 ### SSE Stream
 
@@ -519,7 +539,64 @@ Recent request traces for debugging and observability.
       "client_ip": "10.0.0.50",
       "original_format": "openai",
       "error_message": null,
-      "timestamp": 1710000000.0
+      "timestamp": 1710000000.0,
+      "tags": ["my-app", "production"]
+    }
+  ]
+}
+```
+
+---
+
+#### `GET /dashboard/api/apps`
+
+Per-tag aggregated stats for the Apps page.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `days` | integer | `7` | Number of days of history |
+
+**Response:**
+
+```json
+{
+  "days": 7,
+  "by_tag": [
+    {
+      "tag": "my-app",
+      "request_count": 150,
+      "avg_latency_ms": 3200.5,
+      "avg_ttft_ms": 420.1,
+      "total_prompt_tokens": 18750,
+      "total_completion_tokens": 52500,
+      "error_rate": 0.02
+    }
+  ]
+}
+```
+
+---
+
+#### `GET /dashboard/api/apps/daily`
+
+Per-tag, per-day breakdown for trend charts.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `days` | integer | `7` | Number of days of history |
+
+**Response:**
+
+```json
+{
+  "days": 7,
+  "daily": [
+    {
+      "tag": "my-app",
+      "day": "2026-03-08",
+      "request_count": 25,
+      "avg_latency_ms": 3100.0,
+      "total_tokens": 8500
     }
   ]
 }

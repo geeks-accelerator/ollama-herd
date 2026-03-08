@@ -211,6 +211,27 @@ async def dashboard_traces(request: Request, limit: int = 50):
     return {"traces": traces}
 
 
+@router.get("/dashboard/api/apps")
+async def dashboard_apps_data(request: Request, days: int = 7):
+    """Per-tag aggregated stats for the Apps analytics page."""
+    trace_store = getattr(request.app.state, "trace_store", None)
+    if not trace_store:
+        return {"days": days, "data": [], "summary": []}
+    data = await trace_store.get_usage_by_tag(days=days)
+    summary = await trace_store.get_tag_summary()
+    return {"days": days, "data": data, "summary": summary}
+
+
+@router.get("/dashboard/api/apps/daily")
+async def dashboard_apps_daily_data(request: Request, days: int = 7):
+    """Per-tag, per-day breakdown for the Apps analytics charts."""
+    trace_store = getattr(request.app.state, "trace_store", None)
+    if not trace_store:
+        return {"days": days, "data": []}
+    data = await trace_store.get_tag_daily_stats(days=days)
+    return {"days": days, "data": data}
+
+
 # ---------------------------------------------------------------------------
 # HTML pages
 # ---------------------------------------------------------------------------
@@ -240,6 +261,17 @@ async def dashboard_models_page():
         "Model Insights",
         "models",
         _MODELS_BODY,
+        extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>',
+    )
+
+
+@router.get("/dashboard/apps", response_class=HTMLResponse)
+async def dashboard_apps_page():
+    """Apps analytics — per-tag/application performance and usage breakdown."""
+    return _dashboard_page(
+        "Apps",
+        "apps",
+        _APPS_BODY,
         extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>',
     )
 
@@ -517,6 +549,7 @@ def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str
         ("overview", "Dashboard", "/dashboard"),
         ("trends", "Trends", "/dashboard/trends"),
         ("models", "Model Insights", "/dashboard/models"),
+        ("apps", "Apps", "/dashboard/apps"),
     ]
     nav_html = "".join(
         f'<a href="{href}" class="nav-tab {"active" if key == active_tab else ""}">{label}</a>'
@@ -1145,5 +1178,227 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 loadModels();
+</script>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Apps analytics page body
+# ---------------------------------------------------------------------------
+
+_APPS_BODY = """
+<div class="main">
+  <div class="summary-cards" id="apps-summary-cards">
+    <div class="card summary-card">
+      <div class="card-label">Tagged Requests</div>
+      <div class="card-value" id="tagged-count">-</div>
+    </div>
+    <div class="card summary-card">
+      <div class="card-label">Unique Tags</div>
+      <div class="card-value" id="unique-tags">-</div>
+    </div>
+    <div class="card summary-card">
+      <div class="card-label">Top Tag</div>
+      <div class="card-value" id="top-tag">-</div>
+    </div>
+  </div>
+
+  <div class="charts-row">
+    <div class="chart-card">
+      <h4>Requests by Tag</h4>
+      <canvas id="tag-bar-chart"></canvas>
+    </div>
+    <div class="chart-card">
+      <h4>Tag Activity Over Time</h4>
+      <canvas id="tag-daily-chart"></canvas>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;padding:0;overflow:hidden">
+    <table class="model-table" id="apps-table">
+      <thead>
+        <tr>
+          <th>Tag</th>
+          <th>Requests</th>
+          <th>Avg Latency</th>
+          <th>Avg TTFT</th>
+          <th>Prompt Tokens</th>
+          <th>Completion Tokens</th>
+          <th>Error Rate</th>
+        </tr>
+      </thead>
+      <tbody id="apps-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="charts-row" style="margin-top:16px" id="tag-daily-section" hidden>
+    <div class="chart-card">
+      <h4 id="tag-daily-title">Daily Requests</h4>
+      <canvas id="tag-daily-requests-chart"></canvas>
+    </div>
+    <div class="chart-card">
+      <h4>Daily Avg Latency</h4>
+      <canvas id="tag-daily-latency-chart"></canvas>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:24px;padding:16px">
+    <h4 style="margin:0 0 8px">How to tag requests</h4>
+    <p style="color:var(--text-dim);margin:0 0 12px;font-size:13px">
+      Add tags to your requests so they appear here. Tags are stripped before reaching Ollama.
+    </p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px">
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px">
+        <div style="font-weight:600;margin-bottom:6px;font-size:13px">OpenAI SDK (Python)</div>
+        <pre style="margin:0;font-size:12px;overflow-x:auto;color:var(--text-dim)">client.chat.completions.create(
+  model="llama3.2:3b",
+  messages=[...],
+  extra_body={"metadata": {"tags": ["my-app"]}}
+)</pre>
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px">
+        <div style="font-weight:600;margin-bottom:6px;font-size:13px">Header-based</div>
+        <pre style="margin:0;font-size:12px;overflow-x:auto;color:var(--text-dim)">curl http://router:11435/api/chat \\
+  -H "X-Herd-Tags: my-app, prod" \\
+  -d '{"model": "...", "messages": [...]}'</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const cs = getComputedStyle(document.documentElement);
+const C = {
+  accent: cs.getPropertyValue('--accent').trim(),
+  blue: cs.getPropertyValue('--blue').trim(),
+  green: cs.getPropertyValue('--green').trim(),
+  orange: cs.getPropertyValue('--orange').trim(),
+  red: cs.getPropertyValue('--red').trim(),
+  border: cs.getPropertyValue('--border').trim(),
+  textDim: cs.getPropertyValue('--text-dim').trim(),
+  text: cs.getPropertyValue('--text').trim(),
+};
+const TAG_COLORS = [C.accent, C.blue, C.green, C.orange, C.red, '#e879f9', '#22d3ee', '#a3e635'];
+const chartDefaults = {
+  responsive: true,
+  maintainAspectRatio: true,
+  plugins: { legend: { labels: { color: C.textDim, font: { size: 11 } } } },
+  scales: {
+    x: { ticks: { color: C.textDim, font: { size: 10 } }, grid: { color: C.border + '44' } },
+    y: { ticks: { color: C.textDim, font: { size: 10 } }, grid: { color: C.border + '44' } },
+  },
+};
+
+let barChart, dailyChart, dailyReqChart, dailyLatChart;
+
+function fmtMs(ms) { return ms > 1000 ? (ms/1000).toFixed(1) + 's' : Math.round(ms) + 'ms'; }
+
+async function loadApps() {
+  const [appsRes, dailyRes] = await Promise.all([
+    fetch('/dashboard/api/apps?days=7'),
+    fetch('/dashboard/api/apps/daily?days=7'),
+  ]);
+  const apps = await appsRes.json();
+  const daily = await dailyRes.json();
+
+  const data = apps.data || [];
+  const dailyData = daily.data || [];
+
+  // Summary cards
+  const totalReqs = data.reduce((s, d) => s + d.request_count, 0);
+  document.getElementById('tagged-count').textContent = totalReqs.toLocaleString();
+  document.getElementById('unique-tags').textContent = data.length;
+  document.getElementById('top-tag').textContent = data.length > 0 ? data[0].tag : 'None';
+
+  // Bar chart — requests per tag
+  if (barChart) barChart.destroy();
+  const tags = data.map(d => d.tag);
+  const counts = data.map(d => d.request_count);
+  const colors = tags.map((_, i) => TAG_COLORS[i % TAG_COLORS.length]);
+  barChart = new Chart(document.getElementById('tag-bar-chart'), {
+    type: 'bar',
+    data: {
+      labels: tags,
+      datasets: [{ label: 'Requests', data: counts, backgroundColor: colors.map(c => c + '99'), borderColor: colors, borderWidth: 1 }],
+    },
+    options: { ...chartDefaults, plugins: { ...chartDefaults.plugins, legend: { display: false } } },
+  });
+
+  // Line chart — daily activity per tag
+  if (dailyChart) dailyChart.destroy();
+  const uniqueTags = [...new Set(dailyData.map(d => d.tag))];
+  const uniqueDays = [...new Set(dailyData.map(d => d.day_bucket))].sort();
+  const dayLabels = uniqueDays.map(d => new Date(d * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+  const datasets = uniqueTags.map((tag, i) => {
+    const tagData = uniqueDays.map(day => {
+      const found = dailyData.find(d => d.tag === tag && d.day_bucket === day);
+      return found ? found.request_count : 0;
+    });
+    const color = TAG_COLORS[i % TAG_COLORS.length];
+    return { label: tag, data: tagData, borderColor: color, backgroundColor: color + '22', fill: false, tension: 0.3, pointRadius: 3 };
+  });
+  dailyChart = new Chart(document.getElementById('tag-daily-chart'), {
+    type: 'line',
+    data: { labels: dayLabels, datasets },
+    options: chartDefaults,
+  });
+
+  // Table
+  const tbody = document.getElementById('apps-tbody');
+  tbody.innerHTML = '';
+  data.forEach((d, i) => {
+    const errorRate = d.request_count > 0 ? ((d.failed_count / d.request_count) * 100).toFixed(1) : '0.0';
+    const row = document.createElement('tr');
+    row.style.cursor = 'pointer';
+    row.addEventListener('click', () => showTagDaily(d.tag, dailyData));
+    const dot = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${TAG_COLORS[i % TAG_COLORS.length]};margin-right:6px;vertical-align:middle"></span>`;
+    row.innerHTML = `
+      <td>${dot}${d.tag}</td>
+      <td>${d.request_count.toLocaleString()}</td>
+      <td>${d.avg_latency_ms ? fmtMs(d.avg_latency_ms) : '-'}</td>
+      <td>${d.avg_ttft_ms ? fmtMs(d.avg_ttft_ms) : '-'}</td>
+      <td>${(d.total_prompt_tokens || 0).toLocaleString()}</td>
+      <td>${(d.total_completion_tokens || 0).toLocaleString()}</td>
+      <td style="color:${parseFloat(errorRate) > 5 ? C.red : C.textDim}">${errorRate}%</td>
+    `;
+    tbody.appendChild(row);
+  });
+}
+
+function showTagDaily(tag, dailyData) {
+  const section = document.getElementById('tag-daily-section');
+  section.hidden = false;
+  document.getElementById('tag-daily-title').textContent = `Daily Requests — ${tag}`;
+  section.scrollIntoView({ behavior: 'smooth' });
+
+  const tagDaily = dailyData.filter(d => d.tag === tag).sort((a, b) => a.day_bucket - b.day_bucket);
+  const labels = tagDaily.map(d => new Date(d.day_bucket * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+  const requests = tagDaily.map(d => d.request_count);
+  const latencies = tagDaily.map(d => d.avg_latency_ms ? d.avg_latency_ms / 1000 : 0);
+
+  if (dailyReqChart) dailyReqChart.destroy();
+  if (dailyLatChart) dailyLatChart.destroy();
+
+  dailyReqChart = new Chart(document.getElementById('tag-daily-requests-chart'), {
+    type: 'bar',
+    data: { labels, datasets: [{ label: 'Requests', data: requests, backgroundColor: C.accent + '99', borderColor: C.accent, borderWidth: 1 }] },
+    options: { ...chartDefaults, plugins: { ...chartDefaults.plugins, legend: { display: false } } },
+  });
+
+  dailyLatChart = new Chart(document.getElementById('tag-daily-latency-chart'), {
+    type: 'line',
+    data: { labels, datasets: [{ label: 'Avg Latency (s)', data: latencies, borderColor: C.blue, backgroundColor: C.blue + '22', fill: true, tension: 0.3, pointRadius: 3 }] },
+    options: { ...chartDefaults, plugins: { ...chartDefaults.plugins, legend: { display: false } } },
+  });
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  const dot = document.getElementById('sse-dot');
+  const st = document.getElementById('sse-status');
+  if (dot) dot.className = 'status-dot online';
+  if (st) st.textContent = 'API';
+});
+
+loadApps();
 </script>
 """

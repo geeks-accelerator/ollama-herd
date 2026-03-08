@@ -86,6 +86,7 @@ Every routing decision is recorded in SQLite (`~/.fleet-manager/latency.db`) wit
 
 | Field | Description |
 |-------|-------------|
+| `tags` | JSON array of tags from `metadata.tags`, `X-Herd-Tags` header, and `user` field |
 | `request_id` | Unique ID for the request |
 | `model` | Model that was actually used (may differ from requested if fallback triggered) |
 | `original_model` | Model the client originally requested |
@@ -123,6 +124,63 @@ curl -s http://localhost:11435/dashboard/api/overview
 ```
 
 Via the dashboard UI: open `http://localhost:11435` and navigate to the **Model Insights** tab.
+
+---
+
+## Request Tagging & Per-App Analytics
+
+Tag requests to track performance and usage per application, team, or environment.
+
+### Adding tags
+
+Tags can come from three sources (merged and deduplicated):
+
+| Source | Example | Notes |
+|--------|---------|-------|
+| `metadata.tags` in body | `{"metadata": {"tags": ["my-app"]}}` | Primary method — array of strings |
+| `X-Herd-Tags` header | `X-Herd-Tags: my-app, prod` | Comma-separated, for proxies/middleware |
+| `user` field in body | `{"user": "alice"}` | Stored as `user:alice` tag |
+
+### Accessing per-app analytics
+
+Via the dashboard API:
+
+```bash
+# Per-tag stats (last 7 days)
+curl -s http://localhost:11435/dashboard/api/apps?days=7
+
+# Per-tag daily breakdown
+curl -s http://localhost:11435/dashboard/api/apps/daily?days=7
+```
+
+Via the dashboard UI: open `http://localhost:11435` and navigate to the **Apps** tab.
+
+### Querying tags in SQLite
+
+Tags are stored as a JSON array in the `tags` column of `request_traces`:
+
+```bash
+# Requests per tag
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT j.value AS tag, COUNT(*) AS requests
+   FROM request_traces, json_each(request_traces.tags) AS j
+   WHERE tags IS NOT NULL GROUP BY j.value ORDER BY requests DESC"
+
+# Average latency per tag
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT j.value AS tag, ROUND(AVG(latency_ms), 1) AS avg_ms
+   FROM request_traces, json_each(request_traces.tags) AS j
+   WHERE tags IS NOT NULL GROUP BY j.value ORDER BY avg_ms DESC"
+
+# Error rate per tag
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT j.value AS tag,
+     ROUND(100.0 * SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) / COUNT(*), 1) AS error_pct
+   FROM request_traces, json_each(request_traces.tags) AS j
+   WHERE tags IS NOT NULL GROUP BY j.value"
+```
+
+For the full tagging guide, strategies, and framework integration examples, see [Request Tagging](request-tagging.md).
 
 ---
 

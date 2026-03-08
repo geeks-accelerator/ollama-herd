@@ -166,6 +166,7 @@ class StreamingProxy:
                 excluded_nodes=entry.excluded_nodes if entry.excluded_nodes else None,
                 original_format=entry.request.original_format.value,
                 error_message=error_message,
+                tags=entry.request.tags if entry.request.tags else None,
             ),
             name=f"trace-record-{entry.request.request_id[:8]}",
         )
@@ -377,6 +378,9 @@ class StreamingProxy:
         if request.original_format == RequestFormat.OLLAMA and request.raw_body:
             body = dict(request.raw_body)
             body["stream"] = True
+            # Strip tagging fields that Ollama doesn't understand
+            body.pop("metadata", None)
+            body.pop("fallback_models", None)
             return body
 
         body = {

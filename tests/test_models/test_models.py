@@ -128,6 +128,14 @@ class TestRequestModels:
         assert req.original_format == RequestFormat.OPENAI
         assert req.request_id  # auto-generated UUID
         assert req.created_at > 0
+        assert req.tags == []
+
+    def test_inference_request_with_tags(self):
+        req = InferenceRequest(
+            model="phi4:14b",
+            tags=["my-app", "production", "user:alice"],
+        )
+        assert req.tags == ["my-app", "production", "user:alice"]
 
     def test_inference_request_custom(self):
         req = InferenceRequest(

@@ -14,6 +14,45 @@ HOLD_TIMEOUT = 30.0
 HOLD_RETRY_INTERVAL = 2.0
 
 
+def extract_tags(body: dict, headers=None) -> list[str]:
+    """Extract tags from request body and headers.
+
+    Sources (merged, deduplicated):
+    1. body.metadata.tags (list of strings)
+    2. X-Herd-Tags header (comma-separated)
+    3. body.user (string, stored as "user:<value>")
+    """
+    tags = []
+
+    # Source 1: metadata.tags in body
+    metadata = body.get("metadata", {})
+    if isinstance(metadata, dict):
+        body_tags = metadata.get("tags", [])
+        if isinstance(body_tags, list):
+            tags.extend(str(t) for t in body_tags if t)
+
+    # Source 2: X-Herd-Tags header
+    if headers:
+        header_val = headers.get("x-herd-tags", "")
+        if header_val:
+            tags.extend(t.strip() for t in header_val.split(",") if t.strip())
+
+    # Source 3: user field
+    user = body.get("user", "")
+    if user:
+        tags.append(f"user:{user}")
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for t in tags:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+
+    return unique
+
+
 async def score_with_fallbacks(
     inference_req: InferenceRequest,
     scorer,

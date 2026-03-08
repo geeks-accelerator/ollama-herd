@@ -34,6 +34,8 @@ class InferenceRequest(BaseModel):
     # Fallback & trace fields
     original_model: str = ""
     fallback_models: list[str] = Field(default_factory=list)
+    # Request tagging for per-app analytics
+    tags: list[str] = Field(default_factory=list)
 
 
 class QueueEntry(BaseModel):

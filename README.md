@@ -72,6 +72,30 @@ curl http://router-ip:11435/v1/chat/completions -d '{
 
 The router tries each model in order. If one is unavailable, it seamlessly falls back to the next. See [Operations Guide](docs/operations-guide.md#model-fallbacks).
 
+### Request Tagging
+
+Tag requests to track performance and usage per application, team, or environment:
+
+```bash
+curl http://router-ip:11435/v1/chat/completions -d '{
+  "model": "llama3.2:3b",
+  "metadata": {"tags": ["my-app", "production"]},
+  "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+
+Or via header (useful for proxies and middleware):
+
+```bash
+curl -H "X-Herd-Tags: my-app, production" \
+  http://router-ip:11435/v1/chat/completions -d '{
+  "model": "llama3.2:3b",
+  "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+
+Tags appear in the **Apps** dashboard tab with per-tag latency, tokens, error rates, and daily trends. See [Request Tagging](docs/request-tagging.md) for the full guide including competitive landscape and framework integration examples.
+
 ## How routing works
 
 Every request goes through a scoring pipeline that picks the best device in real time:
@@ -109,17 +133,19 @@ Enable with `FLEET_NODE_ENABLE_CAPACITY_LEARNING=true`. See [Adaptive Capacity L
 
 ## Dashboard
 
-The built-in dashboard at `/dashboard` provides three views:
+The built-in dashboard at `/dashboard` provides four views:
 
 - **Fleet Overview** — live node status, CPU/memory metrics, loaded models, and request queue depths via Server-Sent Events
 - **Trends** — historical charts for requests per hour, average latency, and token throughput (prompt + completion) with selectable time ranges (24h–7d)
 - **Model Insights** — per-model comparison of latency, tokens/sec, and usage; token distribution doughnut chart; clickable rows for daily breakdown
+- **Apps** — per-tag analytics with request volume, latency, tokens, error rates, and daily trends; tag your requests to see per-application breakdowns
 
 All powered by Chart.js and a SQLite-backed latency store. No external database required.
 
 ## Observability
 
-- **Per-request traces** — every routing decision is recorded with scores, node selection, latency, tokens, retry/fallback status
+- **Per-request traces** — every routing decision is recorded with scores, node selection, latency, tokens, tags, retry/fallback status
+- **Per-app analytics** — tag requests with `metadata.tags` or `X-Herd-Tags` header for per-application breakdowns
 - **Usage stats** — per-node, per-model, per-day aggregates via `/dashboard/api/usage`
 - **JSONL structured logging** — daily rotation to `~/.fleet-manager/logs/herd.jsonl`, 30-day retention
 
@@ -142,6 +168,8 @@ See [Operations Guide](docs/operations-guide.md) for log queries, trace access, 
 | `GET /dashboard/api/models` | Per-model daily stats (JSON) |
 | `GET /dashboard/api/overview` | Summary totals (JSON) |
 | `GET /dashboard/api/usage` | Per-node per-model usage (JSON) |
+| `GET /dashboard/api/apps` | Per-tag aggregated stats (JSON) |
+| `GET /dashboard/api/apps/daily` | Per-tag daily breakdown (JSON) |
 | `GET /dashboard/api/traces` | Recent request traces (JSON) |
 
 Full request/response schemas: [API Reference](docs/api-reference.md).
@@ -251,6 +279,7 @@ uv run ruff format src/              # format
 | [Adaptive Capacity](docs/adaptive-capacity.md) | Capacity learner, meeting detection, app fingerprinting |
 | [Routing Engine](docs/fleet-manager-routing-engine.md) | 5-stage scoring pipeline deep dive |
 | [OpenClaw Integration](docs/openclaw-integration.md) | Setup guide for OpenClaw agents |
+| [Request Tagging](docs/request-tagging.md) | Per-app analytics, tagging strategies, competitive landscape |
 | [Project Strategy](docs/project-status-and-strategy.md) | Competitive landscape and agent framework matrix |
 
 ## Requirements

@@ -9,7 +9,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
-from fleet_manager.server.routes.routing import get_all_fleet_models, score_with_fallbacks
+from fleet_manager.server.routes.routing import (
+    extract_tags,
+    get_all_fleet_models,
+    score_with_fallbacks,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["ollama"])
@@ -23,6 +27,7 @@ async def ollama_chat(request: Request):
     if not model:
         return JSONResponse(status_code=400, content={"error": "model is required"})
 
+    tags = extract_tags(body, request.headers)
     inference_req = InferenceRequest(
         model=model,
         original_model=model,
@@ -33,6 +38,7 @@ async def ollama_chat(request: Request):
         max_tokens=body.get("options", {}).get("num_predict"),
         original_format=RequestFormat.OLLAMA,
         raw_body=body,
+        tags=tags,
     )
 
     return await _route_and_stream(request, inference_req)
@@ -49,6 +55,7 @@ async def ollama_generate(request: Request):
     prompt = body.get("prompt", "")
     messages = [{"role": "user", "content": prompt}] if prompt else []
 
+    tags = extract_tags(body, request.headers)
     inference_req = InferenceRequest(
         model=model,
         original_model=model,
@@ -59,6 +66,7 @@ async def ollama_generate(request: Request):
         max_tokens=body.get("options", {}).get("num_predict"),
         original_format=RequestFormat.OLLAMA,
         raw_body=body,
+        tags=tags,
     )
 
     return await _route_and_stream(request, inference_req)

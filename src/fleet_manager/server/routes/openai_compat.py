@@ -11,7 +11,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
-from fleet_manager.server.routes.routing import get_all_fleet_models, score_with_fallbacks
+from fleet_manager.server.routes.routing import (
+    extract_tags,
+    get_all_fleet_models,
+    score_with_fallbacks,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["openai"])
@@ -54,7 +58,11 @@ async def chat_completions(request: Request):
             content={"error": {"message": "model is required", "type": "invalid_request_error"}},
         )
 
-    logger.info(f"OpenAI request: model={model} stream={body.get('stream', False)}")
+    tags = extract_tags(body, request.headers)
+    logger.info(
+        f"OpenAI request: model={model} stream={body.get('stream', False)}"
+        + (f" tags={tags}" if tags else "")
+    )
 
     inference_req = InferenceRequest(
         model=model,
@@ -66,6 +74,7 @@ async def chat_completions(request: Request):
         max_tokens=body.get("max_tokens"),
         original_format=RequestFormat.OPENAI,
         raw_body=body,
+        tags=tags,
     )
 
     scorer = request.app.state.scorer
