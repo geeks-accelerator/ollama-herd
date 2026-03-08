@@ -544,6 +544,7 @@ body {
   grid-template-columns: 1fr 1fr;
   gap: 16px;
 }
+.charts-row[hidden] { display: none; }
 .chart-card {
   background: var(--card);
   border: 1px solid var(--border);
