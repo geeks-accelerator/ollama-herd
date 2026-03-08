@@ -13,7 +13,7 @@ uv run herd-node --router-url http://localhost:11435  # explicit router URL
 
 ```bash
 uv pip install "pytest>=8.0" "pytest-asyncio>=0.24.0"  # install test deps (first time only)
-uv run pytest                    # run all 145 tests (~0.8s)
+uv run pytest                    # run all 203 tests (~0.8s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run pytest -v                 # verbose output
@@ -37,7 +37,7 @@ Single Python package (`fleet_manager`), two CLI entry points:
 | `server/streaming.py` | httpx proxy to Ollama + format conversion (NDJSON ↔ SSE) + auto-retry |
 | `server/latency_store.py` | aiosqlite persistence at `~/.fleet-manager/latency.db` |
 | `server/trace_store.py` | Per-request trace log + usage stats in SQLite |
-| `server/routes/routing.py` | Shared scoring logic with model fallback + holding queue |
+| `server/routes/routing.py` | Shared scoring logic with model fallback + holding queue + tag extraction |
 | `server/rebalancer.py` | Background queue rebalancer + pre-warm trigger |
 | `server/routes/openai_compat.py` | `/v1/chat/completions`, `/v1/models` |
 | `server/routes/ollama_compat.py` | `/api/chat`, `/api/generate`, `/api/tags`, `/api/ps` |
@@ -77,6 +77,10 @@ All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix 
 | [`docs/adaptive-capacity.md`](docs/adaptive-capacity.md) | Capacity learner, meeting detection, app fingerprinting |
 | [`docs/fleet-manager-routing-engine.md`](docs/fleet-manager-routing-engine.md) | 5-stage scoring pipeline deep dive |
 | [`docs/openclaw-integration.md`](docs/openclaw-integration.md) | Setup guide for OpenClaw agents |
+| [`docs/request-tagging.md`](docs/request-tagging.md) | Per-app analytics, tagging strategies, competitive landscape |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Common issues, LAN debugging, operational gotchas |
+| [`docs/architecture-decisions.md`](docs/architecture-decisions.md) | Port selection, design trade-offs, rationale |
+| [`docs/issues.md`](docs/issues.md) | Known issues, improvements, test coverage gaps |
 | [`docs/project-status-and-strategy.md`](docs/project-status-and-strategy.md) | Competitive landscape and agent framework matrix |
 
 ## Conventions

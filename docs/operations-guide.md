@@ -377,3 +377,9 @@ All persistent data lives in `~/.fleet-manager/` (configurable via `FLEET_DATA_D
 ```
 
 The SQLite database uses WAL mode for concurrent read/write access.
+
+---
+
+## Troubleshooting
+
+For common issues (LAN connectivity, "model not found" errors, node status problems, meeting detector false positives, and a debug checklist), see the dedicated [Troubleshooting Guide](troubleshooting.md).

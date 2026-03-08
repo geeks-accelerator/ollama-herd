@@ -280,6 +280,8 @@ uv run ruff format src/              # format
 | [Routing Engine](docs/fleet-manager-routing-engine.md) | 5-stage scoring pipeline deep dive |
 | [OpenClaw Integration](docs/openclaw-integration.md) | Setup guide for OpenClaw agents |
 | [Request Tagging](docs/request-tagging.md) | Per-app analytics, tagging strategies, competitive landscape |
+| [Troubleshooting](docs/troubleshooting.md) | Common issues, LAN debugging, operational gotchas |
+| [Architecture Decisions](docs/architecture-decisions.md) | Port selection, design trade-offs, rationale |
 | [Project Strategy](docs/project-status-and-strategy.md) | Competitive landscape and agent framework matrix |
 
 ## Requirements

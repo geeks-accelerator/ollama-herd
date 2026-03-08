@@ -2,11 +2,13 @@
 
 Identified via code review of the full codebase. Organized by priority.
 
+**Status key:** `OPEN` — not yet addressed. `PARTIAL` — partially fixed. `FIXED` — resolved.
+
 ---
 
 ## Performance (Will Bite at Scale)
 
-### 1. `LatencyStore.get_percentile()` — Unbounded Memory Growth
+### 1. `LatencyStore.get_percentile()` — Unbounded Memory Growth `OPEN`
 
 **File:** `src/fleet_manager/server/latency_store.py`
 **Severity:** High
@@ -17,7 +19,7 @@ Identified via code review of the full codebase. Organized by priority.
 
 ---
 
-### 2. `_refresh_cache()` — N+1 Query Pattern
+### 2. `_refresh_cache()` — N+1 Query Pattern `OPEN`
 
 **File:** `src/fleet_manager/server/latency_store.py`
 **Severity:** Medium
@@ -28,7 +30,7 @@ On startup, `_refresh_cache()` first queries all distinct `(node_id, model_name)
 
 ---
 
-### 3. `in_flight` List — O(n) Membership and Removal
+### 3. `in_flight` List — O(n) Membership and Removal `OPEN`
 
 **File:** `src/fleet_manager/server/queue_manager.py` (lines ~117–129)
 **Severity:** Low–Medium
@@ -41,7 +43,7 @@ The `in_flight` field on each queue is a `list`. Both `in` checks and `.remove()
 
 ## Code Quality
 
-### 4. `_request_tokens` Dict — Leaking Internal State
+### 4. `_request_tokens` Dict — Leaking Internal State `OPEN`
 
 **File:** `src/fleet_manager/server/streaming.py`
 **Severity:** Low
@@ -52,7 +54,7 @@ Route handlers in `openai_compat.py` and `ollama_compat.py` access the private `
 
 ---
 
-### 5. `asyncio.ensure_future` — Deprecated API
+### 5. `asyncio.ensure_future` — Deprecated API `OPEN`
 
 **File:** `src/fleet_manager/common/discovery.py` (line ~65)
 **Severity:** Low
@@ -63,7 +65,7 @@ Route handlers in `openai_compat.py` and `ollama_compat.py` access the private `
 
 ---
 
-### 6. Unused Dependencies and Imports
+### 6. Unused Dependencies and Imports `OPEN`
 
 **Files:** `pyproject.toml`, `src/fleet_manager/server/app.py`
 **Severity:** Low
@@ -76,7 +78,7 @@ Route handlers in `openai_compat.py` and `ollama_compat.py` access the private `
 
 ---
 
-### 7. `HeartbeatPayload.arch` — Hardcoded Default
+### 7. `HeartbeatPayload.arch` — Hardcoded Default `OPEN`
 
 **File:** `src/fleet_manager/models/` (HeartbeatPayload definition)
 **Severity:** Low
@@ -87,25 +89,49 @@ The `arch` field defaults to `"apple_silicon"`, which is incorrect for non-Mac n
 
 ---
 
+### 8. `event_stream()` Re-fetches State Every Tick `OPEN`
+
+**File:** `src/fleet_manager/server/routes/dashboard.py`
+**Severity:** Low
+
+The SSE `event_stream()` function re-fetches `request.app.state` on every tick (every 2 seconds). The references should be captured once before the loop starts.
+
+**Fix:** Capture `registry = request.app.state.registry` etc. before entering the `while True` loop.
+
+---
+
+### 9. Dashboard Inline HTML/CSS/JS — Growing Maintenance Burden `OPEN`
+
+**File:** `src/fleet_manager/server/routes/dashboard.py`
+**Severity:** Low (for now)
+
+The dashboard is ~1,300+ lines of inline HTML/CSS/JS in Python strings. This is pragmatic for a single-file deployment but will become painful as more dashboard features are added (e.g., tag filtering on Trends/Models views).
+
+**Fix:** When the dashboard grows further, extract to Jinja2 templates or a separate frontend build.
+
+---
+
 ## Test Coverage Gaps
 
-### 8. Untested Modules
+### 10. Untested Modules `PARTIAL`
 
 **Severity:** Medium
 
-The following modules have zero test coverage:
+The following modules still have zero test coverage:
 
 - `server/rebalancer.py` — pre-warm trigger and queue move logic
-- `node/agent.py` — mDNS discovery, heartbeat loop, signal handling
 - `common/discovery.py` — mDNS advertise and browse
 - `common/system_metrics.py` — psutil metric collection
 - `common/ollama_client.py` — Ollama HTTP client
+
+Previously untested, now covered:
+- ~~`node/agent.py`~~ — now has 6 tests in `tests/test_node/test_agent.py`
 
 The rebalancer in particular has meaningful logic (deciding when to move pending requests, triggering pre-warm) that warrants unit tests.
 
 ---
 
-### 9. `test_move_pending` — Tautological Assertion
+### 11. `test_move_pending` — Tautological Assertion `OPEN`
 
 **File:** `tests/test_server/test_queue_manager.py`
 **Severity:** Low
@@ -116,7 +142,7 @@ The test asserts `moved >= 0`, which is always true for a non-negative integer. 
 
 ---
 
-### 10. `test_shutdown` — Vacuous Test
+### 12. `test_shutdown` — Vacuous Test `OPEN`
 
 **File:** `tests/test_server/test_queue_manager.py`
 **Severity:** Low
@@ -127,8 +153,39 @@ The test body is `pass  # No assertion needed`. It only verifies that no excepti
 
 ---
 
+## Known Limitations
+
+### 13. Meeting Detector False Positives on Dev Machines
+
+**Severity:** Low
+
+The macOS meeting detector (`node/meeting_detector.py`) detects active camera/microphone as "in meeting" and triggers a hard pause. Developers using webcam-based tools (video calls, streaming, screen sharing) during development will get false positives, causing the node to stop accepting work.
+
+**Workaround:** Set `FLEET_NODE_ENABLE_CAPACITY_LEARNING=false` (the default) to disable meeting detection entirely. Tests use `@patch.object(MeetingDetector, "is_in_meeting", return_value=False)` to work around this.
+
+---
+
+### 14. Capacity Learning 7-Day Bootstrap Period
+
+**Severity:** Low
+
+The capacity learner requires 7 days of real observations to graduate from "bootstrapping" to "learned" mode. During the bootstrap period, the learner contributes less confidence to routing decisions. This cannot be validated in automated tests — it requires a week of real usage.
+
+**Workaround:** Pre-seed the capacity learner JSON file with synthetic data if faster convergence is needed.
+
+---
+
+### 15. Tag Filtering Not Yet on Trends/Models Views
+
+**Severity:** Low (feature gap)
+
+The tagging system records tags on every trace and provides a dedicated Apps dashboard tab. However, the existing Trends and Model Insights views cannot yet be filtered by tag. Adding tag-based filtering to these views is a natural next step.
+
+---
+
 ## Future Considerations
 
-- **Dashboard size** — `routes/dashboard.py` is 1,076 lines with inline HTML/CSS/JS. As the UI grows, extract templates or move to a separate frontend.
-- **`event_stream()` re-fetches `request.app.state` on every tick** — capture references once before the loop.
+- **Extract dashboard frontend** — see issue #9 above
+- **`event_stream()` optimization** — see issue #8 above
+- **Tag filtering on Trends/Models** — see issue #15 above
 - **`collector.py` catch-all** — silently returns empty metrics when Ollama is unreachable, which could mask bugs during development. Consider logging at `WARNING` level.
