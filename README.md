@@ -193,6 +193,22 @@ Compatible with: OpenClaw, LangChain, CrewAI, AutoGen, LlamaIndex, Haystack, smo
 
 See [OpenClaw Integration Guide](docs/openclaw-integration.md) and [Project Strategy](docs/project-status-and-strategy.md#agent-framework-integration) for the full compatibility matrix.
 
+## Design Philosophy
+
+Six principles shape every decision in this project:
+
+- **Every node stands alone** — Each device is sovereign. It runs its own Ollama, manages its own models, learns its own capacity patterns, and works fine without the router. The router coordinates but never controls. No central config file. No dependency chains. A node that loses connectivity keeps serving local inference.
+
+- **Two-person scale** — Two CLI commands, zero config files, zero Docker. If it requires a manual, it's too complex. Every architectural choice picks the simple thing (HTTP heartbeats over gRPC, SQLite over Postgres, mDNS over etcd). The whole codebase fits in one person's head.
+
+- **Human-readable state** — JSONL logs you can `grep`. SQLite you can query with standard tools. JSON config on disk. Env vars for settings. No opaque binary formats. If you can't debug it with `cat` and `sqlite3`, it's wrong.
+
+- **The inference request is primary** — Scoring, queuing, retry, fallback, capacity learning, meeting detection — everything exists to serve one thing: get the best response on the best machine as fast as possible. If a feature doesn't serve that, it doesn't belong.
+
+- **AI as resident, not visitor** — The system accumulates knowledge over time. The capacity learner builds a 168-slot behavioral model of your week. The latency store remembers which nodes are fast for which models. The trace store records every routing decision. It gets smarter the longer it runs.
+
+- **Shared DNA, not shared code** — The scoring pipeline (eliminate → score → rank → select), heartbeat-based coordination, and adaptive capacity learning are transferable patterns, not a framework. Specific tool, transferable DNA.
+
 ## Architecture
 
 ```

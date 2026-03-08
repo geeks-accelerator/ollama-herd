@@ -83,6 +83,28 @@ All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix 
 | [`docs/issues.md`](docs/issues.md) | Known issues, improvements, test coverage gaps |
 | [`docs/project-status-and-strategy.md`](docs/project-status-and-strategy.md) | Competitive landscape and agent framework matrix |
 
+## Design Principles
+
+These principles shape every decision in the codebase. They're non-negotiable.
+
+### Every node stands alone
+Each node is sovereign. It runs its own Ollama, manages its own models, learns its own capacity patterns, and works fine standalone without the router. The router coordinates but never controls. Nodes join and leave freely via mDNS — no central config file lists them. If a node loses connectivity, it keeps serving local inference. That's sovereignty, not dependency.
+
+### Two-person scale as a forcing function
+If it requires a manual, it's too complex. Two CLI commands (`herd`, `herd-node`), zero config files, zero Docker, zero Kubernetes. 145 tests run in 0.8 seconds. The entire codebase fits in one person's head. Every time there's a choice between a "proper" distributed systems solution (service mesh, etcd, gRPC) and the simple thing (HTTP heartbeats, SQLite, mDNS) — choose the simple thing. Kill complexity before it kills you.
+
+### Human-readable state everywhere
+No opaque binary formats. JSONL logs you can `grep`. SQLite you can query with standard tools. Capacity learner state persisted as JSON files. Heartbeats are plain JSON. All config is env vars. A human can run `sqlite3 ~/.fleet-manager/latency.db "SELECT * FROM request_traces LIMIT 5"` and instantly understand what happened. Debuggability is a feature.
+
+### The inference request is primary
+Every component — scoring, queuing, retry, fallback, capacity learning, meeting detection — exists to serve one thing: getting the best response to the user's request as fast as possible on the best available machine. If a feature doesn't serve that, it doesn't belong. Tooling serves the artifact, not the other way around.
+
+### AI as resident, not visitor
+`CLAUDE.md` is institutional memory that makes AI agents productive from message one. The trace store, JSONL logs, and capacity learner state files are accumulated knowledge — they survive restarts, compound over time, and make the system smarter the longer it runs. AI isn't a tool you invoke; it's a collaborator that accumulates understanding across sessions.
+
+### Shared DNA, not shared code
+The scoring pipeline pattern (eliminate → score → rank → select), the heartbeat-based coordination pattern, the adaptive capacity learning pattern (observe → model → predict → constrain) — these are transferable DNA. They cross-pollinate to other distributed systems. But Ollama Herd doesn't try to be a framework. It's a specific tool with transferable patterns, not a generic platform.
+
 ## Conventions
 
 - Fully async (asyncio) — no sync blocking calls
