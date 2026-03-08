@@ -219,7 +219,7 @@ async def dashboard_traces(request: Request, limit: int = 50):
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page():
     """Fleet overview — live node and queue state."""
-    return _dashboard_page("Fleet Overview", "overview", _OVERVIEW_BODY)
+    return _dashboard_page("Dashboard", "overview", _OVERVIEW_BODY)
 
 
 @router.get("/dashboard/trends", response_class=HTMLResponse)
@@ -496,7 +496,7 @@ body {
 def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str = "") -> str:
     """Generate a full dashboard HTML page with shared nav, styles, and footer."""
     nav_items = [
-        ("overview", "Fleet Overview", "/dashboard"),
+        ("overview", "Dashboard", "/dashboard"),
         ("trends", "Trends", "/dashboard/trends"),
         ("models", "Model Insights", "/dashboard/models"),
     ]
@@ -524,7 +524,7 @@ def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str
 </div>
 {body_html}
 <div class="footer">
-  <div>Ollama Herd v0.1.0</div>
+  <div>Ollama Herd v0.1.0 — Created by Twins at <a href="https://geeksinthewoods.com/" target="_blank" style="color:var(--accent);text-decoration:none">Geeks in the Woods</a></div>
   <div class="connected-indicator">
     <span class="status-dot online pulse" id="sse-dot"></span>
     <span id="sse-status">Connected</span>

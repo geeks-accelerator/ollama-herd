@@ -350,7 +350,7 @@ class TestDashboard:
             assert "/dashboard/trends" in resp.text
             assert "/dashboard/models" in resp.text
             # Nav tab labels
-            assert "Fleet Overview" in resp.text
+            assert "Dashboard" in resp.text
             assert "Trends" in resp.text
             assert "Model Insights" in resp.text
 

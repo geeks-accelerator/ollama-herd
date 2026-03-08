@@ -26,7 +26,7 @@ herd-node
 
 That's it. The node discovers the router via mDNS and starts sending heartbeats. No config files needed.
 
-> To skip mDNS and connect directly: `herd-node --router-url http://router-ip:8080`
+> To skip mDNS and connect directly: `herd-node --router-url http://router-ip:4373`
 
 ## Usage
 
@@ -37,7 +37,7 @@ Point any OpenAI-compatible client at the router:
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://router-ip:8080/v1", api_key="not-needed")
+client = OpenAI(base_url="http://router-ip:4373/v1", api_key="not-needed")
 response = client.chat.completions.create(
     model="llama3.2:3b",
     messages=[{"role": "user", "content": "Hello!"}],
@@ -50,7 +50,7 @@ for chunk in response:
 Or use the Ollama API directly:
 
 ```bash
-curl http://router-ip:8080/api/chat -d '{
+curl http://router-ip:4373/api/chat -d '{
   "model": "llama3.2:3b",
   "messages": [{"role": "user", "content": "Hello!"}]
 }'
@@ -108,7 +108,7 @@ All powered by Chart.js and a SQLite-backed latency store. No external database 
                        │
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│  Herd Router (:8080)                                │
+│  Herd Router (:4373)                                │
 │  ┌────────────┐ ┌──────────┐ ┌───────────────────┐  │
 │  │  Scoring    │ │  Queue   │ │  Streaming Proxy  │  │
 │  │  Engine     │ │  Manager │ │  (format convert) │  │
@@ -137,7 +137,7 @@ All settings via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FLEET_PORT` | `8080` | Router listen port |
+| `FLEET_PORT` | `4373` | Router listen port |
 | `FLEET_HOST` | `0.0.0.0` | Router bind address |
 | `FLEET_HEARTBEAT_INTERVAL` | `5.0` | Heartbeat check interval (seconds) |
 | `FLEET_HEARTBEAT_TIMEOUT` | `15.0` | Mark node degraded after (seconds) |

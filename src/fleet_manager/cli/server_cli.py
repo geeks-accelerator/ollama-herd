@@ -18,7 +18,7 @@ app = typer.Typer(
 @app.callback(invoke_without_command=True)
 def start(
     host: str = typer.Option("0.0.0.0", help="Bind address"),
-    port: int = typer.Option(8080, help="Listen port"),
+    port: int = typer.Option(4373, help="Listen port"),
     log_level: str = typer.Option("INFO", help="Log level"),
 ):
     """Start the Ollama Herd router and API server."""

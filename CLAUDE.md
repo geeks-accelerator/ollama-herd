@@ -4,9 +4,9 @@
 
 ```bash
 uv sync                          # install deps
-uv run herd                      # start router on :8080
+uv run herd                      # start router on :4373
 uv run herd-node                 # start node agent (auto-discovers router via mDNS)
-uv run herd-node --router-url http://localhost:8080  # explicit router URL
+uv run herd-node --router-url http://localhost:4373  # explicit router URL
 ```
 
 ## Test

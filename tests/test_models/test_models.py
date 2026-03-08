@@ -165,7 +165,7 @@ class TestConfigModels:
     def test_server_settings_defaults(self):
         s = ServerSettings()
         assert s.host == "0.0.0.0"
-        assert s.port == 8080
+        assert s.port == 4373
         assert s.heartbeat_interval == 5.0
         assert s.score_model_hot == 50.0
         assert s.score_model_warm == 30.0

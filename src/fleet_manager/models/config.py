@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings
 
 class ServerSettings(BaseSettings):
     host: str = "0.0.0.0"
-    port: int = 8080
+    port: int = 4373
     heartbeat_interval: float = 5.0
     heartbeat_timeout: float = 15.0
     heartbeat_offline: float = 30.0
