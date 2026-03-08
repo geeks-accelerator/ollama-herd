@@ -8,6 +8,7 @@ import pytest
 
 from fleet_manager.models.config import ServerSettings
 from fleet_manager.models.node import (
+    CapacityMetrics,
     CpuMetrics,
     HardwareProfile,
     HeartbeatPayload,
@@ -76,6 +77,7 @@ def make_node(
     pressure: MemoryPressure = MemoryPressure.NORMAL,
     loaded_models: list[tuple[str, float]] | None = None,
     available_models: list[str] | None = None,
+    capacity: CapacityMetrics | None = None,
 ) -> NodeState:
     loaded = [
         LoadedModel(name=name, size_gb=size)
@@ -101,6 +103,7 @@ def make_node(
             models_loaded=loaded,
             models_available=available_models or [],
         ),
+        capacity=capacity,
     )
 
 

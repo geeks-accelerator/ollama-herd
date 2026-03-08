@@ -112,6 +112,16 @@ async def dashboard_events(request: Request):
                         "models_available_count": len(node.ollama.models_available),
                         "requests_active": node.ollama.requests_active,
                     }
+                if node.capacity:
+                    node_data["capacity"] = {
+                        "mode": node.capacity.mode,
+                        "ceiling_gb": round(node.capacity.ceiling_gb, 1),
+                        "availability_score": round(node.capacity.availability_score, 3),
+                        "reason": node.capacity.reason,
+                        "override_active": node.capacity.override_active,
+                        "learning_confidence": round(node.capacity.learning_confidence, 2),
+                        "days_observed": node.capacity.days_observed,
+                    }
                 nodes.append(node_data)
 
             data = {
@@ -623,6 +633,44 @@ function renderNodes(nodes) {
     const modelsHtml = models.length > 0
       ? models.map(m => `<span class="model-chip">${m.name} <span class="size">${formatGB(m.size_gb)}</span></span>`).join('')
       : '<span style="color:var(--text-dim);font-size:12px">No models loaded</span>';
+    // Capacity learner panel (only for nodes with adaptive capacity)
+    const cap = node.capacity;
+    let capacityHtml = '';
+    if (cap) {
+      const scoreColor = cap.availability_score > 0.6 ? 'var(--green)' : cap.availability_score > 0.3 ? 'var(--yellow)' : 'var(--red)';
+      const modeLabels = {
+        full: 'Full Capacity', learned_high: 'High Avail', learned_medium: 'Medium Avail',
+        learned_low: 'Low Avail', paused: 'Paused', bootstrap: 'Learning...'
+      };
+      const modeLabel = modeLabels[cap.mode] || cap.mode;
+      const modeBadgeClass = cap.mode === 'paused' ? 'offline' : cap.mode === 'bootstrap' ? 'degraded' : 'online';
+      const reasonText = cap.reason.replace(/_/g, ' ');
+      capacityHtml = `
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div class="label" style="font-size:11px;color:var(--text-dim)">Adaptive Capacity</div>
+            <span class="badge ${modeBadgeClass}">${modeLabel}</span>
+          </div>
+          <div class="metrics-row">
+            <div class="metric">
+              <div class="label">Availability</div>
+              <div class="value" style="color:${scoreColor}">${(cap.availability_score * 100).toFixed(0)}%</div>
+              <div class="bar-container"><div class="bar-fill" style="width:${cap.availability_score * 100}%;background:${scoreColor}"></div></div>
+            </div>
+            <div class="metric">
+              <div class="label">Ceiling</div>
+              <div class="value">${cap.ceiling_gb > 0 ? formatGB(cap.ceiling_gb) : 'None'}</div>
+            </div>
+            <div class="metric">
+              <div class="label">Confidence</div>
+              <div class="value">${(cap.learning_confidence * 100).toFixed(0)}%</div>
+            </div>
+          </div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:4px">
+            ${reasonText}${cap.override_active ? ' (override)' : ''} · ${cap.days_observed}d observed
+          </div>
+        </div>`;
+    }
     return `
       <div class="card">
         <div class="card-header">
@@ -651,6 +699,7 @@ function renderNodes(nodes) {
           </div>
           ${modelsHtml}
         </div>
+        ${capacityHtml}
       </div>`;
   }).join('');
   document.getElementById('header-stats').innerHTML = `

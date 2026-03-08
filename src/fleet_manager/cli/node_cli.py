@@ -22,6 +22,9 @@ def start(
         "http://localhost:11434", help="Local Ollama URL"
     ),
     router_url: str = typer.Option("", help="Router URL (auto-discovered via mDNS if empty)"),
+    learn_capacity: bool = typer.Option(
+        False, "--learn-capacity", help="Enable adaptive capacity learning (for work machines)"
+    ),
     log_level: str = typer.Option("INFO", help="Log level"),
 ):
     """Start the Herd Node agent on this device."""
@@ -41,6 +44,7 @@ def start(
         node_id=node_id,
         ollama_host=ollama_host,
         router_url=router_url,
+        enable_capacity_learning=learn_capacity,
     )
     agent = NodeAgent(settings)
 
@@ -51,6 +55,8 @@ def start(
         typer.echo(f"  Router:   {router_url}")
     else:
         typer.echo("  Router:   auto-discover via mDNS")
+    if learn_capacity:
+        typer.echo("  Capacity: adaptive learning enabled")
     typer.echo("")
 
     asyncio.run(agent.start())

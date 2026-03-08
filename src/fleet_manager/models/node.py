@@ -46,6 +46,17 @@ class OllamaMetrics(BaseModel):
     requests_active: int = 0
 
 
+class CapacityMetrics(BaseModel):
+    """Adaptive capacity state from the node's capacity learner."""
+    mode: str = "full"
+    ceiling_gb: float = 0.0
+    availability_score: float = 1.0
+    reason: str = ""
+    override_active: bool = False
+    learning_confidence: float = 0.0
+    days_observed: int = 0
+
+
 class HeartbeatPayload(BaseModel):
     node_id: str
     arch: str = "apple_silicon"
@@ -56,6 +67,7 @@ class HeartbeatPayload(BaseModel):
     ollama_host: str = "http://localhost:11434"
     lan_ip: str = ""
     draining: bool = False
+    capacity: CapacityMetrics | None = None
 
 
 class HardwareProfile(BaseModel):
@@ -79,3 +91,5 @@ class NodeState(BaseModel):
     ollama_base_url: str = "http://localhost:11434"
     # Track when models were last unloaded for warm-tier scoring
     model_unloaded_at: dict[str, float] = Field(default_factory=dict)
+    # Adaptive capacity from the node's capacity learner
+    capacity: CapacityMetrics | None = None

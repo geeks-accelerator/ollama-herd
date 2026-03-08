@@ -27,6 +27,7 @@ class ServerSettings(BaseSettings):
     score_role_affinity_max: float = 15.0
     score_role_large_threshold_gb: float = 20.0
     score_role_small_threshold_gb: float = 8.0
+    score_availability_trend_max: float = 10.0
 
     # Rebalancer
     rebalance_interval: float = 5.0
@@ -50,5 +51,7 @@ class NodeSettings(BaseSettings):
     heartbeat_interval: float = 5.0
     poll_interval: float = 5.0
     mdns_service_type: str = "_fleet-manager._tcp.local."
+    enable_capacity_learning: bool = False
+    data_dir: str = "~/.fleet-manager"
 
     model_config = {"env_prefix": "FLEET_NODE_"}

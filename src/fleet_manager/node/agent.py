@@ -26,11 +26,27 @@ class NodeAgent:
         self.router_url: str | None = settings.router_url or None
         self._http: httpx.AsyncClient | None = None
         self._running = False
+        self._capacity_learner = None
 
     async def start(self):
         """Main entry point. Discovers router, registers, starts polling."""
         self._running = True
         self._http = httpx.AsyncClient(timeout=10.0)
+
+        # Initialize capacity learner if enabled
+        if self.settings.enable_capacity_learning:
+            mem = psutil.virtual_memory()
+            total_gb = mem.total / (1024**3)
+            from fleet_manager.node.capacity_learner import AdaptiveCapacityLearner
+            self._capacity_learner = AdaptiveCapacityLearner(
+                total_memory_gb=total_gb,
+                data_dir=self.settings.data_dir,
+                node_id=self.node_id,
+            )
+            logger.info(
+                f"Capacity learning enabled: {total_gb:.0f}GB total memory, "
+                f"{self._capacity_learner.days_observed} days observed"
+            )
 
         # Discover router if not configured
         if not self.router_url:
@@ -56,7 +72,8 @@ class NodeAgent:
         while self._running:
             try:
                 payload = await collect_heartbeat(
-                    self.node_id, self.ollama, self.settings.ollama_host
+                    self.node_id, self.ollama, self.settings.ollama_host,
+                    capacity_learner=self._capacity_learner,
                 )
                 await self._send_heartbeat(payload)
             except httpx.ConnectError:
@@ -74,6 +91,8 @@ class NodeAgent:
     async def _drain(self):
         """Graceful shutdown: signal the router, then stop."""
         logger.info("Drain signal received, shutting down...")
+        if self._capacity_learner:
+            self._capacity_learner.save()
         if self._http and self.router_url:
             try:
                 await self._http.post(

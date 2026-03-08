@@ -51,7 +51,10 @@ class ScoringEngine:
             s5 = self._score_role_affinity(node, model)
             breakdown["role_affinity"] = s5
 
-            total = s1 + s2 + s3 + s4 + s5
+            s6 = self._score_availability_trend(node)
+            breakdown["availability_trend"] = s6
+
+            total = s1 + s2 + s3 + s4 + s5 + s6
             breakdown["total"] = total
 
             results.append(
@@ -74,7 +77,8 @@ class ScoringEngine:
                 f"mem={winner.scores_breakdown.get('memory_fit', 0):.0f}, "
                 f"queue={winner.scores_breakdown.get('queue_depth', 0):.0f}, "
                 f"wait={winner.scores_breakdown.get('wait_time', 0):.0f}, "
-                f"affinity={winner.scores_breakdown.get('role_affinity', 0):.0f})"
+                f"affinity={winner.scores_breakdown.get('role_affinity', 0):.0f}, "
+                f"avail={winner.scores_breakdown.get('availability_trend', 0):.0f})"
             )
 
         return results
@@ -94,6 +98,24 @@ class ScoringEngine:
                 logger.debug(f"Eliminated {node.node_id}: critical memory pressure")
                 continue
 
+            # Capacity-aware elimination: nodes in hard-pause or bootstrap mode
+            if node.capacity:
+                if node.capacity.mode == "paused":
+                    logger.debug(
+                        f"Eliminated {node.node_id}: capacity paused "
+                        f"(reason={node.capacity.reason})"
+                    )
+                    continue
+                if node.capacity.mode == "bootstrap":
+                    logger.debug(f"Eliminated {node.node_id}: in bootstrap observation period")
+                    continue
+                if node.capacity.availability_score < 0.2:
+                    logger.debug(
+                        f"Eliminated {node.node_id}: availability score too low "
+                        f"({node.capacity.availability_score:.2f})"
+                    )
+                    continue
+
             loaded_names = [m.name for m in node.ollama.models_loaded]
             if model not in loaded_names and model not in node.ollama.models_available:
                 logger.debug(f"Eliminated {node.node_id}: model '{model}' not available")
@@ -102,10 +124,14 @@ class ScoringEngine:
             # Check memory can fit if model needs loading
             if model not in loaded_names:
                 model_size = self._estimate_model_size(model, node)
-                if node.memory and node.memory.available_gb < model_size:
+                # Use capacity ceiling if available, otherwise raw available memory
+                available = node.memory.available_gb if node.memory else 0
+                if node.capacity and node.capacity.ceiling_gb > 0:
+                    available = min(available, node.capacity.ceiling_gb)
+                if available < model_size:
                     logger.debug(
                         f"Eliminated {node.node_id}: insufficient memory "
-                        f"({node.memory.available_gb:.1f}GB avail < {model_size:.1f}GB needed)"
+                        f"({available:.1f}GB avail/ceiling < {model_size:.1f}GB needed)"
                     )
                     continue
 
@@ -132,7 +158,11 @@ class ScoringEngine:
         return 0.0
 
     def _score_memory_fit(self, node: NodeState, model: str) -> float:
-        """Signal 2: How comfortably does the model fit in available memory?"""
+        """Signal 2: How comfortably does the model fit in available memory?
+
+        Uses the capacity ceiling when available instead of raw available memory,
+        so nodes with adaptive capacity limits are scored correctly.
+        """
         loaded_names = [m.name for m in node.ollama.models_loaded]
         if model in loaded_names:
             return self._s.score_memory_fit_max
@@ -141,7 +171,12 @@ class ScoringEngine:
         if model_size <= 0 or not node.memory:
             return 0.0
 
-        fit_ratio = node.memory.available_gb / model_size
+        # Use capacity ceiling if the node has adaptive capacity enabled
+        available = node.memory.available_gb
+        if node.capacity and node.capacity.ceiling_gb > 0:
+            available = min(available, node.capacity.ceiling_gb)
+
+        fit_ratio = available / model_size
         if fit_ratio > 2.0:
             return 20.0
         elif fit_ratio > 1.5:
@@ -194,6 +229,25 @@ class ScoringEngine:
                 return 8.0
             return 3.0
         return 5.0
+
+    def _score_availability_trend(self, node: NodeState) -> float:
+        """Signal 6: Availability trend for nodes with adaptive capacity.
+
+        Only applies to nodes that have capacity data (work MacBooks).
+        A rising availability score means the machine is freeing up — safe
+        to route new work. A falling score means the owner is actively
+        starting work — avoid adding long-running requests.
+
+        Returns 0 for nodes without capacity data (e.g., always-on servers).
+        """
+        if not node.capacity:
+            return 0.0
+
+        score = node.capacity.availability_score
+
+        # Higher availability = more bonus points (max +10)
+        # This naturally prioritizes highly-available nodes
+        return min(self._s.score_availability_trend_max, score * self._s.score_availability_trend_max)
 
     def _estimate_model_size(self, model: str, node: NodeState) -> float:
         """Estimate model size in GB. Check loaded models first, then all nodes."""
