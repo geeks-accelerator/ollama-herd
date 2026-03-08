@@ -280,7 +280,7 @@ uv sync                              # install deps
 uv run herd                          # start router
 uv run herd-node                     # start node agent
 
-uv run pytest -v                     # run all 145 tests (~0.8s)
+uv run pytest -v                     # run all 203 tests
 uv run ruff check src/               # lint
 uv run ruff format src/              # format
 ```
@@ -299,6 +299,20 @@ uv run ruff format src/              # format
 | [Troubleshooting](docs/troubleshooting.md) | Common issues, LAN debugging, operational gotchas |
 | [Architecture Decisions](docs/architecture-decisions.md) | Port selection, design trade-offs, rationale |
 | [Project Strategy](docs/project-status-and-strategy.md) | Competitive landscape and agent framework matrix |
+| [Agentic Router Vision](docs/agentic-router-vision.md) | What's next: proactive fleet intelligence and task backlogs |
+
+## What's Next
+
+The fleet is smart but passive — it waits for requests. The next evolution is an **agentic router** that uses idle compute proactively:
+
+- **Task backlogs** — drop tasks throughout the day, the fleet chews through them when idle
+- **Pattern-driven pre-warming** — the capacity learner already knows your weekly rhythm, the router should act on it
+- **Agentic decomposition** — complex tasks broken into subtask DAGs, executed in parallel across the fleet
+- **Fleet health opinions** — the router surfaces observations, not just metrics
+
+> *"Your fleet doesn't just wait for requests — it works for you while you sleep."*
+
+See [Agentic Router Vision](docs/agentic-router-vision.md) for the full design.
 
 ## Requirements
 
