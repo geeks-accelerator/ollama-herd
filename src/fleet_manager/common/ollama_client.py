@@ -45,7 +45,16 @@ class OllamaClient:
                 size_bytes = m.get("size", 0)
                 size_gb = round(size_bytes / (1024**3), 2)
                 name = m.get("model", m.get("name", "unknown"))
-                models.append(LoadedModel(name=name, size_gb=size_gb))
+                details = m.get("details", {})
+                models.append(
+                    LoadedModel(
+                        name=name,
+                        size_gb=size_gb,
+                        parameter_size=details.get("parameter_size", ""),
+                        quantization=details.get("quantization_level", ""),
+                        context_length=m.get("context_length", 0),
+                    )
+                )
             return models
         except httpx.HTTPStatusError as e:
             logger.warning(f"Ollama /api/ps returned HTTP {e.response.status_code}")

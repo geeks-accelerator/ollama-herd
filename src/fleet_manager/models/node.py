@@ -38,6 +38,9 @@ class LoadedModel(BaseModel):
     name: str
     size_gb: float
     requests_active: int = 0
+    parameter_size: str = ""  # e.g. "30.5B"
+    quantization: str = ""  # e.g. "Q4_K_M"
+    context_length: int = 0  # allocated context window
 
 
 class OllamaMetrics(BaseModel):

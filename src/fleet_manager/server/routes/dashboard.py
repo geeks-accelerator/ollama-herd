@@ -106,7 +106,13 @@ async def dashboard_events(request: Request):
                 if node.ollama:
                     node_data["ollama"] = {
                         "models_loaded": [
-                            {"name": m.name, "size_gb": round(m.size_gb, 2)}
+                            {
+                                "name": m.name,
+                                "size_gb": round(m.size_gb, 2),
+                                "parameter_size": m.parameter_size,
+                                "quantization": m.quantization,
+                                "context_length": m.context_length,
+                            }
                             for m in node.ollama.models_loaded
                         ],
                         "models_available_count": len(node.ollama.models_available),
@@ -759,7 +765,11 @@ function renderNodes(nodes) {
     totalModels += models.length;
     const availCount = node.ollama ? node.ollama.models_available_count : 0;
     const modelsHtml = models.length > 0
-      ? models.map(m => `<span class="model-chip">${m.name} <span class="size">${formatGB(m.size_gb)}</span></span>`).join('')
+      ? models.map(m => {
+          const meta = m.parameter_size ? m.parameter_size + (m.quantization ? ' ' + m.quantization : '') : formatGB(m.size_gb);
+          const ctx = m.context_length ? ' · ' + (m.context_length >= 1024 ? Math.round(m.context_length/1024) + 'K ctx' : m.context_length + ' ctx') : '';
+          return `<span class="model-chip">${m.name} <span class="size">${meta}${ctx}</span></span>`;
+        }).join('')
       : '<span style="color:var(--text-dim);font-size:12px">No models loaded</span>';
     // Capacity learner panel (only for nodes with adaptive capacity)
     const cap = node.capacity;
