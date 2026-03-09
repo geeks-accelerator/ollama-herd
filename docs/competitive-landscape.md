@@ -106,16 +106,32 @@ Ollama Herd operates at this intersection — fleet orchestration for local LLM 
 
 ---
 
+### llama-swap (~2.7K stars)
+**What it does:** Orchestrates model loading/unloading on a single server across arbitrary inference engines (llama.cpp, vLLM, SGLang). Routes requests to the appropriate model process with on-demand loading and LRU eviction.
+
+**Relationship to Herd:** Single-machine model lifecycle manager. Complementary — llama-swap manages which models are loaded on one node; Herd routes requests across many nodes. Different scale entirely.
+
+---
+
+### ollama_proxy_server (~320 stars)
+**What it does:** Multi-Ollama proxy with API key security, smart model-aware routing, and exponential backoff retries. Routes requests only to servers that have the requested model.
+
+**Relationship to Herd:** Simple, focused solution. No scoring sophistication, no adaptive behavior, no dashboard. Herd is the full-featured version of what this project attempts.
+
+---
+
 ## Adjacent Projects (Not Competitors)
 
 | Project | Stars | What it Does | Relationship to Herd |
 |---------|-------|-------------|---------------------|
-| **Open WebUI** | ~126K | Chat interface for LLMs | Users can point it at Herd instead of a single Ollama. Open WebUI's built-in multi-instance support uses random selection — Herd adds intelligent routing. |
-| **vLLM** | ~72K | High-performance serving engine | GPU cluster inference. Different scale and complexity. Not consumer-oriented. |
-| **Petals** | ~10K | BitTorrent-style distributed inference | Volunteer-based model sharding across the internet. Different model (public volunteer network vs. personal LAN fleet). |
+| **Open WebUI** | ~126K | Chat interface for LLMs | Users can point it at Herd instead of a single Ollama. Open WebUI's built-in multi-instance support uses `random.choice()` — Herd adds intelligent routing. |
+| **vLLM** | ~72K | High-performance serving engine | GPU cluster inference. Different scale and complexity. Not consumer-oriented. vllm-mlx brings 400+ tok/s to Apple Silicon. |
+| **LocalAI** | ~43K | Local OpenAI-compatible API | Offers federated mode and P2P distributed inference. March 2026 roadmap includes MLX-distributed via RDMA — potential future threat. See "Threats to Watch." |
+| **Jan.ai** | ~41K | Desktop LLM app | Single-machine desktop app with OpenAI-compatible API. No multi-node routing. Potential integration target. |
+| **Petals** | ~10K | BitTorrent-style distributed inference | Volunteer-based model sharding across the internet. Different model (public volunteer network vs. personal LAN fleet). Development has slowed. |
 | **Distributed Llama** | ~2.9K | C++ model parallelism | Like exo but in C++. Splits one model across devices. Complementary. |
-| **llm-d** | — | Kubernetes-native distributed inference | Red Hat project. Enterprise-scale, k8s-native. Different universe from personal fleet management. |
-| **LocalAI** | ~30K+ | Local OpenAI-compatible API | Offers federated mode for distributed inference. More complex setup. Not Ollama-native. |
+| **llm-d** | ~2.6K | Kubernetes-native distributed inference | Red Hat + Google + IBM + NVIDIA backed. Enterprise-scale with KV-cache-aware routing. Different universe from personal fleet management. |
+| **Docker Model Runner** | New (2026) | Docker-native LLM inference | vLLM-Metal support on macOS. No multi-node routing yet. If Docker adds orchestration, their distribution advantage is formidable. |
 
 ---
 
@@ -201,4 +217,22 @@ No other project combines all of these:
 
 ---
 
-*The competitive landscape favors Herd: the alternatives are either complementary (exo), operating at a different layer (LiteLLM), more complex (GPUStack), or too niche to matter (SOLLOL, Hive). The market gap — zero-config intelligent routing for personal device fleets — is Herd's to own.*
+## Competitive Threats to Watch
+
+These could become direct competitors if they expand scope:
+
+1. **LocalAI** (~43K stars) — March 2026 roadmap includes "MLX-distributed via P2P and RDMA." If they execute, they combine LocalAI's massive feature set with distributed Apple Silicon inference. Currently basic P2P routing, but the intent to compete is clear.
+
+2. **exo** (~42K stars) — Currently model splitting only, but if they add request routing/load balancing on top of splitting, they become a direct competitor. Their native macOS app, RDMA over Thunderbolt 5, and Apple Silicon focus give them strong positioning. EXO 1.0 shipped a complete rewrite in November 2025.
+
+3. **Ollama itself** — If Ollama adds native clustering/load balancing (GitHub issues #5983, #9147, #4643 are highly requested), it eliminates the need for external routers. As of March 2026, Ollama still has no native clustering — but this is the biggest existential risk.
+
+4. **Docker Model Runner** — New in 2026 with vLLM-Metal support on macOS. Currently single-machine only. If Docker adds multi-node orchestration, their distribution advantage (every developer has Docker) is nearly impossible to compete with.
+
+5. **Olla** (~168 stars) — Closest in spirit to a smart local router. Lightweight, actively developed, multi-backend (Ollama + LM Studio + vLLM + SGLang). If they add hardware-aware scoring signals, they become a direct competitor. Circuit breaker pattern and sub-millisecond endpoint selection are strengths.
+
+**Herd's best defense:** Speed of execution. Ship the features the market needs (PyPI package, demo GIF, agent framework guides) before these threats materialize. The adaptive capacity learning system (168-slot behavioral model, meeting detection, app fingerprinting) is a genuine moat — no competitor is close to replicating it.
+
+---
+
+*The market is fragmenting into three niches: model splitting (exo dominates), cloud API gateways (LiteLLM dominates), and local fleet routing (underserved). Herd owns the third niche today — the question is how fast the first two expand into it.*
