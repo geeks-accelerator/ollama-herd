@@ -25,6 +25,8 @@ class TraceStore:
         self._db = await aiosqlite.connect(str(self._db_path))
         # Enable WAL mode for concurrent readers/writers
         await self._db.execute("PRAGMA journal_mode=WAL")
+        # Wait up to 5s for lock instead of failing immediately
+        await self._db.execute("PRAGMA busy_timeout=5000")
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS request_traces (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -83,6 +83,11 @@ def setup_logging(
         ):
             handler.setLevel(con_level)
 
+    # Silence noisy third-party loggers that flood the JSONL file.
+    # httpcore + aiosqlite account for ~83% of all log lines at DEBUG level.
+    for noisy_logger in ("httpcore", "aiosqlite", "httpx", "hpack"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
     logging.getLogger(__name__).debug(
         f"JSONL logging configured: {log_file} (level={logging.getLevelName(file_level)}, "
         f"rotation=daily, retention=30d)"
