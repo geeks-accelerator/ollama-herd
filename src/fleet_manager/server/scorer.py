@@ -21,7 +21,9 @@ class ScoringEngine:
         self._registry = registry
         self._latency_store = latency_store
 
-    def score_request(self, model: str, queue_depths: dict[str, int]) -> list[RoutingResult]:
+    def score_request(
+        self, model: str, queue_depths: dict[str, int], estimated_tokens: int = 0
+    ) -> list[RoutingResult]:
         """
         Score all candidate nodes for a model request.
         Returns ranked list (highest score first), empty if no candidates survive.
@@ -54,7 +56,10 @@ class ScoringEngine:
             s6 = self._score_availability_trend(node)
             breakdown["availability_trend"] = s6
 
-            total = s1 + s2 + s3 + s4 + s5 + s6
+            s7 = self._score_context_fit(node, model, estimated_tokens)
+            breakdown["context_fit"] = s7
+
+            total = s1 + s2 + s3 + s4 + s5 + s6 + s7
             breakdown["total"] = total
 
             results.append(
@@ -78,7 +83,8 @@ class ScoringEngine:
                 f"queue={winner.scores_breakdown.get('queue_depth', 0):.0f}, "
                 f"wait={winner.scores_breakdown.get('wait_time', 0):.0f}, "
                 f"affinity={winner.scores_breakdown.get('role_affinity', 0):.0f}, "
-                f"avail={winner.scores_breakdown.get('availability_trend', 0):.0f})"
+                f"avail={winner.scores_breakdown.get('availability_trend', 0):.0f}, "
+                f"ctx={winner.scores_breakdown.get('context_fit', 0):.0f})"
             )
 
         return results
@@ -250,6 +256,65 @@ class ScoringEngine:
         return min(
             self._s.score_availability_trend_max, score * self._s.score_availability_trend_max
         )
+
+    def _score_context_fit(self, node: NodeState, model: str, estimated_tokens: int) -> float:
+        """Signal 7: Prefer nodes with more context window headroom.
+
+        Compares estimated input tokens against the loaded model's context_length.
+        Nodes with larger context windows score higher for token-heavy requests.
+        Returns 0 if the model isn't loaded or context_length is unknown.
+        """
+        if estimated_tokens <= 0:
+            return 0.0
+
+        # Find this model's context_length on this node
+        ctx_length = 0
+        for m in node.ollama.models_loaded:
+            if m.name == model and m.context_length > 0:
+                ctx_length = m.context_length
+                break
+
+        if ctx_length == 0:
+            return 0.0  # Unknown context — can't score
+
+        ratio = ctx_length / estimated_tokens
+        max_score = self._s.score_context_fit_max
+
+        if ratio < 1.0:
+            # Tokens may exceed context window — penalize
+            return -max_score
+        elif ratio < 1.5:
+            # Tight fit — minimal bonus
+            return max_score * 0.2
+        elif ratio < 3.0:
+            # Comfortable headroom
+            return max_score * 0.5
+        elif ratio < 8.0:
+            # Plenty of room
+            return max_score * 0.8
+        else:
+            # Massive headroom
+            return max_score
+
+    @staticmethod
+    def estimate_tokens(messages: list[dict]) -> int:
+        """Rough token estimate from message content (~4 chars per token).
+
+        Good enough for routing decisions — not meant for billing accuracy.
+        """
+        total_chars = 0
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                # Multi-modal messages (OpenAI format with text parts)
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        total_chars += len(part.get("text", ""))
+            # Count role + overhead (~4 tokens per message for formatting)
+            total_chars += 16
+        return max(1, total_chars // 4)
 
     def _estimate_model_size(self, model: str, node: NodeState) -> float:
         """Estimate model size in GB. Check loaded models first, then all nodes."""

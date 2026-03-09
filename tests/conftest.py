@@ -40,15 +40,19 @@ def make_heartbeat(
     cores: int = 12,
     cpu_pct: float = 15.0,
     pressure: MemoryPressure = MemoryPressure.NORMAL,
-    loaded_models: list[tuple[str, float]] | None = None,
+    loaded_models: list[tuple[str, float] | tuple[str, float, int]] | None = None,
     available_models: list[str] | None = None,
     lan_ip: str = "192.168.1.100",
     ollama_host: str = "http://localhost:11434",
 ) -> HeartbeatPayload:
-    loaded = [
-        LoadedModel(name=name, size_gb=size)
-        for name, size in (loaded_models or [])
-    ]
+    loaded = []
+    for entry in loaded_models or []:
+        if len(entry) == 3:
+            name, size, ctx = entry
+            loaded.append(LoadedModel(name=name, size_gb=size, context_length=ctx))
+        else:
+            name, size = entry
+            loaded.append(LoadedModel(name=name, size_gb=size))
     return HeartbeatPayload(
         node_id=node_id,
         cpu=CpuMetrics(cores_physical=cores, utilization_pct=cpu_pct),

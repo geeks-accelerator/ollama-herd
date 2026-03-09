@@ -372,6 +372,39 @@ class StreamingProxy:
         except Exception as e:
             logger.warning(f"Pre-warm {model} on {node_id} error: {e}")
 
+    async def pull_model(self, node_id: str, model: str) -> bool:
+        """Pull a model onto a node via Ollama /api/pull. Returns True on success."""
+        try:
+            client = self._get_client(node_id)
+            async with client.stream(
+                "POST", "/api/pull", json={"name": model}
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if data.get("error"):
+                        logger.error(
+                            f"Pull {model} on {node_id} failed: {data['error']}"
+                        )
+                        return False
+                    status = data.get("status", "")
+                    if "completed" in data and "total" in data and data["total"] > 0:
+                        pct = int(data["completed"] / data["total"] * 100)
+                        logger.info(
+                            f"Pulling {model} on {node_id}: {status} {pct}%"
+                        )
+                    elif status == "success":
+                        logger.info(f"Pull {model} on {node_id}: success")
+            return True
+        except Exception as e:
+            logger.error(f"Pull {model} on {node_id} error: {type(e).__name__}: {e}")
+            return False
+
     def _build_ollama_body(self, request: InferenceRequest) -> dict:
         """Convert normalized request to Ollama API format."""
         if request.original_format == RequestFormat.OLLAMA and request.raw_body:

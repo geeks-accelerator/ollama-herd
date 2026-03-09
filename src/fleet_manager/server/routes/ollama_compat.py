@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.routes.routing import (
+    check_context_overflow,
     extract_tags,
     get_all_fleet_models,
     score_with_fallbacks,
@@ -134,8 +135,11 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
     model = inference_req.original_model or inference_req.model
     logger.info(f"Ollama request: model={model} stream={inference_req.stream}")
 
-    # Score with fallback support
-    results, actual_model = await score_with_fallbacks(inference_req, scorer, queue_mgr, registry)
+    # Score with fallback support + auto-pull
+    results, actual_model = await score_with_fallbacks(
+        inference_req, scorer, queue_mgr, registry,
+        proxy=proxy, settings=settings,
+    )
 
     if not results:
         logger.warning(f"No nodes for model={model} fallbacks={inference_req.fallback_models}")
@@ -190,6 +194,7 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         headers["X-Fleet-Fallback"] = actual_model
     if entry.retry_count > 0:
         headers["X-Fleet-Retries"] = str(entry.retry_count)
+    headers.update(check_context_overflow(winner, inference_req, registry))
 
     if inference_req.stream:
 

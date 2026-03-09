@@ -256,6 +256,115 @@ class TestScoringEngine:
         results = scorer.score_request("deepseek-r1:671b", {})
         assert results == []
 
+    async def test_context_fit_prefers_larger_context(self, scorer, registry):
+        """Node with larger context window should score higher for long requests."""
+        # Node A: 8K context
+        hb_a = make_heartbeat(
+            node_id="small-ctx",
+            memory_total=64.0,
+            memory_used=20.0,
+            loaded_models=[("qwen3-coder:latest", 42.0, 8192)],
+        )
+        # Node B: 262K context
+        hb_b = make_heartbeat(
+            node_id="big-ctx",
+            memory_total=512.0,
+            memory_used=100.0,
+            loaded_models=[("qwen3-coder:latest", 42.0, 262144)],
+        )
+        await registry.update_from_heartbeat(hb_a)
+        await registry.update_from_heartbeat(hb_b)
+
+        # Request with ~5K tokens — both can handle but big-ctx has more headroom
+        results = scorer.score_request("qwen3-coder:latest", {}, estimated_tokens=5000)
+        ctx_scores = {r.node_id: r.scores_breakdown["context_fit"] for r in results}
+        assert ctx_scores["big-ctx"] > ctx_scores["small-ctx"]
+
+    async def test_context_fit_penalizes_overflow(self, scorer, registry):
+        """Node whose context window is smaller than estimated tokens gets penalized."""
+        hb = make_heartbeat(
+            node_id="tiny-ctx",
+            memory_total=64.0,
+            memory_used=20.0,
+            loaded_models=[("phi4:14b", 9.0, 4096)],
+        )
+        await registry.update_from_heartbeat(hb)
+
+        # Request with ~10K tokens — exceeds 4K context
+        results = scorer.score_request("phi4:14b", {}, estimated_tokens=10000)
+        assert results[0].scores_breakdown["context_fit"] < 0
+
+    async def test_context_fit_neutral_without_tokens(self, scorer, registry):
+        """Without token estimate, context_fit should be 0 (neutral)."""
+        hb = make_heartbeat(
+            node_id="studio",
+            memory_total=128.0,
+            memory_used=40.0,
+            loaded_models=[("phi4:14b", 9.0, 131072)],
+        )
+        await registry.update_from_heartbeat(hb)
+
+        results = scorer.score_request("phi4:14b", {})
+        assert results[0].scores_breakdown["context_fit"] == 0.0
+
+    async def test_context_fit_neutral_for_cold_model(self, scorer, registry):
+        """Model on disk (not loaded) has no context_length — score should be 0."""
+        hb = make_heartbeat(
+            node_id="studio",
+            memory_total=192.0,
+            memory_used=20.0,
+            available_models=["llama3.3:70b"],
+        )
+        await registry.update_from_heartbeat(hb)
+
+        results = scorer.score_request("llama3.3:70b", {}, estimated_tokens=5000)
+        assert results[0].scores_breakdown["context_fit"] == 0.0
+
+    async def test_context_fit_routes_long_request_to_big_context(self, scorer, registry):
+        """Long conversation should route to the node with the larger context window."""
+        # Both nodes identical except context length
+        hb_a = make_heartbeat(
+            node_id="laptop",
+            memory_total=64.0,
+            memory_used=20.0,
+            loaded_models=[("llama3.3:70b", 40.0, 8192)],
+        )
+        hb_b = make_heartbeat(
+            node_id="studio",
+            memory_total=64.0,
+            memory_used=20.0,
+            loaded_models=[("llama3.3:70b", 40.0, 131072)],
+        )
+        await registry.update_from_heartbeat(hb_a)
+        await registry.update_from_heartbeat(hb_b)
+
+        # Short request — both are fine, context_fit difference is small
+        results_short = scorer.score_request("llama3.3:70b", {}, estimated_tokens=100)
+        # Both have massive headroom relative to 100 tokens
+        assert all(r.scores_breakdown["context_fit"] > 0 for r in results_short)
+
+        # Long request (~50K tokens) — laptop can't handle, studio can
+        results_long = scorer.score_request("llama3.3:70b", {}, estimated_tokens=50000)
+        scores = {r.node_id: r.scores_breakdown["context_fit"] for r in results_long}
+        assert scores["studio"] > 0  # 131K > 50K — comfortable
+        assert scores["laptop"] < 0  # 8K < 50K — overflow penalty
+
+    async def test_estimate_tokens(self):
+        """Token estimation produces reasonable results."""
+        # Simple message
+        messages = [{"role": "user", "content": "Hello world"}]
+        tokens = ScoringEngine.estimate_tokens(messages)
+        assert 1 <= tokens <= 10  # "Hello world" = ~3 tokens + overhead
+
+        # Long message (~4000 chars = ~1000 tokens)
+        long_msg = [{"role": "user", "content": "x" * 4000}]
+        tokens = ScoringEngine.estimate_tokens(long_msg)
+        assert 900 <= tokens <= 1100
+
+        # Empty messages
+        tokens = ScoringEngine.estimate_tokens([])
+        assert tokens >= 1
+
     async def test_wait_time_with_latency_store(self, settings, registry):
         class FakeLatencyStore:
             def get_cached_percentile(self, node_id, model):

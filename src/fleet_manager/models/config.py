@@ -27,6 +27,7 @@ class ServerSettings(BaseSettings):
     score_role_large_threshold_gb: float = 20.0
     score_role_small_threshold_gb: float = 8.0
     score_availability_trend_max: float = 10.0
+    score_context_fit_max: float = 15.0
 
     # Rebalancer
     rebalance_interval: float = 5.0
@@ -36,6 +37,10 @@ class ServerSettings(BaseSettings):
     # Pre-warm
     pre_warm_threshold: int = 3
     pre_warm_min_availability: float = 0.60
+
+    # Auto-pull
+    auto_pull: bool = True
+    auto_pull_timeout: float = 300.0  # 5 minutes
 
     # Retry
     max_retries: int = 2
