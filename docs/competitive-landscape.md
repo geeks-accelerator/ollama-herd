@@ -140,6 +140,19 @@ Ollama Herd operates at this intersection — fleet orchestration for local LLM 
 
 ---
 
+## Known Competitor Weaknesses
+
+These pain points — surfaced from GitHub issues, community forums, and benchmarks — represent opportunities for Herd:
+
+| Competitor | Known Issue | Herd's Advantage |
+|-----------|-------------|-------------------|
+| **exo** | RDMA model loading crashes with SIGSEGV; failed model loads return 404 instead of proper errors; developers went AWOL for a period | Herd doesn't do model sharding (different approach), but its error handling, auto-retry, and active maintenance are selling points |
+| **LiteLLM** | Bifrost benchmarked 54x faster P99 latency (1.68s vs 90.72s); memory leaks in earlier versions; complexity overhead for local-only use | Herd is purpose-built for local inference — no cloud provider abstraction overhead |
+| **GPUStack** | Heavyweight enterprise setup; overkill for home lab / small team; NVIDIA/cloud GPU focus | Herd's two-command zero-config setup is the antithesis of GPUStack's complexity |
+| **Raw Ollama** | No multi-instance routing; no authentication (GitHub #1053 — most-requested feature); response times degrade rapidly under concurrent load | Herd solves all three: intelligent routing, queue management under load, and per-app analytics |
+
+---
+
 ## Where Ollama Herd Wins
 
 ### Against exo
