@@ -285,7 +285,15 @@ launchctl setenv OLLAMA_MAX_LOADED_MODELS "-1"
 |---------|---------|-------------|-----|
 | `OLLAMA_KEEP_ALIVE` | `5m` | `-1` (forever) | Don't unload models from memory when you have RAM to spare |
 | `OLLAMA_MAX_LOADED_MODELS` | auto | `-1` (unlimited) | Let multiple models stay hot simultaneously |
-| `OLLAMA_NUM_PARALLEL` | auto | Leave default | Ollama auto-calculates from available memory per model |
+| `OLLAMA_NUM_PARALLEL` | auto | `2`–`4` for multi-model fleets | Auto-calculated value can be very high on large-memory machines (e.g., 16), causing massive KV cache allocation per model — see warning below |
+
+> **Warning: `OLLAMA_NUM_PARALLEL` and KV cache bloat.** On high-memory machines, Ollama auto-calculates a high parallel slot count (e.g., 16). Each slot pre-allocates KV cache for the full context window. With 16 slots × 262K context, a single model can consume **384 GB of KV cache** on top of its weights — leaving no room for other models and causing constant eviction thrashing. If you run multiple models, set `OLLAMA_NUM_PARALLEL` to `2`–`4`:
+>
+> ```bash
+> launchctl setenv OLLAMA_NUM_PARALLEL 2    # 2 parallel slots × 262K ctx ≈ 20 GB KV cache per model
+> ```
+>
+> This lets multiple models coexist in memory instead of one model monopolizing all VRAM.
 
 **Quick check** — run `ollama ps` and look at the "Until" column:
 ```

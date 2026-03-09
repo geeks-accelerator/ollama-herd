@@ -221,7 +221,11 @@ Meeting detection is disabled by default — it only activates when `FLEET_NODE_
 
    See [Optimize Ollama for your hardware](../README.md#optimize-ollama-for-your-hardware) in the README for the full tuning guide.
 
-2. **Model thrashing** — if two or more models alternate requests on the same node and keep-alive is short, they evict each other in a loop. Symptoms: every request has 50-190s TTFT, `ollama ps` only ever shows one model loaded despite having memory for several. Fix: `OLLAMA_KEEP_ALIVE=-1` and `OLLAMA_MAX_LOADED_MODELS=-1`.
+2. **Model thrashing** — two or more models alternate requests on the same node, evicting each other in a loop. Every request has 50-190s TTFT, and `ollama ps` only ever shows one model loaded despite having memory for several. Two common causes:
+
+   - **Short keep-alive** — `OLLAMA_KEEP_ALIVE` defaults to `5m`, so idle models get evicted. Fix: `OLLAMA_KEEP_ALIVE=-1` and `OLLAMA_MAX_LOADED_MODELS=-1`.
+
+   - **`OLLAMA_NUM_PARALLEL` too high** — on high-memory machines, Ollama auto-calculates a high parallel slot count (e.g., 16). Each slot pre-allocates KV cache for the full context window. With 16 slots × 262K context, a **single model consumes 384 GB of KV cache** on top of its weights — leaving no room for other models even on a 512GB machine. Fix: `OLLAMA_NUM_PARALLEL=2` (or 3–4). This drops KV cache to ~20 GB per model, allowing multiple models to coexist.
 
 3. **Queue congestion** — check the dashboard for queue depths. If one node has a deep queue, the rebalancer should redistribute, but you may want to add more nodes.
 

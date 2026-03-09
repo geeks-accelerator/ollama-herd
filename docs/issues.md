@@ -183,6 +183,37 @@ The tagging system records tags on every trace and provides a dedicated Apps das
 
 ---
 
+### 16. OLLAMA_NUM_PARALLEL Auto-Calculation Causes KV Cache Bloat and Model Thrashing `OPEN`
+
+**Severity:** High
+
+On high-memory machines (e.g., 512GB Mac Studio), Ollama's `auto` setting for `OLLAMA_NUM_PARALLEL` calculates a high slot count (e.g., 16). Each parallel slot pre-allocates KV cache for the full context window. With 16 slots and `default_num_ctx=262144`:
+
+```
+KV cache per model = 262144 ctx × 16 parallel = 4,194,304 KvSize → 384 GB
+```
+
+A single model consumes ~413 GB (17 GB weights + 384 GB KV cache + 12 GB compute), leaving no room for other models on a 464 GB VRAM machine. When a second model is requested, Ollama evicts the first — and vice versa — creating a thrashing loop that freezes the machine for 10-60 seconds per swap.
+
+**Symptoms:**
+- Models drop to 0 loaded at regular intervals (visible in herd dashboard and heartbeat data)
+- Ollama logs show `"model requires more gpu memory than is currently available, evicting a model to make space"` repeatedly
+- Machine freezes during model swaps (loading 88-151 GB models saturates memory bandwidth)
+- `OLLAMA_KEEP_ALIVE=-1` alone does NOT fix this — eviction is space-based, not time-based
+
+**Evidence:** Ollama server logs (`~/.ollama/logs/server-*.log`) showed eviction cascades at hourly intervals coinciding with bot-simulation model rotation. KV cache sizes confirmed via `load request` log entries showing `KvSize:4194304` with `Parallel:16`.
+
+**Fix (user-side):** Set `OLLAMA_NUM_PARALLEL=2` (or 3-4). KV cache drops to ~20 GB per model, allowing 3-4 large models to coexist.
+
+```bash
+launchctl setenv OLLAMA_NUM_PARALLEL 2
+# Restart Ollama
+```
+
+**Potential fix (Herd-side):** The router could detect this condition by comparing a node's reported VRAM against loaded model count and warn in the dashboard. Or Herd could inject `num_ctx` overrides in proxied requests to cap context windows and prevent KV cache explosion.
+
+---
+
 ## Future Considerations
 
 - **Extract dashboard frontend** — see issue #9 above
