@@ -8,7 +8,9 @@ Common issues and solutions when running Ollama Herd.
 
 **Symptom:** `404` response with `"model(s) 'llama3.3:70b' not found on any node"`.
 
-**Cause:** The router doesn't talk to Ollama directly — it only knows about nodes that have sent heartbeats via `herd-node`. Without a running node agent, the router has zero nodes and cannot find any models.
+**Cause:** The model doesn't exist on any fleet node, and auto-pull either failed, timed out, or is disabled.
+
+**Note:** If `FLEET_AUTO_PULL=true` (default), the router will attempt to pull the model onto the best available node before returning 404. Check the router logs for `Auto-pulling` messages. A 404 after auto-pull means the pull failed (network issue, timeout, or no node has enough memory).
 
 **Fix:** Make sure `herd-node` is running on at least one machine with Ollama:
 
@@ -151,6 +153,38 @@ FLEET_NODE_ENABLE_CAPACITY_LEARNING=false herd-node
 ```
 
 Meeting detection is disabled by default — it only activates when `FLEET_NODE_ENABLE_CAPACITY_LEARNING=true` is set.
+
+---
+
+## Context Window Exceeded
+
+**Symptom:** Response includes header `X-Fleet-Context-Overflow: estimated_tokens=5000; context_length=4096`.
+
+**Cause:** The estimated input tokens exceed the model's context window on the winning node. Ollama will truncate the input, potentially losing important context.
+
+**Fix:**
+- Use a model with a larger context window (e.g., models with 32K or 128K context)
+- Split large inputs into smaller requests
+- Increase `FLEET_SCORE_CONTEXT_FIT_MAX` to more aggressively route long inputs to nodes with larger context windows
+
+---
+
+## Auto-Pull Timeout or Failure
+
+**Symptom:** Logs show `Auto-pull timed out` or `Auto-pull failed` and a 404 is returned.
+
+**Possible causes:**
+
+1. **Network issue** — the selected node can't reach the model registry (registry.ollama.ai)
+2. **Model too large** — the default timeout is 300s (5 min); large models need more time
+3. **No suitable node** — no node has enough available memory to fit the model
+
+**Fix:**
+- Verify the node has internet access: `curl -I https://registry.ollama.ai`
+- Increase timeout for large models: `FLEET_AUTO_PULL_TIMEOUT=900` (15 min)
+- Check available memory on nodes: `curl http://localhost:11435/fleet/status`
+- Manually pull on a specific node: `ollama pull <model>` on the target machine
+- Disable auto-pull: `FLEET_AUTO_PULL=false`
 
 ---
 

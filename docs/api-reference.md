@@ -87,13 +87,14 @@ data: [DONE]\n\n
 | `X-Fleet-Score` | Winning routing score (integer) |
 | `X-Fleet-Fallback` | Fallback model used (only if primary was unavailable) |
 | `X-Fleet-Retries` | Number of retries (only if retry occurred) |
+| `X-Fleet-Context-Overflow` | Context overflow warning: `estimated_tokens=N; context_length=M` (only if estimated tokens exceed the node's context window) |
 
 **Error responses:**
 
 | Status | Condition |
 |--------|-----------|
 | 400 | Missing `model` field |
-| 404 | Model not found on any node |
+| 404 | Model not found on any node (auto-pull attempted first if `FLEET_AUTO_PULL=true`) |
 | 503 | Model exists but no node can serve it right now |
 
 ---

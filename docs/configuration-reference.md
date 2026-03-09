@@ -23,7 +23,7 @@ All settings are configured via environment variables. No config files needed.
 
 ### Scoring Weights
 
-These control the 5-signal scoring engine. Each incoming request is scored across all candidate nodes. Higher total score wins.
+These control the 7-signal scoring engine. Each incoming request is scored across all candidate nodes. Higher total score wins.
 
 | Variable | Default | Signal | Description |
 |----------|---------|--------|-------------|
@@ -38,11 +38,13 @@ These control the 5-signal scoring engine. Each incoming request is scored acros
 | `FLEET_SCORE_ROLE_LARGE_THRESHOLD_GB` | `20.0` | Affinity | Models above this size prefer large machines |
 | `FLEET_SCORE_ROLE_SMALL_THRESHOLD_GB` | `8.0` | Affinity | Models below this size prefer small machines |
 | `FLEET_SCORE_AVAILABILITY_TREND_MAX` | `10.0` | Capacity | Max points for node availability (capacity learning) |
+| `FLEET_SCORE_CONTEXT_FIT_MAX` | `15.0` | Context | Max points (or penalty) for context window fit vs estimated tokens |
 
 **Tuning guidance:**
 - Increase `SCORE_MODEL_HOT` to more aggressively prefer hot models over empty queues
 - Decrease `SCORE_QUEUE_DEPTH_PENALTY_PER` to tolerate deeper queues before spreading load
 - Increase `SCORE_ROLE_AFFINITY_MAX` to more strongly enforce "big models on big machines"
+- Increase `SCORE_CONTEXT_FIT_MAX` to more strongly prefer nodes with larger context windows for long inputs
 
 ### Rebalancer
 
@@ -53,6 +55,17 @@ The rebalancer runs continuously, moving pending requests from overloaded queues
 | `FLEET_REBALANCE_INTERVAL` | `5.0` | Seconds between rebalancer scans |
 | `FLEET_REBALANCE_THRESHOLD` | `4` | Queue depth that triggers rebalancing |
 | `FLEET_REBALANCE_MAX_PER_CYCLE` | `3` | Max requests moved per rebalancer cycle |
+
+### Auto-Pull
+
+When a requested model doesn't exist on any fleet node, the router can automatically pull it onto the best available node and serve the request seamlessly.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_AUTO_PULL` | `true` | Auto-pull missing models onto the best available node |
+| `FLEET_AUTO_PULL_TIMEOUT` | `300.0` | Max seconds to wait for a model pull to complete (5 min) |
+
+The router selects the online node with the most available memory that can fit the estimated model size. Concurrent pulls of the same model are deduplicated. Disable with `FLEET_AUTO_PULL=false` to get a 404 for missing models instead.
 
 ### Pre-Warm
 

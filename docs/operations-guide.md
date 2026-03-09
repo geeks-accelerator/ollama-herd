@@ -378,6 +378,52 @@ Pre-warm means that by the time the router starts sending overflow requests to t
 
 ---
 
+## Auto-Pull
+
+When a requested model doesn't exist on any fleet node and `FLEET_AUTO_PULL=true` (default), the router automatically pulls it onto the best available node.
+
+### How it works
+
+1. Router scores all nodes for the requested model — no node has it
+2. Router selects the online node with the most available memory
+3. Sends `POST /api/pull` to that node's Ollama with the model name
+4. Streams pull progress, logging download status
+5. After pull completes, injects the model into the registry and retries routing
+6. Request is served seamlessly — client sees normal latency plus download time
+
+### Node selection for pull
+
+The router picks the node with:
+- Status: online (not offline or paused)
+- Memory pressure: not critical
+- Most available memory (respecting capacity ceilings)
+- Enough available memory to fit the estimated model size
+
+### Duplicate prevention
+
+A module-level `_pulls_in_flight` set tracks models currently being pulled. If a second request arrives for the same model during a pull, it waits for the in-flight pull to complete rather than starting a duplicate download.
+
+### Relevant log lines
+
+```
+Auto-pulling tinyllama onto Neons-Mac-Studio
+Pulling tinyllama on Neons-Mac-Studio: pulling 56%
+Pull tinyllama on Neons-Mac-Studio: success
+Auto-pull tinyllama on Neons-Mac-Studio complete, retrying routing
+Routing tinyllama → Neons-Mac-Studio (score=20)
+```
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_AUTO_PULL` | `true` | Enable auto-pull for missing models |
+| `FLEET_AUTO_PULL_TIMEOUT` | `300.0` | Max seconds to wait for a pull (5 min) |
+
+Set `FLEET_AUTO_PULL=false` to return 404 immediately for missing models (the pre-auto-pull behavior).
+
+---
+
 ## Streaming Format Conversion
 
 The router transparently converts between Ollama and OpenAI streaming formats.

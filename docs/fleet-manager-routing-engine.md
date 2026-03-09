@@ -5,7 +5,7 @@
 
 ## Overview
 
-The routing engine is the brain of Fleet Manager. Every incoming request passes through a five-stage pipeline that eliminates unsuitable candidates, scores the survivors across six weighted signals, selects a winner, and then triggers background processes to keep the fleet ahead of future demand.
+The routing engine is the brain of Fleet Manager. Every incoming request passes through a five-stage pipeline that eliminates unsuitable candidates, scores the survivors across seven weighted signals, selects a winner, and then triggers background processes to keep the fleet ahead of future demand.
 
 The goal of every routing decision is to minimize **total response time**:
 
@@ -24,7 +24,7 @@ Incoming Request
       ↓
 Stage 1: Hard Elimination    → removes nodes that physically cannot serve
       ↓
-Stage 2: Scoring             → ranks survivors across 6 weighted signals
+Stage 2: Scoring             → ranks survivors across 7 weighted signals
       ↓
 Stage 3: Final Decision      → highest score wins, request enters queue
       ↓
@@ -61,7 +61,7 @@ The request enters a **holding queue** rather than failing. The router retries e
 
 ## Stage 2 — Scoring
 
-Each surviving candidate receives a score composed of six weighted signals. Higher total score wins. The signals are designed to be additive and independent — each captures a distinct dimension of routing quality.
+Each surviving candidate receives a score composed of seven weighted signals. Higher total score wins. The signals are designed to be additive and independent — each captures a distinct dimension of routing quality.
 
 ---
 
@@ -178,10 +178,31 @@ This prevents the pathological case where the router sends a 3-minute inference 
 
 ---
 
+### Signal 7 — Context Window Fit
+**Weight: −15 to +15 points**
+
+Routes token-heavy requests to nodes with adequate context window headroom. The router estimates input tokens (~4 chars per token) and compares against each loaded model's `context_length`.
+
+```
+ratio = context_length / estimated_tokens
+
+ratio < 1.0      −15  (tokens exceed context — truncation risk)
+ratio 1.0–1.5     +3  (tight fit)
+ratio 1.5–3.0     +7  (comfortable)
+ratio 3.0–8.0    +12  (plenty of room)
+ratio > 8.0      +15  (massive headroom)
+```
+
+Only applies to models that are already loaded (hot) with a known `context_length`. Returns 0 for cold models or when token count is unknown — avoiding cold loads remains the #1 priority.
+
+When estimated tokens exceed the context window on the winning node, the response includes an `X-Fleet-Context-Overflow` header warning the client that Ollama may truncate the input.
+
+---
+
 ## Stage 3 — Final Decision
 
 ```
-total_score = signal_1 + signal_2 − signal_3 − signal_4 + signal_5 + signal_6
+total_score = signal_1 + signal_2 − signal_3 − signal_4 + signal_5 + signal_6 + signal_7
 ```
 
 The highest-scoring candidate wins. The request is atomically added to that node's model queue.
@@ -200,16 +221,17 @@ The highest-scoring candidate wins. The request is atomically added to that node
 │ S4  Est. wait 48s / 0s                      │  -12   │   0    │
 │ S5  Role affinity (large model)             │  +15   │   +5   │
 │ S6  Availability trend (MBP only)           │   —    │  +10   │
+│ S7  Context fit (32K ctx, ~500 tokens)      │  +15   │  +15   │
 ├─────────────────────────────────────────────┼────────┼────────┤
-│ Total Score                                 │   49   │   40   │
+│ Total Score                                 │   64   │   55   │
 └─────────────────────────────────────────────┴────────┴────────┘
 
-→ Route to Mac Studio (49 > 40)
+→ Route to Mac Studio (64 > 55)
 → Trigger pre-warm: macbook-new:llama3.3:70b
   (Studio queue growing, MacBook available, model fits comfortably)
 ```
 
-The Mac Studio wins despite its busy queue because the model is already hot and it has the role affinity advantage. But the gap is only 9 points — small enough that the pre-warm trigger fires to close that gap for the next request.
+The Mac Studio wins despite its busy queue because the model is already hot and it has the role affinity advantage. But the gap is only 9 points — small enough that the pre-warm trigger fires to close that gap for the next request. (Context fit is equal here since both nodes have the same model with the same context window.)
 
 ---
 
@@ -309,7 +331,7 @@ The node agent emits a **capacity-change event** (distinct from the regular hear
 If 10 requests arrive simultaneously for a model that's cold on all nodes, the router must not send 10 simultaneous load signals to the same node. The pre-warm lock handles this: only the first routing decision triggers the load signal. Subsequent requests queue behind the first, and by the time they're processed, the model is hot.
 
 ### Model not available anywhere
-If the requested model isn't on disk on any node, the router does not silently fail or hang. It returns an explicit error response indicating which nodes were checked and that the model isn't available, along with the `ollama pull` command needed to make it available.
+If the requested model isn't on disk on any node and `FLEET_AUTO_PULL` is enabled (default), the router automatically pulls the model onto the node with the most available memory. The client waits for the download to complete, then receives the response seamlessly. If auto-pull is disabled or fails, the router returns an explicit 404 error.
 
 ### All nodes saturated
 If every candidate node has a queue depth above the rebalance threshold and no node has spare capacity, new requests enter the **holding queue** with a timestamp. The router surfaces this state in the dashboard as a fleet saturation warning. When any node's queue clears, the holding queue drains in FIFO order.
@@ -339,6 +361,7 @@ weights:
   wait_time:        25           # max penalty for Signal 4
   role_affinity:    15           # max points for Signal 5
   availability_trend: 10         # max points for Signal 6
+  context_fit:      15           # max points for Signal 7
 ```
 
 ---

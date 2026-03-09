@@ -98,9 +98,9 @@ Concurrency is recalculated on every enqueue, so it adapts as memory conditions 
 
 ---
 
-## Scoring Engine: 5 Signals with Fixed Weights
+## Scoring Engine: 7 Signals with Fixed Weights
 
-**Decision:** Use 5 weighted signals with fixed point values rather than a configurable or ML-based scoring system.
+**Decision:** Use 7 weighted signals with fixed point values rather than a configurable or ML-based scoring system.
 
 | Signal | Max Points | Purpose |
 |--------|-----------|---------|
@@ -109,6 +109,8 @@ Concurrency is recalculated on every enqueue, so it adapts as memory conditions 
 | Queue depth | −30 | Penalize busy nodes |
 | Latency history | −25 | Penalize historically slow nodes |
 | Role affinity | +15 | Match model size to machine capability |
+| Availability trend | +10 | Prefer nodes that are freeing up (capacity learning) |
+| Context fit | ±15 | Prefer nodes with context windows fitting the input |
 
 **Why fixed weights?**
 - Predictable — operators can reason about why a node was chosen
@@ -116,6 +118,39 @@ Concurrency is recalculated on every enqueue, so it adapts as memory conditions 
 - Thermal state dominates by design — avoiding cold model loads (10-60s) is the #1 performance win
 
 **Trade-off:** Fixed weights don't adapt to specific workload patterns. A future version could learn optimal weights per deployment, but the current system works well across diverse fleet configurations.
+
+---
+
+## Context Window Awareness (Signal 7)
+
+**Decision:** Add a scoring signal that prefers nodes with larger context windows for token-heavy requests.
+
+**Why?**
+- Models with limited context windows (4K–8K) risk truncating large prompts
+- Some models have 32K–128K context variants — the router can route long inputs to better-equipped nodes
+- Token estimation is rough (~4 chars/token heuristic), so this is a soft scoring signal, not a hard gate
+
+**Design:** Returns +15 max when input tokens have plenty of headroom, −15 when they exceed the window. Only applies to loaded (hot) models with known `context_length` — cold models return 0 (neutral), keeping "avoid cold loads" as the #1 priority.
+
+**Overflow handling:** When estimated tokens exceed the context window on the winning node, the response includes an `X-Fleet-Context-Overflow` header. The router still serves the request — Ollama handles truncation.
+
+---
+
+## Auto-Pull: Seamless Model Acquisition
+
+**Decision:** When a requested model doesn't exist on any fleet node, automatically pull it onto the best available node rather than returning a 404.
+
+**Why?**
+- Eliminates the most common setup friction ("Run `ollama pull <model>` first")
+- Small models download in under a minute — seamless for the client
+- The router already knows each node's Ollama URL and available memory
+- Enabled by default — aligns with the zero-config design principle
+
+**Node selection:** Pick the online node with the most available memory that can fit the estimated model size. Respects capacity ceilings, memory pressure, and paused state.
+
+**Deduplication:** A module-level `_pulls_in_flight` set prevents concurrent pulls of the same model. A second request for the same model waits for the in-flight pull to complete, then retries scoring.
+
+**Trade-off:** The client waits for the download (up to `FLEET_AUTO_PULL_TIMEOUT`, default 5 minutes). For large models this can be slow, but the alternative — returning an error and requiring manual intervention — is worse for the zero-config use case. Users who prefer explicit control can set `FLEET_AUTO_PULL=false`.
 
 ---
 
