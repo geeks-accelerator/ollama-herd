@@ -129,7 +129,8 @@ class NodeRegistry:
         """Build the network-reachable Ollama URL from the heartbeat.
 
         If the node is on the same machine as the router (heartbeat from localhost),
-        use the node's configured ollama_host directly (typically localhost:11434).
+        use localhost directly — more reliable than going through the LAN IP since
+        it avoids network stack issues (firewall, IP changes, macOS quirks).
         For remote nodes, construct URL from the node's LAN IP.
         """
         from urllib.parse import urlparse
@@ -137,10 +138,12 @@ class NodeRegistry:
         # If heartbeat came from loopback, the node is on this machine
         is_local = request_ip in ("127.0.0.1", "::1", "")
         if is_local:
-            # Node on same machine — localhost is reachable
+            # Node on same machine — use localhost for reliability.
+            # The collector may have rewritten ollama_host to the LAN IP,
+            # but for co-located router+node, localhost is always reachable.
             parsed = urlparse(payload.ollama_host)
-            if parsed.hostname in ("localhost", "127.0.0.1", "::1"):
-                return payload.ollama_host
+            port = parsed.port or 11434
+            return f"http://localhost:{port}"
 
         if payload.lan_ip and payload.lan_ip != "127.0.0.1":
             parsed = urlparse(payload.ollama_host)

@@ -36,21 +36,51 @@ class StreamingProxy:
     def __init__(self, registry: NodeRegistry, latency_store=None, trace_store=None):
         self._registry = registry
         self._clients: dict[str, httpx.AsyncClient] = {}
+        self._client_urls: dict[str, str] = {}  # Track URL used to create each client
         self._latency_store = latency_store
         self._trace_store = trace_store
         # Token counts extracted from Ollama final chunks, keyed by request_id
         self._request_tokens: dict[str, tuple[int | None, int | None]] = {}
 
     def _get_client(self, node_id: str) -> httpx.AsyncClient:
+        node = self._registry.get_node(node_id)
+        if not node:
+            raise ValueError(f"Node {node_id} not found in registry")
+
+        # Recreate client if URL changed (e.g., node got a new LAN IP)
+        current_url = node.ollama_base_url
+        if node_id in self._clients and self._client_urls.get(node_id) != current_url:
+            logger.info(
+                f"Node {node_id} URL changed from {self._client_urls[node_id]} "
+                f"to {current_url}, recreating HTTP client"
+            )
+            _create_logged_task(
+                self._clients[node_id].aclose(),
+                name=f"close-stale-client-{node_id}",
+            )
+            del self._clients[node_id]
+
         if node_id not in self._clients:
-            node = self._registry.get_node(node_id)
-            if not node:
-                raise ValueError(f"Node {node_id} not found in registry")
             self._clients[node_id] = httpx.AsyncClient(
-                base_url=node.ollama_base_url,
+                base_url=current_url,
                 timeout=httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0),
             )
+            self._client_urls[node_id] = current_url
         return self._clients[node_id]
+
+    def _invalidate_client(self, node_id: str):
+        """Discard a cached HTTP client so the next request creates a fresh one.
+
+        Called after connection errors to recover from stale connection pools.
+        """
+        if node_id in self._clients:
+            logger.info(f"Invalidating HTTP client for {node_id} after connection error")
+            _create_logged_task(
+                self._clients[node_id].aclose(),
+                name=f"close-failed-client-{node_id}",
+            )
+            del self._clients[node_id]
+            self._client_urls.pop(node_id, None)
 
     def make_process_fn(self, queue_key: str, queue_manager, scorer=None, settings=None):
         """Create a process function for the queue worker.
@@ -83,6 +113,9 @@ class StreamingProxy:
             logger.debug(f"Stream consumer stopped early for {entry.request.request_id[:8]}")
         except Exception as e:
             error_occurred = True
+            # Invalidate stale client on connection errors so next request gets a fresh one
+            if self._is_retryable_error(e):
+                self._invalidate_client(entry.assigned_node)
             queue_manager.mark_failed(queue_key, entry)
             logger.error(f"Stream error for {entry.request.request_id[:8]}: {e}")
             # Record failed trace
@@ -220,6 +253,10 @@ class StreamingProxy:
                 self._record_trace(entry, current_node, start_time, first_token_time, "completed")
                 return
             except Exception as e:
+                # Invalidate stale client on connection errors
+                if self._is_retryable_error(e):
+                    self._invalidate_client(current_node)
+
                 if first_chunk_sent or not self._is_retryable_error(e):
                     # Cannot retry after chunks sent, or non-retryable error
                     queue_manager.mark_failed(current_queue_key, entry)
