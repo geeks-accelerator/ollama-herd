@@ -105,15 +105,47 @@ class HealthEngine:
             vitals.overall_error_rate_pct = overall_24h["error_rate_pct"]
             vitals.avg_ttft_ms = overall_24h["avg_ttft_ms"]
 
+            model_timeouts = await trace_store.get_model_timeouts_24h()
+            recent_timeouts = await trace_store.get_model_timeouts_24h(
+                lookback_s=self.RECENT_WINDOW_S
+            )
+
             recommendations.extend(
                 self._check_model_thrashing(
                     cold_loads["by_node"], recent_cold["by_node"], nodes
                 )
             )
             recommendations.extend(
+                self._check_model_load_timeouts(
+                    model_timeouts, recent_timeouts, nodes
+                )
+            )
+            recommendations.extend(
                 self._check_error_rates(error_rates, recent_errors)
             )
             recommendations.extend(self._check_retry_rates(retry_stats))
+
+        # Suppress misleading "underutilized memory" when there's active
+        # model thrashing or timeouts on the same node — telling users to
+        # "load more models" while models are timing out is contradictory.
+        nodes_with_load_issues: set[str] = set()
+        for r in recommendations:
+            if r.check_id in ("model_thrashing", "model_load_timeout"):
+                if r.severity != Severity.INFO:  # don't suppress for resolved issues
+                    if r.node_id:
+                        nodes_with_load_issues.add(r.node_id)
+                    # model_load_timeout spans nodes — check data field too
+                    for n in r.data.get("nodes", []):
+                        nodes_with_load_issues.add(n)
+        if nodes_with_load_issues:
+            recommendations = [
+                r
+                for r in recommendations
+                if not (
+                    r.check_id == "underutilized_memory"
+                    and r.node_id in nodes_with_load_issues
+                )
+            ]
 
         # Compute health score
         vitals.health_score = self._compute_health_score(recommendations)
@@ -243,6 +275,76 @@ class HealthEngine:
     # ------------------------------------------------------------------
     # Trace-based checks
     # ------------------------------------------------------------------
+
+    def _check_model_load_timeouts(
+        self, timeouts, recent_timeouts, nodes
+    ) -> list[Recommendation]:
+        """Detect models that repeatedly time out — they can't load fast enough.
+
+        This catches the pattern where a model keeps getting evicted and
+        requested again, but takes so long to reload that requests time out.
+        The cold-load detector misses these because the requests never complete.
+        """
+        recs = []
+        if timeouts["total_count"] < 3:
+            return recs
+
+        # Find the worst-offending models
+        for model, info in timeouts["by_model"].items():
+            if info["count"] < 3:
+                continue
+            recent_model = recent_timeouts["by_model"].get(model, {})
+            recent_count = recent_model.get("count", 0)
+            still_active = recent_count >= 1
+            node_list = ", ".join(sorted(set(info["nodes"])))
+
+            if still_active:
+                recs.append(
+                    Recommendation(
+                        check_id="model_load_timeout",
+                        severity=Severity.WARNING,
+                        title=f"Model {model} repeatedly timing out",
+                        description=(
+                            f"{info['count']} timeout(s) for {model} in the last 24h "
+                            f"({recent_count} in the last hour) on {node_list}. "
+                            f"The model is likely being evicted from memory and can't "
+                            f"reload before the request timeout."
+                        ),
+                        fix=(
+                            f"Keep {model} loaded: "
+                            f"curl http://localhost:11434/api/generate "
+                            f"-d '{{\"model\":\"{model}\",\"keep_alive\":-1}}'. "
+                            f"Or set OLLAMA_MAX_LOADED_MODELS=-1 to let Ollama "
+                            f"fill available memory."
+                        ),
+                        data={
+                            "model": model,
+                            "timeouts_24h": info["count"],
+                            "timeouts_1h": recent_count,
+                            "nodes": info["nodes"],
+                        },
+                    )
+                )
+            else:
+                recs.append(
+                    Recommendation(
+                        check_id="model_load_timeout",
+                        severity=Severity.INFO,
+                        title=f"Model {model} timeouts resolved",
+                        description=(
+                            f"{info['count']} timeout(s) in the last 24h, but none in "
+                            f"the last hour."
+                        ),
+                        fix="No action needed. This will clear as historical data ages out.",
+                        data={
+                            "model": model,
+                            "timeouts_24h": info["count"],
+                            "timeouts_1h": 0,
+                            "resolved": True,
+                        },
+                    )
+                )
+        return recs
 
     def _check_model_thrashing(
         self, cold_loads_by_node, recent_cold_by_node, nodes

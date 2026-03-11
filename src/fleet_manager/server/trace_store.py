@@ -543,6 +543,41 @@ class TraceStore:
             "total_retries": row[3] or 0,
         }
 
+    async def get_model_timeouts_24h(
+        self, timeout_threshold_ms: float = 120_000, lookback_s: int = 86400
+    ) -> dict:
+        """Count model load timeouts (failed/retried requests with high latency) by node and model.
+
+        Catches the pattern where a model keeps timing out because it's being
+        evicted and can't reload fast enough — the smoking gun for model thrashing
+        that cold-load detection misses (since those requests never complete).
+        """
+        if not self._db:
+            return {"total_count": 0, "by_node": {}, "by_model": {}}
+        cutoff = time.time() - lookback_s
+        cursor = await self._db.execute(
+            """
+            SELECT node_id, model, COUNT(*) AS timeout_count
+            FROM request_traces
+            WHERE timestamp >= ?
+              AND status IN ('retried', 'failed')
+              AND latency_ms > ?
+            GROUP BY node_id, model
+            """,
+            (cutoff, timeout_threshold_ms),
+        )
+        rows = await cursor.fetchall()
+        by_node: dict[str, int] = {}
+        by_model: dict[str, dict] = {}
+        for node_id, model, count in rows:
+            by_node[node_id] = by_node.get(node_id, 0) + count
+            if model not in by_model:
+                by_model[model] = {"count": 0, "nodes": []}
+            by_model[model]["count"] += count
+            by_model[model]["nodes"].append(node_id)
+        total = sum(by_node.values())
+        return {"total_count": total, "by_node": by_node, "by_model": by_model}
+
     # -- Benchmark runs --
 
     async def save_benchmark_run(self, data: dict):
