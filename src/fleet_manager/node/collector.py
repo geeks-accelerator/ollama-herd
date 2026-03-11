@@ -6,7 +6,12 @@ import logging
 from urllib.parse import urlparse
 
 from fleet_manager.common.ollama_client import OllamaClient
-from fleet_manager.common.system_metrics import get_cpu_metrics, get_local_ip, get_memory_metrics
+from fleet_manager.common.system_metrics import (
+    get_cpu_metrics,
+    get_disk_metrics,
+    get_local_ip,
+    get_memory_metrics,
+)
 from fleet_manager.models.node import CapacityMetrics, HeartbeatPayload, OllamaMetrics
 
 logger = logging.getLogger(__name__)
@@ -30,6 +35,7 @@ async def collect_heartbeat(
     """Assemble a complete heartbeat payload from local system state."""
     cpu = get_cpu_metrics()
     memory = get_memory_metrics()
+    disk = get_disk_metrics()
 
     try:
         models_loaded = await ollama.get_running_models()
@@ -69,6 +75,7 @@ async def collect_heartbeat(
         node_id=node_id,
         cpu=cpu,
         memory=memory,
+        disk=disk,
         ollama=OllamaMetrics(
             models_loaded=models_loaded,
             models_available=models_available,

@@ -59,6 +59,7 @@ class NodeRegistry:
 
             node.cpu = payload.cpu
             node.memory = payload.memory
+            node.disk = payload.disk
             node.ollama = payload.ollama
             node.capacity = payload.capacity
             node.last_heartbeat = time.time()

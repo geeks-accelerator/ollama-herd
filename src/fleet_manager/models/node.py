@@ -34,6 +34,12 @@ class MemoryMetrics(BaseModel):
     compressed_gb: float = 0.0
 
 
+class DiskMetrics(BaseModel):
+    total_gb: float
+    used_gb: float
+    available_gb: float
+
+
 class LoadedModel(BaseModel):
     name: str
     size_gb: float
@@ -67,6 +73,7 @@ class HeartbeatPayload(BaseModel):
     timestamp: float = Field(default_factory=time.time)
     cpu: CpuMetrics
     memory: MemoryMetrics
+    disk: DiskMetrics | None = None
     ollama: OllamaMetrics
     ollama_host: str = "http://localhost:11434"
     lan_ip: str = ""
@@ -91,6 +98,7 @@ class NodeState(BaseModel):
     missed_heartbeats: int = 0
     cpu: CpuMetrics | None = None
     memory: MemoryMetrics | None = None
+    disk: DiskMetrics | None = None
     ollama: OllamaMetrics | None = None
     ollama_base_url: str = "http://localhost:11434"
     # Track when models were last unloaded for warm-tier scoring

@@ -8,7 +8,7 @@ import subprocess
 
 import psutil
 
-from fleet_manager.models.node import CpuMetrics, MemoryMetrics, MemoryPressure
+from fleet_manager.models.node import CpuMetrics, DiskMetrics, MemoryMetrics, MemoryPressure
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,15 @@ def get_memory_metrics() -> MemoryMetrics:
         pressure=pressure,
         wired_gb=round(wired / (1024**3), 2),
         compressed_gb=0.0,
+    )
+
+
+def get_disk_metrics() -> DiskMetrics:
+    usage = psutil.disk_usage("/")
+    return DiskMetrics(
+        total_gb=round(usage.total / (1024**3), 2),
+        used_gb=round(usage.used / (1024**3), 2),
+        available_gb=round(usage.free / (1024**3), 2),
     )
 
 

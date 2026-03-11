@@ -236,6 +236,33 @@ class TraceStore:
             for row in rows
         ]
 
+    async def get_last_used_by_node_model(self) -> list[dict]:
+        """Per-node, per-model last-used timestamp and total request count."""
+        if not self._db:
+            return []
+        cursor = await self._db.execute(
+            """
+            SELECT
+                node_id,
+                model,
+                MAX(timestamp) AS last_used,
+                COUNT(*) AS total_requests
+            FROM request_traces
+            GROUP BY node_id, model
+            ORDER BY node_id, model
+            """
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "node_id": row[0],
+                "model": row[1],
+                "last_used": row[2],
+                "total_requests": row[3],
+            }
+            for row in rows
+        ]
+
     async def get_node_summary(self) -> list[dict]:
         """Per-node all-time aggregate stats."""
         if not self._db:

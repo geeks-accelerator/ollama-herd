@@ -344,3 +344,53 @@ class TestRecommender:
         assert custom_recs[0].already_available
         assert custom_recs[0].priority == Priority.HIGH
         assert custom_recs[0].ram_gb == 5.0
+
+    def test_disk_constrained_skips_large_models(self):
+        """Node with lots of RAM but little disk should skip large non-downloaded models."""
+        node = make_node(
+            "low-disk",
+            memory_total=96.0,
+            memory_used=10.0,
+            disk_total=100.0,
+            disk_used=95.0,  # Only 5 GB free
+            available_models=["qwen3:8b"],  # Already have one model
+        )
+        report = self.recommender.analyze([node])
+        plan = report.nodes[0]
+        assert plan.disk_total_gb == 100.0
+        assert plan.disk_available_gb <= 5.0
+        # All non-downloaded recommendations should fit in available disk
+        for rec in plan.recommendations:
+            if not rec.already_available:
+                assert rec.ram_gb <= 5.0, (
+                    f"{rec.model} ({rec.ram_gb}GB) exceeds 5GB disk free"
+                )
+
+    def test_disk_available_in_plan(self):
+        """Node plan should include disk metrics."""
+        node = make_node("studio", memory_total=64.0, disk_total=500.0, disk_used=200.0)
+        report = self.recommender.analyze([node])
+        plan = report.nodes[0]
+        assert plan.disk_total_gb == 500.0
+        # Disk available should be <= 300 (original free minus new downloads)
+        assert plan.disk_available_gb <= 300.0
+
+    def test_downloaded_models_ignore_disk(self):
+        """Already-downloaded models should be recommended regardless of disk space."""
+        node = make_node(
+            "full-disk",
+            memory_total=64.0,
+            memory_used=10.0,
+            disk_total=100.0,
+            disk_used=99.0,  # 1 GB free — almost no disk
+            available_models=["qwen3:8b", "llama3.1:8b"],
+        )
+        usage_data = [
+            {"model": "qwen3:8b", "request_count": 50, "node_id": "full-disk"},
+        ]
+        report = self.recommender.analyze([node], usage_data)
+        plan = report.nodes[0]
+        # qwen3:8b should still be recommended (already downloaded)
+        qwen_recs = [r for r in plan.recommendations if "qwen3" in r.model]
+        assert len(qwen_recs) > 0
+        assert qwen_recs[0].already_available

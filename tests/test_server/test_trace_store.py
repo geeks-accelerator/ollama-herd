@@ -339,6 +339,34 @@ class TestTagAnalytics:
         assert tags_map["staging"]["total_requests"] == 1
 
 
+class TestLastUsedByNodeModel:
+    @pytest.mark.asyncio
+    async def test_get_last_used_by_node_model(self, store):
+        await _seed_traces(store)
+        data = await store.get_last_used_by_node_model()
+        # _seed_traces inserts 3 traces: node-a/phi4:14b, node-b/phi4:14b, node-a/llama3:8b
+        lookup = {(d["node_id"], d["model"]): d for d in data}
+        assert ("node-a", "phi4:14b") in lookup
+        assert lookup[("node-a", "phi4:14b")]["total_requests"] == 1
+        assert ("node-b", "phi4:14b") in lookup
+        assert lookup[("node-b", "phi4:14b")]["total_requests"] == 1
+        assert ("node-a", "llama3:8b") in lookup
+        assert lookup[("node-a", "llama3:8b")]["total_requests"] == 1
+        # last_used should be a timestamp
+        assert lookup[("node-a", "phi4:14b")]["last_used"] > 0
+
+    @pytest.mark.asyncio
+    async def test_get_last_used_empty(self, store):
+        data = await store.get_last_used_by_node_model()
+        assert data == []
+
+    @pytest.mark.asyncio
+    async def test_get_last_used_without_init(self):
+        store = TraceStore(data_dir="/tmp/nonexistent")
+        data = await store.get_last_used_by_node_model()
+        assert data == []
+
+
 class TestBenchmarkRuns:
     @pytest.mark.asyncio
     async def test_save_and_get_benchmark_run(self, store):

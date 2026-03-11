@@ -329,6 +329,97 @@ async def dashboard_pull_model(request: Request):
     return {"ok": success, "node_id": node_id, "model": model}
 
 
+@router.post("/dashboard/api/delete")
+async def dashboard_delete_model(request: Request):
+    """Delete a model from a specific node via Ollama."""
+    body = await request.json()
+    node_id = body["node_id"]
+    model = body["model"]
+    proxy = request.app.state.streaming_proxy
+    success = await proxy.delete_model(node_id, model)
+    return {"ok": success, "node_id": node_id, "model": model}
+
+
+@router.get("/dashboard/api/model-management")
+async def dashboard_model_management(request: Request):
+    """Per-node model details with disk sizes and last-used timestamps."""
+    from fleet_manager.server.model_knowledge import classify_model, lookup_model
+
+    registry = request.app.state.registry
+    trace_store = getattr(request.app.state, "trace_store", None)
+    proxy = request.app.state.streaming_proxy
+
+    nodes = registry.get_all_nodes()
+    online_nodes = [n for n in nodes if n.status != "offline"]
+
+    # Get last-used data in one query
+    usage_map: dict[tuple[str, str], dict] = {}
+    if trace_store:
+        usage_rows = await trace_store.get_last_used_by_node_model()
+        for row in usage_rows:
+            usage_map[(row["node_id"], row["model"])] = row
+
+    now = time.time()
+    result = []
+
+    for node in online_nodes:
+        if not node.ollama:
+            continue
+
+        # Query Ollama for full model details (including disk size)
+        model_details = await proxy.query_node_models(node.node_id)
+        detail_map = {m["name"]: m for m in model_details}
+
+        # Models currently loaded in VRAM
+        loaded_set = {m.name for m in node.ollama.models_loaded}
+
+        models = []
+        for model_name in node.ollama.models_available:
+            detail = detail_map.get(model_name, {})
+            usage = usage_map.get((node.node_id, model_name), {})
+
+            spec = lookup_model(model_name)
+            category = classify_model(model_name).value
+
+            last_used = usage.get("last_used")
+            days_unused = None
+            if last_used:
+                days_unused = round((now - last_used) / 86400, 1)
+
+            models.append({
+                "name": model_name,
+                "display_name": spec.display_name if spec else model_name,
+                "category": category,
+                "size_gb": detail.get("size_gb", spec.ram_gb if spec else 0),
+                "parameter_size": detail.get("parameter_size", ""),
+                "quantization": detail.get("quantization", ""),
+                "last_used": last_used,
+                "days_unused": days_unused,
+                "total_requests": usage.get("total_requests", 0),
+                "loaded_in_vram": model_name in loaded_set,
+                "unused": days_unused is None or days_unused >= 7,
+            })
+
+        # Sort: loaded first, then by last-used desc, then alphabetical
+        models.sort(key=lambda m: (
+            not m["loaded_in_vram"],
+            -(m["last_used"] or 0),
+            m["name"],
+        ))
+
+        result.append({
+            "node_id": node.node_id,
+            "models": models,
+            "total_size_gb": round(sum(m["size_gb"] for m in models), 1),
+            "disk_available_gb": (
+                round(node.disk.available_gb, 1) if node.disk else 0
+            ),
+            "disk_total_gb": round(node.disk.total_gb, 1) if node.disk else 0,
+        })
+
+    return {"nodes": result}
+
+
 # ---------------------------------------------------------------------------
 # HTML pages
 # ---------------------------------------------------------------------------
@@ -1966,6 +2057,7 @@ _RECOMMENDATIONS_BODY = """
 .node-plan { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:16px; }
 .node-plan-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
 .node-plan-title { font-size:16px; font-weight:600; }
+.node-bars { display:flex; flex-direction:column; gap:4px; align-items:flex-end; }
 .node-ram-bar { display:flex; align-items:center; gap:12px; }
 .ram-bar { width:160px; height:8px; background:var(--border); border-radius:4px; overflow:hidden; }
 .ram-bar-fill { height:100%; border-radius:4px; background:var(--accent); transition:width 0.3s; }
@@ -2024,11 +2116,67 @@ _RECOMMENDATIONS_BODY = """
 .pull-status.pulling { animation: pulse 1.5s ease-in-out infinite; }
 .empty-state { text-align:center; padding:60px 20px; color:var(--text-dim); }
 .empty-state h3 { color:var(--text); margin-bottom:8px; font-size:18px; }
+/* Model Management */
+.model-mgmt { margin-top:16px; padding-top:16px; border-top:1px solid var(--border); }
+.model-mgmt-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.model-mgmt-label { font-size:12px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; font-weight:600; }
+.model-mgmt-summary { font-size:11px; color:var(--text-dim); }
+.model-table { width:100%; border-collapse:collapse; font-size:12px; }
+.model-table th { text-align:left; padding:6px 8px; color:var(--text-dim); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:0.3px; border-bottom:1px solid var(--border); }
+.model-table td { padding:8px; border-bottom:1px solid rgba(255,255,255,0.04); vertical-align:middle; }
+.model-table tr:hover { background:rgba(108,99,255,0.04); }
+.model-table tr.unused-row { background:rgba(239,68,68,0.04); }
+.model-table tr.unused-row:hover { background:rgba(239,68,68,0.08); }
+.model-table .name-col { font-weight:500; }
+.model-table .name-col code { font-size:11px; color:var(--text-dim); }
+.model-table .cat-pill { font-size:10px; padding:1px 6px; border-radius:3px; background:var(--border); }
+.model-table .size-col { font-variant-numeric:tabular-nums; text-align:right; }
+.model-table .usage-col { text-align:right; font-variant-numeric:tabular-nums; }
+.model-table .status-col { text-align:center; white-space:nowrap; }
+.vram-badge { font-size:10px; padding:1px 6px; border-radius:3px; background:rgba(34,197,94,0.15); color:var(--green); }
+.unused-badge { font-size:10px; padding:1px 6px; border-radius:3px; background:rgba(239,68,68,0.15); color:var(--red); }
+.never-used-badge { font-size:10px; padding:1px 6px; border-radius:3px; background:rgba(234,179,8,0.15); color:var(--yellow); }
+.delete-section { display:flex; align-items:center; gap:10px; margin-top:10px; }
+.delete-btn {
+  background:var(--red); color:#fff; border:none; border-radius:6px;
+  font-size:13px; font-weight:500; padding:8px 16px; cursor:pointer;
+  display:inline-flex; align-items:center; gap:6px; transition:all .15s;
+}
+.delete-btn:hover { opacity:0.85; }
+.delete-btn:disabled { opacity:.4; cursor:not-allowed; }
+.delete-btn svg { width:14px; height:14px; }
+.delete-progress { font-size:12px; color:var(--text-dim); }
+.delete-status { font-size:11px; font-weight:500; margin-left:4px; }
+.delete-status.deleting { color:var(--red); animation: pulse 1.5s ease-in-out infinite; }
+.delete-status.deleted { color:var(--green); }
+.delete-status.error { color:var(--red); }
+.mgmt-check { width:16px; height:16px; accent-color:var(--red); cursor:pointer; }
+.mgmt-check:disabled { opacity:.4; cursor:default; }
+.mgmt-check-all { width:16px; height:16px; accent-color:var(--red); cursor:pointer; }
+.confirm-overlay {
+  position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6);
+  display:flex; align-items:center; justify-content:center; z-index:1000;
+}
+.confirm-dialog {
+  background:var(--card); border:1px solid var(--border); border-radius:12px;
+  padding:24px; max-width:480px; width:90%;
+}
+.confirm-dialog h3 { margin:0 0 12px; font-size:16px; }
+.confirm-dialog p { font-size:13px; color:var(--text-dim); line-height:1.5; margin:0 0 8px; }
+.confirm-dialog .warn-text { color:var(--yellow); font-size:12px; margin:8px 0; }
+.confirm-dialog ul { font-size:12px; margin:8px 0; padding-left:20px; color:var(--text); }
+.confirm-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+.confirm-cancel { background:var(--border); color:var(--text); border:none; border-radius:6px; padding:8px 16px; cursor:pointer; font-size:13px; }
+.confirm-cancel:hover { background:rgba(255,255,255,0.15); }
+.confirm-delete { background:var(--red); color:#fff; border:none; border-radius:6px; padding:8px 16px; cursor:pointer; font-size:13px; font-weight:500; }
+.confirm-delete:hover { opacity:0.85; }
 @media (max-width:768px) {
   .usage-grid { grid-template-columns:repeat(2,1fr); }
   .node-plan-header { flex-direction:column; align-items:flex-start; gap:8px; }
   .model-rec { flex-direction:column; align-items:flex-start; }
   .model-stats { flex-direction:row; }
+  .model-table { font-size:11px; }
+  .model-table th, .model-table td { padding:4px 6px; }
 }
 </style>
 
@@ -2150,12 +2298,23 @@ function renderRecommendations(data) {
     var ramPct = node.usable_ram_gb > 0 ? Math.min(100, Math.round(node.total_recommended_ram_gb / node.usable_ram_gb * 100)) : 0;
     var barColor = ramPct > 90 ? 'var(--yellow)' : 'var(--accent)';
 
+    var diskPct = node.disk_total_gb > 0 ? Math.min(100, Math.round((node.disk_total_gb - node.disk_available_gb) / node.disk_total_gb * 100)) : 0;
+    var diskColor = diskPct > 90 ? 'var(--red)' : diskPct > 75 ? 'var(--yellow)' : 'var(--blue)';
+
     var html = '<div class="node-plan">';
     html += '<div class="node-plan-header">';
     html += '<div class="node-plan-title">' + node.node_id + '</div>';
+    html += '<div class="node-bars">';
     html += '<div class="node-ram-bar">';
     html += '<div class="ram-bar"><div class="ram-bar-fill" style="width:' + ramPct + '%;background:' + barColor + '"></div></div>';
-    html += '<div class="ram-bar-label">' + node.total_recommended_ram_gb + ' / ' + node.usable_ram_gb + ' GB usable</div>';
+    html += '<div class="ram-bar-label">' + node.total_recommended_ram_gb + ' / ' + node.usable_ram_gb + ' GB RAM</div>';
+    html += '</div>';
+    if (node.disk_total_gb > 0) {
+      html += '<div class="node-ram-bar">';
+      html += '<div class="ram-bar"><div class="ram-bar-fill" style="width:' + diskPct + '%;background:' + diskColor + '"></div></div>';
+      html += '<div class="ram-bar-label">' + node.disk_available_gb.toFixed(0) + ' / ' + node.disk_total_gb.toFixed(0) + ' GB Disk free</div>';
+      html += '</div>';
+    }
     html += '</div></div>';
 
     if (node.recommendations.length === 0) {
@@ -2208,16 +2367,14 @@ function renderRecommendations(data) {
       }
     }
 
-    // Current models
-    if (node.current_models && node.current_models.length > 0) {
-      html += '<div class="current-models">';
-      html += '<div class="current-models-label">Currently Available (' + node.current_models.length + ' models)</div>';
-      html += '<div class="current-tags">';
-      node.current_models.forEach(function(m) {
-        html += '<span class="current-tag">' + m + '</span>';
-      });
-      html += '</div></div>';
-    }
+    // Model Management placeholder (populated by loadModelManagement)
+    html += '<div class="model-mgmt" id="mgmt-' + node.node_id + '">';
+    html += '<div class="model-mgmt-header">';
+    html += '<div class="model-mgmt-label">Model Management</div>';
+    html += '<div class="model-mgmt-summary" id="mgmt-summary-' + node.node_id + '">Loading...</div>';
+    html += '</div>';
+    html += '<div id="mgmt-table-' + node.node_id + '"></div>';
+    html += '</div>';
 
     html += '</div>';
     return html;
@@ -2346,6 +2503,196 @@ function updateTimestamp() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Model Management
+// ---------------------------------------------------------------------------
+var _mgmtData = {};
+
+async function loadModelManagement() {
+  try {
+    var resp = await fetch('/dashboard/api/model-management');
+    var data = await resp.json();
+    (data.nodes || []).forEach(function(nodeData) {
+      _mgmtData[nodeData.node_id] = nodeData;
+      renderModelManagement(nodeData);
+    });
+  } catch (err) {
+    console.error('Model management load error:', err);
+  }
+}
+
+function renderModelManagement(nodeData) {
+  var tableEl = document.getElementById('mgmt-table-' + nodeData.node_id);
+  var summaryEl = document.getElementById('mgmt-summary-' + nodeData.node_id);
+  if (!tableEl) return;
+
+  var models = nodeData.models || [];
+  var unusedCount = models.filter(function(m) { return m.unused; }).length;
+
+  summaryEl.textContent = models.length + ' model' + (models.length !== 1 ? 's' : '') +
+    ' (' + nodeData.total_size_gb + ' GB on disk)' +
+    (unusedCount > 0 ? ' \u00b7 ' + unusedCount + ' unused' : '');
+
+  if (models.length === 0) {
+    tableEl.innerHTML = '<div style="padding:12px;color:var(--text-dim);font-size:12px">No models on this node</div>';
+    return;
+  }
+
+  var html = '<table class="model-table">';
+  html += '<thead><tr>';
+  html += '<th style="width:30px"><input type="checkbox" class="mgmt-check-all" data-node="' + nodeData.node_id + '"></th>';
+  html += '<th>Model</th><th>Category</th><th style="text-align:right">Size</th>';
+  html += '<th style="text-align:right">Requests</th><th style="text-align:right">Last Used</th>';
+  html += '<th style="text-align:center">Status</th>';
+  html += '</tr></thead><tbody>';
+
+  models.forEach(function(m) {
+    var rowClass = m.unused ? 'unused-row' : '';
+    var safeId = m.name.replace(/[^a-zA-Z0-9]/g, '-');
+    html += '<tr class="' + rowClass + '">';
+    html += '<td><input type="checkbox" class="mgmt-check" data-node="' + nodeData.node_id + '" data-model="' + m.name + '"';
+    if (m.loaded_in_vram) html += ' data-loaded="1"';
+    html += '></td>';
+    html += '<td class="name-col">' + m.display_name + '<br><code>' + m.name + '</code></td>';
+    html += '<td><span class="cat-pill">' + (CAT_LABELS[m.category] || m.category) + '</span></td>';
+    html += '<td class="size-col">' + m.size_gb.toFixed(1) + ' GB</td>';
+    html += '<td class="usage-col">' + (m.total_requests || 0) + '</td>';
+    html += '<td class="usage-col">';
+    if (m.last_used) {
+      html += formatTimestamp(m.last_used);
+    } else {
+      html += '<span style="color:var(--yellow)">never</span>';
+    }
+    html += '</td>';
+    html += '<td class="status-col">';
+    if (m.loaded_in_vram) html += '<span class="vram-badge">VRAM</span> ';
+    if (m.unused && !m.last_used) {
+      html += '<span class="never-used-badge">never used</span>';
+    } else if (m.unused) {
+      html += '<span class="unused-badge">unused 7d+</span>';
+    }
+    html += '<span class="delete-status" id="del-' + nodeData.node_id + '-' + safeId + '"></span>';
+    html += '</td>';
+    html += '</tr>';
+  });
+
+  html += '</tbody></table>';
+  html += '<div class="delete-section" id="delete-section-' + nodeData.node_id + '" style="display:none">';
+  html += '<button class="delete-btn" id="delete-btn-' + nodeData.node_id + '" data-node="' + nodeData.node_id + '">';
+  html += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+  html += 'Delete Selected</button>';
+  html += '<span class="delete-progress" id="delete-progress-' + nodeData.node_id + '"></span>';
+  html += '</div>';
+
+  tableEl.innerHTML = html;
+}
+
+function getSelectedDeleteModels(nodeId) {
+  var checks = document.querySelectorAll('.mgmt-check[data-node="' + nodeId + '"]:checked');
+  var models = [];
+  checks.forEach(function(cb) { models.push({ name: cb.dataset.model, loaded: cb.dataset.loaded === '1' }); });
+  return models;
+}
+
+function updateDeleteSection(nodeId) {
+  var selected = getSelectedDeleteModels(nodeId);
+  var section = document.getElementById('delete-section-' + nodeId);
+  if (!section) return;
+  section.style.display = selected.length > 0 ? 'flex' : 'none';
+  var btn = document.getElementById('delete-btn-' + nodeId);
+  if (btn && !btn.disabled) {
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>' +
+      'Delete ' + selected.length + ' Model' + (selected.length > 1 ? 's' : '');
+  }
+}
+
+function showDeleteConfirmation(nodeId) {
+  var selected = getSelectedDeleteModels(nodeId);
+  if (selected.length === 0) return;
+
+  var loadedModels = selected.filter(function(m) { return m.loaded; });
+  var hasLoaded = loadedModels.length > 0;
+
+  var html = '<div class="confirm-overlay" id="confirm-overlay">';
+  html += '<div class="confirm-dialog">';
+  html += '<h3>Delete ' + selected.length + ' model' + (selected.length > 1 ? 's' : '') + '?</h3>';
+  html += '<p>These models will be permanently removed from <strong>' + nodeId + '</strong>:</p>';
+  html += '<ul>';
+  selected.forEach(function(m) {
+    html += '<li>' + m.name + (m.loaded ? ' (loaded in VRAM)' : '') + '</li>';
+  });
+  html += '</ul>';
+  if (hasLoaded) {
+    html += '<p class="warn-text">' +
+      loadedModels.length + ' model' + (loadedModels.length > 1 ? 's are' : ' is') +
+      ' currently loaded in VRAM. Deleting will unload ' + (loadedModels.length > 1 ? 'them' : 'it') +
+      ' and may interrupt active requests.</p>';
+  }
+  html += '<p>Models will need to be re-downloaded to use again.</p>';
+  html += '<div class="confirm-actions">';
+  html += '<button class="confirm-cancel" id="confirm-cancel">Cancel</button>';
+  html += '<button class="confirm-delete" id="confirm-proceed" data-node="' + nodeId + '">Delete</button>';
+  html += '</div></div></div>';
+
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+async function executeDelete(nodeId) {
+  var selected = getSelectedDeleteModels(nodeId);
+  if (selected.length === 0) return;
+
+  var btn = document.getElementById('delete-btn-' + nodeId);
+  var progress = document.getElementById('delete-progress-' + nodeId);
+  if (btn) btn.disabled = true;
+
+  document.querySelectorAll('.mgmt-check[data-node="' + nodeId + '"]').forEach(function(cb) { cb.disabled = true; });
+
+  var done = 0;
+  var failed = 0;
+
+  for (var i = 0; i < selected.length; i++) {
+    var model = selected[i].name;
+    var safeId = model.replace(/[^a-zA-Z0-9]/g, '-');
+    var statusEl = document.getElementById('del-' + nodeId + '-' + safeId);
+
+    if (statusEl) { statusEl.className = 'delete-status deleting'; statusEl.textContent = 'deleting...'; }
+    if (progress) progress.textContent = 'Deleting ' + (i + 1) + ' of ' + selected.length + '...';
+
+    try {
+      var resp = await fetch('/dashboard/api/delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({node_id: nodeId, model: model})
+      });
+      var result = await resp.json();
+      if (result.ok) {
+        done++;
+        if (statusEl) { statusEl.className = 'delete-status deleted'; statusEl.textContent = 'deleted'; }
+      } else {
+        failed++;
+        if (statusEl) { statusEl.className = 'delete-status error'; statusEl.textContent = 'failed'; }
+      }
+    } catch (err) {
+      failed++;
+      if (statusEl) { statusEl.className = 'delete-status error'; statusEl.textContent = 'error'; }
+    }
+  }
+
+  if (progress) {
+    progress.textContent = done + ' deleted' + (failed > 0 ? ', ' + failed + ' failed' : '') + '.';
+  }
+  if (btn) btn.disabled = false;
+  document.querySelectorAll('.mgmt-check[data-node="' + nodeId + '"]').forEach(function(cb) { cb.disabled = false; });
+
+  // Refresh data after deletes
+  if (done > 0) {
+    setTimeout(function() {
+      loadRecommendations(true);
+      loadModelManagement();
+    }, 2000);
+  }
+}
+
 window.addEventListener('DOMContentLoaded', function() {
   var dot = document.getElementById('sse-dot');
   var st = document.getElementById('sse-status');
@@ -2354,6 +2701,7 @@ window.addEventListener('DOMContentLoaded', function() {
 });
 
 document.addEventListener('click', function(e) {
+  // Pull command copy
   var el = e.target.closest('.pull-cmd');
   if (el && el.dataset.cmd) {
     navigator.clipboard.writeText(el.dataset.cmd).then(function() {
@@ -2362,19 +2710,61 @@ document.addEventListener('click', function(e) {
     });
     return;
   }
+  // Pull button
   var btn = e.target.closest('.pull-btn');
   if (btn && btn.dataset.node) {
     pullSelected(btn.dataset.node);
+    return;
+  }
+  // Delete button -> show confirmation
+  var delBtn = e.target.closest('.delete-btn');
+  if (delBtn && delBtn.dataset.node) {
+    showDeleteConfirmation(delBtn.dataset.node);
+    return;
+  }
+  // Confirm cancel
+  if (e.target.id === 'confirm-cancel') {
+    var overlay = document.getElementById('confirm-overlay');
+    if (overlay) overlay.remove();
+    return;
+  }
+  // Confirm overlay background click
+  if (e.target.id === 'confirm-overlay') {
+    e.target.remove();
+    return;
+  }
+  // Confirm proceed
+  var proceedBtn = e.target.closest('#confirm-proceed');
+  if (proceedBtn) {
+    var overlay = document.getElementById('confirm-overlay');
+    if (overlay) overlay.remove();
+    executeDelete(proceedBtn.dataset.node);
+    return;
   }
 });
 
 document.addEventListener('change', function(e) {
+  // Pull checkboxes
   if (e.target.classList.contains('model-check') && e.target.dataset.node) {
     updatePullSection(e.target.dataset.node);
+  }
+  // Model management checkboxes
+  if (e.target.classList.contains('mgmt-check') && e.target.dataset.node) {
+    updateDeleteSection(e.target.dataset.node);
+  }
+  // Select-all for management
+  if (e.target.classList.contains('mgmt-check-all') && e.target.dataset.node) {
+    var nodeId = e.target.dataset.node;
+    var checked = e.target.checked;
+    document.querySelectorAll('.mgmt-check[data-node="' + nodeId + '"]').forEach(function(cb) {
+      cb.checked = checked;
+    });
+    updateDeleteSection(nodeId);
   }
 });
 
 loadRecommendations();
+loadModelManagement();
 // Keep the relative timestamp fresh
 setInterval(updateTimestamp, 30000);
 </script>

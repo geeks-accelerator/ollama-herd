@@ -442,6 +442,55 @@ class StreamingProxy:
             logger.error(f"Pull {model} on {node_id} error: {type(e).__name__}: {e}")
             return False
 
+    async def delete_model(self, node_id: str, model: str) -> bool:
+        """Delete a model from a node via Ollama DELETE /api/delete."""
+        try:
+            client = self._get_client(node_id)
+            resp = await client.request(
+                "DELETE", "/api/delete", json={"name": model}, timeout=30.0
+            )
+            if resp.status_code == 200:
+                logger.info(f"Deleted {model} from {node_id}")
+                return True
+            else:
+                logger.warning(
+                    f"Delete {model} on {node_id} failed: HTTP {resp.status_code}"
+                )
+                return False
+        except Exception as e:
+            logger.error(
+                f"Delete {model} on {node_id} error: {type(e).__name__}: {e}"
+            )
+            return False
+
+    async def query_node_models(self, node_id: str) -> list[dict]:
+        """Query a node's Ollama /api/tags for model details including disk size."""
+        try:
+            client = self._get_client(node_id)
+            resp = await client.get("/api/tags", timeout=10.0)
+            resp.raise_for_status()
+            data = resp.json()
+            result = []
+            for m in data.get("models", []):
+                size_bytes = m.get("size", 0)
+                result.append({
+                    "name": m.get("model", m.get("name", "")),
+                    "size_gb": round(size_bytes / (1024**3), 2),
+                    "parameter_size": m.get("details", {}).get(
+                        "parameter_size", ""
+                    ),
+                    "quantization": m.get("details", {}).get(
+                        "quantization_level", ""
+                    ),
+                    "family": m.get("details", {}).get("family", ""),
+                })
+            return result
+        except Exception as e:
+            logger.warning(
+                f"Query models on {node_id} error: {type(e).__name__}: {e}"
+            )
+            return []
+
     def _build_ollama_body(self, request: InferenceRequest) -> dict:
         """Convert normalized request to Ollama API format."""
         if request.original_format == RequestFormat.OLLAMA and request.raw_body:

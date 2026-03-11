@@ -10,6 +10,7 @@ from fleet_manager.models.config import ServerSettings
 from fleet_manager.models.node import (
     CapacityMetrics,
     CpuMetrics,
+    DiskMetrics,
     HardwareProfile,
     HeartbeatPayload,
     LoadedModel,
@@ -44,6 +45,8 @@ def make_heartbeat(
     available_models: list[str] | None = None,
     lan_ip: str = "192.168.1.100",
     ollama_host: str = "http://localhost:11434",
+    disk_total: float = 500.0,
+    disk_used: float = 200.0,
 ) -> HeartbeatPayload:
     loaded = []
     for entry in loaded_models or []:
@@ -61,6 +64,11 @@ def make_heartbeat(
             used_gb=memory_used,
             available_gb=memory_total - memory_used,
             pressure=pressure,
+        ),
+        disk=DiskMetrics(
+            total_gb=disk_total,
+            used_gb=disk_used,
+            available_gb=disk_total - disk_used,
         ),
         ollama=OllamaMetrics(
             models_loaded=loaded,
@@ -82,6 +90,8 @@ def make_node(
     loaded_models: list[tuple[str, float]] | None = None,
     available_models: list[str] | None = None,
     capacity: CapacityMetrics | None = None,
+    disk_total: float = 500.0,
+    disk_used: float = 200.0,
 ) -> NodeState:
     loaded = [
         LoadedModel(name=name, size_gb=size)
@@ -102,6 +112,11 @@ def make_node(
             used_gb=memory_used,
             available_gb=memory_total - memory_used,
             pressure=pressure,
+        ),
+        disk=DiskMetrics(
+            total_gb=disk_total,
+            used_gb=disk_used,
+            available_gb=disk_total - disk_used,
         ),
         ollama=OllamaMetrics(
             models_loaded=loaded,

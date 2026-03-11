@@ -64,6 +64,8 @@ class NodePlan(BaseModel):
     usable_ram_gb: float
     current_models: list[str] = Field(default_factory=list)
     recommendations: list[ModelRecommendation] = Field(default_factory=list)
+    disk_total_gb: float = 0.0
+    disk_available_gb: float = 0.0
     total_recommended_ram_gb: float = 0.0
     ram_headroom_gb: float = 0.0
 
@@ -232,6 +234,11 @@ class ModelRecommender:
         total_ram = node.memory.total_gb if node.memory else 0
         usable_ram = max(0, total_ram - OS_OVERHEAD_GB)
 
+        # Disk space tracking
+        disk_total = node.disk.total_gb if node.disk else 0
+        disk_available = node.disk.available_gb if node.disk else 0
+        disk_used_by_recs = 0.0  # Track new downloads only
+
         # What's already on this node?
         current_models: list[str] = []
         if node.ollama:
@@ -340,6 +347,12 @@ class ModelRecommender:
 
             already_available = self._is_available(best.ollama_name, current_models)
 
+            # Skip if not downloaded and won't fit on disk
+            if not already_available and disk_total > 0:
+                disk_remaining = disk_available - disk_used_by_recs
+                if best.ram_gb > disk_remaining:
+                    continue
+
             # Determine priority
             priority = Priority.MEDIUM
             if cat == priority_cats[0] or usage.category_breakdown.get(cat.value, 0) > 0:
@@ -360,6 +373,8 @@ class ModelRecommender:
                 )
             )
             ram_used += best.ram_gb
+            if not already_available:
+                disk_used_by_recs += best.ram_gb
             assigned_cats.add(cat.value)
             assigned_families.add(best.family)
 
@@ -369,19 +384,27 @@ class ModelRecommender:
             fast = best_for_category(ModelCategory.FAST_CHAT, remaining)
             if fast and fast.family not in assigned_families:
                 already_available = self._is_available(fast.ollama_name, current_models)
-                recommendations.append(
-                    ModelRecommendation(
-                        model=fast.ollama_name,
-                        display_name=fast.display_name,
-                        category=ModelCategory.FAST_CHAT.value,
-                        ram_gb=fast.ram_gb,
-                        quality_score=round(fast.benchmarks.quality_score, 1),
-                        reason="Fast response model for quick queries and autocomplete",
-                        priority=Priority.LOW,
-                        already_available=already_available,
+                # Skip if not downloaded and won't fit on disk
+                if not already_available and disk_total > 0:
+                    disk_remaining = disk_available - disk_used_by_recs
+                    if fast.ram_gb > disk_remaining:
+                        fast = None
+                if fast:
+                    recommendations.append(
+                        ModelRecommendation(
+                            model=fast.ollama_name,
+                            display_name=fast.display_name,
+                            category=ModelCategory.FAST_CHAT.value,
+                            ram_gb=fast.ram_gb,
+                            quality_score=round(fast.benchmarks.quality_score, 1),
+                            reason="Fast response model for quick queries and autocomplete",
+                            priority=Priority.LOW,
+                            already_available=already_available,
+                        )
                     )
-                )
-                ram_used += fast.ram_gb
+                    ram_used += fast.ram_gb
+                    if not already_available:
+                        disk_used_by_recs += fast.ram_gb
 
         total_rec_ram = round(sum(r.ram_gb for r in recommendations), 1)
 
@@ -389,6 +412,8 @@ class ModelRecommender:
             node_id=node.node_id,
             total_ram_gb=round(total_ram, 1),
             usable_ram_gb=round(usable_ram, 1),
+            disk_total_gb=round(disk_total, 1),
+            disk_available_gb=round(disk_available - disk_used_by_recs, 1),
             current_models=current_models,
             recommendations=recommendations,
             total_recommended_ram_gb=total_rec_ram,
