@@ -129,3 +129,13 @@ class TestNodeRegistry:
         node = registry.get_node("studio")
         assert node.status == NodeStatus.ONLINE
         assert node.missed_heartbeats == 0
+
+    async def test_agent_version_stored(self, registry):
+        hb = make_heartbeat(node_id="versioned", agent_version="0.1.0")
+        node = await registry.update_from_heartbeat(hb)
+        assert node.agent_version == "0.1.0"
+
+    async def test_agent_version_defaults_empty(self, registry):
+        hb = make_heartbeat(node_id="no-version")
+        node = await registry.update_from_heartbeat(hb)
+        assert node.agent_version == ""

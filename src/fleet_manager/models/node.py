@@ -79,6 +79,7 @@ class HeartbeatPayload(BaseModel):
     lan_ip: str = ""
     draining: bool = False
     capacity: CapacityMetrics | None = None
+    agent_version: str = ""
 
 
 class HardwareProfile(BaseModel):
@@ -105,3 +106,5 @@ class NodeState(BaseModel):
     model_unloaded_at: dict[str, float] = Field(default_factory=dict)
     # Adaptive capacity from the node's capacity learner
     capacity: CapacityMetrics | None = None
+    # Software version reported by the node agent
+    agent_version: str = ""

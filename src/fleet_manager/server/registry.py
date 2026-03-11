@@ -62,6 +62,7 @@ class NodeRegistry:
             node.disk = payload.disk
             node.ollama = payload.ollama
             node.capacity = payload.capacity
+            node.agent_version = payload.agent_version
             node.last_heartbeat = time.time()
             node.missed_heartbeats = 0
             node.status = NodeStatus.ONLINE

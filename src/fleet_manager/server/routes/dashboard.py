@@ -318,6 +318,104 @@ async def dashboard_recommendations_data(request: Request, refresh: int = 0):
     return {**result, "generated_at": now}
 
 
+@router.get("/dashboard/api/settings")
+async def dashboard_settings_data(request: Request):
+    """Current configuration values and node list for the settings page."""
+    import socket
+
+    from fleet_manager import __version__
+
+    settings = request.app.state.settings
+    registry = request.app.state.registry
+    hostname = socket.gethostname().split(".")[0]
+
+    config = {
+        "toggles": {
+            "auto_pull": settings.auto_pull,
+            "vram_fallback": settings.vram_fallback,
+        },
+        "server": {
+            "host": hostname if settings.host == "0.0.0.0" else settings.host,
+            "port": settings.port,
+            "data_dir": settings.data_dir,
+            "max_retries": settings.max_retries,
+        },
+        "heartbeat": {
+            "heartbeat_interval": settings.heartbeat_interval,
+            "heartbeat_timeout": settings.heartbeat_timeout,
+            "heartbeat_offline": settings.heartbeat_offline,
+        },
+        "scoring": {
+            "score_model_hot": settings.score_model_hot,
+            "score_model_warm": settings.score_model_warm,
+            "score_model_cold": settings.score_model_cold,
+            "score_memory_fit_max": settings.score_memory_fit_max,
+            "score_queue_depth_max_penalty": settings.score_queue_depth_max_penalty,
+            "score_queue_depth_penalty_per": settings.score_queue_depth_penalty_per,
+            "score_wait_time_max_penalty": settings.score_wait_time_max_penalty,
+            "score_role_affinity_max": settings.score_role_affinity_max,
+            "score_role_large_threshold_gb": settings.score_role_large_threshold_gb,
+            "score_role_small_threshold_gb": settings.score_role_small_threshold_gb,
+            "score_availability_trend_max": settings.score_availability_trend_max,
+            "score_context_fit_max": settings.score_context_fit_max,
+        },
+        "rebalancer": {
+            "rebalance_interval": settings.rebalance_interval,
+            "rebalance_threshold": settings.rebalance_threshold,
+            "rebalance_max_per_cycle": settings.rebalance_max_per_cycle,
+        },
+        "pre_warm": {
+            "pre_warm_threshold": settings.pre_warm_threshold,
+            "pre_warm_min_availability": settings.pre_warm_min_availability,
+        },
+        "auto_pull_config": {
+            "auto_pull_timeout": settings.auto_pull_timeout,
+        },
+    }
+
+    nodes_data = []
+    for node in registry.get_all_nodes():
+        models_count = 0
+        if node.ollama:
+            models_count = len(node.ollama.models_loaded)
+        nodes_data.append({
+            "node_id": node.node_id,
+            "status": node.status.value,
+            "agent_version": node.agent_version,
+            "ip": node.ollama_base_url,
+            "models_loaded_count": models_count,
+            "is_router": node.node_id == hostname,
+        })
+
+    return {
+        "router_version": __version__,
+        "router_hostname": hostname,
+        "config": config,
+        "nodes": nodes_data,
+    }
+
+
+@router.post("/dashboard/api/settings")
+async def dashboard_settings_update(request: Request):
+    """Update runtime-mutable settings (toggles only)."""
+    body = await request.json()
+    settings = request.app.state.settings
+
+    mutable_fields = {"auto_pull", "vram_fallback"}
+    updated = {}
+
+    for field in mutable_fields:
+        if field in body:
+            value = bool(body[field])
+            setattr(settings, field, value)
+            updated[field] = value
+
+    if not updated:
+        return {"status": "no_change", "message": "No mutable fields provided"}
+
+    return {"status": "updated", "updated": updated}
+
+
 @router.post("/dashboard/api/pull")
 async def dashboard_pull_model(request: Request):
     """Pull a model onto a specific node via Ollama."""
@@ -485,6 +583,12 @@ async def dashboard_health_page():
 async def dashboard_recommendations_page():
     """Model recommendations — optimal model mix per node."""
     return _dashboard_page("Recommendations", "recommendations", _RECOMMENDATIONS_BODY)
+
+
+@router.get("/dashboard/settings", response_class=HTMLResponse)
+async def dashboard_settings_page():
+    """Settings — configuration, toggles, and node list."""
+    return _dashboard_page("Settings", "settings", _SETTINGS_BODY)
 
 
 # ---------------------------------------------------------------------------
@@ -772,6 +876,7 @@ def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str
         ("benchmarks", "Benchmarks", "/dashboard/benchmarks"),
         ("health", "Health", "/dashboard/health"),
         ("recommendations", "Recommendations", "/dashboard/recommendations"),
+        ("settings", "Settings", "/dashboard/settings"),
     ]
     nav_html = "".join(
         f'<a href="{href}" class="nav-tab {"active" if key == active_tab else ""}">{label}</a>'
@@ -2767,5 +2872,221 @@ loadRecommendations();
 loadModelManagement();
 // Keep the relative timestamp fresh
 setInterval(updateTimestamp, 30000);
+</script>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Settings page body
+# ---------------------------------------------------------------------------
+
+_SETTINGS_BODY = """
+<style>
+.settings-header { margin-bottom:24px; }
+.settings-header h2 { font-size:20px; font-weight:600; margin-bottom:4px; }
+.settings-header .version-info { font-size:13px; color:var(--text-dim); }
+.settings-header .version-info span { color:var(--accent); font-weight:500; }
+
+.section-label { font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-dim); margin-bottom:12px; margin-top:28px; }
+.section-label:first-of-type { margin-top:0; }
+
+.toggle-container { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; background:var(--card); border:1px solid var(--border); border-radius:10px; margin-bottom:8px; }
+.toggle-info { flex:1; }
+.toggle-label { font-size:14px; font-weight:500; }
+.toggle-desc { font-size:12px; color:var(--text-dim); margin-top:2px; }
+.toggle-env { font-size:11px; color:var(--text-dim); font-family:'SF Mono','Fira Code',monospace; margin-top:4px; opacity:0.7; }
+.toggle-switch { position:relative; width:44px; height:24px; cursor:pointer; flex-shrink:0; margin-left:16px; }
+.toggle-switch input { opacity:0; width:0; height:0; position:absolute; }
+.toggle-slider { position:absolute; inset:0; background:var(--border); border-radius:12px; transition:.2s; }
+.toggle-slider:before { content:''; position:absolute; height:18px; width:18px; left:3px; bottom:3px; background:var(--text-dim); border-radius:50%; transition:.2s; }
+.toggle-switch input:checked + .toggle-slider { background:var(--accent); }
+.toggle-switch input:checked + .toggle-slider:before { transform:translateX(20px); background:#fff; }
+
+.config-table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--border); border-radius:10px; overflow:hidden; margin-bottom:16px; }
+.config-table th { text-align:left; padding:10px 16px; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-dim); border-bottom:1px solid var(--border); background:rgba(108,99,255,0.04); }
+.config-table td { padding:10px 16px; font-size:13px; border-bottom:1px solid var(--border); }
+.config-table tr:last-child td { border-bottom:none; }
+.config-table .env-name { font-family:'SF Mono','Fira Code',monospace; font-size:11px; color:var(--text-dim); }
+.config-table .config-val { font-weight:500; font-variant-numeric:tabular-nums; }
+.config-note { font-size:11px; color:var(--text-dim); margin-top:4px; font-style:italic; }
+
+.nodes-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:12px; margin-bottom:24px; }
+.node-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px 18px; }
+.node-card-header { display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+.node-card-header .node-name { font-size:14px; font-weight:600; }
+.node-badge { font-size:10px; padding:2px 8px; border-radius:4px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; }
+.node-badge.router { background:rgba(108,99,255,0.15); color:var(--accent); }
+.node-detail { display:flex; justify-content:space-between; padding:4px 0; font-size:13px; }
+.node-detail .nd-label { color:var(--text-dim); }
+.node-detail .nd-value { font-weight:500; font-variant-numeric:tabular-nums; }
+
+.toast { position:fixed; bottom:24px; right:24px; background:var(--card); border:1px solid var(--accent); color:var(--text); padding:12px 20px; border-radius:10px; font-size:13px; font-weight:500; z-index:1000; opacity:0; transform:translateY(10px); transition:opacity .2s, transform .2s; pointer-events:none; }
+.toast.show { opacity:1; transform:translateY(0); }
+
+@media (max-width:768px) { .nodes-grid{grid-template-columns:1fr;} .config-table{font-size:12px;} }
+</style>
+
+<div class="main">
+  <div class="settings-header">
+    <h2>Settings</h2>
+    <div class="version-info">Router <span id="router-version">...</span> on <span id="router-hostname">...</span></div>
+  </div>
+
+  <div class="section-label">Feature Toggles</div>
+  <div id="toggles-container">
+    <div style="text-align:center;padding:20px;color:var(--text-dim)">Loading...</div>
+  </div>
+
+  <div class="section-label">Fleet Nodes</div>
+  <div class="nodes-grid" id="nodes-grid">
+    <div style="text-align:center;padding:20px;color:var(--text-dim)">Loading...</div>
+  </div>
+
+  <div class="section-label">Router Configuration</div>
+  <div id="config-tables"></div>
+  <div class="config-note">Configuration is set via environment variables with the FLEET_ prefix. Restart the router to apply changes.</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+var TOGGLE_META = {
+  auto_pull: {label:'Auto-Pull Models', desc:'Automatically download models to nodes when requested but not available'},
+  vram_fallback: {label:'VRAM-Aware Fallback', desc:'Route to a loaded model in the same category instead of cold-loading the requested model'}
+};
+
+var CONFIG_LABELS = {
+  server: 'Router',
+  heartbeat: 'Heartbeat',
+  scoring: 'Scoring Weights',
+  rebalancer: 'Rebalancer',
+  pre_warm: 'Pre-warm',
+  auto_pull_config: 'Auto-Pull'
+};
+
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(function() { t.classList.remove('show'); }, 2500);
+}
+
+function statusDotHtml(status) {
+  var cls = status === 'online' ? 'online' : status === 'degraded' ? 'degraded' : 'offline';
+  return '<span class="status-dot ' + cls + '" style="display:inline-block;width:8px;height:8px;border-radius:50;margin-right:6px"></span>';
+}
+
+function renderSettings(data) {
+  document.getElementById('router-version').textContent = 'v' + data.router_version;
+  document.getElementById('router-hostname').textContent = data.router_hostname;
+
+  // Toggles
+  var tc = document.getElementById('toggles-container');
+  var html = '';
+  var toggles = data.config.toggles;
+  for (var key in toggles) {
+    var meta = TOGGLE_META[key] || {label:key, desc:''};
+    var checked = toggles[key] ? 'checked' : '';
+    var envName = 'FLEET_' + key.toUpperCase();
+    html += '<div class="toggle-container">' +
+      '<div class="toggle-info">' +
+        '<div class="toggle-label">' + meta.label + '</div>' +
+        '<div class="toggle-desc">' + meta.desc + '</div>' +
+        '<div class="toggle-env">' + envName + '</div>' +
+      '</div>' +
+      '<label class="toggle-switch">' +
+        '<input type="checkbox" ' + checked + ' onchange="toggleSetting(\\'' + key + '\\', this.checked)">' +
+        '<span class="toggle-slider"></span>' +
+      '</label>' +
+    '</div>';
+  }
+  tc.innerHTML = html;
+
+  // Nodes
+  var ng = document.getElementById('nodes-grid');
+  if (data.nodes.length === 0) {
+    ng.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim)">No nodes registered yet</div>';
+  } else {
+    ng.innerHTML = data.nodes.map(function(n) {
+      var dotCls = n.status === 'online' ? 'online' : n.status === 'degraded' ? 'degraded' : 'offline';
+      var badge = n.is_router ? '<span class="node-badge router">Router</span>' : '';
+      var ver = n.agent_version || 'unknown';
+      var verColor = '';
+      if (n.agent_version && n.agent_version !== data.router_version) {
+        verColor = ' style="color:var(--yellow)"';
+      }
+      return '<div class="node-card">' +
+        '<div class="node-card-header">' +
+          '<span class="status-dot ' + dotCls + '"></span>' +
+          '<span class="node-name">' + n.node_id + '</span>' +
+          badge +
+        '</div>' +
+        '<div class="node-detail"><span class="nd-label">Status</span><span class="nd-value">' + n.status + '</span></div>' +
+        '<div class="node-detail"><span class="nd-label">Version</span><span class="nd-value"' + verColor + '>' + ver + '</span></div>' +
+        '<div class="node-detail"><span class="nd-label">Ollama</span><span class="nd-value">' + n.ip + '</span></div>' +
+        '<div class="node-detail"><span class="nd-label">Models Loaded</span><span class="nd-value">' + n.models_loaded_count + '</span></div>' +
+      '</div>';
+    }).join('');
+  }
+
+  // Config tables
+  var ct = document.getElementById('config-tables');
+  var tablesHtml = '';
+  var configGroups = data.config;
+  for (var group in configGroups) {
+    if (group === 'toggles') continue;
+    var label = CONFIG_LABELS[group] || group;
+    var settings = configGroups[group];
+    tablesHtml += '<table class="config-table"><thead><tr><th>' + label + '</th><th>Value</th><th>Env Var</th></tr></thead><tbody>';
+    for (var sKey in settings) {
+      var envName = 'FLEET_' + sKey.toUpperCase();
+      tablesHtml += '<tr><td>' + sKey.replace(/_/g, '_') + '</td><td class="config-val">' + settings[sKey] + '</td><td class="env-name">' + envName + '</td></tr>';
+    }
+    tablesHtml += '</tbody></table>';
+  }
+  ct.innerHTML = tablesHtml;
+}
+
+async function toggleSetting(field, value) {
+  try {
+    var body = {};
+    body[field] = value;
+    var resp = await fetch('/dashboard/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    var result = await resp.json();
+    if (result.status === 'updated') {
+      var meta = TOGGLE_META[field] || {label:field};
+      showToast(meta.label + (value ? ' enabled' : ' disabled'));
+    } else {
+      loadSettings();
+    }
+  } catch (err) {
+    console.error('Toggle error:', err);
+    loadSettings();
+  }
+}
+
+async function loadSettings() {
+  try {
+    var resp = await fetch('/dashboard/api/settings');
+    var data = await resp.json();
+    renderSettings(data);
+  } catch (err) {
+    console.error('Settings load error:', err);
+  }
+}
+
+window.addEventListener('DOMContentLoaded', function() {
+  var dot = document.getElementById('sse-dot');
+  var st = document.getElementById('sse-status');
+  if (dot) dot.className = 'status-dot online';
+  if (st) st.textContent = 'API';
+});
+
+loadSettings();
+setInterval(loadSettings, 15000);
 </script>
 """

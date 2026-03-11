@@ -47,6 +47,7 @@ def make_heartbeat(
     ollama_host: str = "http://localhost:11434",
     disk_total: float = 500.0,
     disk_used: float = 200.0,
+    agent_version: str = "",
 ) -> HeartbeatPayload:
     loaded = []
     for entry in loaded_models or []:
@@ -76,6 +77,7 @@ def make_heartbeat(
         ),
         lan_ip=lan_ip,
         ollama_host=ollama_host,
+        agent_version=agent_version,
     )
 
 
@@ -92,6 +94,7 @@ def make_node(
     capacity: CapacityMetrics | None = None,
     disk_total: float = 500.0,
     disk_used: float = 200.0,
+    agent_version: str = "",
 ) -> NodeState:
     loaded = [
         LoadedModel(name=name, size_gb=size)
@@ -123,6 +126,7 @@ def make_node(
             models_available=available_models or [],
         ),
         capacity=capacity,
+        agent_version=agent_version,
     )
 
 

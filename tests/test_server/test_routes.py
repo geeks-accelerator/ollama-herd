@@ -365,9 +365,17 @@ class TestDashboard:
         assert "Fleet Vitals" in resp.text
         assert "Recommendations" in resp.text
 
+    def test_settings_page_html(self, client):
+        resp = client.get("/dashboard/settings")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "Settings" in resp.text
+        assert "Feature Toggles" in resp.text
+        assert "Fleet Nodes" in resp.text
+
     def test_all_pages_have_nav(self, client):
         """All dashboard pages include navigation links to all tabs."""
-        for path in ("/dashboard", "/dashboard/trends", "/dashboard/models", "/dashboard/apps", "/dashboard/benchmarks", "/dashboard/health"):
+        for path in ("/dashboard", "/dashboard/trends", "/dashboard/models", "/dashboard/apps", "/dashboard/benchmarks", "/dashboard/health", "/dashboard/settings"):
             resp = client.get(path)
             assert resp.status_code == 200
             assert "/dashboard" in resp.text
@@ -376,6 +384,7 @@ class TestDashboard:
             assert "/dashboard/apps" in resp.text
             assert "/dashboard/benchmarks" in resp.text
             assert "/dashboard/health" in resp.text
+            assert "/dashboard/settings" in resp.text
             # Nav tab labels
             assert "Dashboard" in resp.text
             assert "Trends" in resp.text
@@ -383,6 +392,7 @@ class TestDashboard:
             assert "Apps" in resp.text
             assert "Benchmarks" in resp.text
             assert "Health" in resp.text
+            assert "Settings" in resp.text
 
 
 class TestDashboardAPI:
@@ -485,6 +495,62 @@ class TestDashboardAPI:
         # With 108GB free and only 1 model, should get underutilized memory info
         check_ids = [r["check_id"] for r in data["recommendations"]]
         assert "underutilized_memory" in check_ids
+
+    def test_settings_api_returns_config(self, client):
+        resp = client.get("/dashboard/api/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "router_version" in data
+        assert "config" in data
+        assert "nodes" in data
+        assert "toggles" in data["config"]
+        assert data["config"]["toggles"]["auto_pull"] is True
+        assert data["config"]["toggles"]["vram_fallback"] is True
+
+    def test_settings_api_toggle_auto_pull(self, client):
+        resp = client.get("/dashboard/api/settings")
+        assert resp.json()["config"]["toggles"]["auto_pull"] is True
+
+        resp = client.post("/dashboard/api/settings", json={"auto_pull": False})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "updated"
+        assert resp.json()["updated"]["auto_pull"] is False
+
+        resp = client.get("/dashboard/api/settings")
+        assert resp.json()["config"]["toggles"]["auto_pull"] is False
+
+    def test_settings_api_toggle_vram_fallback(self, client):
+        resp = client.post("/dashboard/api/settings", json={"vram_fallback": False})
+        assert resp.status_code == 200
+        assert resp.json()["updated"]["vram_fallback"] is False
+
+        resp = client.get("/dashboard/api/settings")
+        assert resp.json()["config"]["toggles"]["vram_fallback"] is False
+
+    def test_settings_api_rejects_non_mutable(self, client):
+        resp = client.post("/dashboard/api/settings", json={"score_model_hot": 999.0})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "no_change"
+
+        resp = client.get("/dashboard/api/settings")
+        assert resp.json()["config"]["scoring"]["score_model_hot"] == 50.0
+
+    def test_settings_api_nodes_list(self, client):
+        from tests.conftest import make_heartbeat
+
+        hb = make_heartbeat(node_id="test-node", agent_version="0.1.0").model_dump()
+        client.post("/heartbeat", json=hb)
+
+        resp = client.get("/dashboard/api/settings")
+        nodes = resp.json()["nodes"]
+        assert len(nodes) >= 1
+        node = next(n for n in nodes if n["node_id"] == "test-node")
+        assert node["agent_version"] == "0.1.0"
+        assert node["status"] == "online"
+
+    def test_settings_api_empty_nodes(self, client):
+        resp = client.get("/dashboard/api/settings")
+        assert resp.json()["nodes"] == []
 
 
 class TestFallbackRoutes:

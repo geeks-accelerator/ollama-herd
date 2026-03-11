@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
+from fleet_manager import __version__
 from fleet_manager.common.ollama_client import OllamaClient
 from fleet_manager.common.system_metrics import (
     get_cpu_metrics,
@@ -84,4 +85,5 @@ async def collect_heartbeat(
         ollama_host=_make_lan_reachable_url(ollama_host, lan_ip),
         lan_ip=lan_ip,
         capacity=capacity,
+        agent_version=__version__,
     )
