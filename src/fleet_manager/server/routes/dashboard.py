@@ -282,6 +282,53 @@ async def dashboard_health_data(request: Request):
     return report.model_dump()
 
 
+_recommendations_cache: dict = {"data": None, "generated_at": 0.0}
+
+
+@router.get("/dashboard/api/recommendations")
+async def dashboard_recommendations_data(request: Request, refresh: int = 0):
+    """Model mix recommendations based on fleet hardware and usage patterns.
+
+    Results are cached for 5 minutes.  Pass ?refresh=1 to force re-analysis.
+    """
+    from fleet_manager.server.model_recommender import ModelRecommender
+
+    cache = _recommendations_cache
+    now = time.time()
+    stale = now - cache["generated_at"] > 300  # 5 min TTL
+
+    if not stale and not refresh and cache["data"] is not None:
+        return {**cache["data"], "generated_at": cache["generated_at"]}
+
+    registry = request.app.state.registry
+    trace_store = getattr(request.app.state, "trace_store", None)
+
+    nodes = registry.get_all_nodes()
+    usage_data = []
+    if trace_store:
+        usage_data = await trace_store.get_usage_by_node_model_day(days=1)
+
+    recommender = ModelRecommender()
+    report = recommender.analyze(nodes, usage_data)
+    result = report.model_dump()
+
+    cache["data"] = result
+    cache["generated_at"] = now
+
+    return {**result, "generated_at": now}
+
+
+@router.post("/dashboard/api/pull")
+async def dashboard_pull_model(request: Request):
+    """Pull a model onto a specific node via Ollama."""
+    body = await request.json()
+    node_id = body["node_id"]
+    model = body["model"]
+    proxy = request.app.state.streaming_proxy
+    success = await proxy.pull_model(node_id, model)
+    return {"ok": success, "node_id": node_id, "model": model}
+
+
 # ---------------------------------------------------------------------------
 # HTML pages
 # ---------------------------------------------------------------------------
@@ -341,6 +388,12 @@ async def dashboard_benchmarks_page():
 async def dashboard_health_page():
     """Fleet health — recommendations and vitals."""
     return _dashboard_page("Health", "health", _HEALTH_BODY)
+
+
+@router.get("/dashboard/recommendations", response_class=HTMLResponse)
+async def dashboard_recommendations_page():
+    """Model recommendations — optimal model mix per node."""
+    return _dashboard_page("Recommendations", "recommendations", _RECOMMENDATIONS_BODY)
 
 
 # ---------------------------------------------------------------------------
@@ -627,6 +680,7 @@ def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str
         ("apps", "Apps", "/dashboard/apps"),
         ("benchmarks", "Benchmarks", "/dashboard/benchmarks"),
         ("health", "Health", "/dashboard/health"),
+        ("recommendations", "Recommendations", "/dashboard/recommendations"),
     ]
     nav_html = "".join(
         f'<a href="{href}" class="nav-tab {"active" if key == active_tab else ""}">{label}</a>'
@@ -1873,5 +1927,455 @@ window.addEventListener('DOMContentLoaded', function() {
 
 loadHealth();
 refreshTimer = setInterval(loadHealth, 15000);
+</script>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Recommendations page body
+# ---------------------------------------------------------------------------
+
+_RECOMMENDATIONS_BODY = """
+<style>
+.rec-header { margin-bottom:24px; }
+.rec-header-row { display:flex; align-items:center; gap:12px; margin-bottom:4px; }
+.rec-header h2 { font-size:20px; font-weight:600; }
+.rec-header p { font-size:13px; color:var(--text-dim); }
+.rec-meta { display:flex; align-items:center; gap:12px; margin-top:6px; }
+.rec-timestamp { font-size:12px; color:var(--text-dim); }
+.refresh-btn {
+  background:var(--border); border:1px solid #2a2a3e; border-radius:6px;
+  color:var(--text-dim); font-size:12px; padding:4px 10px; cursor:pointer;
+  display:inline-flex; align-items:center; gap:5px; transition:all .15s;
+}
+.refresh-btn:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
+.refresh-btn.loading { opacity:.5; pointer-events:none; }
+.refresh-btn svg { width:13px; height:13px; }
+.refresh-btn.loading svg { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.usage-section { margin-bottom:28px; }
+.usage-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; margin-bottom:16px; }
+.usage-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px; text-align:center; }
+.usage-card .u-value { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+.usage-card .u-label { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-top:4px; }
+.usage-card.active { border-color:var(--accent); }
+.coverage-row { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+.cov-badge { font-size:12px; padding:4px 12px; border-radius:20px; font-weight:500; }
+.cov-badge.covered { background:rgba(34,197,94,0.15); color:var(--green); }
+.cov-badge.uncovered { background:rgba(239,68,68,0.15); color:var(--red); }
+.node-plan { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:16px; }
+.node-plan-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+.node-plan-title { font-size:16px; font-weight:600; }
+.node-ram-bar { display:flex; align-items:center; gap:12px; }
+.ram-bar { width:160px; height:8px; background:var(--border); border-radius:4px; overflow:hidden; }
+.ram-bar-fill { height:100%; border-radius:4px; background:var(--accent); transition:width 0.3s; }
+.ram-bar-label { font-size:12px; color:var(--text-dim); }
+.model-recs { display:flex; flex-direction:column; gap:10px; }
+.model-rec { display:flex; align-items:center; gap:14px; padding:12px 16px; background:rgba(108,99,255,0.04); border:1px solid rgba(108,99,255,0.1); border-radius:8px; }
+.model-rec.available { border-color:rgba(34,197,94,0.3); background:rgba(34,197,94,0.04); }
+.model-icon { width:40px; height:40px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0; }
+.model-icon.general { background:rgba(108,99,255,0.15); color:var(--accent); }
+.model-icon.coding { background:rgba(34,197,94,0.15); color:var(--green); }
+.model-icon.reasoning { background:rgba(59,130,246,0.15); color:var(--blue); }
+.model-icon.creative { background:rgba(234,179,8,0.15); color:var(--yellow); }
+.model-icon.fast-chat { background:rgba(168,85,247,0.15); color:#a855f7; }
+.model-info { flex:1; min-width:0; }
+.model-name { font-size:14px; font-weight:600; }
+.model-meta { font-size:12px; color:var(--text-dim); margin-top:2px; }
+.model-reason { font-size:12px; color:var(--text-dim); margin-top:4px; line-height:1.4; }
+.model-stats { display:flex; gap:12px; flex-shrink:0; text-align:right; }
+.model-stat { display:flex; flex-direction:column; align-items:flex-end; }
+.model-stat .s-val { font-size:14px; font-weight:600; font-variant-numeric:tabular-nums; }
+.model-stat .s-lbl { font-size:10px; color:var(--text-dim); text-transform:uppercase; }
+.model-badges { display:flex; gap:6px; flex-shrink:0; }
+.m-badge { font-size:11px; padding:2px 8px; border-radius:4px; font-weight:500; }
+.m-badge.high { background:rgba(34,197,94,0.15); color:var(--green); }
+.m-badge.medium { background:rgba(59,130,246,0.15); color:var(--blue); }
+.m-badge.low { background:rgba(108,99,255,0.1); color:var(--text-dim); }
+.m-badge.downloaded { background:rgba(34,197,94,0.12); color:var(--green); }
+.current-models { margin-top:12px; padding-top:12px; border-top:1px solid var(--border); }
+.current-models-label { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px; }
+.current-tags { display:flex; flex-wrap:wrap; gap:4px; }
+.current-tag { font-size:11px; padding:2px 8px; background:var(--border); border-radius:4px; color:var(--text-dim); }
+.pull-section { margin-top:16px; }
+.pull-cmd { font-size:12px; background:rgba(108,99,255,0.08); border:1px solid rgba(108,99,255,0.2); border-radius:6px; padding:10px 14px; font-family:'SF Mono','Fira Code',monospace; cursor:pointer; transition:background 0.2s; word-break:break-all; }
+.pull-cmd:hover { background:rgba(108,99,255,0.14); }
+.pull-cmd .copy-hint { font-size:10px; color:var(--text-dim); float:right; }
+.pull-actions { display:flex; align-items:center; gap:10px; margin-top:10px; }
+.pull-btn {
+  background:var(--accent); color:#fff; border:none; border-radius:6px;
+  font-size:13px; font-weight:500; padding:8px 16px; cursor:pointer;
+  display:inline-flex; align-items:center; gap:6px; transition:all .15s;
+}
+.pull-btn:hover { background:#5b54e0; }
+.pull-btn:disabled { opacity:.5; cursor:not-allowed; }
+.pull-btn svg { width:14px; height:14px; }
+.pull-progress { font-size:12px; color:var(--text-dim); }
+.model-check { flex-shrink:0; width:18px; height:18px; accent-color:var(--accent); cursor:pointer; }
+.model-check:disabled { opacity:.5; cursor:default; }
+.model-rec.pulling { border-color:rgba(108,99,255,0.4); }
+.model-rec.pulled { border-color:rgba(34,197,94,0.4); background:rgba(34,197,94,0.04); }
+.model-rec.pull-error { border-color:rgba(239,68,68,0.3); }
+.pull-status { font-size:11px; font-weight:500; margin-left:8px; }
+.pull-status.pulling { color:var(--accent); }
+.pull-status.done { color:var(--green); }
+.pull-status.error { color:var(--red); }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
+.pull-status.pulling { animation: pulse 1.5s ease-in-out infinite; }
+.empty-state { text-align:center; padding:60px 20px; color:var(--text-dim); }
+.empty-state h3 { color:var(--text); margin-bottom:8px; font-size:18px; }
+@media (max-width:768px) {
+  .usage-grid { grid-template-columns:repeat(2,1fr); }
+  .node-plan-header { flex-direction:column; align-items:flex-start; gap:8px; }
+  .model-rec { flex-direction:column; align-items:flex-start; }
+  .model-stats { flex-direction:row; }
+}
+</style>
+
+<div class="main">
+  <div class="rec-header">
+    <div class="rec-header-row">
+      <h2 id="rec-title">Analyzing fleet...</h2>
+    </div>
+    <p id="rec-subtitle">Evaluating hardware, usage patterns, and model benchmarks</p>
+    <div class="rec-meta" id="rec-meta" style="display:none">
+      <span class="rec-timestamp" id="rec-timestamp"></span>
+      <button class="refresh-btn" id="refresh-btn" onclick="refreshRecommendations()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+        Refresh
+      </button>
+    </div>
+  </div>
+
+  <div class="usage-section" id="usage-section" style="display:none">
+    <div class="section-label">Usage Analysis (24h)</div>
+    <div class="usage-grid" id="usage-grid"></div>
+    <div class="section-label" style="margin-top:16px">Category Coverage</div>
+    <div class="coverage-row" id="coverage-row"></div>
+  </div>
+
+  <div class="section-label" id="nodes-label" style="display:none">Per-Node Recommendations</div>
+  <div id="node-plans"></div>
+</div>
+
+<script>
+const CAT_ICONS = {
+  'general': '&#x1f30d;',
+  'coding': '&#x1f4bb;',
+  'reasoning': '&#x1f9e0;',
+  'creative': '&#x1f3a8;',
+  'fast-chat': '&#x26a1;'
+};
+
+const CAT_LABELS = {
+  'general': 'General',
+  'coding': 'Coding',
+  'reasoning': 'Reasoning',
+  'creative': 'Creative',
+  'fast-chat': 'Fast Chat'
+};
+
+function formatTimestamp(epoch) {
+  if (!epoch) return '';
+  var d = new Date(epoch * 1000);
+  var now = new Date();
+  var diffMs = now - d;
+  var diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return diffMin + 'm ago';
+  var diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return diffHr + 'h ' + (diffMin % 60) + 'm ago';
+  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+var _lastGeneratedAt = 0;
+
+function renderRecommendations(data) {
+  const titleEl = document.getElementById('rec-title');
+  const subtitleEl = document.getElementById('rec-subtitle');
+  titleEl.textContent = 'Model Recommendations';
+  subtitleEl.textContent = data.fleet_summary || 'No nodes available';
+
+  // Timestamp
+  if (data.generated_at) {
+    _lastGeneratedAt = data.generated_at;
+    var metaEl = document.getElementById('rec-meta');
+    metaEl.style.display = 'flex';
+    updateTimestamp();
+  }
+
+  // Usage section
+  const usageSection = document.getElementById('usage-section');
+  const usage = data.usage || {};
+
+  if (usage.total_requests_24h > 0) {
+    usageSection.style.display = 'block';
+    const ug = document.getElementById('usage-grid');
+    let ugHtml = '<div class="usage-card"><div class="u-value">' + usage.total_requests_24h.toLocaleString() + '</div><div class="u-label">Total Requests</div></div>';
+    const cats = usage.category_breakdown || {};
+    const sortedCats = Object.entries(cats).sort((a, b) => b[1] - a[1]);
+    sortedCats.forEach(function(entry) {
+      var cat = entry[0], count = entry[1];
+      ugHtml += '<div class="usage-card active"><div class="u-value">' + count.toLocaleString() + '</div><div class="u-label">' + (CAT_LABELS[cat] || cat) + '</div></div>';
+    });
+    ug.innerHTML = ugHtml;
+  } else {
+    usageSection.style.display = 'block';
+    document.getElementById('usage-grid').innerHTML = '<div class="usage-card"><div class="u-value">0</div><div class="u-label">Requests (24h)</div></div>';
+  }
+
+  // Coverage badges
+  const covRow = document.getElementById('coverage-row');
+  const coverage = usage.category_coverage || {};
+  covRow.innerHTML = Object.entries(coverage).map(function(entry) {
+    var cat = entry[0], covered = entry[1];
+    var cls = covered ? 'cov-badge covered' : 'cov-badge uncovered';
+    var icon = covered ? '&#10003; ' : '&#10007; ';
+    return '<span class="' + cls + '">' + icon + (CAT_LABELS[cat] || cat) + '</span>';
+  }).join('');
+
+  // Node plans
+  var nodesLabel = document.getElementById('nodes-label');
+  var plansEl = document.getElementById('node-plans');
+  var nodes = data.nodes || [];
+
+  if (nodes.length === 0) {
+    nodesLabel.style.display = 'none';
+    plansEl.innerHTML = '<div class="empty-state"><h3>No Nodes Online</h3><p>Start a node agent to get model recommendations.</p></div>';
+    return;
+  }
+
+  nodesLabel.style.display = 'block';
+  plansEl.innerHTML = nodes.map(function(node) {
+    var ramPct = node.usable_ram_gb > 0 ? Math.min(100, Math.round(node.total_recommended_ram_gb / node.usable_ram_gb * 100)) : 0;
+    var barColor = ramPct > 90 ? 'var(--yellow)' : 'var(--accent)';
+
+    var html = '<div class="node-plan">';
+    html += '<div class="node-plan-header">';
+    html += '<div class="node-plan-title">' + node.node_id + '</div>';
+    html += '<div class="node-ram-bar">';
+    html += '<div class="ram-bar"><div class="ram-bar-fill" style="width:' + ramPct + '%;background:' + barColor + '"></div></div>';
+    html += '<div class="ram-bar-label">' + node.total_recommended_ram_gb + ' / ' + node.usable_ram_gb + ' GB usable</div>';
+    html += '</div></div>';
+
+    if (node.recommendations.length === 0) {
+      html += '<div style="text-align:center;padding:20px;color:var(--text-dim)">No recommendations — insufficient memory</div>';
+    } else {
+      html += '<div class="model-recs">';
+      node.recommendations.forEach(function(rec) {
+        var recClass = 'model-rec' + (rec.already_available ? ' available' : '');
+        var cardId = 'card-' + node.node_id + '-' + rec.model.replace(/[^a-zA-Z0-9]/g, '-');
+        html += '<div class="' + recClass + '" id="' + cardId + '">';
+
+        // Checkbox for non-downloaded models
+        if (rec.already_available) {
+          html += '<input type="checkbox" class="model-check" checked disabled title="Already downloaded">';
+        } else {
+          html += '<input type="checkbox" class="model-check" checked data-node="' + node.node_id + '" data-model="' + rec.model + '">';
+        }
+
+        html += '<div class="model-icon ' + rec.category + '">' + (CAT_ICONS[rec.category] || '&#x2699;') + '</div>';
+        html += '<div class="model-info">';
+        html += '<div class="model-name">' + rec.display_name + '<span class="pull-status" id="status-' + cardId + '"></span></div>';
+        html += '<div class="model-meta"><code>' + rec.model + '</code> &middot; ' + rec.ram_gb + ' GB &middot; ' + (CAT_LABELS[rec.category] || rec.category) + '</div>';
+        html += '<div class="model-reason">' + rec.reason + '</div>';
+        html += '</div>';
+        html += '<div class="model-stats">';
+        if (rec.quality_score > 0) {
+          html += '<div class="model-stat"><div class="s-val">' + rec.quality_score + '</div><div class="s-lbl">Quality</div></div>';
+        }
+        html += '</div>';
+        html += '<div class="model-badges">';
+        html += '<span class="m-badge ' + rec.priority + '">' + rec.priority + '</span>';
+        if (rec.already_available) { html += '<span class="m-badge downloaded">downloaded</span>'; }
+        html += '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+
+      // Pull section for models not yet downloaded
+      var toPull = node.recommendations.filter(function(r) { return !r.already_available; });
+      if (toPull.length > 0) {
+        html += '<div class="pull-section" id="pull-section-' + node.node_id + '">';
+        var cmds = toPull.map(function(r) { return 'ollama pull ' + r.model; }).join(' && ');
+        html += '<div class="pull-cmd" data-cmd="' + cmds + '" id="pull-cmd-' + node.node_id + '">' + cmds + '<span class="copy-hint">click to copy</span></div>';
+        html += '<div class="pull-actions">';
+        html += '<button class="pull-btn" id="pull-btn-' + node.node_id + '" data-node="' + node.node_id + '">';
+        html += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+        html += 'Pull ' + toPull.length + ' Model' + (toPull.length > 1 ? 's' : '') + '</button>';
+        html += '<span class="pull-progress" id="pull-progress-' + node.node_id + '"></span>';
+        html += '</div></div>';
+      }
+    }
+
+    // Current models
+    if (node.current_models && node.current_models.length > 0) {
+      html += '<div class="current-models">';
+      html += '<div class="current-models-label">Currently Available (' + node.current_models.length + ' models)</div>';
+      html += '<div class="current-tags">';
+      node.current_models.forEach(function(m) {
+        html += '<span class="current-tag">' + m + '</span>';
+      });
+      html += '</div></div>';
+    }
+
+    html += '</div>';
+    return html;
+  }).join('');
+}
+
+function getSelectedModels(nodeId) {
+  var checks = document.querySelectorAll('.model-check[data-node="' + nodeId + '"]:checked');
+  var models = [];
+  checks.forEach(function(cb) { models.push(cb.dataset.model); });
+  return models;
+}
+
+function updatePullSection(nodeId) {
+  var models = getSelectedModels(nodeId);
+  var cmdEl = document.getElementById('pull-cmd-' + nodeId);
+  var btnEl = document.getElementById('pull-btn-' + nodeId);
+  var sectionEl = document.getElementById('pull-section-' + nodeId);
+  if (!sectionEl) return;
+
+  if (models.length === 0) {
+    sectionEl.style.display = 'none';
+    return;
+  }
+  sectionEl.style.display = 'block';
+
+  if (cmdEl) {
+    var cmds = models.map(function(m) { return 'ollama pull ' + m; }).join(' && ');
+    cmdEl.dataset.cmd = cmds;
+    cmdEl.innerHTML = cmds + '<span class="copy-hint">click to copy</span>';
+  }
+  if (btnEl && !btnEl.disabled) {
+    btnEl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+      'Pull ' + models.length + ' Model' + (models.length > 1 ? 's' : '');
+  }
+}
+
+async function pullSelected(nodeId) {
+  var models = getSelectedModels(nodeId);
+  if (models.length === 0) return;
+
+  var btn = document.getElementById('pull-btn-' + nodeId);
+  var progress = document.getElementById('pull-progress-' + nodeId);
+  btn.disabled = true;
+
+  // Disable checkboxes during pull
+  document.querySelectorAll('.model-check[data-node="' + nodeId + '"]').forEach(function(cb) { cb.disabled = true; });
+
+  var done = 0;
+  var failed = 0;
+
+  for (var i = 0; i < models.length; i++) {
+    var model = models[i];
+    var cardId = 'card-' + nodeId + '-' + model.replace(/[^a-zA-Z0-9]/g, '-');
+    var cardEl = document.getElementById(cardId);
+    var statusEl = document.getElementById('status-' + cardId);
+
+    if (cardEl) cardEl.classList.add('pulling');
+    if (statusEl) { statusEl.className = 'pull-status pulling'; statusEl.textContent = 'pulling...'; }
+    if (progress) progress.textContent = 'Pulling ' + (i + 1) + ' of ' + models.length + '...';
+
+    try {
+      var resp = await fetch('/dashboard/api/pull', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({node_id: nodeId, model: model})
+      });
+      var result = await resp.json();
+
+      if (cardEl) cardEl.classList.remove('pulling');
+      if (result.ok) {
+        done++;
+        if (cardEl) cardEl.classList.add('pulled');
+        if (statusEl) { statusEl.className = 'pull-status done'; statusEl.textContent = 'pulled!'; }
+      } else {
+        failed++;
+        if (cardEl) cardEl.classList.add('pull-error');
+        if (statusEl) { statusEl.className = 'pull-status error'; statusEl.textContent = 'failed'; }
+      }
+    } catch (err) {
+      failed++;
+      if (cardEl) { cardEl.classList.remove('pulling'); cardEl.classList.add('pull-error'); }
+      if (statusEl) { statusEl.className = 'pull-status error'; statusEl.textContent = 'error'; }
+    }
+  }
+
+  if (progress) {
+    progress.textContent = done + ' pulled' + (failed > 0 ? ', ' + failed + ' failed' : '') + '.';
+  }
+  btn.disabled = false;
+
+  // Re-enable checkboxes
+  document.querySelectorAll('.model-check[data-node="' + nodeId + '"]').forEach(function(cb) { cb.disabled = false; });
+
+  // Refresh recommendations to update available status
+  if (done > 0) {
+    setTimeout(function() { loadRecommendations(true); }, 2000);
+  }
+}
+
+async function loadRecommendations(forceRefresh) {
+  try {
+    var url = '/dashboard/api/recommendations';
+    if (forceRefresh) url += '?refresh=1';
+    const resp = await fetch(url);
+    const data = await resp.json();
+    renderRecommendations(data);
+  } catch (err) {
+    console.error('Recommendations load error:', err);
+    document.getElementById('rec-title').textContent = 'Error loading recommendations';
+  }
+}
+
+function refreshRecommendations() {
+  var btn = document.getElementById('refresh-btn');
+  btn.classList.add('loading');
+  loadRecommendations(true).finally(function() {
+    btn.classList.remove('loading');
+  });
+}
+
+function updateTimestamp() {
+  var el = document.getElementById('rec-timestamp');
+  if (el && _lastGeneratedAt) {
+    el.textContent = 'Last analyzed ' + formatTimestamp(_lastGeneratedAt);
+  }
+}
+
+window.addEventListener('DOMContentLoaded', function() {
+  var dot = document.getElementById('sse-dot');
+  var st = document.getElementById('sse-status');
+  if (dot) dot.className = 'status-dot online';
+  if (st) st.textContent = 'API';
+});
+
+document.addEventListener('click', function(e) {
+  var el = e.target.closest('.pull-cmd');
+  if (el && el.dataset.cmd) {
+    navigator.clipboard.writeText(el.dataset.cmd).then(function() {
+      var hint = el.querySelector('.copy-hint');
+      if (hint) { hint.textContent = 'copied!'; setTimeout(function() { hint.textContent = 'click to copy'; }, 2000); }
+    });
+    return;
+  }
+  var btn = e.target.closest('.pull-btn');
+  if (btn && btn.dataset.node) {
+    pullSelected(btn.dataset.node);
+  }
+});
+
+document.addEventListener('change', function(e) {
+  if (e.target.classList.contains('model-check') && e.target.dataset.node) {
+    updatePullSection(e.target.dataset.node);
+  }
+});
+
+loadRecommendations();
+// Keep the relative timestamp fresh
+setInterval(updateTimestamp, 30000);
 </script>
 """

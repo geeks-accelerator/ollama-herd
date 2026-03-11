@@ -130,13 +130,15 @@ class HealthEngine:
         # "load more models" while models are timing out is contradictory.
         nodes_with_load_issues: set[str] = set()
         for r in recommendations:
-            if r.check_id in ("model_thrashing", "model_load_timeout"):
-                if r.severity != Severity.INFO:  # don't suppress for resolved issues
-                    if r.node_id:
-                        nodes_with_load_issues.add(r.node_id)
-                    # model_load_timeout spans nodes — check data field too
-                    for n in r.data.get("nodes", []):
-                        nodes_with_load_issues.add(n)
+            if (
+                r.check_id in ("model_thrashing", "model_load_timeout")
+                and r.severity != Severity.INFO  # don't suppress for resolved issues
+            ):
+                if r.node_id:
+                    nodes_with_load_issues.add(r.node_id)
+                # model_load_timeout spans nodes — check data field too
+                for n in r.data.get("nodes", []):
+                    nodes_with_load_issues.add(n)
         if nodes_with_load_issues:
             recommendations = [
                 r

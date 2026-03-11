@@ -143,13 +143,15 @@ Enable with `FLEET_NODE_ENABLE_CAPACITY_LEARNING=true`. See [Adaptive Capacity L
 
 ## Dashboard
 
-The built-in dashboard at `/dashboard` provides five views:
+The built-in dashboard at `/dashboard` provides seven views:
 
 - **Fleet Overview** — live node status, CPU/memory metrics, loaded models, and request queue depths via Server-Sent Events
 - **Trends** — historical charts for requests per hour, average latency, and token throughput (prompt + completion) with selectable time ranges (24h–7d)
 - **Model Insights** — per-model comparison of latency, tokens/sec, and usage; token distribution doughnut chart; clickable rows for daily breakdown
 - **Apps** — per-tag analytics with request volume, latency, tokens, error rates, and daily trends; tag your requests to see per-application breakdowns
 - **Benchmarks** — capacity growth over time with per-run throughput, latency percentiles, per-model and per-node breakdowns
+- **Health** — fleet health analysis with 7 automated checks (offline nodes, memory pressure, thrashing, timeouts, error rates)
+- **Recommendations** — AI-powered model mix recommendations per node based on hardware, usage patterns, and curated benchmark data; select which models to pull and download them directly from the dashboard
 
 All powered by Chart.js and a SQLite-backed latency store. No external database required.
 
@@ -184,7 +186,12 @@ See [Operations Guide](docs/operations-guide.md) for log queries, trace access, 
 | `GET /dashboard/api/traces` | Recent request traces (JSON) |
 | `GET /dashboard/api/benchmarks` | Benchmark run history (JSON) |
 | `POST /dashboard/api/benchmarks` | Save benchmark results (JSON) |
+| `GET /dashboard/api/health` | Fleet health analysis (JSON) |
+| `GET /dashboard/api/recommendations` | Model mix recommendations per node (JSON, cached 5m) |
+| `POST /dashboard/api/pull` | Pull a model onto a specific node |
 | `GET /dashboard/benchmarks` | Benchmarks dashboard page |
+| `GET /dashboard/health` | Health dashboard page |
+| `GET /dashboard/recommendations` | Model recommendations dashboard page |
 
 Full request/response schemas: [API Reference](docs/api-reference.md).
 
@@ -339,7 +346,7 @@ uv sync                              # install deps
 uv run herd                          # start router
 uv run herd-node                     # start node agent
 
-uv run pytest -v                     # run all 212 tests (~4s)
+uv run pytest -v                     # run all 289 tests (~4s)
 uv run ruff check src/               # lint
 uv run ruff format src/              # format
 ```

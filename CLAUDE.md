@@ -13,7 +13,7 @@ uv run herd-node --router-url http://localhost:11435  # explicit router URL
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 251 tests (~4s)
+uv run pytest                    # run all 289 tests (~4s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run pytest -v                 # verbose output
@@ -39,13 +39,15 @@ Single Python package (`fleet_manager`), two CLI entry points:
 | `server/latency_store.py` | aiosqlite persistence at `~/.fleet-manager/latency.db` |
 | `server/trace_store.py` | Per-request trace log + usage stats + benchmark results + timeout detection in SQLite |
 | `server/health_engine.py` | Fleet health analysis: 7 checks (offline, degraded, memory pressure, underutilized, thrashing, timeouts, error rates) |
+| `server/model_knowledge.py` | Curated catalog of 30+ Ollama models with benchmarks, RAM requirements, and category classifications |
+| `server/model_recommender.py` | Analyzes fleet hardware + usage patterns to recommend optimal model mix per node |
 | `server/routes/routing.py` | Shared scoring logic with model fallback + holding queue + auto-pull + tag extraction |
 | `server/rebalancer.py` | Background queue rebalancer + pre-warm trigger |
 | `server/routes/openai_compat.py` | `/v1/chat/completions`, `/v1/models` |
 | `server/routes/ollama_compat.py` | `/api/chat`, `/api/generate`, `/api/tags`, `/api/ps` |
 | `server/routes/fleet.py` | `/fleet/status` — full fleet state |
 | `server/routes/heartbeat.py` | `/heartbeat` — node agent heartbeat receiver |
-| `server/routes/dashboard.py` | Real-time web dashboard at `/dashboard` with SSE updates + benchmarks tab |
+| `server/routes/dashboard.py` | Real-time web dashboard at `/dashboard` with SSE updates, benchmarks, health, and model recommendations tabs |
 | `node/agent.py` | Main loop: mDNS discovery, heartbeat, Ollama auto-start, LAN proxy, SIGTERM drain |
 | `node/collector.py` | Assembles HeartbeatPayload from psutil + Ollama, rewrites localhost to LAN IP |
 | `node/ollama_proxy.py` | TCP reverse proxy: bridges LAN IP → localhost Ollama (auto-started) |
@@ -95,7 +97,7 @@ These principles shape every decision in the codebase. They're non-negotiable.
 Each node is sovereign. It runs its own Ollama, manages its own models, learns its own capacity patterns, and works fine standalone without the router. The router coordinates but never controls. Nodes join and leave freely via mDNS — no central config file lists them. If a node loses connectivity, it keeps serving local inference. That's sovereignty, not dependency.
 
 ### Two-person scale as a forcing function
-If it requires a manual, it's too complex. Two CLI commands (`herd`, `herd-node`), zero config files, zero Docker, zero Kubernetes. 251 tests run in under 5 seconds. The entire codebase fits in one person's head. Every time there's a choice between a "proper" distributed systems solution (service mesh, etcd, gRPC) and the simple thing (HTTP heartbeats, SQLite, mDNS) — choose the simple thing. Kill complexity before it kills you.
+If it requires a manual, it's too complex. Two CLI commands (`herd`, `herd-node`), zero config files, zero Docker, zero Kubernetes. 289 tests run in under 5 seconds. The entire codebase fits in one person's head. Every time there's a choice between a "proper" distributed systems solution (service mesh, etcd, gRPC) and the simple thing (HTTP heartbeats, SQLite, mDNS) — choose the simple thing. Kill complexity before it kills you.
 
 ### Human-readable state everywhere
 No opaque binary formats. JSONL logs you can `grep`. SQLite you can query with standard tools. Capacity learner state persisted as JSON files. Heartbeats are plain JSON. All config is env vars. A human can run `sqlite3 ~/.fleet-manager/latency.db "SELECT * FROM request_traces LIMIT 5"` and instantly understand what happened. Debuggability is a feature.

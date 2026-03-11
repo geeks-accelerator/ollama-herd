@@ -684,6 +684,81 @@ Save benchmark results from the benchmark script.
 
 ---
 
+### `GET /dashboard/api/recommendations`
+
+Model mix recommendations for the fleet based on hardware, usage patterns, and curated benchmark data. Results are cached for 5 minutes.
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `refresh` | int | `0` | Pass `1` to force re-analysis (bypasses cache) |
+
+**Response:**
+
+```json
+{
+  "nodes": [
+    {
+      "node_id": "mac-studio",
+      "total_ram_gb": 512.0,
+      "usable_ram_gb": 506.0,
+      "current_models": ["gpt-oss:120b", "qwen3:235b-a22b"],
+      "recommendations": [
+        {
+          "model": "gpt-oss:120b",
+          "display_name": "GPT-OSS 120B",
+          "category": "reasoning",
+          "ram_gb": 72.0,
+          "quality_score": 89.0,
+          "reason": "Currently your most-used reasoning model (4303 requests in 24h)",
+          "priority": "high",
+          "already_available": true
+        }
+      ],
+      "total_recommended_ram_gb": 313.0,
+      "ram_headroom_gb": 193.0
+    }
+  ],
+  "usage": {
+    "total_requests_24h": 4484,
+    "category_breakdown": {"reasoning": 4390, "general": 52, "coding": 42},
+    "top_models": [{"model": "gpt-oss:120b", "requests": 4390, "category": "reasoning"}],
+    "category_coverage": {"general": true, "coding": true, "reasoning": true, "creative": true, "fast-chat": true}
+  },
+  "fleet_summary": "1 node(s), 512GB total RAM, 6 model(s) recommended using 313GB",
+  "uncovered_categories": [],
+  "generated_at": 1741700000.0
+}
+```
+
+The recommender uses a curated catalog of 30+ models with benchmark data (MMLU, HumanEval, MT-Bench) and considers: available RAM per node (with 6GB OS overhead), last 24h request patterns, models already downloaded, cross-fleet distribution (avoids redundant large models), and a 50% RAM cap per model to ensure variety.
+
+---
+
+### `POST /dashboard/api/pull`
+
+Pull a model onto a specific node via Ollama's `/api/pull` API. Blocks until the pull completes (may take minutes for large models).
+
+**Request body:**
+
+```json
+{
+  "node_id": "mac-studio",
+  "model": "codestral:22b"
+}
+```
+
+**Response:**
+
+```json
+{"ok": true, "node_id": "mac-studio", "model": "codestral:22b"}
+```
+
+Returns `{"ok": false, ...}` if the pull fails. The router proxies the pull request to the target node's Ollama instance using the same HTTP client used for inference (600s read timeout).
+
+---
+
 ## Static Assets
 
 | Endpoint | Description |
