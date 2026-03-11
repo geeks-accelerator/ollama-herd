@@ -189,6 +189,8 @@ See [Operations Guide](docs/operations-guide.md) for log queries, trace access, 
 | `GET /dashboard/api/health` | Fleet health analysis (JSON) |
 | `GET /dashboard/api/recommendations` | Model mix recommendations per node (JSON, cached 5m) |
 | `POST /dashboard/api/pull` | Pull a model onto a specific node |
+| `GET /dashboard/api/model-management` | Per-node model details with sizes, usage stats, last-used timestamps |
+| `POST /dashboard/api/delete` | Delete a model from a specific node |
 | `GET /dashboard/benchmarks` | Benchmarks dashboard page |
 | `GET /dashboard/health` | Health dashboard page |
 | `GET /dashboard/recommendations` | Model recommendations dashboard page |
@@ -346,7 +348,7 @@ uv sync                              # install deps
 uv run herd                          # start router
 uv run herd-node                     # start node agent
 
-uv run pytest -v                     # run all 289 tests (~4s)
+uv run pytest -v                     # run all 295 tests (~4s)
 uv run ruff check src/               # lint
 uv run ruff format src/              # format
 ```

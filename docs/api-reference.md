@@ -757,6 +757,63 @@ Pull a model onto a specific node via Ollama's `/api/pull` API. Blocks until the
 
 Returns `{"ok": false, ...}` if the pull fails. The router proxies the pull request to the target node's Ollama instance using the same HTTP client used for inference (600s read timeout).
 
+### `POST /dashboard/api/delete`
+
+Delete a model from a specific node via Ollama's `DELETE /api/delete` API.
+
+**Request body:**
+
+```json
+{
+  "node_id": "mac-studio",
+  "model": "qwen3-coder-480b:latest"
+}
+```
+
+**Response:**
+
+```json
+{"ok": true, "node_id": "mac-studio", "model": "qwen3-coder-480b:latest"}
+```
+
+Returns `{"ok": false, ...}` if the delete fails. This permanently removes the model from the node's disk — it must be re-downloaded to use again.
+
+### `GET /dashboard/api/model-management`
+
+Per-node model details with disk sizes, usage statistics, and last-used timestamps for the model management UI.
+
+**Response:**
+
+```json
+{
+  "nodes": [
+    {
+      "node_id": "mac-studio",
+      "models": [
+        {
+          "name": "gpt-oss:120b",
+          "display_name": "GPT-OSS 120B",
+          "category": "reasoning",
+          "size_gb": 60.9,
+          "parameter_size": "120B",
+          "quantization": "Q4_K_M",
+          "last_used": 1741700000.0,
+          "days_unused": 0.1,
+          "total_requests": 18065,
+          "loaded_in_vram": true,
+          "unused": false
+        }
+      ],
+      "total_size_gb": 959.0,
+      "disk_available_gb": 2994.0,
+      "disk_total_gb": 3722.0
+    }
+  ]
+}
+```
+
+Models are sorted by: loaded in VRAM first, then by last-used descending, then alphabetically. The `unused` flag is `true` if the model has never been used through the router or hasn't been used in 7+ days.
+
 ---
 
 ## Static Assets
