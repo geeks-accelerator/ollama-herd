@@ -84,8 +84,6 @@ All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix 
 | [`docs/architecture-decisions.md`](docs/architecture-decisions.md) | Port selection, design trade-offs, rationale |
 | [`docs/issues.md`](docs/issues.md) | Known issues, improvements, test coverage gaps |
 | [`docs/observations.md`](docs/observations.md) | Patterns and insights extracted from operating the fleet |
-| [`docs/project-status-and-strategy.md`](docs/project-status-and-strategy.md) | Competitive landscape and agent framework matrix |
-| [`docs/agentic-router-vision.md`](docs/agentic-router-vision.md) | Vision: proactive fleet intelligence, task backlogs, agentic decomposition |
 
 ## Design Principles
 

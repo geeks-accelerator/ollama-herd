@@ -205,7 +205,7 @@ export LLM_BASE_URL=http://router-ip:11435/v1
 
 Compatible with: OpenClaw, LangChain, CrewAI, AutoGen, LlamaIndex, Haystack, smolagents, OpenHands, Aider, Cline, Continue.dev, Bolt.diy, and any OpenAI-compatible client.
 
-See [OpenClaw Integration Guide](docs/openclaw-integration.md) and [Project Strategy](docs/project-status-and-strategy.md#agent-framework-integration) for the full compatibility matrix.
+See [OpenClaw Integration Guide](docs/openclaw-integration.md) for the full compatibility matrix.
 
 ## Design Philosophy
 
@@ -355,8 +355,6 @@ uv run ruff format src/              # format
 | [Request Tagging](docs/request-tagging.md) | Per-app analytics, tagging strategies, competitive landscape |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues, LAN debugging, operational gotchas |
 | [Architecture Decisions](docs/architecture-decisions.md) | Port selection, design trade-offs, rationale |
-| [Project Strategy](docs/project-status-and-strategy.md) | Competitive landscape and agent framework matrix |
-| [Agentic Router Vision](docs/agentic-router-vision.md) | What's next: proactive fleet intelligence and task backlogs |
 
 ## What's Next
 
@@ -368,8 +366,6 @@ The fleet is smart but passive — it waits for requests. The next evolution is 
 - **Fleet health opinions** — the router surfaces observations, not just metrics
 
 > *"Your fleet doesn't just wait for requests — it works for you while you sleep."*
-
-See [Agentic Router Vision](docs/agentic-router-vision.md) for the full design.
 
 ## Scale your AI agent's brain
 
