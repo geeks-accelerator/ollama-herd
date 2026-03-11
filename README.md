@@ -9,7 +9,7 @@ You have multiple machines with GPUs sitting around. You want one endpoint that 
 ## Quick start
 
 ```bash
-uv sync  # or: pip install .
+pip install ollama-herd
 ```
 
 **On your router machine:**
@@ -333,6 +333,8 @@ Node settings use the `FLEET_NODE_` prefix:
 ## Development
 
 ```bash
+git clone https://github.com/geeks-accelerator/ollama-herd.git
+cd ollama-herd
 uv sync                              # install deps
 uv run herd                          # start router
 uv run herd-node                     # start node agent
