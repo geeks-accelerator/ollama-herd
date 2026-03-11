@@ -83,6 +83,7 @@ class HealthEngine:
         recommendations.extend(self._check_degraded_offline_nodes(nodes))
         recommendations.extend(self._check_memory_pressure(nodes))
         recommendations.extend(self._check_underutilized_memory(nodes))
+        recommendations.extend(self._check_vram_fallbacks())
 
         # Trace-based checks (async, queries SQLite)
         if trace_store:
@@ -273,6 +274,46 @@ class HealthEngine:
                     )
                 )
         return recs
+
+    def _check_vram_fallbacks(self) -> list[Recommendation]:
+        """Surface VRAM fallback events as an INFO health card."""
+        from fleet_manager.server.routes.routing import get_vram_fallback_events
+
+        events = get_vram_fallback_events(hours=24)
+        if not events:
+            return []
+
+        # Aggregate: which models were requested but not loaded
+        from collections import Counter
+
+        requested_counts: Counter[str] = Counter()
+        for e in events:
+            requested_counts[e["requested_model"]] += 1
+
+        top_models = requested_counts.most_common(5)
+        model_lines = ", ".join(f"{m} ({c}x)" for m, c in top_models)
+
+        return [
+            Recommendation(
+                check_id="vram_fallback_active",
+                severity=Severity.INFO,
+                title=f"VRAM fallback active: {len(events)} request(s) rerouted in 24h",
+                description=(
+                    f"Requests for unloaded models were routed to loaded alternatives "
+                    f"to avoid cold-load delays. Most requested: {model_lines}."
+                ),
+                fix=(
+                    "Consider loading frequently-requested models to avoid fallbacks. "
+                    + " ".join(
+                        f"ollama pull {m}" for m, _ in top_models[:3]
+                    )
+                ),
+                data={
+                    "total_fallbacks": len(events),
+                    "top_requested": dict(top_models),
+                },
+            )
+        ]
 
     # ------------------------------------------------------------------
     # Trace-based checks

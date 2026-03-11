@@ -387,3 +387,88 @@ class TestScoringEngine:
         # With queue depth 0, no wait penalty
         results = scorer.score_request("llama3.3:70b", {"studio:llama3.3:70b": 0})
         assert results[0].scores_breakdown["wait_time"] == 0.0
+
+
+@pytest.mark.asyncio
+class TestScoreLoadedModels:
+    async def test_same_category_filter(self, scorer, registry):
+        """Only return loaded models matching the requested category."""
+        # Node with a coding model loaded
+        hb = make_heartbeat(
+            node_id="studio",
+            memory_total=512.0,
+            memory_used=200.0,
+            loaded_models=[("qwen2.5-coder:32b", 20.0), ("llama3.3:70b", 40.0)],
+        )
+        await registry.update_from_heartbeat(hb)
+
+        # Request coding category — should only return the coder model
+        results = scorer.score_loaded_models("coding", {})
+        assert len(results) == 1
+        assert results[0][1] == "qwen2.5-coder:32b"
+
+    async def test_any_category(self, scorer, registry):
+        """With category=None, return all loaded models."""
+        hb = make_heartbeat(
+            node_id="studio",
+            memory_total=512.0,
+            memory_used=200.0,
+            loaded_models=[("qwen2.5-coder:32b", 20.0), ("llama3.3:70b", 40.0)],
+        )
+        await registry.update_from_heartbeat(hb)
+
+        results = scorer.score_loaded_models(None, {})
+        model_names = {r[1] for r in results}
+        assert "qwen2.5-coder:32b" in model_names
+        assert "llama3.3:70b" in model_names
+
+    async def test_exclude_models(self, scorer, registry):
+        """Excluded models are filtered out."""
+        hb = make_heartbeat(
+            node_id="studio",
+            memory_total=512.0,
+            memory_used=200.0,
+            loaded_models=[("qwen2.5-coder:32b", 20.0), ("llama3.3:70b", 40.0)],
+        )
+        await registry.update_from_heartbeat(hb)
+
+        results = scorer.score_loaded_models(
+            None, {}, exclude_models=["llama3.3:70b"],
+        )
+        model_names = {r[1] for r in results}
+        assert "llama3.3:70b" not in model_names
+        assert "qwen2.5-coder:32b" in model_names
+
+    async def test_offline_nodes_excluded(self, scorer, registry):
+        """Offline nodes are not scored."""
+        hb = make_heartbeat(
+            node_id="offline-node",
+            loaded_models=[("phi4:14b", 9.0)],
+        )
+        await registry.update_from_heartbeat(hb)
+        registry.handle_drain("offline-node")
+
+        results = scorer.score_loaded_models(None, {})
+        assert results == []
+
+    async def test_sorted_by_score_descending(self, scorer, registry):
+        """Results are sorted by score descending."""
+        # Two nodes with different memory headroom
+        hb_a = make_heartbeat(
+            node_id="big",
+            memory_total=512.0,
+            memory_used=100.0,
+            loaded_models=[("phi4:14b", 9.0)],
+        )
+        hb_b = make_heartbeat(
+            node_id="small",
+            memory_total=32.0,
+            memory_used=10.0,
+            loaded_models=[("phi4:14b", 9.0)],
+        )
+        await registry.update_from_heartbeat(hb_a)
+        await registry.update_from_heartbeat(hb_b)
+
+        results = scorer.score_loaded_models(None, {})
+        assert len(results) == 2
+        assert results[0][0].score >= results[1][0].score

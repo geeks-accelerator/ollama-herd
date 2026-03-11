@@ -42,6 +42,9 @@ class ServerSettings(BaseSettings):
     auto_pull: bool = True
     auto_pull_timeout: float = 300.0  # 5 minutes
 
+    # VRAM-aware fallback: route to loaded model in same category instead of cold-loading
+    vram_fallback: bool = True
+
     # Retry
     max_retries: int = 2
 

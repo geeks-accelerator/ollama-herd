@@ -8,6 +8,7 @@ import time
 from fleet_manager.models.config import ServerSettings
 from fleet_manager.models.node import MemoryPressure, NodeState, NodeStatus
 from fleet_manager.models.request import RoutingResult
+from fleet_manager.server.model_knowledge import classify_model, lookup_model
 from fleet_manager.server.registry import NodeRegistry
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,76 @@ class ScoringEngine:
                 f"ctx={winner.scores_breakdown.get('context_fit', 0):.0f})"
             )
 
+        return results
+
+    def score_loaded_models(
+        self,
+        category: str | None,
+        queue_depths: dict[str, int],
+        estimated_tokens: int = 0,
+        exclude_models: list[str] | None = None,
+    ) -> list[tuple[RoutingResult, str]]:
+        """Score all currently-loaded models, optionally filtered by category.
+
+        Returns [(RoutingResult, model_name), ...] sorted by score descending.
+        Only considers models that are HOT (loaded in VRAM).
+        """
+        exclude = set(exclude_models or [])
+        results: list[tuple[RoutingResult, str]] = []
+
+        for node in self._registry.get_all_nodes():
+            if node.status == NodeStatus.OFFLINE or not node.ollama:
+                continue
+            if node.memory and node.memory.pressure == MemoryPressure.CRITICAL:
+                continue
+            if node.capacity and node.capacity.mode in ("paused", "bootstrap"):
+                continue
+
+            for loaded_model in node.ollama.models_loaded:
+                if loaded_model.name in exclude:
+                    continue
+
+                # Category filter
+                if category is not None:
+                    model_cat = classify_model(loaded_model.name)
+                    spec = lookup_model(loaded_model.name)
+                    secondary = [c.value for c in spec.secondary_categories] if spec else []
+                    if model_cat.value != category and category not in secondary:
+                        continue
+
+                # Score using existing 7-signal pipeline
+                model = loaded_model.name
+                queue_key = f"{node.node_id}:{model}"
+                depth = queue_depths.get(queue_key, 0)
+                breakdown = {
+                    "thermal": self._score_thermal(node, model),
+                    "memory_fit": self._score_memory_fit(node, model),
+                    "queue_depth": self._score_queue_depth(depth),
+                    "wait_time": self._score_wait_time(node, model, depth),
+                    "role_affinity": self._score_role_affinity(node, model),
+                    "availability_trend": self._score_availability_trend(node),
+                    "context_fit": self._score_context_fit(node, model, estimated_tokens),
+                }
+
+                total = sum(breakdown.values())
+
+                # Quality boost: prefer bigger/better models as compensation
+                spec = lookup_model(model)
+                if spec:
+                    quality_bonus = spec.benchmarks.quality_score * 0.3
+                    total += quality_bonus
+                    breakdown["quality_bonus"] = quality_bonus
+
+                breakdown["total"] = total
+                result = RoutingResult(
+                    node_id=node.node_id,
+                    queue_key=queue_key,
+                    score=total,
+                    scores_breakdown=breakdown,
+                )
+                results.append((result, model))
+
+        results.sort(key=lambda r: r[0].score, reverse=True)
         return results
 
     def _eliminate(self, model: str) -> list[NodeState]:
