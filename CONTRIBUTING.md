@@ -7,7 +7,7 @@ Thanks for your interest in contributing! Whether you're fixing a bug, adding a 
 ```bash
 git clone https://github.com/geeks-accelerator/ollama-herd.git
 cd ollama-herd
-uv sync
+uv sync --extra dev  # installs test + lint deps
 ```
 
 ## Development Workflow
