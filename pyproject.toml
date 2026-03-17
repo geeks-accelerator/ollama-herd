@@ -1,6 +1,6 @@
 [project]
 name = "ollama-herd"
-version = "0.1.0"
+version = "0.1.1"
 description = "Smart inference router that herds your Ollama instances into one endpoint"
 readme = "README.md"
 license = "MIT"
