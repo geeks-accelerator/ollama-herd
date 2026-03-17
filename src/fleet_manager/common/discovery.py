@@ -94,6 +94,6 @@ class FleetServiceDiscoverer:
 
     async def stop(self):
         if self._browser:
-            self._browser.cancel()
+            await self._browser.async_cancel()
         if self._azc:
             await self._azc.async_close()

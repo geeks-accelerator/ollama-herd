@@ -6,6 +6,13 @@
       "runtimeExecutable": "uv",
       "runtimeArgs": ["run", "herd"],
       "port": 11435
+    },
+    {
+      "name": "herd-node",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "herd-node", "--router-url", "http://localhost:11435"],
+      "port": 11436,
+      "autoPort": true
     }
   ]
 }
