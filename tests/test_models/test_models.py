@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from fleet_manager.models.config import ServerSettings, NodeSettings
+from fleet_manager.models.config import NodeSettings, ServerSettings
 from fleet_manager.models.node import (
     CpuMetrics,
     HardwareProfile,
@@ -22,6 +22,7 @@ from fleet_manager.models.request import (
     RequestFormat,
     RequestStatus,
     RoutingResult,
+    normalize_model_name,
 )
 
 
@@ -106,6 +107,44 @@ class TestNodeModels:
             model_unloaded_at={"phi4:14b": time.time()},
         )
         assert "phi4:14b" in ns.model_unloaded_at
+
+
+class TestModelNameNormalization:
+    """Model names should always include a tag to match Ollama conventions."""
+
+    def test_appends_latest_when_no_tag(self):
+        assert normalize_model_name("qwen3-coder") == "qwen3-coder:latest"
+        assert normalize_model_name("llama3") == "llama3:latest"
+
+    def test_preserves_explicit_tag(self):
+        assert normalize_model_name("qwen3:235b") == "qwen3:235b"
+        assert normalize_model_name("phi4:14b") == "phi4:14b"
+        assert normalize_model_name("llama3.3:70b") == "llama3.3:70b"
+
+    def test_preserves_latest_tag(self):
+        assert normalize_model_name("qwen3-coder:latest") == "qwen3-coder:latest"
+
+    def test_empty_string_unchanged(self):
+        assert normalize_model_name("") == ""
+
+    def test_inference_request_normalizes_model(self):
+        req = InferenceRequest(model="qwen3-coder")
+        assert req.model == "qwen3-coder:latest"
+
+    def test_inference_request_normalizes_original_model(self):
+        req = InferenceRequest(model="qwen3-coder", original_model="qwen3-coder")
+        assert req.original_model == "qwen3-coder:latest"
+
+    def test_inference_request_normalizes_fallbacks(self):
+        req = InferenceRequest(
+            model="phi4:14b",
+            fallback_models=["llama3", "qwen3:235b"],
+        )
+        assert req.fallback_models == ["llama3:latest", "qwen3:235b"]
+
+    def test_inference_request_preserves_tagged_model(self):
+        req = InferenceRequest(model="phi4:14b")
+        assert req.model == "phi4:14b"
 
 
 class TestRequestModels:

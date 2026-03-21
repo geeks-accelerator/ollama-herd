@@ -6,7 +6,7 @@ import time
 import uuid
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class RequestFormat(StrEnum):
@@ -19,6 +19,21 @@ class RequestStatus(StrEnum):
     IN_FLIGHT = "in_flight"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+def normalize_model_name(name: str) -> str:
+    """Normalize Ollama model names by appending :latest when no tag is present.
+
+    Ollama always returns model names with explicit tags (e.g. 'qwen3-coder:latest',
+    'qwen3:235b'). Client requests often omit the tag (e.g. 'qwen3-coder'), which
+    causes duplicate queues, scoring mismatches, and cache misses throughout the
+    pipeline. This function ensures consistent naming.
+    """
+    if not name:
+        return name
+    if ":" not in name:
+        return f"{name}:latest"
+    return name
 
 
 class InferenceRequest(BaseModel):
@@ -36,6 +51,15 @@ class InferenceRequest(BaseModel):
     fallback_models: list[str] = Field(default_factory=list)
     # Request tagging for per-app analytics
     tags: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _normalize_model_names(self) -> InferenceRequest:
+        """Append :latest to model names missing a tag, matching Ollama conventions."""
+        self.model = normalize_model_name(self.model)
+        if self.original_model:
+            self.original_model = normalize_model_name(self.original_model)
+        self.fallback_models = [normalize_model_name(m) for m in self.fallback_models]
+        return self
 
 
 class QueueEntry(BaseModel):

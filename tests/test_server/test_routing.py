@@ -12,7 +12,6 @@ from fleet_manager.server.routes.routing import (
     _vram_fallback_events,
     score_with_fallbacks,
 )
-
 from tests.conftest import make_inference_request, make_node
 
 
@@ -34,11 +33,17 @@ def _mock_queue_mgr():
 
 
 def _mock_registry_with_models(models: list[str]):
-    """Registry where one node has all listed models available."""
+    """Registry where one node has all listed models available.
+
+    Model names are normalized with :latest tag (matching Ollama behavior).
+    """
+    from fleet_manager.models.request import normalize_model_name
+
+    tagged = [normalize_model_name(m) for m in models]
     node = make_node(
         node_id="studio",
-        loaded_models=[(m, 5.0) for m in models],
-        available_models=models,
+        loaded_models=[(m, 5.0) for m in tagged],
+        available_models=tagged,
     )
     registry = MagicMock()
     registry.get_all_nodes.return_value = [node]
@@ -111,7 +116,7 @@ class TestScoreWithFallbacks:
 
         def tracking_score(model, depths, estimated_tokens=0):
             call_order.append(model)
-            if model == "fallback-2":
+            if model == "fallback-2:latest":
                 return [
                     RoutingResult(
                         node_id="n1", queue_key=f"n1:{model}", score=50.0
@@ -126,15 +131,17 @@ class TestScoreWithFallbacks:
             ["primary", "fallback-1", "fallback-2"]
         )
 
-        req = make_inference_request(model="primary")
-        req.fallback_models = ["fallback-1", "fallback-2"]
+        req = make_inference_request(
+            model="primary", fallback_models=["fallback-1", "fallback-2"]
+        )
         results, actual_model = await score_with_fallbacks(
             req, scorer, queue_mgr, registry
         )
 
-        assert actual_model == "fallback-2"
+        assert actual_model == "fallback-2:latest"
         # The first cycle should try primary, fallback-1, fallback-2 in order
-        assert call_order[:3] == ["primary", "fallback-1", "fallback-2"]
+        # Model names are normalized with :latest tag
+        assert call_order[:3] == ["primary:latest", "fallback-1:latest", "fallback-2:latest"]
 
     @pytest.mark.asyncio
     async def test_no_fallbacks_works_like_before(self):
