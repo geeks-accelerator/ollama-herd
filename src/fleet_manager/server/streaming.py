@@ -149,7 +149,9 @@ class StreamingProxy:
             if self._is_retryable_error(e):
                 self._invalidate_client(entry.assigned_node)
             queue_manager.mark_failed(queue_key, entry)
-            logger.error(f"Stream error for {entry.request.request_id[:8]}: {e}")
+            logger.error(
+                f"Stream error for {entry.request.request_id[:8]}: {type(e).__name__}: {e}"
+            )
             # Record failed trace
             elapsed_ms = (time.time() - start_time) * 1000
             self._record_trace(
@@ -158,7 +160,7 @@ class StreamingProxy:
                 start_time,
                 first_token_time,
                 "failed",
-                error_message=str(e),
+                error_message=f"{type(e).__name__}: {e}",
             )
             raise
         finally:
@@ -298,15 +300,18 @@ class StreamingProxy:
                         start_time,
                         first_token_time,
                         "failed",
-                        error_message=str(e),
+                        error_message=f"{type(e).__name__}: {e}",
                     )
                     if first_chunk_sent:
                         logger.error(
                             f"Stream error (after first chunk, cannot retry) "
-                            f"for {entry.request.request_id[:8]}: {e}"
+                            f"for {entry.request.request_id[:8]}: {type(e).__name__}: {e}"
                         )
                     else:
-                        logger.error(f"Non-retryable error for {entry.request.request_id[:8]}: {e}")
+                        logger.error(
+                            f"Non-retryable error for {entry.request.request_id[:8]}: "
+                            f"{type(e).__name__}: {e}"
+                        )
                     raise
 
                 # Retryable pre-first-chunk failure
@@ -317,7 +322,7 @@ class StreamingProxy:
 
                 logger.warning(
                     f"Node {current_node} failed for {entry.request.request_id[:8]} "
-                    f"(attempt {attempt}/{max_retries + 1}): {e}"
+                    f"(attempt {attempt}/{max_retries + 1}): {type(e).__name__}: {e}"
                 )
 
                 # Record "retried" trace for the failed attempt
@@ -327,7 +332,7 @@ class StreamingProxy:
                     start_time,
                     None,
                     "retried",
-                    error_message=str(e),
+                    error_message=f"{type(e).__name__}: {e}",
                 )
 
                 if attempt > max_retries:

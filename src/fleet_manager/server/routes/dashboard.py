@@ -374,6 +374,9 @@ async def dashboard_settings_data(request: Request):
         "context_protection": {
             "context_protection": settings.context_protection,
         },
+        "reaper": {
+            "stale_timeout": settings.stale_timeout,
+        },
     }
 
     nodes_data = []
@@ -2965,7 +2968,8 @@ var CONFIG_LABELS = {
   rebalancer: 'Rebalancer',
   pre_warm: 'Pre-warm',
   auto_pull_config: 'Auto-Pull',
-  context_protection: 'Context Protection'
+  context_protection: 'Context Protection',
+  reaper: 'Reaper'
 };
 
 function showToast(msg) {

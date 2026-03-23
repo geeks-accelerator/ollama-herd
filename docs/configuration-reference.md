@@ -91,11 +91,12 @@ Pre-warm proactively loads models on runner-up nodes before they're needed.
 | `FLEET_PRE_WARM_THRESHOLD` | `3` | Winner's queue depth that triggers pre-warm on runner-up |
 | `FLEET_PRE_WARM_MIN_AVAILABILITY` | `0.60` | Minimum node availability score to receive pre-warm (capacity learning) |
 
-### Retry
+### Retry & Reaper
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLEET_MAX_RETRIES` | `2` | Max retry attempts on node failure (before first chunk) |
+| `FLEET_STALE_TIMEOUT` | `900.0` | Seconds before in-flight requests are considered zombied and reaped (15 min) |
 
 ### mDNS Discovery
 

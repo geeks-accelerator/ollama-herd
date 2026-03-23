@@ -262,14 +262,14 @@ Root causes compound: GPT-OSS minimum context override (Ollama bumps `num_ctx < 
 
 ---
 
-### 21. Stream Error Messages Are Empty Strings `OPEN`
+### 21. Stream Error Messages Are Empty Strings `FIXED`
 
 **File:** `src/fleet_manager/server/streaming.py`
 **Severity:** Medium
 
 Failed request traces in the trace store have empty `error_message` fields. The `logger.error()` calls in `_stream_with_tracking` and `_stream_with_retry` format the exception with `{e}` but the exception objects sometimes stringify to empty strings (e.g., `httpx.RemoteProtocolError` with no message). This makes post-mortem debugging blind — you can see a request failed but not why.
 
-**Fix:** Use `type(e).__name__: {e}` or `repr(e)` instead of `str(e)` to always capture at least the exception class. Also consider logging the full traceback at DEBUG level.
+**Fix:** Changed all `str(e)` to `f"{type(e).__name__}: {e}"` in stream error paths. Now error messages always include the exception class (e.g., `RemoteProtocolError:` instead of empty string). Applied in both `_stream_with_tracking` and `_stream_with_retry`.
 
 ---
 

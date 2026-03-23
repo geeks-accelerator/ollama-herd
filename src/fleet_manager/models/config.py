@@ -51,6 +51,10 @@ class ServerSettings(BaseSettings):
     # "passthrough" = do nothing
     context_protection: str = "strip"
 
+    # Stale request reaper
+    # Seconds before in-flight requests are considered zombied (15 min default)
+    stale_timeout: float = 900.0
+
     # Retry
     max_retries: int = 2
 

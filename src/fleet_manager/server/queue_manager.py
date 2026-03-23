@@ -64,10 +64,15 @@ class DeviceModelQueue:
 
 
 class QueueManager:
-    def __init__(self, registry=None):
+    def __init__(self, registry=None, settings=None):
         self._queues: dict[str, DeviceModelQueue] = {}
         self._lock = asyncio.Lock()
         self._registry = registry
+        self._settings = settings
+        self._stale_timeout = (
+            settings.stale_timeout if settings and hasattr(settings, "stale_timeout")
+            else _STALE_IN_FLIGHT_SECONDS
+        )
         self._reaper_task: asyncio.Task | None = None
 
     def start_reaper(self):
@@ -84,7 +89,7 @@ class QueueManager:
                 for key, q in list(self._queues.items()):
                     stale = [
                         e for e in q.in_flight
-                        if e.started_at and (now - e.started_at) > _STALE_IN_FLIGHT_SECONDS
+                        if e.started_at and (now - e.started_at) > self._stale_timeout
                     ]
                     for entry in stale:
                         q.in_flight.remove(entry)

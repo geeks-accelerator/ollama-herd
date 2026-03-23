@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
     trace_store = TraceStore(settings.data_dir)
     await trace_store.initialize()
     scorer = ScoringEngine(settings, registry, latency_store)
-    queue_mgr = QueueManager(registry=registry)
+    queue_mgr = QueueManager(registry=registry, settings=settings)
     streaming_proxy = StreamingProxy(registry, latency_store, trace_store, settings=settings)
     rebalancer = Rebalancer(settings, registry, scorer, queue_mgr, streaming_proxy)
 

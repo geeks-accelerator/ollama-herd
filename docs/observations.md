@@ -190,4 +190,14 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+### 2026-03-23 — In-memory event lists as a lightweight observability layer
+
+**Evidence:** Added health visibility for context protection and zombie reaper — two features that only logged events but had no dashboard presence. Rather than adding columns to the trace store (schema migration, async complexity), used module-level event lists capped at 100-200 entries with `get_*_events(hours)` getters. The health engine imports and aggregates them into `Recommendation` cards. Same pattern already proven by VRAM fallback tracking in `routing.py`.
+
+**Insight:** Not every operational signal needs database persistence. For "what's happening right now" visibility, in-memory event lists with time-windowed getters are sufficient. They're zero-latency (no async/await), zero-schema (no migrations), and self-cleaning (capped lists). The health engine treats all data sources uniformly — it doesn't care if the data comes from SQLite traces, registry state, or in-memory event lists. This separation of storage concern from health analysis concern keeps the system simple.
+
+**Pattern:** When adding observability for a new subsystem, ask: does this need to survive a restart? If no (it's diagnostic, not historical), use an in-memory event list. If yes (it's a metric for trending), add it to the trace store. The health engine's check methods abstract over this distinction — each check knows where to get its data, and the `analyze()` method just collects recommendations. This is the Strategy pattern applied to health monitoring.
+
+---
+
 *Add new observations above this line. Date them. Link evidence. Extract the transferable insight.*
