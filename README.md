@@ -154,7 +154,7 @@ The built-in dashboard at `/dashboard` provides eight views:
 - **Model Insights** — per-model comparison of latency, tokens/sec, and usage; token distribution doughnut chart; clickable rows for daily breakdown
 - **Apps** — per-tag analytics with request volume, latency, tokens, error rates, and daily trends; tag your requests to see per-application breakdowns
 - **Benchmarks** — capacity growth over time with per-run throughput, latency percentiles, per-model and per-node breakdowns
-- **Health** — fleet health analysis with 7 automated checks (offline nodes, memory pressure, thrashing, timeouts, error rates)
+- **Health** — fleet health analysis with 11 automated checks (offline nodes, memory pressure, thrashing, timeouts, error rates, version mismatch, context protection, zombie reaper)
 - **Recommendations** — AI-powered model mix recommendations per node based on hardware, usage patterns, and curated benchmark data; select which models to pull and download them directly from the dashboard
 - **Settings** — runtime toggle switches for auto-pull and VRAM fallback, read-only config tables grouped by category, and node list with version tracking and Router badge
 
@@ -325,7 +325,7 @@ If you see a timestamp instead of "Forever", your keep-alive is too short.
 
 ## Configuration
 
-All settings via environment variables. See [Configuration Reference](docs/configuration-reference.md) for the complete list of 29+ variables with tuning guidance.
+All settings via environment variables. See [Configuration Reference](docs/configuration-reference.md) for the complete list of 31+ variables with tuning guidance.
 
 ### Common variables
 
@@ -356,7 +356,7 @@ uv sync                              # install deps
 uv run herd                          # start router
 uv run herd-node                     # start node agent
 
-uv run pytest -v                     # run all 295 tests (~4s)
+uv run pytest -v                     # run all 342 tests (~5s)
 uv run ruff check src/               # lint
 uv run ruff format src/              # format
 ```

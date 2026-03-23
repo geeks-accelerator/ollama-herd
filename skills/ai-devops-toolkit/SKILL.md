@@ -34,7 +34,7 @@ Everything is backed by SQLite at `~/.fleet-manager/latency.db`. No external dat
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 ```
 
-Seven checks, each returning a severity (info/warning/critical) and recommendation:
+Eleven checks, each returning a severity (info/warning/critical) and recommendation:
 
 | Check | What it detects |
 |-------|----------------|
@@ -42,6 +42,10 @@ Seven checks, each returning a severity (info/warning/critical) and recommendati
 | Degraded nodes | Nodes reporting errors or high memory pressure |
 | Memory pressure | Nodes approaching memory limits |
 | Underutilized nodes | Healthy nodes not receiving traffic |
+| VRAM fallbacks | Requests rerouted to loaded alternatives to avoid cold loads |
+| Version mismatch | Nodes running different versions than the router |
+| Context protection | num_ctx values stripped or models upgraded to prevent reloads |
+| Zombie reaper | Stuck in-flight requests cleaned up |
 | Model thrashing | Models loading/unloading frequently (memory contention) |
 | Request timeouts | Requests exceeding expected latency thresholds |
 | Error rates | Elevated failure rates per model or per node |

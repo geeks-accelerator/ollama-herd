@@ -370,7 +370,7 @@ Receives heartbeats from node agents. Internal endpoint — not intended for ext
 | `GET /dashboard/models` | Model Insights — per-model latency, tokens/sec, usage comparison |
 | `GET /dashboard/apps` | Apps — per-tag analytics with latency, tokens, errors, daily trends |
 | `GET /dashboard/benchmarks` | Benchmarks — capacity growth charts, per-run results |
-| `GET /dashboard/health` | Health — 7 automated fleet health checks with severity and recommendations |
+| `GET /dashboard/health` | Health — 11 automated fleet health checks with severity and recommendations |
 | `GET /dashboard/recommendations` | Recommendations — AI-powered model mix per node with one-click pull |
 | `GET /dashboard/settings` | Settings — runtime toggles, config tables, node versions |
 
@@ -825,7 +825,7 @@ Current router configuration, toggleable settings, and registered node list with
 
 ```json
 {
-  "router_version": "0.1.1",
+  "router_version": "0.2.0",
   "router_hostname": "Neons-Mac-Studio",
   "config": {
     "toggles": { "auto_pull": true, "vram_fallback": true },
@@ -841,7 +841,7 @@ Current router configuration, toggleable settings, and registered node list with
     {
       "node_id": "Neons-Mac-Studio",
       "status": "online",
-      "agent_version": "0.1.1",
+      "agent_version": "0.2.0",
       "ip": "http://localhost:11434",
       "models_loaded_count": 2,
       "is_router": true

@@ -11,7 +11,7 @@ All settings are configured via environment variables. No config files needed.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLEET_HOST` | `0.0.0.0` | Bind address for the router |
-| `FLEET_PORT` | `4373` | Listen port (HERD on numpad) |
+| `FLEET_PORT` | `11435` | Listen port (Ollama default + 1) |
 
 ### Heartbeat Monitoring
 

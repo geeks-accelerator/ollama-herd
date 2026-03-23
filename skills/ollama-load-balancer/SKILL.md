@@ -22,7 +22,7 @@ The load balancer runs at `http://localhost:11435`. Drop-in replacement for dire
 
 ## Health monitoring
 
-### Fleet-wide health check (7 automated checks)
+### Fleet-wide health check (11 automated checks)
 ```bash
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 ```

@@ -62,7 +62,7 @@ Returns the last N routing decisions with: model requested, node selected, score
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 ```
 
-Returns 7 automated health checks: offline nodes, degraded nodes, memory pressure, underutilized nodes, model thrashing, request timeouts, and error rates.
+Returns 11 automated health checks: offline/degraded nodes, memory pressure, underutilized nodes, VRAM fallbacks, version mismatch, context protection, zombie reaper, model thrashing, request timeouts, error rates, and retry rates.
 
 ### Model recommendations
 ```bash
@@ -116,7 +116,7 @@ The web dashboard is at `http://localhost:11435/dashboard`. It has eight tabs:
 - **Model Insights** — per-model latency, tokens/sec, usage comparison
 - **Apps** — per-tag analytics with request volume, latency, tokens, error rates, and daily trends
 - **Benchmarks** — capacity growth over time with per-run throughput and latency percentiles
-- **Health** — 7 automated fleet health checks with severity levels and recommendations
+- **Health** — 11 automated fleet health checks with severity levels and recommendations
 - **Recommendations** — model mix recommendations per node with one-click pull
 - **Settings** — runtime toggle switches, read-only config tables, and node version tracking
 
