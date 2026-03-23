@@ -3,7 +3,7 @@ name: ollama-herd
 description: Manage your Ollama Herd device fleet — check node status, view queue depths, list available models, inspect request traces, monitor fleet health, manage settings, and get model recommendations. Use when the user asks about their local LLM fleet, inference routing, node status, model availability, or fleet performance.
 version: 1.1.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"]},"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"]},"os":["darwin","linux"]}}
 ---
 
 # Ollama Herd Fleet Manager

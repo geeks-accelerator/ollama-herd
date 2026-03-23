@@ -3,7 +3,7 @@ name: ollama-load-balancer
 description: Load balance Ollama across multiple machines with auto-discovery, health checks, queue management, and zero configuration. Automatic failover, retry on node failure, zombie request cleanup, and real-time monitoring dashboard. Use when the user needs high availability for Ollama, wants to distribute inference load, or needs operational visibility into their Ollama fleet.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"scales","requires":{"anyBins":["curl","wget"]},"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"scales","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"]},"os":["darwin","linux"]}}
 ---
 
 # Ollama Load Balancer

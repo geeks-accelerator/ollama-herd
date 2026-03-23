@@ -3,7 +3,7 @@ name: distributed-inference
 description: Run distributed LLM inference across heterogeneous hardware without the complexity. Scatter requests across Apple Silicon Macs, Linux boxes, and any machine running Ollama. Automatic node discovery, thermal-aware scheduling, adaptive capacity learning, and context-aware model placement. No orchestration layer, no container runtime, no shared filesystem — just HTTP and mDNS.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"globe","requires":{"anyBins":["curl","sqlite3"]},"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"globe","requires":{"anyBins":["curl","sqlite3"],"optionalBins":["python3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"]},"os":["darwin","linux"]}}
 ---
 
 # Distributed Inference

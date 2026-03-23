@@ -3,7 +3,7 @@ name: ai-devops-toolkit
 description: Operational tooling for teams running local LLM infrastructure. Request tracing with full scoring breakdowns, per-application usage analytics via request tagging, automated health checks with severity levels, latency percentile tracking, error rate monitoring, and capacity planning via model recommendations. SQLite-backed observability — no Prometheus, no Grafana, no external dependencies.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"wrench","requires":{"anyBins":["curl","sqlite3"]},"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"wrench","requires":{"anyBins":["curl","sqlite3"],"optionalBins":["python3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"]},"os":["darwin","linux"]}}
 ---
 
 # AI DevOps Toolkit
