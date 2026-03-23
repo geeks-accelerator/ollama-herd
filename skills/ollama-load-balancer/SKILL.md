@@ -16,6 +16,16 @@ Ollama has no built-in load balancing. One machine goes down, your app gets erro
 
 This load balancer auto-discovers Ollama instances via mDNS, monitors their health continuously, distributes requests based on real-time scoring, and automatically retries on failure. Zero config files. Zero Docker. `pip install ollama-herd`, run two commands, done.
 
+## Deploy
+
+```bash
+pip install ollama-herd
+herd              # start the load balancer
+herd-node         # start on each backend node
+```
+
+Package: [`ollama-herd`](https://pypi.org/project/ollama-herd/) | Repo: [github.com/geeks-accelerator/ollama-herd](https://github.com/geeks-accelerator/ollama-herd)
+
 ## Endpoint
 
 The load balancer runs at `http://localhost:11435`. Drop-in replacement for direct Ollama connections — same API, same model names.

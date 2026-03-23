@@ -10,6 +10,16 @@ metadata: {"openclaw":{"emoji":"globe","requires":{"anyBins":["curl","sqlite3"]}
 
 A coordination layer for running LLM inference across heterogeneous machines. Each node is autonomous — it runs its own Ollama, manages its own models, and works fine standalone. The coordinator routes requests to the optimal node using a multi-signal scoring function and records every decision for analysis.
 
+## Install
+
+```bash
+pip install ollama-herd
+herd              # start the coordinator
+herd-node         # start an agent on each node in the topology
+```
+
+Package: [`ollama-herd`](https://pypi.org/project/ollama-herd/) | Repo: [github.com/geeks-accelerator/ollama-herd](https://github.com/geeks-accelerator/ollama-herd)
+
 ## Architecture
 
 ```

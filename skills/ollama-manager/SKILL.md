@@ -16,6 +16,16 @@ Ollama makes it too easy to pull models. `ollama pull` this, `ollama pull` that 
 
 That's what this is for.
 
+## Get started
+
+```bash
+pip install ollama-herd
+herd              # start the router (tracks all your machines)
+herd-node         # run on each machine you want to manage
+```
+
+Package: [`ollama-herd`](https://pypi.org/project/ollama-herd/) | Repo: [github.com/geeks-accelerator/ollama-herd](https://github.com/geeks-accelerator/ollama-herd)
+
 ## Connect to your fleet
 
 The manager talks to an Ollama Herd router at `http://localhost:11435`. This router already knows about all your machines — it tracks heartbeats, loaded models, disk usage, and performance history.

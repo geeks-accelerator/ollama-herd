@@ -10,6 +10,16 @@ metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"]},"o
 
 You are managing an Ollama Herd fleet — a smart inference router that distributes LLM requests across multiple Ollama instances. It scores nodes on 7 signals (thermal state, memory fit, queue depth, latency history, role affinity, availability trend, context fit) and routes each request to the optimal device.
 
+## Install
+
+```bash
+pip install ollama-herd
+herd              # start the router
+herd-node         # start a node agent (run on each device)
+```
+
+PyPI: [`ollama-herd`](https://pypi.org/project/ollama-herd/) | Source: [github.com/geeks-accelerator/ollama-herd](https://github.com/geeks-accelerator/ollama-herd)
+
 ## Router endpoint
 
 The Herd router runs at `http://localhost:11435` by default. If the user has specified a different URL, use that instead.

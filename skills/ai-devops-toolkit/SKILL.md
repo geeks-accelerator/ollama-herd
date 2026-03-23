@@ -10,11 +10,19 @@ metadata: {"openclaw":{"emoji":"wrench","requires":{"anyBins":["curl","sqlite3"]
 
 Operational tooling for running local LLM inference at production quality. This skill provides the observability, tracing, and health monitoring layer for an Ollama Herd fleet.
 
+## Prerequisites
+
+```bash
+pip install ollama-herd
+herd              # start the router (exposes all observability endpoints)
+herd-node         # start on each monitored node
+```
+
+Package: [`ollama-herd`](https://pypi.org/project/ollama-herd/) | Repo: [github.com/geeks-accelerator/ollama-herd](https://github.com/geeks-accelerator/ollama-herd)
+
 ## Scope
 
 This toolkit assumes you have an Ollama Herd router running at `http://localhost:11435` with one or more node agents reporting in. It focuses on the operational side: are requests succeeding? what's slow? which apps consume the most tokens? are nodes healthy? is capacity adequate?
-
-If you need to set up the fleet itself, see the `ollama-herd` skill.
 
 ## Observability stack
 

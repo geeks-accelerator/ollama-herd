@@ -16,6 +16,16 @@ You have multiple machines with GPUs but your inference scripts only talk to one
 
 This router sits in front of your Ollama instances and picks the optimal device for every request — based on what models are hot in memory, how much headroom each machine has, how deep the queues are, and historical latency data. Drop-in compatible with the OpenAI SDK and Ollama API.
 
+## Setup
+
+```bash
+pip install ollama-herd
+herd              # launch the router (scores and routes requests)
+herd-node         # launch a node agent on each inference device
+```
+
+Package: [`ollama-herd`](https://pypi.org/project/ollama-herd/) | Repo: [github.com/geeks-accelerator/ollama-herd](https://github.com/geeks-accelerator/ollama-herd)
+
 ## Router endpoint
 
 The router runs at `http://localhost:11435` by default. Point any OpenAI-compatible client at `http://localhost:11435/v1`.
