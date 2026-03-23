@@ -37,6 +37,26 @@ skills/
 
 All seven skills share the same API endpoints. Each is fully self-contained — installing any one skill gives the complete API reference. The difference is framing, voice, and which features are highlighted first.
 
+## Prerequisites
+
+Every skill assumes the user has Ollama Herd installed and running. Each SKILL.md includes a setup section, but the core requirement is:
+
+```bash
+pip install ollama-herd    # install from PyPI
+herd                       # start the router (port 11435)
+herd-node                  # start node agent on each device
+```
+
+**Dependencies:**
+- [Ollama](https://ollama.ai) must be installed on each device (the node agent auto-starts it if needed)
+- Python 3.10+
+- No Docker, no config files, no Kubernetes
+
+The router and node agent discover each other via mDNS — no manual IP configuration. For explicit connection, use `herd-node --router-url http://<router-ip>:11435`.
+
+**PyPI:** [ollama-herd](https://pypi.org/project/ollama-herd/)
+**GitHub:** [geeks-accelerator/ollama-herd](https://github.com/geeks-accelerator/ollama-herd)
+
 ## Competitive Landscape
 
 As of March 2026, **zero skills on ClawHub** occupy the local inference infrastructure category. The entire space — inference routing, load balancing, fleet management, GPU clustering — is empty. Our 7 skills cover 35+ unique search keywords across an uncontested category. See [Skill Marketplace Analysis](../docs/skill-marketplace-analysis.md) for the full competitive research, keyword coverage matrix, and gap analysis.
