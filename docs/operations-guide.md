@@ -424,6 +424,26 @@ Set `FLEET_AUTO_PULL=false` to return 404 immediately for missing models (the pr
 
 ---
 
+## Context-Size Protection
+
+When a client sends `num_ctx` in Ollama request options, Ollama reloads the entire model if the value differs from the loaded context window. For large models (89GB+), this causes multi-minute hangs or deadlocks. The router intercepts `num_ctx` to prevent this.
+
+**Default behavior** (`FLEET_CONTEXT_PROTECTION=strip`):
+
+- **`num_ctx` ≤ loaded context**: Stripped from the request. The model already supports that context window — no resize needed.
+- **`num_ctx` > loaded context**: Router searches for a loaded model with sufficient context and more parameters. If found, auto-switches to it (logged). If not, preserves `num_ctx` with a warning.
+
+Look for `Context protection:` in logs to see when it activates:
+
+```
+Context protection: stripped num_ctx=4096 for gpt-oss:120b on Neons-Mac-Studio (loaded context=32768)
+Context protection: switched small-model:7b → big-model:70b for num_ctx=65536 on Neons-Mac-Studio (original context=32768)
+```
+
+Set `FLEET_CONTEXT_PROTECTION=warn` to log without modifying requests, or `passthrough` to disable entirely.
+
+---
+
 ## Streaming Format Conversion
 
 The router transparently converts between Ollama and OpenAI streaming formats.

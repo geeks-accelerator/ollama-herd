@@ -13,7 +13,7 @@ uv run herd-node --router-url http://localhost:11435  # explicit router URL
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 295 tests (~4s)
+uv run pytest                    # run all 331 tests (~5s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run pytest -v                 # verbose output
@@ -34,8 +34,8 @@ Single Python package (`fleet_manager`), two CLI entry points:
 |--------|---------|
 | `server/registry.py` | In-memory node state tracking via heartbeats |
 | `server/scorer.py` | 7-signal scoring: thermal, memory fit, queue depth, wait time, role affinity, availability trend, context fit |
-| `server/queue_manager.py` | Per `node:model` queues with dynamic concurrent workers |
-| `server/streaming.py` | httpx proxy to Ollama + format conversion (NDJSON ↔ SSE) + auto-retry |
+| `server/queue_manager.py` | Per `node:model` queues with dynamic concurrent workers + stale in-flight reaper |
+| `server/streaming.py` | httpx proxy to Ollama + format conversion (NDJSON ↔ SSE) + auto-retry + context-size protection |
 | `server/latency_store.py` | aiosqlite persistence at `~/.fleet-manager/latency.db` |
 | `server/trace_store.py` | Per-request trace log + usage stats + benchmark results + timeout detection in SQLite |
 | `server/health_engine.py` | Fleet health analysis: 7 checks (offline, degraded, memory pressure, underutilized, thrashing, timeouts, error rates) |
@@ -47,7 +47,7 @@ Single Python package (`fleet_manager`), two CLI entry points:
 | `server/routes/ollama_compat.py` | `/api/chat`, `/api/generate`, `/api/tags`, `/api/ps` |
 | `server/routes/fleet.py` | `/fleet/status` — full fleet state |
 | `server/routes/heartbeat.py` | `/heartbeat` — node agent heartbeat receiver |
-| `server/routes/dashboard.py` | Real-time web dashboard at `/dashboard` with SSE updates, benchmarks, health, model recommendations, and model management (delete unused models) |
+| `server/routes/dashboard.py` | Real-time web dashboard at `/dashboard` with SSE updates, benchmarks, health, model recommendations, model management, and settings (runtime toggles + node versions) |
 | `node/agent.py` | Main loop: mDNS discovery, heartbeat, Ollama auto-start, LAN proxy, SIGTERM drain |
 | `node/collector.py` | Assembles HeartbeatPayload from psutil + Ollama, rewrites localhost to LAN IP |
 | `node/ollama_proxy.py` | TCP reverse proxy: bridges LAN IP → localhost Ollama (auto-started) |
@@ -60,17 +60,17 @@ Single Python package (`fleet_manager`), two CLI entry points:
 ### Request flow
 
 1. Client hits `/v1/chat/completions` or `/api/chat`
-2. Route handler creates `InferenceRequest` (normalized)
+2. Route handler creates `InferenceRequest` (model names normalized with `:latest` tag)
 3. `score_with_fallbacks()` — tries primary model, then fallbacks with holding queue
 4. `ScoringEngine.score_request()` — eliminates bad nodes, scores survivors on 7 signals
 5. `QueueManager.enqueue()` — places in `node:model` queue, returns Future
-6. Queue worker calls `StreamingProxy.make_process_fn()` — httpx stream to Ollama with auto-retry
+6. Queue worker calls `StreamingProxy.make_process_fn()` — context protection strips/upgrades `num_ctx`, then httpx stream to Ollama with auto-retry
 7. Response streamed back (SSE for OpenAI, NDJSON for Ollama format)
 8. Trace recorded to SQLite, latency table updated
 
 ### Configuration
 
-All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix (node). See [`docs/configuration-reference.md`](docs/configuration-reference.md) for the complete 29+ variable reference.
+All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix (node). See [`docs/configuration-reference.md`](docs/configuration-reference.md) for the complete 30+ variable reference.
 
 ## Documentation
 

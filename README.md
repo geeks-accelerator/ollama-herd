@@ -1,6 +1,6 @@
 # Ollama Herd
 
-Smart inference router that herds your Ollama instances into one endpoint. Auto-discovers nodes via mDNS, scores them on 5 signals (thermal state, memory fit, queue depth, latency history, role affinity), and routes each request to the optimal device. OpenAI-compatible API with real-time dashboard.
+Smart inference router that herds your Ollama instances into one endpoint. Auto-discovers nodes via mDNS, scores them on 7 signals (thermal state, memory fit, queue depth, latency history, role affinity, availability trend, context fit), and routes each request to the optimal device. OpenAI-compatible API with real-time dashboard.
 
 ## Why
 
@@ -116,6 +116,7 @@ Every request goes through a scoring pipeline that picks the best device in real
 4. **Queue depth** (−30 pts) — busy nodes get penalized (capped so no node is starved)
 5. **Latency history** (−25 pts) — past p75 latency from SQLite informs expected wait time
 6. **Role affinity** (+15 pts) — large models prefer big machines, small models prefer small ones
+7. **Context fit** (+15 pts) — nodes with loaded context windows that fit the request's estimated token count score higher
 
 The highest-scoring node wins. If no node is available, the request enters a holding queue and retries until one frees up or times out.
 
@@ -125,8 +126,11 @@ For full details on the scoring algorithm, pre-warm triggers, and rebalancer: [F
 
 - **Auto-retry** — if a node fails before the first response chunk, the router re-scores and retries on the next-best node (up to 2 retries)
 - **Model fallbacks** — clients specify backup models; the router tries alternatives when the primary model has no available nodes
+- **Context protection** — strips `num_ctx` from requests when unnecessary (prevents Ollama from reloading 89GB models); auto-upgrades to a larger loaded model when more context is genuinely needed
+- **VRAM-aware fallback** — routes to an already-loaded model in the same category instead of cold-loading the requested model
 - **Holding queue** — requests wait (up to 30s) when all nodes are busy rather than immediately failing
 - **Graceful drain** — when a node shuts down, in-flight requests finish and pending requests are redistributed
+- **Zombie reaper** — background task detects and cleans up stuck in-flight requests that would otherwise permanently consume queue slots
 
 See [Operations Guide](docs/operations-guide.md) for details.
 
@@ -143,7 +147,7 @@ Enable with `FLEET_NODE_ENABLE_CAPACITY_LEARNING=true`. See [Adaptive Capacity L
 
 ## Dashboard
 
-The built-in dashboard at `/dashboard` provides seven views:
+The built-in dashboard at `/dashboard` provides eight views:
 
 - **Fleet Overview** — live node status, CPU/memory metrics, loaded models, and request queue depths via Server-Sent Events
 - **Trends** — historical charts for requests per hour, average latency, and token throughput (prompt + completion) with selectable time ranges (24h–7d)
@@ -152,6 +156,7 @@ The built-in dashboard at `/dashboard` provides seven views:
 - **Benchmarks** — capacity growth over time with per-run throughput, latency percentiles, per-model and per-node breakdowns
 - **Health** — fleet health analysis with 7 automated checks (offline nodes, memory pressure, thrashing, timeouts, error rates)
 - **Recommendations** — AI-powered model mix recommendations per node based on hardware, usage patterns, and curated benchmark data; select which models to pull and download them directly from the dashboard
+- **Settings** — runtime toggle switches for auto-pull and VRAM fallback, read-only config tables grouped by category, and node list with version tracking and Router badge
 
 All powered by Chart.js and a SQLite-backed latency store. No external database required.
 
@@ -194,6 +199,9 @@ See [Operations Guide](docs/operations-guide.md) for log queries, trace access, 
 | `GET /dashboard/benchmarks` | Benchmarks dashboard page |
 | `GET /dashboard/health` | Health dashboard page |
 | `GET /dashboard/recommendations` | Model recommendations dashboard page |
+| `GET /dashboard/settings` | Settings dashboard page |
+| `GET /dashboard/api/settings` | Current config, toggles, and node list (JSON) |
+| `POST /dashboard/api/settings` | Toggle runtime-mutable settings (auto_pull, vram_fallback) |
 
 Full request/response schemas: [API Reference](docs/api-reference.md).
 

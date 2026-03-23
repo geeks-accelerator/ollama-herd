@@ -237,6 +237,32 @@ Meeting detection is disabled by default — it only activates when `FLEET_NODE_
 
 ## Debug Checklist
 
+## Requests hang with 0 bytes returned when using `num_ctx`
+
+**Symptom:** Client sends a request with `options.num_ctx` set. The router accepts the connection but returns 0 bytes after minutes, eventually timing out. Streaming requests to the same model (without `num_ctx`) work fine.
+
+**Cause:** When `num_ctx` differs from the model's loaded context window, Ollama unloads and reloads the entire model. For large models (89GB+), this takes minutes and often deadlocks — the runner startup timeout expires and the request hangs indefinitely.
+
+**Fix:** Context protection is enabled by default (`FLEET_CONTEXT_PROTECTION=strip`). The router automatically strips `num_ctx` when it's ≤ the loaded context, and auto-upgrades to a bigger loaded model when more context is needed. If you see this issue, check that context protection hasn't been disabled:
+
+```bash
+# Verify context protection is active
+curl -s http://localhost:11435/dashboard/api/settings | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f\"context_protection: {d['config']['context_protection']['context_protection']}\")
+"
+
+# Check logs for context protection activity
+grep "Context protection" ~/.fleet-manager/logs/herd.jsonl | tail -5
+```
+
+If the client genuinely needs a larger context than any loaded model provides, you'll need to load a model with a larger context window.
+
+---
+
+## Quick debugging checklist
+
 When something isn't working:
 
 ```bash

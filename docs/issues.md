@@ -249,6 +249,30 @@ Ollama returns model names with explicit tags (e.g., `qwen3-coder:latest`) but c
 
 ---
 
+### 20. Client `num_ctx` Triggers Full Model Reload and Hang in Ollama `FIXED`
+
+**File:** `src/fleet_manager/server/streaming.py`
+**Severity:** Critical
+
+When a client sends `num_ctx` in request options that differs from the loaded model's context window, Ollama's scheduler calls `needsReload()` and triggers a full model unload+reload. For large models (89GB `gpt-oss:120b`), this causes multi-minute hangs or complete deadlocks — 0 bytes returned. Reproduced: `num_ctx: 4096` on a model loaded at 32768 hangs indefinitely; without `num_ctx` works in 3 seconds. Confirmed directly against Ollama (bypassing Herd) — Ollama itself hangs.
+
+Root causes compound: GPT-OSS minimum context override (Ollama bumps `num_ctx < 8192` to 8192), runner startup timeout exceeded during 89GB reload, and KV cache fill loop on small context values.
+
+**Fix:** Added context-size protection (`FLEET_CONTEXT_PROTECTION=strip` by default) in `_build_ollama_body()`. Strips `num_ctx` when ≤ loaded context (prevents needless reload). When `num_ctx` > loaded context, searches fleet for a loaded model with sufficient context and more parameters, and auto-switches. Logged for operator visibility.
+
+---
+
+### 21. Stream Error Messages Are Empty Strings `OPEN`
+
+**File:** `src/fleet_manager/server/streaming.py`
+**Severity:** Medium
+
+Failed request traces in the trace store have empty `error_message` fields. The `logger.error()` calls in `_stream_with_tracking` and `_stream_with_retry` format the exception with `{e}` but the exception objects sometimes stringify to empty strings (e.g., `httpx.RemoteProtocolError` with no message). This makes post-mortem debugging blind — you can see a request failed but not why.
+
+**Fix:** Use `type(e).__name__: {e}` or `repr(e)` instead of `str(e)` to always capture at least the exception class. Also consider logging the full traceback at DEBUG level.
+
+---
+
 ## Future Considerations
 
 - **Extract dashboard frontend** — see issue #9 above

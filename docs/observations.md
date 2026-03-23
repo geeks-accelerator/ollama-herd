@@ -168,4 +168,26 @@ Fix: `OLLAMA_NUM_PARALLEL=2`. KV cache drops from 384 GB to ~20 GB per model, al
 
 ---
 
+### 2026-03-23 — Client `num_ctx` triggers catastrophic Ollama model reloads
+
+**Evidence:** External script sending `num_ctx: 4096` to `gpt-oss:120b` (loaded at 32768 context) caused 0 bytes returned and indefinite hang. Same request without `num_ctx` completed in 3 seconds. Confirmed directly against Ollama on port 11434 (bypassing Herd) — same hang. Trace DB showed 5 requests with 300-600s latencies and null token counts, confirming Ollama never started generating.
+
+Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `num_ctx` differs from loaded context, triggering a full unload+reload of the 89GB model. Compounding factors: GPT-OSS minimum context override (4096 → 8192, but still ≠ 32768), runner startup timeout exceeded during reload, and potential KV cache fill loop on small context values. Related Ollama issues: #9749, #11711, #3583, #13461.
+
+**Insight:** When proxying to a backend service (Ollama, databases, APIs), the proxy must understand which client parameters trigger expensive internal operations in the backend. `num_ctx` looks like an innocent optimization hint but it's actually a destructive reconfiguration command. The router is in the best position to protect against this — it knows what context the model is already loaded with and can strip unnecessary resize requests. This is the same pattern as a database connection pool that normalizes `SET` commands to prevent clients from reconfiguring shared connections.
+
+**Pattern:** Proxy layers should be aware of which pass-through parameters have side effects in the backend. Not all client parameters are equal — some are query parameters (affect this request only), and some are configuration parameters (affect the backend's state for all future requests). A parameter that looks like a per-request hint (`num_ctx`) can actually be a global state mutation (model reload). The proxy should classify parameters and strip or normalize the dangerous ones. When the same backend serves multiple clients, one client's "optimization" can be another client's outage.
+
+---
+
+### 2026-03-23 — Context-based model upgrade as an alternative to cold loading
+
+**Evidence:** After implementing context protection to strip `num_ctx ≤ loaded context`, the question arose: what if the client genuinely needs more context than the loaded model has? Rather than letting Ollama attempt a slow resize or failing with a warning, the router can search for a loaded model with sufficient context AND more parameters (larger `size_gb`). If node has `small-model:7b` at 32k and `big-model:70b` at 128k, a request for `small-model:7b` with `num_ctx: 65536` auto-switches to `big-model:70b` — already warm, no load time.
+
+**Insight:** The router's fleet-wide view of loaded models enables optimizations that no single Ollama instance can make. Ollama only knows about its own loaded models and would try to reload the requested model with a larger context. The router knows about ALL loaded models across ALL nodes and can find a better-fit model that's already warm. This transforms a potentially catastrophic operation (reload 89GB model) into a zero-cost operation (use an already-loaded model).
+
+**Pattern:** When a system has multiple backends with overlapping capabilities, the router/proxy layer can perform capability-based substitution: instead of forcing the requested backend to adapt (expensive), find an already-adapted backend that meets the requirement (free). This is the same principle as CDN edge selection, database read replica routing, and microservice version routing — match the request to the capability, don't force the capability to match the request.
+
+---
+
 *Add new observations above this line. Date them. Link evidence. Extract the transferable insight.*
