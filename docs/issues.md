@@ -214,6 +214,41 @@ launchctl setenv OLLAMA_NUM_PARALLEL 2
 
 ---
 
+### 17. Zombie In-Flight Queue Entries Block Concurrency Slots `FIXED`
+
+**File:** `src/fleet_manager/server/queue_manager.py`
+**Severity:** High
+
+The queue worker adds entries to `in_flight` then hands an async generator to the route handler via a Future. If the client disconnects mid-stream or the generator is never fully consumed, `mark_completed`/`mark_failed` in the `_tracked_stream` finally block never executes. The entry stays in `in_flight` forever, permanently consuming a concurrency slot.
+
+In production, 5 of 8 slots became zombied, causing the router to accept new connections but never process them (0 bytes returned after 2 minutes).
+
+**Fix:** Added a background reaper task that runs every 60s and removes any in-flight entries older than 15 minutes (past the 10-minute Ollama read timeout). Reaped entries are marked as failed. The reaper starts automatically via `queue_mgr.start_reaper()` during app lifespan.
+
+---
+
+### 18. mDNS `NonUniqueNameException` Prevents Router Restart `FIXED`
+
+**File:** `src/fleet_manager/common/discovery.py`
+**Severity:** High
+
+When the router crashes or is killed without clean shutdown, the zeroconf mDNS service registration persists in the network. On restart, `async_register_service()` raises `NonUniqueNameException` because the stale service name is still registered by the OS, causing the router to fail to start entirely.
+
+**Fix:** Wrapped registration in try/except. On `NonUniqueNameException`, close the zeroconf instance, create a fresh one, and re-register with `allow_name_change=True`. This handles both stale registrations and concurrent instances gracefully.
+
+---
+
+### 19. Duplicate Queues from Unnormalized Model Names `FIXED`
+
+**File:** `src/fleet_manager/models/request.py`
+**Severity:** Medium
+
+Ollama returns model names with explicit tags (e.g., `qwen3-coder:latest`) but client requests often omit the tag (e.g., `qwen3-coder`). This caused duplicate queues (`node:qwen3-coder` and `node:qwen3-coder:latest`), scoring mismatches, latency cache misses, and broken pre-warm tracking. Dashboard showed two separate queue cards for the same model with split stats (20 done vs 4520 done).
+
+**Fix:** Added a Pydantic `model_validator` on `InferenceRequest` that appends `:latest` to model names (and fallback_models) that lack a tag. Normalization happens at construction time so all downstream code sees consistent names.
+
+---
+
 ## Future Considerations
 
 - **Extract dashboard frontend** — see issue #9 above

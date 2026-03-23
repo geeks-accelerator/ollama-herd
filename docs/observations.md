@@ -148,4 +148,24 @@ Fix: `OLLAMA_NUM_PARALLEL=2`. KV cache drops from 384 GB to ~20 GB per model, al
 
 ---
 
+### 2026-03-22 — Zombie in-flight entries silently starved queue concurrency
+
+**Evidence:** Dashboard showed `gpt-oss:120b` queue with 5/8 in-flight, 0 pending, but Ollama reported 0 active requests. External client reported accepting connection but receiving 0 bytes after 2 minutes. The 5 in-flight entries were from requests where clients disconnected mid-stream — the async generator's `finally` block (which calls `mark_completed`) never ran because the generator was abandoned, not consumed or closed.
+
+**Insight:** In async generator-based streaming architectures, handing a generator to a consumer via a Future creates a lifecycle gap: the producer (queue worker) marks the entry as in-flight, but cleanup depends on the consumer fully consuming or explicitly closing the generator. If neither happens (client disconnect, timeout, error in the route handler), the entry is orphaned. The fix is a reaper — a background task that enforces a maximum in-flight duration. This is the same pattern as TCP keepalive probes: when you can't trust the cleanup path, add a heartbeat/timeout that catches the failure case.
+
+**Pattern:** Any system that tracks "in-progress" state and relies on the happy path for cleanup needs a reaper. Database connection pools have idle timeouts. HTTP servers have request timeouts. Queue managers need in-flight timeouts. If the cleanup is in a `finally` block that might not execute, you need a belt-and-suspenders reaper.
+
+---
+
+### 2026-03-22 — Model name normalization split queue state across two keys
+
+**Evidence:** Dashboard showed two queue cards: `Neons-Mac-Studio:qwen3-coder` (8 concurrency, 20 done) and `Neons-Mac-Studio:qwen3-coder:latest` (1 concurrency, 4520 done). Same model, two identities. The `:latest` variant had 4520 completions at 1 concurrency while the untagged variant had 8 concurrency slots but only 20 completions — the scoring engine and queue manager were treating them as independent models.
+
+**Insight:** Ollama's tag system means `qwen3-coder` and `qwen3-coder:latest` are the same model, but string equality says they're different. Every system that uses model names as keys (queues, latency cache, scoring, pre-warm tracking) was silently creating duplicate entries. The fix is to normalize at the boundary — add `:latest` to any model name without a tag at `InferenceRequest` construction time, before any downstream code sees it.
+
+**Pattern:** When external systems have implicit defaults (Ollama's `:latest` tag, Docker's `:latest` tag, npm's `@latest` dist-tag), normalize them to explicit form at your system boundary. Don't let implicit defaults leak into your key space — it creates phantom duplicates that are invisible until you check the data.
+
+---
+
 *Add new observations above this line. Date them. Link evidence. Extract the transferable insight.*

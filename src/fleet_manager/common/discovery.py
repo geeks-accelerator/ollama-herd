@@ -34,7 +34,14 @@ class FleetServiceAdvertiser:
             port=self._port,
             properties={b"version": b"0.1.0"},
         )
-        await self._azc.async_register_service(info)
+        try:
+            await self._azc.async_register_service(info)
+        except Exception:
+            # Stale mDNS registration from a previous crash — close and re-create
+            logger.warning("mDNS: stale service found, re-registering")
+            await self._azc.async_close()
+            self._azc = AsyncZeroconf()
+            await self._azc.async_register_service(info, allow_name_change=True)
         logger.info(f"mDNS: advertising Fleet Manager at {ip}:{self._port}")
 
     async def stop(self):

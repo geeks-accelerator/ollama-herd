@@ -20,6 +20,13 @@ _KV_CACHE_PER_REQUEST_GB = 2.0
 _MIN_CONCURRENCY = 1
 _MAX_CONCURRENCY = 8
 
+# In-flight entries older than this are considered stale/zombied (seconds).
+# Ollama's read timeout is 600s; add headroom for slow generation.
+_STALE_IN_FLIGHT_SECONDS = 900  # 15 minutes
+
+# How often to run the stale reaper (seconds).
+_REAPER_INTERVAL_SECONDS = 60
+
 
 def compute_concurrency(available_memory_gb: float, model_size_gb: float) -> int:
     """Calculate how many concurrent requests a node can handle for a model.
@@ -51,6 +58,38 @@ class QueueManager:
         self._queues: dict[str, DeviceModelQueue] = {}
         self._lock = asyncio.Lock()
         self._registry = registry
+        self._reaper_task: asyncio.Task | None = None
+
+    def start_reaper(self):
+        """Start the background stale in-flight reaper."""
+        if self._reaper_task is None or self._reaper_task.done():
+            self._reaper_task = asyncio.create_task(self._reap_stale_in_flight())
+
+    async def _reap_stale_in_flight(self):
+        """Periodically remove in-flight entries that have been stuck too long."""
+        while True:
+            try:
+                await asyncio.sleep(_REAPER_INTERVAL_SECONDS)
+                now = time.time()
+                for key, q in list(self._queues.items()):
+                    stale = [
+                        e for e in q.in_flight
+                        if e.started_at and (now - e.started_at) > _STALE_IN_FLIGHT_SECONDS
+                    ]
+                    for entry in stale:
+                        q.in_flight.remove(entry)
+                        entry.status = RequestStatus.FAILED
+                        entry.completed_at = now
+                        q.failed_count += 1
+                        age = int(now - entry.started_at)
+                        logger.warning(
+                            f"Reaped stale in-flight {entry.request.request_id[:8]} "
+                            f"from {key} (stuck for {age}s)"
+                        )
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("Error in stale in-flight reaper")
 
     def get_queue_depths(self) -> dict[str, int]:
         """Return current depth (pending + in_flight) for all queues."""
@@ -228,7 +267,9 @@ class QueueManager:
         return moved
 
     async def shutdown(self):
-        """Cancel all worker tasks."""
+        """Cancel all worker tasks and the reaper."""
+        if self._reaper_task and not self._reaper_task.done():
+            self._reaper_task.cancel()
         for q in self._queues.values():
             for task in q.worker_tasks:
                 if not task.done():

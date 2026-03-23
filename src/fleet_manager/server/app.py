@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     monitor_task = asyncio.create_task(registry.monitor_heartbeats())
     rebalancer_task = asyncio.create_task(rebalancer.run())
+    queue_mgr.start_reaper()
 
     logger.info(f"Ollama Herd ready on port {settings.port}")
 
