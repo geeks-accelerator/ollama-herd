@@ -124,6 +124,61 @@ clawhub --workdir skills --registry https://clawhub.ai publish distributed-infer
 | **Skills.sh** | `npx skills add geeks-accelerator/ollama-herd` |
 | **SkillsMP** | Auto-indexed from GitHub (needs 2+ stars) |
 
+## Security Scan Status
+
+ClawHub runs automated security scans via VirusTotal and OpenClaw on every published skill version. Here's the current status and our rationale for each finding.
+
+### Current Ratings (v1.0.1 / v1.1.0)
+
+| Skill | VirusTotal | OpenClaw | Confidence | Notes |
+|-------|-----------|----------|------------|-------|
+| `ollama-herd` | ✅ Benign | ✅ Benign | Medium | Clean — all requirements declared |
+| `ollama-manager` | ✅ Benign | ✅ Benign | High | Highest confidence across all skills |
+| `gpu-cluster-manager` | ✅ Benign | ✅ Benign | Medium | Fixed in v1.0.1 — was Suspicious |
+| `ai-devops-toolkit` | ✅ Benign | ✅ Benign | Medium | Fixed in v1.0.1 — was Suspicious |
+| `local-llm-router` | ✅ Benign | ⚠️ Suspicious | Medium | Config path declaration mismatch |
+| `ollama-load-balancer` | ✅ Benign | ⚠️ Suspicious | Medium | Auto-pull side effects flagged |
+| `distributed-inference` | ✅ Benign | ⚠️ Suspicious | Medium | Meeting detection privacy concern |
+
+### What we fixed (v1.0.0 → v1.0.1)
+
+In v1.0.0, all skills only declared `curl`/`wget`/`sqlite3` as required binaries. But the SKILL.md instructions also reference `python3`, `pip`, and read files from `~/.fleet-manager/`. The scanner flagged this as an inconsistency — the metadata didn't match actual usage.
+
+**Fix:** Added `optionalBins` (python3, sqlite3, pip) and `configPaths` (~/.fleet-manager/latency.db, ~/.fleet-manager/logs/herd.jsonl) to all skill frontmatter. This resolved the mismatch for 4 of 7 skills.
+
+### Remaining Suspicious ratings — rationale and response
+
+**`local-llm-router`** — Scanner says config paths are declared in SKILL.md but not in registry metadata. This appears to be a scanner caching issue since we added `configPaths` in v1.0.1. The declared metadata now includes both paths. We expect this to resolve on the next scan cycle.
+
+**`ollama-load-balancer`** — Flagged for auto-pull side effects: the skill documents `POST /dashboard/api/pull` which downloads models (potentially 10-100+ GB) to nodes. This is legitimate functionality with explicit user confirmation required (the SKILL.md guardrails section states "Never pull models without user confirmation"). The scanner correctly identifies the side effect but our guardrails section addresses it. No code change needed — this is an inherent capability of the tool.
+
+**`distributed-inference`** — Flagged for privacy concerns around meeting detection (camera/microphone state) and app fingerprinting. These are real features of the node agent:
+- **Meeting detection**: The node agent checks if the camera/mic is active (macOS only) and pauses inference during meetings. It does NOT record audio/video — it only checks if hardware is in use. This is a binary signal (active/inactive) used to avoid hogging resources during calls.
+- **App fingerprinting**: Classifies the current resource usage pattern (idle/light/moderate/heavy/intensive) to set dynamic memory ceilings. Uses psutil CPU/memory metrics, not application names or window titles.
+- **Traces**: Request traces in SQLite contain model names, latencies, and token counts. They do NOT store prompt text or completion text.
+
+These are legitimate operational features that improve user experience. We added clarifying language to the SKILL.md about what data is collected and what isn't.
+
+### How the scanner works
+
+OpenClaw's security scanner evaluates 5 dimensions:
+
+1. **Purpose & Capability** — Does the skill name/description match what the code actually does?
+2. **Instruction Scope** — Does the skill request access proportional to its stated purpose?
+3. **Install Mechanism** — Is the install method transparent and verifiable?
+4. **Credentials** — Does it request secrets or tokens?
+5. **Persistence & Privilege** — Does it run persistently or request elevated access?
+
+The "pip install without checksums" concern appears on ALL skills as info-level. This is inherent to the PyPI distribution model — the scanner can't verify the package contents at registry time. Users should review the [source code](https://github.com/geeks-accelerator/ollama-herd) before installing.
+
+### Our security posture
+
+- **All requests go to localhost** — Skills never contact external APIs (except PyPI for initial install)
+- **No credentials required** — No API keys, tokens, or passwords
+- **No persistent privileges** — Skills don't request always-on or elevated access
+- **Explicit confirmation for destructive actions** — All SKILL.md guardrails require user approval before pull/delete operations
+- **Trace data is non-sensitive** — SQLite traces store model names and latencies, not prompt content
+
 ## Updating
 
 1. Edit the relevant `SKILL.md` file
