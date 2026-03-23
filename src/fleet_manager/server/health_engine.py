@@ -84,6 +84,9 @@ class HealthEngine:
         recommendations.extend(self._check_memory_pressure(nodes))
         recommendations.extend(self._check_underutilized_memory(nodes))
         recommendations.extend(self._check_vram_fallbacks())
+        recommendations.extend(self._check_version_mismatch(nodes))
+        recommendations.extend(self._check_context_protection())
+        recommendations.extend(self._check_zombie_reaper())
 
         # Trace-based checks (async, queries SQLite)
         if trace_store:
@@ -311,6 +314,174 @@ class HealthEngine:
                 data={
                     "total_fallbacks": len(events),
                     "top_requested": dict(top_models),
+                },
+            )
+        ]
+
+    def _check_version_mismatch(self, nodes) -> list[Recommendation]:
+        """Detect nodes running different versions than the router."""
+        from fleet_manager import __version__ as router_version
+
+        mismatched = []
+        unknown = []
+        for node in nodes:
+            if node.status.value == "offline":
+                continue
+            if not node.agent_version:
+                unknown.append(node.node_id)
+            elif node.agent_version != router_version:
+                mismatched.append((node.node_id, node.agent_version))
+
+        recs = []
+        if mismatched:
+            node_lines = ", ".join(f"{n} (v{v})" for n, v in mismatched)
+            recs.append(
+                Recommendation(
+                    check_id="version_mismatch",
+                    severity=Severity.WARNING,
+                    title=(
+                        f"Node version mismatch: {len(mismatched)} node(s) "
+                        f"differ from router v{router_version}"
+                    ),
+                    description=(
+                        f"The router is running v{router_version} but these nodes report "
+                        f"different versions: {node_lines}. Version mismatches can cause "
+                        f"unexpected behavior."
+                    ),
+                    fix=(
+                        "Update node agents to match the router version: "
+                        "pip install --upgrade ollama-herd"
+                    ),
+                    data={
+                        "router_version": router_version,
+                        "mismatched_nodes": {n: v for n, v in mismatched},
+                    },
+                )
+            )
+        if unknown:
+            recs.append(
+                Recommendation(
+                    check_id="version_unknown",
+                    severity=Severity.INFO,
+                    title=f"{len(unknown)} node(s) not reporting version",
+                    description=(
+                        f"These nodes don't send agent_version in heartbeats: "
+                        f"{', '.join(unknown)}. They may be running an older version."
+                    ),
+                    fix="Upgrade node agents: pip install --upgrade ollama-herd",
+                    data={"unknown_nodes": unknown},
+                )
+            )
+        return recs
+
+    def _check_context_protection(self) -> list[Recommendation]:
+        """Surface context protection activity as health cards."""
+        from fleet_manager.server.streaming import get_context_protection_events
+
+        events = get_context_protection_events(hours=24)
+        if not events:
+            return []
+
+        from collections import Counter
+
+        actions = Counter(e["action"] for e in events)
+        stripped = actions.get("stripped", 0)
+        upgraded = actions.get("upgraded", 0)
+        warnings = actions.get("warning", 0)
+
+        recs = []
+
+        if warnings > 0:
+            # Clients want more context than any loaded model has
+            warning_models = Counter(e["model"] for e in events if e["action"] == "warning")
+            model_lines = ", ".join(f"{m} ({c}x)" for m, c in warning_models.most_common(5))
+            recs.append(
+                Recommendation(
+                    check_id="context_protection_insufficient",
+                    severity=Severity.WARNING,
+                    title=f"Context too small for {warnings} request(s) in 24h",
+                    description=(
+                        f"Clients requested more context than loaded models provide. "
+                        f"Affected models: {model_lines}. These requests proceed with "
+                        f"the requested num_ctx, which may trigger Ollama model reloads."
+                    ),
+                    fix=(
+                        "Load models with larger context windows, or tell clients to "
+                        "omit num_ctx and use the model's default context."
+                    ),
+                    data={
+                        "warning_count": warnings,
+                        "affected_models": dict(warning_models.most_common(5)),
+                    },
+                )
+            )
+
+        if stripped > 0 or upgraded > 0:
+            parts = []
+            if stripped:
+                parts.append(f"{stripped} had num_ctx stripped")
+            if upgraded:
+                parts.append(f"{upgraded} were upgraded to a larger model")
+            recs.append(
+                Recommendation(
+                    check_id="context_protection_active",
+                    severity=Severity.INFO,
+                    title=f"Context protection active: {len(events)} event(s) in 24h",
+                    description=(
+                        f"The router intercepted num_ctx values to prevent Ollama model "
+                        f"reloads: {', '.join(parts)}. This is expected behavior that "
+                        f"prevents multi-minute hangs."
+                    ),
+                    fix=(
+                        "No action needed. To reduce events, tell clients to stop sending "
+                        "num_ctx in requests — the model's default context is usually sufficient."
+                    ),
+                    data={
+                        "stripped": stripped,
+                        "upgraded": upgraded,
+                        "warnings": warnings,
+                        "total": len(events),
+                    },
+                )
+            )
+
+        return recs
+
+    def _check_zombie_reaper(self) -> list[Recommendation]:
+        """Surface zombie reaper activity as health cards."""
+        from fleet_manager.server.queue_manager import get_reaper_events
+
+        events = get_reaper_events(hours=24)
+        if not events:
+            return []
+
+        total = len(events)
+        avg_stuck = sum(e["stuck_seconds"] for e in events) / total
+        queues_affected = set(e["queue_key"] for e in events)
+
+        severity = Severity.CRITICAL if total > 10 else Severity.WARNING
+
+        return [
+            Recommendation(
+                check_id="zombie_reaper_active",
+                severity=severity,
+                title=f"Zombie reaper: {total} stuck request(s) cleaned up in 24h",
+                description=(
+                    f"The reaper detected {total} in-flight request(s) that were stuck "
+                    f"for an average of {avg_stuck:.0f} seconds. Affected queues: "
+                    f"{', '.join(sorted(queues_affected))}. Zombies consume concurrency "
+                    f"slots and block new requests."
+                ),
+                fix=(
+                    "Check Ollama stability — zombies indicate requests that started "
+                    "streaming but never completed. Common causes: Ollama process crash, "
+                    "client disconnects during long generation, or out-of-memory kills. "
+                    "Check logs: grep 'Stream error' ~/.fleet-manager/logs/herd.jsonl"
+                ),
+                data={
+                    "total_reaped": total,
+                    "avg_stuck_seconds": round(avg_stuck),
+                    "queues_affected": sorted(queues_affected),
                 },
             )
         ]

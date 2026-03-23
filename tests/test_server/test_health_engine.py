@@ -28,8 +28,10 @@ class TestRegistryChecks:
 
     @pytest.mark.asyncio
     async def test_healthy_fleet_no_recommendations(self):
+        from fleet_manager import __version__
+
         engine = HealthEngine()
-        node = make_node("studio", memory_total=128.0, memory_used=100.0)
+        node = make_node("studio", memory_total=128.0, memory_used=100.0, agent_version=__version__)
         report = await engine.analyze(FakeRegistry([node]), None)
         assert report.vitals.health_score == 100
         assert len(report.recommendations) == 0
@@ -324,3 +326,165 @@ class TestTraceChecks:
         assert report.vitals.total_requests_24h == 1
         assert report.vitals.total_retries_24h == 1
         assert report.vitals.avg_ttft_ms is not None
+
+
+class TestVersionMismatchCheck:
+    """Tests for node agent version mismatch detection."""
+
+    @pytest.mark.asyncio
+    async def test_matching_versions_no_recommendation(self):
+        from fleet_manager import __version__
+
+        engine = HealthEngine()
+        node = make_node("studio", agent_version=__version__)
+        report = await engine.analyze(FakeRegistry([node]), None)
+        version_recs = [r for r in report.recommendations if "version" in r.check_id]
+        assert len(version_recs) == 0
+
+    @pytest.mark.asyncio
+    async def test_mismatched_version_warning(self):
+        engine = HealthEngine()
+        node = make_node("old-node", agent_version="0.0.1")
+        report = await engine.analyze(FakeRegistry([node]), None)
+        mismatch = [r for r in report.recommendations if r.check_id == "version_mismatch"]
+        assert len(mismatch) == 1
+        assert mismatch[0].severity == Severity.WARNING
+        assert "old-node" in mismatch[0].description
+
+    @pytest.mark.asyncio
+    async def test_empty_version_info(self):
+        engine = HealthEngine()
+        node = make_node("legacy-node", agent_version="")
+        report = await engine.analyze(FakeRegistry([node]), None)
+        unknown = [r for r in report.recommendations if r.check_id == "version_unknown"]
+        assert len(unknown) == 1
+        assert unknown[0].severity == Severity.INFO
+        assert "legacy-node" in unknown[0].description
+
+    @pytest.mark.asyncio
+    async def test_offline_nodes_ignored(self):
+        engine = HealthEngine()
+        node = make_node("dead", status=NodeStatus.OFFLINE, agent_version="0.0.1")
+        node.last_heartbeat = time.time() - 300
+        report = await engine.analyze(FakeRegistry([node]), None)
+        version_recs = [r for r in report.recommendations if r.check_id == "version_mismatch"]
+        assert len(version_recs) == 0
+
+
+class TestContextProtectionCheck:
+    """Tests for context protection health visibility."""
+
+    @pytest.mark.asyncio
+    async def test_no_events_no_recommendation(self):
+        engine = HealthEngine()
+        node = make_node("studio")
+        report = await engine.analyze(FakeRegistry([node]), None)
+        ctx_recs = [r for r in report.recommendations if "context_protection" in r.check_id]
+        assert len(ctx_recs) == 0
+
+    @pytest.mark.asyncio
+    async def test_stripped_events_info(self):
+        from fleet_manager.server.streaming import _context_protection_events, _record_context_protection
+
+        _context_protection_events.clear()
+        for _ in range(5):
+            _record_context_protection("stripped", "gpt-oss:120b", "studio", 4096, 32768)
+
+        engine = HealthEngine()
+        node = make_node("studio")
+        report = await engine.analyze(FakeRegistry([node]), None)
+        active = [r for r in report.recommendations if r.check_id == "context_protection_active"]
+        assert len(active) == 1
+        assert active[0].severity == Severity.INFO
+        assert active[0].data["stripped"] == 5
+
+        _context_protection_events.clear()
+
+    @pytest.mark.asyncio
+    async def test_warning_events_warning(self):
+        from fleet_manager.server.streaming import _context_protection_events, _record_context_protection
+
+        _context_protection_events.clear()
+        _record_context_protection("warning", "small-model:7b", "studio", 65536, 32768)
+
+        engine = HealthEngine()
+        node = make_node("studio")
+        report = await engine.analyze(FakeRegistry([node]), None)
+        insufficient = [r for r in report.recommendations if r.check_id == "context_protection_insufficient"]
+        assert len(insufficient) == 1
+        assert insufficient[0].severity == Severity.WARNING
+
+        _context_protection_events.clear()
+
+    @pytest.mark.asyncio
+    async def test_upgraded_events_info(self):
+        from fleet_manager.server.streaming import _context_protection_events, _record_context_protection
+
+        _context_protection_events.clear()
+        _record_context_protection("upgraded", "small:7b", "studio", 65536, 32768, "big:70b")
+
+        engine = HealthEngine()
+        node = make_node("studio")
+        report = await engine.analyze(FakeRegistry([node]), None)
+        active = [r for r in report.recommendations if r.check_id == "context_protection_active"]
+        assert len(active) == 1
+        assert active[0].data["upgraded"] == 1
+
+        _context_protection_events.clear()
+
+
+class TestZombieReaperCheck:
+    """Tests for zombie reaper health visibility."""
+
+    @pytest.mark.asyncio
+    async def test_no_events_no_recommendation(self):
+        engine = HealthEngine()
+        node = make_node("studio")
+        report = await engine.analyze(FakeRegistry([node]), None)
+        reaper_recs = [r for r in report.recommendations if r.check_id == "zombie_reaper_active"]
+        assert len(reaper_recs) == 0
+
+    @pytest.mark.asyncio
+    async def test_few_zombies_warning(self):
+        from fleet_manager.server.queue_manager import _reaper_events
+
+        _reaper_events.clear()
+        for i in range(3):
+            _reaper_events.append({
+                "timestamp": time.time(),
+                "request_id": f"zombie-{i}",
+                "queue_key": "studio:gpt-oss:120b",
+                "stuck_seconds": 920,
+            })
+
+        engine = HealthEngine()
+        node = make_node("studio")
+        report = await engine.analyze(FakeRegistry([node]), None)
+        reaper = [r for r in report.recommendations if r.check_id == "zombie_reaper_active"]
+        assert len(reaper) == 1
+        assert reaper[0].severity == Severity.WARNING
+        assert reaper[0].data["total_reaped"] == 3
+
+        _reaper_events.clear()
+
+    @pytest.mark.asyncio
+    async def test_many_zombies_critical(self):
+        from fleet_manager.server.queue_manager import _reaper_events
+
+        _reaper_events.clear()
+        for i in range(15):
+            _reaper_events.append({
+                "timestamp": time.time(),
+                "request_id": f"zombie-{i}",
+                "queue_key": "studio:gpt-oss:120b",
+                "stuck_seconds": 1000,
+            })
+
+        engine = HealthEngine()
+        node = make_node("studio")
+        report = await engine.analyze(FakeRegistry([node]), None)
+        reaper = [r for r in report.recommendations if r.check_id == "zombie_reaper_active"]
+        assert len(reaper) == 1
+        assert reaper[0].severity == Severity.CRITICAL
+
+        _reaper_events.clear()

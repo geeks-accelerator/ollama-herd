@@ -16,6 +16,37 @@ from fleet_manager.server.registry import NodeRegistry
 
 logger = logging.getLogger(__name__)
 
+# Context protection event tracking (same pattern as VRAM fallbacks in routing.py)
+_context_protection_events: list[dict] = []
+
+
+def _record_context_protection(
+    action: str,
+    model: str,
+    node_id: str,
+    client_num_ctx: int,
+    loaded_ctx: int,
+    upgrade_model: str | None = None,
+) -> None:
+    """Record a context protection event for health visibility."""
+    _context_protection_events.append({
+        "timestamp": time.time(),
+        "action": action,  # "stripped", "upgraded", "warning"
+        "model": model,
+        "node_id": node_id,
+        "client_num_ctx": client_num_ctx,
+        "loaded_ctx": loaded_ctx,
+        "upgrade_model": upgrade_model,
+    })
+    if len(_context_protection_events) > 200:
+        _context_protection_events.pop(0)
+
+
+def get_context_protection_events(hours: float = 24) -> list[dict]:
+    """Return context protection events from the last N hours."""
+    cutoff = time.time() - (hours * 3600)
+    return [e for e in _context_protection_events if e["timestamp"] >= cutoff]
+
 
 def _create_logged_task(coro, *, name: str = "background"):
     """Create an asyncio task that logs exceptions instead of silently dropping them."""
@@ -583,11 +614,13 @@ class StreamingProxy:
                     f"Context protection: stripped num_ctx={client_num_ctx} for {model} on "
                     f"{node_id} (loaded context={loaded_ctx})"
                 )
+                _record_context_protection("stripped", model, node_id, client_num_ctx, loaded_ctx)
             else:
                 logger.warning(
                     f"Context protection: client sent num_ctx={client_num_ctx} for {model} on "
                     f"{node_id} (loaded context={loaded_ctx}) — would trigger reload"
                 )
+                _record_context_protection("warning", model, node_id, client_num_ctx, loaded_ctx)
         else:
             # Client needs more context than loaded — try to find a bigger loaded model
             if mode == "strip":
@@ -601,12 +634,16 @@ class StreamingProxy:
                         f"Context protection: switched {model} → {upgrade} for "
                         f"num_ctx={client_num_ctx} on {node_id} (original context={loaded_ctx})"
                     )
+                    _record_context_protection(
+                        "upgraded", model, node_id, client_num_ctx, loaded_ctx, upgrade
+                    )
                     return
 
             logger.warning(
                 f"Context protection: client wants num_ctx={client_num_ctx} but {model} on "
                 f"{node_id} only has context={loaded_ctx}"
             )
+            _record_context_protection("warning", model, node_id, client_num_ctx, loaded_ctx)
 
     def _build_ollama_body(self, request: InferenceRequest, node_id: str) -> dict:
         """Convert normalized request to Ollama API format."""

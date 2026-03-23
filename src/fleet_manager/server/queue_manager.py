@@ -11,6 +11,16 @@ from fleet_manager.models.request import QueueEntry, RequestStatus
 
 logger = logging.getLogger(__name__)
 
+# Zombie reaper event tracking for health visibility
+_reaper_events: list[dict] = []
+
+
+def get_reaper_events(hours: float = 24) -> list[dict]:
+    """Return zombie reaper events from the last N hours."""
+    cutoff = time.time() - (hours * 3600)
+    return [e for e in _reaper_events if e["timestamp"] >= cutoff]
+
+
 # Estimated KV cache memory per concurrent request (GB).
 # Conservative: large models need more, small models less, but 2GB is a
 # reasonable middle ground that prevents over-subscription.
@@ -82,6 +92,14 @@ class QueueManager:
                         entry.completed_at = now
                         q.failed_count += 1
                         age = int(now - entry.started_at)
+                        _reaper_events.append({
+                            "timestamp": now,
+                            "request_id": entry.request.request_id,
+                            "queue_key": key,
+                            "stuck_seconds": age,
+                        })
+                        if len(_reaper_events) > 100:
+                            _reaper_events.pop(0)
                         logger.warning(
                             f"Reaped stale in-flight {entry.request.request_id[:8]} "
                             f"from {key} (stuck for {age}s)"
