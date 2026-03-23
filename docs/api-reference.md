@@ -370,6 +370,9 @@ Receives heartbeats from node agents. Internal endpoint — not intended for ext
 | `GET /dashboard/models` | Model Insights — per-model latency, tokens/sec, usage comparison |
 | `GET /dashboard/apps` | Apps — per-tag analytics with latency, tokens, errors, daily trends |
 | `GET /dashboard/benchmarks` | Benchmarks — capacity growth charts, per-run results |
+| `GET /dashboard/health` | Health — 7 automated fleet health checks with severity and recommendations |
+| `GET /dashboard/recommendations` | Recommendations — AI-powered model mix per node with one-click pull |
+| `GET /dashboard/settings` | Settings — runtime toggles, config tables, node versions |
 
 ### SSE Stream
 
@@ -813,6 +816,59 @@ Per-node model details with disk sizes, usage statistics, and last-used timestam
 ```
 
 Models are sorted by: loaded in VRAM first, then by last-used descending, then alphabetically. The `unused` flag is `true` if the model has never been used through the router or hasn't been used in 7+ days.
+
+### `GET /dashboard/api/settings`
+
+Current router configuration, toggleable settings, and registered node list with versions.
+
+**Response:**
+
+```json
+{
+  "router_version": "0.1.1",
+  "router_hostname": "Neons-Mac-Studio",
+  "config": {
+    "toggles": { "auto_pull": true, "vram_fallback": true },
+    "server": { "host": "Neons-Mac-Studio", "port": 11435, "data_dir": "~/.fleet-manager", "max_retries": 2 },
+    "heartbeat": { "heartbeat_interval": 5.0, "heartbeat_timeout": 15.0, "heartbeat_offline": 30.0 },
+    "scoring": { "score_model_hot": 50.0, "score_model_warm": 30.0, "..." : "..." },
+    "rebalancer": { "rebalance_interval": 5.0, "rebalance_threshold": 4, "rebalance_max_per_cycle": 3 },
+    "pre_warm": { "pre_warm_threshold": 3, "pre_warm_min_availability": 0.6 },
+    "auto_pull_config": { "auto_pull_timeout": 300.0 },
+    "context_protection": { "context_protection": "strip" }
+  },
+  "nodes": [
+    {
+      "node_id": "Neons-Mac-Studio",
+      "status": "online",
+      "agent_version": "0.1.1",
+      "ip": "http://localhost:11434",
+      "models_loaded_count": 2,
+      "is_router": true
+    }
+  ]
+}
+```
+
+### `POST /dashboard/api/settings`
+
+Toggle runtime-mutable boolean settings. Only `auto_pull` and `vram_fallback` are allowed — all other fields are silently ignored. Changes take effect immediately but are ephemeral (env vars remain source of truth on restart).
+
+**Request:**
+
+```json
+{"auto_pull": false}
+```
+
+**Response:**
+
+```json
+{"status": "updated", "updated": {"auto_pull": false}}
+```
+
+### `GET /dashboard/settings`
+
+HTML page for the Settings dashboard tab. Shows router info, toggle switches, read-only configuration tables grouped by category, and a node list with version tracking.
 
 ---
 

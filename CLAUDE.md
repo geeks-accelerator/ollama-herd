@@ -77,17 +77,19 @@ All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix 
 | Document | Description |
 |----------|-------------|
 | [`docs/api-reference.md`](docs/api-reference.md) | All endpoints with request/response schemas |
-| [`docs/configuration-reference.md`](docs/configuration-reference.md) | All 29+ env vars with tuning guidance |
-| [`docs/operations-guide.md`](docs/operations-guide.md) | Logging, traces, fallbacks, retry, drain, pre-warm, streaming |
+| [`docs/configuration-reference.md`](docs/configuration-reference.md) | All 30+ env vars with tuning guidance |
+| [`docs/operations-guide.md`](docs/operations-guide.md) | Logging, traces, fallbacks, retry, drain, pre-warm, streaming, context protection |
 | [`docs/adaptive-capacity.md`](docs/adaptive-capacity.md) | Capacity learner, meeting detection, app fingerprinting |
 | [`docs/fleet-manager-routing-engine.md`](docs/fleet-manager-routing-engine.md) | 5-stage scoring pipeline deep dive |
 | [`docs/openclaw-integration.md`](docs/openclaw-integration.md) | Setup guide for OpenClaw agents |
 | [`docs/request-tagging.md`](docs/request-tagging.md) | Per-app analytics, tagging strategies, competitive landscape |
-| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Common issues, LAN debugging, operational gotchas |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Common issues, LAN debugging, context protection, operational gotchas |
 | [`docs/architecture-decisions.md`](docs/architecture-decisions.md) | Port selection, design trade-offs, rationale |
 | [`docs/issues.md`](docs/issues.md) | Known issues, improvements, test coverage gaps |
 | [`docs/observations.md`](docs/observations.md) | Patterns and insights extracted from operating the fleet |
 | [`docs/competitive-landscape.md`](docs/competitive-landscape.md) | 20+ competing projects analyzed, feature comparison matrix |
+| [`docs/skill-publishing-strategy.md`](docs/skill-publishing-strategy.md) | Multi-skill publishing approach for ClawHub marketplace |
+| [`docs/skill-marketplace-analysis.md`](docs/skill-marketplace-analysis.md) | ClawHub competitive analysis, keyword gaps, tag strategy |
 
 ## Design Principles
 
