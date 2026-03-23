@@ -1,9 +1,9 @@
 ---
 name: ollama-load-balancer
 description: Load balance Ollama across multiple machines with auto-discovery, health checks, queue management, and zero configuration. Automatic failover, retry on node failure, zombie request cleanup, and real-time monitoring dashboard. Use when the user needs high availability for Ollama, wants to distribute inference load, or needs operational visibility into their Ollama fleet.
-version: 1.0.0
+version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"scales","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"]},"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"scales","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
 ---
 
 # Ollama Load Balancer
@@ -62,7 +62,7 @@ for key, q in d.get('queues', {}).items():
 - **Zombie reaper** — background task detects in-flight requests stuck longer than 15 minutes and cleans them up, freeing concurrency slots
 - **Context protection** — strips dangerous `num_ctx` parameters that would trigger multi-minute model reloads
 - **VRAM-aware fallback** — routes to an already-loaded model in the same category instead of triggering a cold load
-- **Auto-pull** — if a requested model doesn't exist on any node, pulls it onto the node with the most available memory
+- **Auto-pull** — optionally pulls missing models (disabled by default, toggle via settings API)
 - **Holding queue** — when all nodes are busy, requests wait (up to 30s) rather than immediately failing
 
 ## Available API endpoints

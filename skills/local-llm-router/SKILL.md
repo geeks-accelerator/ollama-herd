@@ -1,9 +1,9 @@
 ---
 name: local-llm-router
 description: Smart routing for local LLM inference across multiple devices. 7-signal scoring engine picks the optimal machine for every request — thermal state, memory fit, queue depth, latency history, role affinity, availability trend, context fit. OpenAI-compatible API, real-time dashboard. Use when the user wants to optimize inference routing, reduce latency, or manage models across local Ollama instances.
-version: 1.0.0
+version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"router","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"]},"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"router","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
 ---
 
 # Local LLM Router

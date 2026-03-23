@@ -3,7 +3,7 @@ name: ollama-manager
 description: Manage Ollama models across your machines — see what's loaded, what's eating disk, what's never used, and what you should pull next. Get AI-powered recommendations for the optimal model mix based on your hardware. Pull, delete, and organize models from one place instead of SSH-ing into each box.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"package","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"]},"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"package","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
 ---
 
 # Ollama Manager
