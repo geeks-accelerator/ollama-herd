@@ -371,6 +371,9 @@ async def dashboard_settings_data(request: Request):
         "auto_pull_config": {
             "auto_pull_timeout": settings.auto_pull_timeout,
         },
+        "context_protection": {
+            "context_protection": settings.context_protection,
+        },
     }
 
     nodes_data = []
@@ -2961,7 +2964,8 @@ var CONFIG_LABELS = {
   scoring: 'Scoring Weights',
   rebalancer: 'Rebalancer',
   pre_warm: 'Pre-warm',
-  auto_pull_config: 'Auto-Pull'
+  auto_pull_config: 'Auto-Pull',
+  context_protection: 'Context Protection'
 };
 
 function showToast(msg) {

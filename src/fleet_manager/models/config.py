@@ -45,6 +45,12 @@ class ServerSettings(BaseSettings):
     # VRAM-aware fallback: route to loaded model in same category instead of cold-loading
     vram_fallback: bool = True
 
+    # Context protection: prevent clients from triggering Ollama model reloads via num_ctx
+    # "strip" = remove num_ctx when ≤ loaded context (default, prevents reload hang)
+    # "warn"  = keep num_ctx but log warnings
+    # "passthrough" = do nothing
+    context_protection: str = "strip"
+
     # Retry
     max_retries: int = 2
 

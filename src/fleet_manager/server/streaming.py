@@ -33,12 +33,13 @@ def _create_logged_task(coro, *, name: str = "background"):
 
 
 class StreamingProxy:
-    def __init__(self, registry: NodeRegistry, latency_store=None, trace_store=None):
+    def __init__(self, registry: NodeRegistry, latency_store=None, trace_store=None, settings=None):
         self._registry = registry
         self._clients: dict[str, httpx.AsyncClient] = {}
         self._client_urls: dict[str, str] = {}  # Track URL used to create each client
         self._latency_store = latency_store
         self._trace_store = trace_store
+        self._settings = settings
         # Token counts extracted from Ollama final chunks, keyed by request_id
         self._request_tokens: dict[str, tuple[int | None, int | None]] = {}
 
@@ -354,7 +355,7 @@ class StreamingProxy:
     async def stream_from_node(self, node_id: str, request: InferenceRequest) -> AsyncIterator[str]:
         """Stream response from a node's Ollama, converting format if needed."""
         client = self._get_client(node_id)
-        ollama_body = self._build_ollama_body(request)
+        ollama_body = self._build_ollama_body(request, node_id)
 
         # Determine endpoint based on original request shape
         endpoint = "/api/chat"
@@ -491,7 +492,123 @@ class StreamingProxy:
             )
             return []
 
-    def _build_ollama_body(self, request: InferenceRequest) -> dict:
+    def _get_loaded_context(self, model: str, node_id: str) -> int:
+        """Look up the context length of a loaded model on a node. Returns 0 if unknown."""
+        node = self._registry.get_node(node_id)
+        if not node or not node.ollama:
+            return 0
+        for loaded in node.ollama.models_loaded:
+            if loaded.name == model:
+                return loaded.context_length or 0
+        return 0
+
+    def _find_context_upgrade(
+        self, model: str, required_ctx: int, node_id: str
+    ) -> str | None:
+        """Find a loaded model with sufficient context and more parameters.
+
+        Searches the assigned node first, then all other nodes. Returns the model
+        name if a suitable upgrade is found, or None.
+        """
+        node = self._registry.get_node(node_id)
+        if not node or not node.ollama:
+            return None
+
+        # Find the current model's size for comparison
+        current_size = 0.0
+        for loaded in node.ollama.models_loaded:
+            if loaded.name == model:
+                current_size = loaded.size_gb
+                break
+
+        # Search this node first, then all nodes
+        all_nodes = [node]
+        for other in self._registry.get_all_nodes():
+            if other.node_id != node_id and other.ollama:
+                all_nodes.append(other)
+
+        best_candidate = None
+        best_size = current_size
+        for n in all_nodes:
+            if not n.ollama:
+                continue
+            for loaded in n.ollama.models_loaded:
+                if loaded.name == model:
+                    continue  # Skip the same model
+                if (
+                    (loaded.context_length or 0) >= required_ctx
+                    and loaded.size_gb > best_size
+                    and (best_candidate is None or loaded.size_gb < best_candidate[1])
+                ):
+                    best_candidate = (loaded.name, loaded.size_gb, n.node_id)
+
+        if best_candidate:
+            return best_candidate[0]  # Return model name
+        return None
+
+    def _apply_context_protection(self, body: dict, model: str, node_id: str) -> None:
+        """Strip or warn about num_ctx values that would trigger Ollama model reloads.
+
+        When a client sends num_ctx different from the loaded model's context window,
+        Ollama unloads and reloads the entire model. For large models this causes
+        multi-minute hangs or deadlocks. This method intercepts and strips num_ctx
+        when it's unnecessary (≤ loaded context), preventing the reload.
+
+        When num_ctx exceeds the loaded context, searches for a loaded model with
+        sufficient context and more parameters, and switches to it if found.
+        """
+        if not self._settings:
+            return
+        mode = getattr(self._settings, "context_protection", "strip")
+        if mode == "passthrough":
+            return
+
+        options = body.get("options")
+        if not options or "num_ctx" not in options:
+            return
+
+        client_num_ctx = options["num_ctx"]
+        loaded_ctx = self._get_loaded_context(model, node_id)
+        if loaded_ctx == 0:
+            # Unknown context — can't protect, pass through
+            return
+
+        if client_num_ctx <= loaded_ctx:
+            if mode == "strip":
+                del options["num_ctx"]
+                # Clean up empty options dict
+                if not options:
+                    body.pop("options", None)
+                logger.info(
+                    f"Context protection: stripped num_ctx={client_num_ctx} for {model} on "
+                    f"{node_id} (loaded context={loaded_ctx})"
+                )
+            else:
+                logger.warning(
+                    f"Context protection: client sent num_ctx={client_num_ctx} for {model} on "
+                    f"{node_id} (loaded context={loaded_ctx}) — would trigger reload"
+                )
+        else:
+            # Client needs more context than loaded — try to find a bigger loaded model
+            if mode == "strip":
+                upgrade = self._find_context_upgrade(model, client_num_ctx, node_id)
+                if upgrade:
+                    body["model"] = upgrade
+                    del options["num_ctx"]
+                    if not options:
+                        body.pop("options", None)
+                    logger.info(
+                        f"Context protection: switched {model} → {upgrade} for "
+                        f"num_ctx={client_num_ctx} on {node_id} (original context={loaded_ctx})"
+                    )
+                    return
+
+            logger.warning(
+                f"Context protection: client wants num_ctx={client_num_ctx} but {model} on "
+                f"{node_id} only has context={loaded_ctx}"
+            )
+
+    def _build_ollama_body(self, request: InferenceRequest, node_id: str) -> dict:
         """Convert normalized request to Ollama API format."""
         if request.original_format == RequestFormat.OLLAMA and request.raw_body:
             body = dict(request.raw_body)
@@ -502,6 +619,8 @@ class StreamingProxy:
             # Keep models loaded permanently — the router manages model lifecycle,
             # not Ollama's idle timeout. Prevents costly cold loads on high-memory machines.
             body.setdefault("keep_alive", -1)
+            # Protect against num_ctx triggering expensive model reloads
+            self._apply_context_protection(body, request.model, node_id)
             return body
 
         body = {

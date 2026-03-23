@@ -67,6 +67,21 @@ When a requested model doesn't exist on any fleet node, the router can automatic
 
 The router selects the online node with the most available memory that can fit the estimated model size. Concurrent pulls of the same model are deduplicated. Disable with `FLEET_AUTO_PULL=false` to get a 404 for missing models instead.
 
+### Context Protection
+
+Prevents clients from triggering expensive Ollama model reloads by sending `num_ctx` in request options. When Ollama receives a `num_ctx` different from the loaded model's context window, it unloads and reloads the entire model — which can cause multi-minute hangs or deadlocks on large models.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_CONTEXT_PROTECTION` | `strip` | How to handle client `num_ctx` values: `strip`, `warn`, or `passthrough` |
+
+Modes:
+- **`strip`** (default): Remove `num_ctx` from requests when it's ≤ the loaded model's context window. Logs an info message. If `num_ctx` exceeds the loaded context, it's preserved with a warning (client genuinely needs more context).
+- **`warn`**: Keep `num_ctx` but log warnings about potential reload triggers.
+- **`passthrough`**: No intervention — pass `num_ctx` through to Ollama as-is.
+
+Only applies to Ollama-format requests (`/api/chat`, `/api/generate`). OpenAI-format requests don't have a `num_ctx` equivalent.
+
 ### Pre-Warm
 
 Pre-warm proactively loads models on runner-up nodes before they're needed.
