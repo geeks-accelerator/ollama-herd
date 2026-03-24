@@ -53,7 +53,7 @@ class ServerSettings(BaseSettings):
 
     # Stale request reaper
     # Seconds before in-flight requests are considered zombied (15 min default)
-    stale_timeout: float = 900.0
+    stale_timeout: float = 600.0
 
     # Retry
     max_retries: int = 2

@@ -96,7 +96,7 @@ Pre-warm proactively loads models on runner-up nodes before they're needed.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLEET_MAX_RETRIES` | `2` | Max retry attempts on node failure (before first chunk) |
-| `FLEET_STALE_TIMEOUT` | `900.0` | Seconds before in-flight requests are considered zombied and reaped (15 min) |
+| `FLEET_STALE_TIMEOUT` | `600.0` | Seconds before in-flight requests are considered zombied and reaped (10 min) |
 
 ### mDNS Discovery
 

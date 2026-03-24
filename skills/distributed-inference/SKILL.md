@@ -158,7 +158,7 @@ curl -s -X POST http://localhost:11435/dashboard/api/settings \
 |-----------|----------|
 | Auto-retry | If a node fails before the first chunk, re-score and retry on next-best node (up to N retries, configurable) |
 | Holding queue | When all nodes are saturated, requests queue for up to 30 seconds before timing out |
-| Zombie reaper | Background task reclaims in-flight slots stuck longer than 15 minutes |
+| Zombie reaper | Background task reclaims in-flight slots stuck longer than 10 minutes |
 | VRAM fallback | Routes to a loaded model in the same category rather than cold-loading the requested model |
 | Auto-pull | Pulls missing models onto the node with the most available memory |
 | Graceful drain | SIGTERM triggers drain: in-flight requests finish, pending requests redistribute |

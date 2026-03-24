@@ -59,7 +59,7 @@ for key, q in d.get('queues', {}).items():
 ## Auto-recovery features
 
 - **Auto-retry** — if a node fails before sending the first response chunk, the balancer re-scores all nodes and retries on the next-best one (up to 2 retries, configurable via `FLEET_MAX_RETRIES`)
-- **Zombie reaper** — background task detects in-flight requests stuck longer than 15 minutes and cleans them up, freeing concurrency slots
+- **Zombie reaper** — background task detects in-flight requests stuck longer than 10 minutes and cleans them up, freeing concurrency slots
 - **Context protection** — strips dangerous `num_ctx` parameters that would trigger multi-minute model reloads
 - **VRAM-aware fallback** — routes to an already-loaded model in the same category instead of triggering a cold load
 - **Auto-pull** — optionally pulls missing models (disabled by default, toggle via settings API)
