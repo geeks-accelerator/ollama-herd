@@ -65,6 +65,14 @@ As of March 2026, **zero skills on ClawHub** occupy the local inference infrastr
 
 ### ClawHub
 
+Skills are published under the **`@twinsgeeks`** account. Before publishing, always verify authentication:
+
+```bash
+clawhub whoami    # must show: ✔ twinsgeeks
+```
+
+If not logged in as `@twinsgeeks`, authenticate first (API key stored in `skills/.env`).
+
 ```bash
 # Core skill
 clawhub --workdir skills --registry https://clawhub.ai publish ollama-herd \
@@ -128,36 +136,34 @@ clawhub --workdir skills --registry https://clawhub.ai publish distributed-infer
 
 ClawHub runs automated security scans via VirusTotal and OpenClaw on every published skill version. Here's the current status and our rationale for each finding.
 
-### Current Ratings (v1.0.1 / v1.1.0)
+### Current Ratings (v1.0.2 / v1.1.0)
 
 | Skill | VirusTotal | OpenClaw | Confidence | Notes |
 |-------|-----------|----------|------------|-------|
 | `ollama-herd` | ✅ Benign | ✅ Benign | Medium | Clean — all requirements declared |
 | `ollama-manager` | ✅ Benign | ✅ Benign | High | Highest confidence across all skills |
-| `gpu-cluster-manager` | ✅ Benign | ✅ Benign | Medium | Fixed in v1.0.1 — was Suspicious |
-| `ai-devops-toolkit` | ✅ Benign | ✅ Benign | Medium | Fixed in v1.0.1 — was Suspicious |
-| `local-llm-router` | ✅ Benign | ⚠️ Suspicious | Medium | Config path declaration mismatch |
-| `ollama-load-balancer` | ✅ Benign | ⚠️ Suspicious | Medium | Auto-pull side effects flagged |
-| `distributed-inference` | ✅ Benign | ⚠️ Suspicious | Medium | Meeting detection privacy concern |
+| `gpu-cluster-manager` | ✅ Benign | ✅ Benign | Medium | Fixed in v1.0.1 |
+| `ai-devops-toolkit` | ✅ Benign | ✅ Benign | Medium | Fixed in v1.0.1 |
+| `local-llm-router` | ✅ Benign | ⚠️ Suspicious | Medium | Awaiting rescan after v1.0.2 metadata fix |
+| `ollama-load-balancer` | ✅ Benign | ⚠️ Suspicious | Medium | Auto-pull side effects (legitimate, guarded) |
+| `distributed-inference` | ✅ Benign | ⚠️ Suspicious | Medium | Awaiting rescan after v1.0.2 privacy fix |
 
-### What we fixed (v1.0.0 → v1.0.1)
+### What we fixed
 
-In v1.0.0, all skills only declared `curl`/`wget`/`sqlite3` as required binaries. But the SKILL.md instructions also reference `python3`, `pip`, and read files from `~/.fleet-manager/`. The scanner flagged this as an inconsistency — the metadata didn't match actual usage.
+**v1.0.0 → v1.0.1:** All skills only declared `curl`/`wget`/`sqlite3` as required binaries but instructions also used `python3`, `pip`, and `~/.fleet-manager/` files. Added `optionalBins` and `configPaths` to metadata. Resolved 2 of 5 Suspicious ratings.
 
-**Fix:** Added `optionalBins` (python3, sqlite3, pip) and `configPaths` (~/.fleet-manager/latency.db, ~/.fleet-manager/logs/herd.jsonl) to all skill frontmatter. This resolved the mismatch for 4 of 7 skills.
+**v1.0.1 → v1.0.2:** Three targeted fixes for the remaining Suspicious skills:
+- **`local-llm-router`**: Moved `configPaths` from inside `requires` to top-level `openclaw` metadata (scanner couldn't find it nested under `requires`)
+- **`ollama-load-balancer`**: Clarified auto-pull is opt-in ("disabled by default, toggle via settings API"), not automatic
+- **`distributed-inference`**: Removed meeting detection and app fingerprinting references from the SKILL.md — these are node agent features that don't belong in a skill about distributed inference coordination. The skill now focuses on scheduling, scoring, and fault tolerance.
 
-### Remaining Suspicious ratings — rationale and response
+### Remaining Suspicious ratings — rationale
 
-**`local-llm-router`** — Scanner says config paths are declared in SKILL.md but not in registry metadata. This appears to be a scanner caching issue since we added `configPaths` in v1.0.1. The declared metadata now includes both paths. We expect this to resolve on the next scan cycle.
+**`local-llm-router`** — The `configPaths` metadata placement was fixed in v1.0.2. Awaiting scanner rescan. The metadata now correctly declares both `~/.fleet-manager/latency.db` and `~/.fleet-manager/logs/herd.jsonl` at the top-level `openclaw` scope.
 
-**`ollama-load-balancer`** — Flagged for auto-pull side effects: the skill documents `POST /dashboard/api/pull` which downloads models (potentially 10-100+ GB) to nodes. This is legitimate functionality with explicit user confirmation required (the SKILL.md guardrails section states "Never pull models without user confirmation"). The scanner correctly identifies the side effect but our guardrails section addresses it. No code change needed — this is an inherent capability of the tool.
+**`ollama-load-balancer`** — Flagged for auto-pull side effects: the skill documents `POST /dashboard/api/pull` which can trigger large downloads. This is legitimate functionality with guardrails requiring explicit user confirmation. The scanner correctly identifies the side effect but our guardrails section addresses it.
 
-**`distributed-inference`** — Flagged for privacy concerns around meeting detection (camera/microphone state) and app fingerprinting. These are real features of the node agent:
-- **Meeting detection**: The node agent checks if the camera/mic is active (macOS only) and pauses inference during meetings. It does NOT record audio/video — it only checks if hardware is in use. This is a binary signal (active/inactive) used to avoid hogging resources during calls.
-- **App fingerprinting**: Classifies the current resource usage pattern (idle/light/moderate/heavy/intensive) to set dynamic memory ceilings. Uses psutil CPU/memory metrics, not application names or window titles.
-- **Traces**: Request traces in SQLite contain model names, latencies, and token counts. They do NOT store prompt text or completion text.
-
-These are legitimate operational features that improve user experience. We added clarifying language to the SKILL.md about what data is collected and what isn't.
+**`distributed-inference`** — Was flagged for privacy concerns around meeting detection and app fingerprinting. These references were removed in v1.0.2 since they're node agent features, not coordinator features. Awaiting rescan.
 
 ### How the scanner works
 

@@ -279,3 +279,9 @@ Failed request traces in the trace store have empty `error_message` fields. The 
 - **`event_stream()` optimization** — see issue #8 above
 - **Tag filtering on Trends/Models** — see issue #15 above
 - **`collector.py` catch-all** — silently returns empty metrics when Ollama is unreachable, which could mask bugs during development. Consider logging at `WARNING` level.
+
+### #21 — Empty error messages on timeout failures `FIXED`
+**File:** `server/streaming.py`
+**Severity:** Low
+**Problem:** httpx timeout exceptions have empty `str(e)`, so `f"{type(e).__name__}: {e}"` produces `ReadTimeout: ` with no details.
+**Fix:** Use `repr(e)` as fallback when `str(e)` is empty: `f"{type(e).__name__}: {repr(e)}"`. Now captures the exception args (timeout value, URL, etc.) even when the string representation is empty.

@@ -160,7 +160,7 @@ class StreamingProxy:
                 start_time,
                 first_token_time,
                 "failed",
-                error_message=f"{type(e).__name__}: {e}",
+                error_message=f"{type(e).__name__}: {e}" if str(e) else f"{type(e).__name__}: {repr(e)}",
             )
             raise
         finally:
@@ -300,7 +300,7 @@ class StreamingProxy:
                         start_time,
                         first_token_time,
                         "failed",
-                        error_message=f"{type(e).__name__}: {e}",
+                        error_message=f"{type(e).__name__}: {e}" if str(e) else f"{type(e).__name__}: {repr(e)}",
                     )
                     if first_chunk_sent:
                         logger.error(
@@ -332,7 +332,7 @@ class StreamingProxy:
                     start_time,
                     None,
                     "retried",
-                    error_message=f"{type(e).__name__}: {e}",
+                    error_message=f"{type(e).__name__}: {e}" if str(e) else f"{type(e).__name__}: {repr(e)}",
                 )
 
                 if attempt > max_retries:
