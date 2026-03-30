@@ -428,6 +428,38 @@ async def dashboard_settings_update(request: Request):
     return {"status": "updated", "updated": updated}
 
 
+@router.get("/dashboard/api/image-stats")
+async def dashboard_image_stats():
+    """Image generation statistics from the last 24 hours."""
+    from fleet_manager.server.routes.image_compat import get_image_gen_events
+
+    events = get_image_gen_events(hours=24)
+    completed = [e for e in events if e["status"] == "completed"]
+    failed = [e for e in events if e["status"] == "failed"]
+
+    return {
+        "total": len(events),
+        "completed": len(completed),
+        "failed": len(failed),
+        "avg_generation_ms": (
+            int(sum(e["generation_ms"] for e in completed) / len(completed))
+            if completed
+            else 0
+        ),
+        "by_node": _group_by(events, "node_id"),
+        "by_model": _group_by(events, "model"),
+        "recent": events[-10:],
+    }
+
+
+def _group_by(events: list[dict], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for e in events:
+        val = e.get(key, "unknown")
+        counts[val] = counts.get(val, 0) + 1
+    return counts
+
+
 @router.post("/dashboard/api/pull")
 async def dashboard_pull_model(request: Request):
     """Pull a model onto a specific node via Ollama."""

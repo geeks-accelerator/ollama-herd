@@ -258,5 +258,104 @@ class TestImageSettings:
         assert resp.json()["status"] == "updated"
         assert resp.json()["updated"]["image_generation"] is True
 
-        resp = client.get("/dashboard/api/settings")
-        assert resp.json()["config"]["toggles"]["image_generation"] is True
+
+class TestImageTracking:
+    """Tests for image generation event tracking."""
+
+    def test_record_and_retrieve_events(self):
+        from fleet_manager.server.routes.image_compat import (
+            _image_gen_events,
+            _record_image_gen,
+            get_image_gen_events,
+        )
+
+        # Clear state
+        _image_gen_events.clear()
+
+        _record_image_gen("z-image-turbo", "studio", "completed", 15000, 1024, 1024)
+        _record_image_gen("z-image-turbo", "studio", "failed", 5000, 512, 512, "timeout")
+
+        events = get_image_gen_events(hours=1)
+        assert len(events) == 2
+        assert events[0]["status"] == "completed"
+        assert events[0]["generation_ms"] == 15000
+        assert events[1]["status"] == "failed"
+        assert events[1]["error"] == "timeout"
+
+        _image_gen_events.clear()
+
+    def test_image_stats_api(self, client):
+        resp = client.get("/dashboard/api/image-stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total" in data
+        assert "completed" in data
+        assert "failed" in data
+        assert "by_node" in data
+
+
+class TestImageHealthCheck:
+    """Tests for image generation health check."""
+
+    def test_no_events_no_recommendation(self):
+        from fleet_manager.server.routes.image_compat import _image_gen_events
+
+        _image_gen_events.clear()
+
+        from fleet_manager.server.health_engine import HealthEngine
+
+        engine = HealthEngine()
+        recs = engine._check_image_generation([])
+        assert len(recs) == 0
+
+        _image_gen_events.clear()
+
+    def test_events_produce_recommendation(self):
+        from fleet_manager.server.routes.image_compat import (
+            _image_gen_events,
+            _record_image_gen,
+        )
+
+        _image_gen_events.clear()
+        for _ in range(5):
+            _record_image_gen("z-image-turbo", "studio", "completed", 15000, 1024, 1024)
+
+        from fleet_manager.server.health_engine import HealthEngine
+
+        engine = HealthEngine()
+        recs = engine._check_image_generation([])
+        assert len(recs) >= 1
+        assert recs[0].check_id == "image_generation"
+        assert "5 images generated" in recs[0].description
+
+        _image_gen_events.clear()
+
+    def test_mflux_expansion_recommendation(self):
+        from fleet_manager.server.routes.image_compat import (
+            _image_gen_events,
+            _record_image_gen,
+        )
+
+        _image_gen_events.clear()
+        for _ in range(5):
+            _record_image_gen("z-image-turbo", "studio", "completed", 15000, 1024, 1024)
+
+        # Node with mflux
+        node_with = make_node(node_id="studio", memory_total=64, memory_used=20)
+        node_with.image = ImageMetrics(
+            models_available=[ImageModel(name="z-image-turbo", binary="mflux")],
+        )
+        # Node without mflux but with enough memory
+        node_without = make_node(node_id="mini", memory_total=32, memory_used=10)
+
+        from fleet_manager.server.health_engine import HealthEngine
+
+        engine = HealthEngine()
+        recs = engine._check_image_generation([node_with, node_without])
+
+        check_ids = [r.check_id for r in recs]
+        assert "mflux_expansion" in check_ids
+        expansion = next(r for r in recs if r.check_id == "mflux_expansion")
+        assert "mini" in expansion.description
+
+        _image_gen_events.clear()

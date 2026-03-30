@@ -87,6 +87,7 @@ class HealthEngine:
         recommendations.extend(self._check_version_mismatch(nodes))
         recommendations.extend(self._check_context_protection())
         recommendations.extend(self._check_zombie_reaper())
+        recommendations.extend(self._check_image_generation(nodes))
 
         # Trace-based checks (async, queries SQLite)
         if trace_store:
@@ -485,6 +486,81 @@ class HealthEngine:
                 },
             )
         ]
+
+    def _check_image_generation(self, nodes) -> list[Recommendation]:
+        """Surface image generation activity and suggest mflux expansion."""
+        from fleet_manager.server.routes.image_compat import get_image_gen_events
+
+        events = get_image_gen_events(hours=24)
+        if not events:
+            return []
+
+        recs: list[Recommendation] = []
+        completed = [e for e in events if e["status"] == "completed"]
+        failed = [e for e in events if e["status"] == "failed"]
+
+        # Summary card
+        avg_ms = (
+            sum(e["generation_ms"] for e in completed) / len(completed)
+            if completed
+            else 0
+        )
+        nodes_used = {e["node_id"] for e in events}
+        summary = (
+            f"{len(completed)} images generated"
+            f" ({len(failed)} failed) in 24h."
+            f" Avg generation: {avg_ms / 1000:.1f}s."
+            f" Nodes used: {', '.join(sorted(nodes_used))}."
+        )
+
+        severity = Severity.WARNING if failed else Severity.INFO
+        recs.append(Recommendation(
+            check_id="image_generation",
+            severity=severity,
+            title="Image Generation Activity",
+            description=summary,
+            fix="Check failed generations in router logs."
+            if failed
+            else "Image generation is healthy.",
+        ))
+
+        # Recommend mflux on nodes that don't have it
+        nodes_with_mflux = {
+            n.node_id
+            for n in nodes
+            if n.image and n.image.models_available
+        }
+        nodes_without_mflux = [
+            n
+            for n in nodes
+            if n.node_id not in nodes_with_mflux
+            and n.status.value == "online"
+            and n.memory
+            and n.memory.available_gb >= 8.0
+        ]
+
+        if nodes_without_mflux and len(completed) >= 3:
+            node_names = ", ".join(n.node_id for n in nodes_without_mflux)
+            recs.append(Recommendation(
+                check_id="mflux_expansion",
+                severity=Severity.INFO,
+                title="Expand Image Generation to More Nodes",
+                description=(
+                    f"Image generation was used {len(completed)} times "
+                    f"in the last 24h but only {len(nodes_with_mflux)} "
+                    f"node(s) have mflux installed. "
+                    f"{len(nodes_without_mflux)} online node(s) with "
+                    f"sufficient memory could also serve images: "
+                    f"{node_names}."
+                ),
+                fix=(
+                    "Install mflux on additional nodes: "
+                    "`uv tool install mflux` — first image request "
+                    "will download model weights (~3GB)."
+                ),
+            ))
+
+        return recs
 
     # ------------------------------------------------------------------
     # Trace-based checks

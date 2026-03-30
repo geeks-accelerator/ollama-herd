@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -10,6 +11,40 @@ from fastapi.responses import JSONResponse, Response
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["images"])
+
+# In-memory tracking of image generation events (same pattern as VRAM fallbacks)
+_image_gen_events: list[dict] = []
+_MAX_IMAGE_EVENTS = 200
+
+
+def _record_image_gen(
+    model: str,
+    node_id: str,
+    status: str,
+    generation_ms: int = 0,
+    width: int = 0,
+    height: int = 0,
+    error: str = "",
+) -> None:
+    """Record an image generation event for health monitoring."""
+    _image_gen_events.append({
+        "timestamp": time.time(),
+        "model": model,
+        "node_id": node_id,
+        "status": status,
+        "generation_ms": generation_ms,
+        "width": width,
+        "height": height,
+        "error": error,
+    })
+    if len(_image_gen_events) > _MAX_IMAGE_EVENTS:
+        del _image_gen_events[: len(_image_gen_events) - _MAX_IMAGE_EVENTS]
+
+
+def get_image_gen_events(hours: float = 24) -> list[dict]:
+    """Get image generation events from the last N hours."""
+    cutoff = time.time() - hours * 3600
+    return [e for e in _image_gen_events if e["timestamp"] >= cutoff]
 
 
 def _score_image_candidates(candidates, registry) -> object:
@@ -86,12 +121,20 @@ async def generate_image(request: Request):
         )
 
     best = _score_image_candidates(candidates, registry)
-    logger.info(f"Image generation: model={model} → node={best.node_id}")
+    width = body.get("width", 1024)
+    height = body.get("height", 1024)
+    logger.info(f"Image generation: model={model} {width}x{height} → {best.node_id}")
 
     proxy = request.app.state.streaming_proxy
+    start = time.monotonic()
     try:
         png_bytes = await proxy.generate_image_on_node(
             best.node_id, body, timeout=settings.image_timeout
+        )
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        _record_image_gen(
+            model, best.node_id, "completed",
+            generation_ms=elapsed_ms, width=width, height=height,
         )
         return Response(
             content=png_bytes,
@@ -99,9 +142,16 @@ async def generate_image(request: Request):
             headers={
                 "X-Fleet-Node": best.node_id,
                 "X-Fleet-Model": model,
+                "X-Generation-Time": str(elapsed_ms),
             },
         )
     except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        _record_image_gen(
+            model, best.node_id, "failed",
+            generation_ms=elapsed_ms, width=width, height=height,
+            error=repr(e),
+        )
         logger.error(f"Image generation failed on {best.node_id}: {repr(e)}")
         return JSONResponse(
             status_code=502,
