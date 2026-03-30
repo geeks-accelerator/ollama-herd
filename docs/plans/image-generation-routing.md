@@ -2,10 +2,29 @@
 
 **Status**: Planned
 **Priority**: Medium — valuable when fleet has multiple devices with limited memory
+**Related**: [Local Fleet Economics](../research/local-fleet-economics.md) — why fleet-scale routing matters economically
 
 ## Problem
 
 mflux (MLX-native Flux image generation) runs as a CLI subprocess on Apple Silicon. Currently it bypasses Herd entirely. In a fleet of Mac Minis with 24-64GB each, only one or two might have the image model loaded. Agents on other devices have no way to discover which node has the model and route to it.
+
+As documented in [Local Fleet Economics](../research/local-fleet-economics.md), fleet architectures work because hardware is a fixed cost while cloud APIs scale linearly. But this only works when the fleet can route any workload — LLM or image generation — to the right device. Today, image generation breaks that model by requiring direct subprocess access on a specific machine. See also [mflux Image Generation Guide](../research/mflux-image-generation.md) for details on the current mflux setup and why it bypasses Herd.
+
+### Open design questions
+
+These gaps were identified during plan review and need resolution during implementation:
+
+1. **How does the router reach the node's image endpoint?** The router currently only knows `ollama_base_url` (port 11434). Need to add an `image_base_url` to heartbeats/NodeState, or use a convention like `ollama_port + 2`.
+
+2. **Real-time generation detection.** The `generating: bool` field in heartbeats updates every 5 seconds, but a 20-second generation might start and finish between heartbeats. The image server should report back to the node agent, or the scorer should query the image endpoint directly.
+
+3. **Queue manager compatibility.** Current queue returns `AsyncGenerator[bytes]` for streaming. Image gen returns a single `bytes` blob. Either extend `QueueManager.enqueue()` to handle both, or image requests bypass the queue (simpler but loses queue depth tracking).
+
+4. **Trace store schema.** Image requests have no `prompt_tokens`/`completion_tokens`. Need nullable columns in `request_traces` or a separate `image_traces` table.
+
+5. **Multiple mflux binaries.** `mflux-generate`, `mflux-generate-z-image-turbo`, etc. — different binaries for different model families. Detection logic must map binary names to model capabilities.
+
+6. **Memory contention.** mflux uses ~3GB during generation on the same unified memory pool as Ollama models. The scorer should temporarily reduce the node's `available_gb` during image gen.
 
 ## Solution
 
