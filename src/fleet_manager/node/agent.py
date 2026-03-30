@@ -40,6 +40,8 @@ class NodeAgent:
         self._ollama_proxy: OllamaProxy | None = None
         self._image_server_task: asyncio.Task | None = None
         self._image_port: int = 0
+        self._transcription_process: subprocess.Popen | None = None
+        self._transcription_port: int = 0
 
     async def _ensure_ollama(self) -> bool:
         """Check if Ollama is running; if not, try to start it.
@@ -139,6 +141,9 @@ class NodeAgent:
         # Start image generation server if mflux is available
         await self._ensure_image_server()
 
+        # Start transcription server if mlx-qwen3-asr is available
+        await self._ensure_transcription_server()
+
         # Install signal handlers for graceful drain
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -165,6 +170,8 @@ class NodeAgent:
                 )
                 if self._image_port:
                     payload.image_port = self._image_port
+                if self._transcription_port:
+                    payload.transcription_port = self._transcription_port
                 await self._send_heartbeat(payload)
                 self._ollama_failures = 0
                 heartbeat_count += 1
@@ -291,6 +298,45 @@ class NodeAgent:
             logger.warning(f"Failed to start image server: {repr(e)}")
             self._image_port = 0
 
+    async def _ensure_transcription_server(self):
+        """Start mlx-qwen3-asr serve if available."""
+        from fleet_manager.node.collector import _detect_transcription_models
+
+        stt_metrics = _detect_transcription_models()
+        if not stt_metrics or not stt_metrics.models_available:
+            logger.debug("No mlx-qwen3-asr found, skipping transcription server")
+            return
+
+        from urllib.parse import urlparse
+
+        parsed = urlparse(self.settings.ollama_host)
+        ollama_port = parsed.port or 11434
+        stt_port = ollama_port + 3  # 11434 → 11437
+
+        binary = stt_metrics.models_available[0].binary
+        try:
+            import os
+
+            env = os.environ.copy()
+            env["MLX_ASR_API_KEY"] = "herd-internal"
+            self._transcription_process = subprocess.Popen(
+                [binary, "serve", "--port", str(stt_port), "--host", "0.0.0.0"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env=env,
+            )
+            self._transcription_port = stt_port
+
+            models = ", ".join(m.name for m in stt_metrics.models_available)
+            logger.info(
+                f"Transcription server started on 0.0.0.0:{stt_port} "
+                f"(models: {models}, pid={self._transcription_process.pid})"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to start transcription server: {repr(e)}")
+            self._transcription_port = 0
+
     async def _send_heartbeat(self, payload):
         resp = await self._http.post(
             f"{self.router_url}/heartbeat",
@@ -318,6 +364,10 @@ class NodeAgent:
             self._image_server_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._image_server_task
+        if self._transcription_process:
+            self._transcription_process.terminate()
+            with contextlib.suppress(Exception):
+                self._transcription_process.wait(timeout=5)
         if self._ollama_proxy:
             await self._ollama_proxy.stop()
         await self.ollama.close()

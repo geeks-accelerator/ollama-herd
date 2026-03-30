@@ -535,6 +535,95 @@ class StreamingProxy:
 
         return process
 
+    async def transcribe_on_node(
+        self, node_id: str, audio_bytes: bytes, filename: str, timeout: float = 300.0
+    ) -> dict:
+        """Proxy a transcription request to a node's STT server.
+
+        The mlx-qwen3-asr server uses an async job API: submit → poll.
+        This method handles both steps and returns the final result.
+        """
+        import asyncio
+
+        node = self._registry.get_node(node_id)
+        if not node:
+            raise ValueError(f"Node {node_id} not found")
+
+        from urllib.parse import urlparse
+
+        parsed = urlparse(node.ollama_base_url)
+        host = parsed.hostname or "localhost"
+        stt_port = node.transcription_port or 11437
+        stt_url = f"http://{host}:{stt_port}"
+        auth = {"Authorization": "Bearer herd-internal"}
+
+        async with httpx.AsyncClient(
+            base_url=stt_url,
+            timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0),
+        ) as client:
+            # Submit job
+            resp = await client.post(
+                "/transcribe",
+                files={"audio": (filename, audio_bytes)},
+                headers=auth,
+            )
+            resp.raise_for_status()
+            job = resp.json()
+            job_id = job["job_id"]
+
+            # Poll for completion
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                resp = await client.get(f"/jobs/{job_id}", headers=auth)
+                resp.raise_for_status()
+                status = resp.json()
+                if status["status"] == "completed":
+                    return status.get("result", status)
+                if status["status"] == "failed":
+                    raise RuntimeError(
+                        f"Transcription job {job_id} failed: "
+                        f"{status.get('error', 'unknown')}"
+                    )
+                await asyncio.sleep(0.5)
+
+            raise TimeoutError(f"Transcription job {job_id} timed out")
+
+    def make_transcription_process_fn(
+        self, queue_key: str, queue_manager, timeout: float = 300.0
+    ):
+        """Create a process function for transcription queue entries."""
+        proxy = self
+
+        async def _transcribe_and_yield(entry: QueueEntry):
+            start_time = time.time()
+            try:
+                audio_bytes = entry.request.raw_body.get("_audio_bytes", b"")
+                filename = entry.request.raw_body.get("_filename", "audio.wav")
+                result = await proxy.transcribe_on_node(
+                    entry.assigned_node, audio_bytes, filename, timeout
+                )
+                elapsed_ms = (time.time() - start_time) * 1000
+                logger.info(
+                    f"Transcription {entry.request.request_id[:8]} completed "
+                    f"on {entry.assigned_node} in {elapsed_ms:.0f}ms"
+                )
+                queue_manager.mark_completed(queue_key, entry)
+                import json
+
+                yield json.dumps(result)
+            except Exception as e:
+                queue_manager.mark_failed(queue_key, entry)
+                logger.error(
+                    f"Transcription {entry.request.request_id[:8]} failed "
+                    f"on {entry.assigned_node}: {repr(e)}"
+                )
+                raise
+
+        def process(entry: QueueEntry):
+            return _transcribe_and_yield(entry)
+
+        return process
+
     async def generate_image_on_node(
         self, node_id: str, body: dict, timeout: float = 120.0
     ) -> bytes:

@@ -65,6 +65,8 @@ class NodeRegistry:
             node.agent_version = payload.agent_version
             node.image = payload.image
             node.image_port = payload.image_port
+            node.transcription = payload.transcription
+            node.transcription_port = payload.transcription_port
             node.last_heartbeat = time.time()
             node.missed_heartbeats = 0
             node.status = NodeStatus.ONLINE

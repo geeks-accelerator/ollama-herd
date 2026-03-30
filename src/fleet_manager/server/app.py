@@ -99,12 +99,14 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         image_compat,
         ollama_compat,
         openai_compat,
+        transcription_compat,
     )
 
     app.include_router(heartbeat.router)
     app.include_router(openai_compat.router)
     app.include_router(ollama_compat.router)
     app.include_router(image_compat.router)
+    app.include_router(transcription_compat.router)
     app.include_router(fleet.router)
     app.include_router(dashboard.router)
 

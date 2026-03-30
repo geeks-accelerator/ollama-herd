@@ -334,6 +334,7 @@ async def dashboard_settings_data(request: Request):
             "auto_pull": settings.auto_pull,
             "vram_fallback": settings.vram_fallback,
             "image_generation": settings.image_generation,
+            "transcription": settings.transcription,
         },
         "server": {
             "host": hostname if settings.host == "0.0.0.0" else settings.host,
@@ -388,6 +389,9 @@ async def dashboard_settings_data(request: Request):
         image_models = []
         if node.image:
             image_models = [m.name for m in node.image.models_available]
+        stt_models = []
+        if node.transcription:
+            stt_models = [m.name for m in node.transcription.models_available]
         nodes_data.append({
             "node_id": node.node_id,
             "status": node.status.value,
@@ -397,6 +401,8 @@ async def dashboard_settings_data(request: Request):
             "is_router": node.node_id == hostname,
             "image_models": image_models,
             "image_port": node.image_port,
+            "stt_models": stt_models,
+            "transcription_port": node.transcription_port,
         })
 
     return {
@@ -413,7 +419,7 @@ async def dashboard_settings_update(request: Request):
     body = await request.json()
     settings = request.app.state.settings
 
-    mutable_fields = {"auto_pull", "vram_fallback", "image_generation"}
+    mutable_fields = {"auto_pull", "vram_fallback", "image_generation", "transcription"}
     updated = {}
 
     for field in mutable_fields:
@@ -2997,7 +3003,8 @@ _SETTINGS_BODY = """
 var TOGGLE_META = {
   auto_pull: {label:'Auto-Pull Models', desc:'Automatically download models to nodes when requested but not available'},
   vram_fallback: {label:'VRAM-Aware Fallback', desc:'Route to a loaded model in the same category instead of cold-loading the requested model'},
-  image_generation: {label:'Image Generation', desc:'Route mflux image generation requests to nodes with image models available'}
+  image_generation: {label:'Image Generation', desc:'Route mflux image generation requests to nodes with image models available'},
+  transcription: {label:'Transcription (STT)', desc:'Route speech-to-text requests to nodes with mlx-qwen3-asr available'}
 };
 
 var CONFIG_LABELS = {

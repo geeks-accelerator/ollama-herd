@@ -20,6 +20,8 @@ from fleet_manager.models.node import (
     ImageMetrics,
     ImageModel,
     OllamaMetrics,
+    TranscriptionMetrics,
+    TranscriptionModel,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,30 @@ def _detect_image_models() -> ImageMetrics | None:
         pass
 
     return ImageMetrics(models_available=models, generating=generating)
+
+
+def _detect_transcription_models() -> TranscriptionMetrics | None:
+    """Detect available speech-to-text models on this system."""
+    models: list[TranscriptionModel] = []
+    if shutil.which("mlx-qwen3-asr"):
+        models.append(TranscriptionModel(name="qwen3-asr", binary="mlx-qwen3-asr"))
+    if not models:
+        return None
+
+    # Check if a transcription is currently running
+    transcribing = False
+    try:
+        import psutil
+
+        for proc in psutil.process_iter(["name"]):
+            proc_name = proc.info.get("name", "") or ""
+            if "qwen3-asr" in proc_name.lower() or "mlx-qwen3-asr" in proc_name.lower():
+                transcribing = True
+                break
+    except Exception:
+        pass
+
+    return TranscriptionMetrics(models_available=models, transcribing=transcribing)
 
 
 async def collect_heartbeat(
@@ -111,6 +137,7 @@ async def collect_heartbeat(
 
     lan_ip = get_local_ip()
     image = _detect_image_models()
+    transcription = _detect_transcription_models()
 
     return HeartbeatPayload(
         node_id=node_id,
@@ -127,4 +154,5 @@ async def collect_heartbeat(
         capacity=capacity,
         agent_version=__version__,
         image=image,
+        transcription=transcription,
     )

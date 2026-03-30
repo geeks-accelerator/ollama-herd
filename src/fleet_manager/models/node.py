@@ -81,6 +81,20 @@ class ImageMetrics(BaseModel):
     generating: bool = False
 
 
+class TranscriptionModel(BaseModel):
+    """A speech-to-text model available on a node."""
+
+    name: str  # e.g. "qwen3-asr-0.6b", "qwen3-asr-1.7b"
+    binary: str  # e.g. "mlx-qwen3-asr"
+
+
+class TranscriptionMetrics(BaseModel):
+    """Speech-to-text capabilities reported by a node."""
+
+    models_available: list[TranscriptionModel] = Field(default_factory=list)
+    transcribing: bool = False
+
+
 class HeartbeatPayload(BaseModel):
     node_id: str
     arch: str = "apple_silicon"
@@ -96,6 +110,8 @@ class HeartbeatPayload(BaseModel):
     agent_version: str = ""
     image: ImageMetrics | None = None
     image_port: int = 0
+    transcription: TranscriptionMetrics | None = None
+    transcription_port: int = 0
 
 
 class HardwareProfile(BaseModel):
@@ -128,3 +144,7 @@ class NodeState(BaseModel):
     image: ImageMetrics | None = None
     # Port for image generation server on this node
     image_port: int = 0
+    # Speech-to-text capabilities
+    transcription: TranscriptionMetrics | None = None
+    # Port for transcription server on this node
+    transcription_port: int = 0

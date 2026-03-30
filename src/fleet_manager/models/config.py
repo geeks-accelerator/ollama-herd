@@ -59,6 +59,10 @@ class ServerSettings(BaseSettings):
     image_generation: bool = False  # Enable /api/generate-image endpoint
     image_timeout: float = 120.0  # Max seconds to wait for image generation
 
+    # Transcription routing
+    transcription: bool = False  # Enable /api/transcribe endpoint
+    transcription_timeout: float = 300.0  # Max seconds for transcription
+
     # Retry
     max_retries: int = 2
 
