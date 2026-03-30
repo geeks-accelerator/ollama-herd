@@ -1,6 +1,6 @@
 ---
 name: mflux-image-router
-description: mflux image generation on Apple Silicon — Z-Image-Turbo, Flux Dev, Flux Schnell routed across your device fleet. MLX-native Stable Diffusion alternative with queue management and dashboard visibility. ~7s at 512px, ~18s at 1024px. Use when the user wants to generate images locally without cloud APIs like DALL-E or Midjourney.
+description: Local image generation with mflux on Apple Silicon AI — Z-Image-Turbo, Flux Dev, Flux Schnell, and Stable Diffusion models routed across your Mac fleet. MLX-native on Mac Studio, Mac Mini, MacBook Pro. ~7s at 512px, ~18s at 1024px. Fleet-routed with queue management and dashboard visibility. No DALL-E, no Midjourney, no cloud APIs.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"art","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}

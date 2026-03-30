@@ -32,12 +32,14 @@ skills/
 ├── fleet-embeddings/          # Embeddings — batch embed across fleet
 │   └── SKILL.md
 │
-│   # Keyword-targeted skills (3) — model name as primary search term
+│   # Keyword-targeted skills (4) — specific search term as primary target
 ├── ollama-ollama-herd/        # Targets "ollama" keyword — all 4 model types
 │   └── SKILL.md
 ├── deepseek-deepseek-coder/   # Targets "deepseek" keyword — DeepSeek model family
 │   └── SKILL.md
-└── qwen-qwen3/                # Targets "qwen" keyword — Qwen model family
+├── qwen-qwen3/                # Targets "qwen" keyword — Qwen model family
+│   └── SKILL.md
+└── apple-silicon-ai/          # Targets "apple silicon", "mac studio", "mac mini" keywords
     └── SKILL.md
 ```
 
@@ -63,15 +65,16 @@ skills/
 | `mflux-image-router` | 1.0.0 | mflux Image Router — Apple Silicon Flux Image Generation Across Your Fleet | Image |
 | `fleet-embeddings` | 1.0.0 | Fleet Embeddings — nomic-embed-text, mxbai-embed Distributed for RAG | Embeddings |
 
-### Keyword-targeted skills — model name as primary search term
+### Keyword-targeted skills — specific search term as primary target
 
 | Slug | Version | ClawHub Display Name | Target Keyword |
 |------|---------|---------------------|----------------|
 | `ollama-ollama-herd` | 1.0.0 | Ollama — Herd Your Ollama LLMs Into One Smart Endpoint | "ollama" |
 | `deepseek-deepseek-coder` | 1.0.1 | DeepSeek — DeepSeek-Coder, V3, R1 on Your Local Fleet | "deepseek" |
 | `qwen-qwen3` | 1.0.1 | Qwen — Qwen3, Qwen3-Coder, Qwen3-ASR on Your Local Fleet | "qwen" |
+| `apple-silicon-ai` | 1.0.0 | Apple Silicon AI — Mac Studio, Mac Mini, MacBook Pro Local AI Fleet | "apple silicon", "mac studio", "mac mini" |
 
-All thirteen skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types (LLM, image, STT, embeddings). The difference is framing, voice, and which capability leads.
+All fourteen skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types (LLM, image, STT, embeddings). The difference is framing, voice, and which capability leads.
 
 ## ClawHub Search Rankings (as of 2026-03-30)
 
@@ -246,6 +249,12 @@ clawhub --workdir skills --registry https://clawhub.ai publish qwen-qwen3 \
   --name "Qwen — Qwen3, Qwen3-Coder, Qwen3-ASR on Your Local Fleet" \
   --version 1.0.1 \
   --tags "qwen,qwen3,qwen3-coder,qwen-asr,qwen2.5,local-llm,ollama,fleet-routing,apple-silicon,speech-to-text,coding"
+
+clawhub --workdir skills --registry https://clawhub.ai publish apple-silicon-ai \
+  --slug apple-silicon-ai \
+  --name "Apple Silicon AI — Mac Studio, Mac Mini, MacBook Pro Local AI Fleet" \
+  --version 1.0.0 \
+  --tags "apple-silicon,mac-studio,mac-mini,macbook-pro,mac-pro,m4-max,m4-ultra,m3-max,m2-ultra,local-ai,self-hosted,ollama,llm,image-generation,speech-to-text,embeddings"
 ```
 
 ### Other Registries

@@ -1,6 +1,6 @@
 ---
 name: ollama-herd
-description: Ollama fleet router for Llama, Qwen, DeepSeek, Phi, and Mistral — plus mflux image generation, Qwen3-ASR transcription, and embeddings. Multimodal inference routing across Apple Silicon devices with 7-signal scoring, queue management, real-time dashboard, and health monitoring. Use when the user asks about their local LLM fleet, inference routing, node status, or fleet performance.
+description: Ollama multimodal model router for Llama, Qwen, DeepSeek, Phi, and Mistral — plus mflux image generation, speech-to-text, and embeddings. Self-hosted local AI on Apple Silicon with 7-signal scoring, queue management, real-time dashboard, and health monitoring. Routes LLM, image, STT, and embedding requests across Mac Studio, Mac Mini, MacBook Pro. Use when the user asks about their local LLM fleet, inference routing, node status, or fleet performance.
 version: 1.1.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
