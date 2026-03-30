@@ -13,7 +13,7 @@ uv run herd-node --router-url http://localhost:11435  # explicit router URL
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 342 tests (~5s)
+uv run pytest                    # run all 359 tests (~5s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run pytest -v                 # verbose output
@@ -54,6 +54,8 @@ Single Python package (`fleet_manager`), two CLI entry points:
 | `node/capacity_learner.py` | 168-slot behavioral model, availability score, dynamic memory ceiling |
 | `node/meeting_detector.py` | macOS camera/microphone detection → hard pause |
 | `node/app_fingerprint.py` | Resource signature classification (idle/light/moderate/heavy/intensive) |
+| `node/image_server.py` | FastAPI wrapper for mflux CLI — `/api/generate-image` on port 11436 |
+| `server/routes/image_compat.py` | `/api/generate-image` — routes mflux requests to best node via queue |
 | `common/discovery.py` | AsyncZeroconf mDNS advertise + browse |
 | `common/logging_config.py` | JSONL structured logging to `~/.fleet-manager/logs/` |
 
@@ -90,6 +92,9 @@ All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix 
 | [`docs/competitive-landscape.md`](docs/competitive-landscape.md) | 20+ competing projects analyzed, feature comparison matrix |
 | [`docs/skill-publishing-strategy.md`](docs/skill-publishing-strategy.md) | Multi-skill publishing approach for ClawHub marketplace |
 | [`docs/skill-marketplace-analysis.md`](docs/skill-marketplace-analysis.md) | ClawHub competitive analysis, keyword gaps, tag strategy |
+| [`docs/guides/image-generation.md`](docs/guides/image-generation.md) | Image generation routing setup, API reference, integration examples |
+| [`docs/research/local-fleet-economics.md`](docs/research/local-fleet-economics.md) | Economics of local AI fleets vs cloud APIs |
+| [`docs/research/mflux-image-generation.md`](docs/research/mflux-image-generation.md) | mflux setup, architecture, why it bypasses/integrates with Herd |
 
 ## Design Principles
 
@@ -99,7 +104,7 @@ These principles shape every decision in the codebase. They're non-negotiable.
 Each node is sovereign. It runs its own Ollama, manages its own models, learns its own capacity patterns, and works fine standalone without the router. The router coordinates but never controls. Nodes join and leave freely via mDNS — no central config file lists them. If a node loses connectivity, it keeps serving local inference. That's sovereignty, not dependency.
 
 ### Two-person scale as a forcing function
-If it requires a manual, it's too complex. Two CLI commands (`herd`, `herd-node`), zero config files, zero Docker, zero Kubernetes. 342 tests run in under 5 seconds. The entire codebase fits in one person's head. Every time there's a choice between a "proper" distributed systems solution (service mesh, etcd, gRPC) and the simple thing (HTTP heartbeats, SQLite, mDNS) — choose the simple thing. Kill complexity before it kills you.
+If it requires a manual, it's too complex. Two CLI commands (`herd`, `herd-node`), zero config files, zero Docker, zero Kubernetes. 359 tests run in under 5 seconds. The entire codebase fits in one person's head. Every time there's a choice between a "proper" distributed systems solution (service mesh, etcd, gRPC) and the simple thing (HTTP heartbeats, SQLite, mDNS) — choose the simple thing. Kill complexity before it kills you.
 
 ### Human-readable state everywhere
 No opaque binary formats. JSONL logs you can `grep`. SQLite you can query with standard tools. Capacity learner state persisted as JSON files. Heartbeats are plain JSON. All config is env vars. A human can run `sqlite3 ~/.fleet-manager/latency.db "SELECT * FROM request_traces LIMIT 5"` and instantly understand what happened. Debuggability is a feature.

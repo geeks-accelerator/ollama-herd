@@ -182,6 +182,10 @@ Client → POST /api/generate-image → Router (:11435)
 
 ## Monitoring
 
+### Dashboard visibility
+
+Image requests flow through the same queue manager as LLM requests. Open `http://localhost:11435/dashboard` and you'll see image queues in the **Request Queues** section alongside LLM queues — with pending, in-flight, done, and failed counters.
+
 ### Image generation stats
 
 ```bash
