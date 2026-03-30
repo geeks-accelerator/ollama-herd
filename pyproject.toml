@@ -1,14 +1,14 @@
 [project]
 name = "ollama-herd"
 version = "0.2.0"
-description = "Smart inference router that herds your Ollama instances into one endpoint"
+description = "Smart multimodal router — LLM inference, image generation, speech-to-text, and embeddings across your device fleet"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
     { name = "Geeks Accelerator", email = "hello@geeks-accelerator.com" },
 ]
-keywords = ["ollama", "llm", "inference", "router", "load-balancer", "mDNS", "openai-compatible", "fleet"]
+keywords = ["ollama", "llm", "inference", "router", "load-balancer", "mDNS", "openai-compatible", "fleet", "multimodal", "speech-to-text", "image-generation", "embeddings"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

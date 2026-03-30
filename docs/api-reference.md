@@ -359,6 +359,85 @@ Receives heartbeats from node agents. Internal endpoint — not intended for ext
 
 ---
 
+## Image Generation
+
+### `POST /api/generate-image`
+
+Generate an image on the best available node with mflux. Requires `FLEET_IMAGE_GENERATION=true`.
+
+**Request body (JSON):**
+
+```json
+{
+  "model": "z-image-turbo",
+  "prompt": "a cat sitting on a laptop",
+  "width": 1024,
+  "height": 1024,
+  "steps": 4,
+  "quantize": 8,
+  "seed": 42,
+  "negative_prompt": ""
+}
+```
+
+**Response:** Raw PNG bytes with `Content-Type: image/png`.
+
+**Response headers:**
+
+| Header | Description |
+|--------|-------------|
+| `X-Fleet-Node` | Node that generated the image |
+| `X-Fleet-Model` | Image model used |
+| `X-Generation-Time` | Generation time in ms |
+
+**Error responses:** `400` (missing fields), `404` (model not available), `502` (generation failed), `503` (disabled).
+
+---
+
+## Transcription (Speech-to-Text)
+
+### `POST /api/transcribe`
+
+Transcribe an audio file on the best available node with Qwen3-ASR. Requires `FLEET_TRANSCRIPTION=true`.
+
+**Request:** `multipart/form-data` with `audio` file field.
+
+```bash
+curl http://localhost:11435/api/transcribe -F "audio=@recording.wav"
+```
+
+**Supported formats:** WAV, MP3, M4A, FLAC, MP4, OGG (any format FFmpeg supports).
+
+**Response:**
+
+```json
+{
+  "text": "Full transcription text...",
+  "language": "English",
+  "chunks": [
+    {
+      "text": "Hello, this is a test.",
+      "start": 0.0,
+      "end": 2.5,
+      "chunk_index": 0,
+      "language": "English"
+    }
+  ]
+}
+```
+
+**Response headers:**
+
+| Header | Description |
+|--------|-------------|
+| `X-Fleet-Node` | Node that transcribed the audio |
+| `X-Fleet-Model` | Transcription model used |
+| `X-Transcription-Time` | Processing time in ms |
+
+**Error responses:** `404` (no STT models available), `502` (transcription failed), `503` (disabled).
+
+---
+
 ## Dashboard
 
 ### HTML Pages

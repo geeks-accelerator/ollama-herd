@@ -56,6 +56,7 @@ Single Python package (`fleet_manager`), two CLI entry points:
 | `node/app_fingerprint.py` | Resource signature classification (idle/light/moderate/heavy/intensive) |
 | `node/image_server.py` | FastAPI wrapper for mflux CLI — `/api/generate-image` on port 11436 |
 | `server/routes/image_compat.py` | `/api/generate-image` — routes mflux requests to best node via queue |
+| `server/routes/transcription_compat.py` | `/api/transcribe` — routes speech-to-text requests to best node via Qwen3-ASR |
 | `common/discovery.py` | AsyncZeroconf mDNS advertise + browse |
 | `common/logging_config.py` | JSONL structured logging to `~/.fleet-manager/logs/` |
 
@@ -93,6 +94,9 @@ All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix 
 | [`docs/skill-publishing-strategy.md`](docs/skill-publishing-strategy.md) | Multi-skill publishing approach for ClawHub marketplace |
 | [`docs/skill-marketplace-analysis.md`](docs/skill-marketplace-analysis.md) | ClawHub competitive analysis, keyword gaps, tag strategy |
 | [`docs/guides/image-generation.md`](docs/guides/image-generation.md) | Image generation routing setup, API reference, integration examples |
+| [`docs/guides/integrate-z-image-turbo.md`](docs/guides/integrate-z-image-turbo.md) | Z-Image-Turbo integration guide for other projects |
+| [`docs/guides/request-tagging-analytics.md`](docs/guides/request-tagging-analytics.md) | Request tagging for per-app analytics and insights |
+| [`docs/guides/agent-setup-guide.md`](docs/guides/agent-setup-guide.md) | Complete agent setup for all 4 model types (LLM, image, STT, embeddings) |
 | [`docs/research/local-fleet-economics.md`](docs/research/local-fleet-economics.md) | Economics of local AI fleets vs cloud APIs |
 | [`docs/research/mflux-image-generation.md`](docs/research/mflux-image-generation.md) | mflux setup, architecture, why it bypasses/integrates with Herd |
 

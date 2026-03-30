@@ -98,6 +98,20 @@ Pre-warm proactively loads models on runner-up nodes before they're needed.
 | `FLEET_MAX_RETRIES` | `2` | Max retry attempts on node failure (before first chunk) |
 | `FLEET_STALE_TIMEOUT` | `600.0` | Seconds before in-flight requests are considered zombied and reaped (10 min) |
 
+### Image Generation
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_IMAGE_GENERATION` | `false` | Enable `/api/generate-image` endpoint for mflux routing |
+| `FLEET_IMAGE_TIMEOUT` | `120.0` | Max seconds to wait for image generation |
+
+### Transcription (Speech-to-Text)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_TRANSCRIPTION` | `false` | Enable `/api/transcribe` endpoint for Qwen3-ASR routing |
+| `FLEET_TRANSCRIPTION_TIMEOUT` | `300.0` | Max seconds to wait for transcription |
+
 ### mDNS Discovery
 
 | Variable | Default | Description |
