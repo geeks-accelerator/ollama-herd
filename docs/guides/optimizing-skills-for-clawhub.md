@@ -1,6 +1,6 @@
 # Optimizing Skills for ClawHub
 
-A practical guide for getting Ollama Herd skills discovered, installed, and passing security scans on [ClawHub](https://clawhub.ai). Based on publishing 10 skills and conducting keyword ranking analysis on 2026-03-30.
+A practical guide for getting Ollama Herd skills discovered, installed, and passing security scans on [ClawHub](https://clawhub.ai). Based on publishing 13 skills and conducting keyword ranking analysis on 2026-03-30.
 
 > **Skills reference:** [skills/README.md](../../skills/README.md) — current descriptions, tags, sizes, publish commands, and security scan status.
 
@@ -59,9 +59,9 @@ description: Route Llama, Qwen, DeepSeek, Phi, and Mistral across your device fl
 | **STT** | Qwen ASR, Whisper, MLX Whisper | local-transcription, ollama-herd |
 | **Embedding** | nomic-embed-text, mxbai-embed, snowflake-arctic-embed | fleet-embeddings, ollama-herd |
 
-## Lesson 3: Ten skills, four modalities
+## Lesson 3: Thirteen skills, four modalities
 
-We publish 10 skills with different voices and keyword targets:
+We publish 13 skills with different voices and keyword targets:
 
 | Skill | Primary keyword target | Modality focus |
 |-------|----------------------|---------------|
@@ -75,6 +75,9 @@ We publish 10 skills with different voices and keyword targets:
 | `local-transcription` | "transcription", "qwen asr", "speech to text" | STT |
 | `mflux-image-router` | "mflux", "image generation", "apple silicon" | Image |
 | `fleet-embeddings` | "embeddings", "rag", "vector search" | Embeddings |
+| `ollama-ollama-herd` | "ollama" (doubled keyword) | All 4 |
+| `deepseek-deepseek-coder` | "deepseek", "deepseek coder" (doubled keyword) | LLM |
+| `qwen-qwen3` | "qwen", "qwen3" (doubled keyword) | LLM + STT |
 
 Each skill is fully self-contained. The primary modality gets detailed examples; the other 3 get brief "also available" sections with one example each. Every skill links to the full [Agent Setup Guide](./agent-setup-guide.md).
 
@@ -86,7 +89,7 @@ ClawHub runs two security scans:
 
 ### What triggered flags for us
 
-**5 of 7 original skills flagged as Suspicious** (v1.0.0):
+**5 of 7 original core skills flagged as Suspicious** (v1.0.0):
 1. **Undeclared binaries** — SKILL.md referenced `python3`, `sqlite3`, `pip` but metadata only declared `curl`
 2. **Undeclared config paths** — SKILL.md accessed `~/.fleet-manager/latency.db` without declaring it
 3. **Privacy-sensitive references** — "meeting detection" (camera/mic access) and "app fingerprinting" triggered privacy flags
@@ -105,9 +108,9 @@ ClawHub runs two security scans:
 
 | Rating | Count | Skills |
 |--------|-------|--------|
-| Benign | 6 | ollama-herd, ollama-manager, gpu-cluster-manager, ai-devops-toolkit, + new skills |
-| Suspicious | 1 | distributed-inference (privacy references remain) |
-| Pending | 3 | New skills awaiting scan |
+| Benign | 4 | ollama-herd, ollama-manager, gpu-cluster-manager, ai-devops-toolkit |
+| Suspicious | 3 | local-llm-router, ollama-load-balancer, distributed-inference |
+| Pending | 6 | All modality + keyword-targeted skills awaiting first scan |
 
 ### What to avoid in SKILL.md
 
@@ -188,29 +191,38 @@ Each line: `slug  display-name  (score)`
 
 | Keyword | Skill | Score | Competition |
 |---------|-------|-------|------------|
-| "gpu cluster" | gpu-cluster-manager | 3.268 | #1, next at 1.009 |
-| "embeddings" | fleet-embeddings | 2.815 | #3, behind generic skills |
-| "mflux" | mflux-image-router | 2.860 | #2, behind generic mflux skill |
+| "gpu cluster" | gpu-cluster-manager | 3.266 | #1, next at 1.009 |
+| "load balancer" | ollama-load-balancer | 3.251 | #1, next competitor is nginx at 0.913 |
+| "distributed inference" | distributed-inference | 3.132 | #1, next at 0.847 |
+| "inference routing" | local-llm-router | 1.711 | #1, next at 0.992 |
+| "ollama herd" | ollama-ollama-herd | 2.875 | #1, owned term |
+| "deepseek coder" | deepseek-deepseek-coder | 2.894 | #1, next at 1.480 |
 
-### Keywords we should own but don't
+### Keywords we're competitive but not #1
 
-| Keyword | Why we miss | Fix |
-|---------|------------|-----|
-| "ollama" (3.556 leader) | Our titles say "Ollama Herd" not "Ollama" | Lead title with "Ollama" |
-| "local llm" (3.251 leader) | `local-llm-router` not ranking | Optimize description |
-| "inference routing" | No skill title leads with this | Add to display name |
-| "qwen asr" (3.419 leader) | `local-transcription` doesn't lead with "Qwen ASR" | Rename display title |
-| "transcription" (3.434 leader) | Azure skill dominates | Lead with "Transcription" |
-| "deepseek" (3.492 leader) | Only in tags, not in any title/description | Add to description |
+| Keyword | Our rank | Score | Leader |
+|---------|---------|-------|--------|
+| "mflux" | #2 | 2.869 | MFlux Skill (2.943) — 0.07 gap |
+| "qwen" | #3 | 2.862 | qwen-image-gen (3.057) |
+| "embeddings" | #3 | 2.833 | AIML Embeddings (3.404) |
+| "qwen3" | #4 | 2.867 | Qwen3 Audio (3.333) |
 
-### Exclusively uncontested keywords
+### Keywords we don't crack top 8
+
+| Keyword | Leader (score) | Why | Fix |
+|---------|---------------|-----|-----|
+| "ollama" | ollama-local (3.556) | 20+ skills with "ollama" slug | Saturated — accept or add more skills |
+| "deepseek" | deepseek-reasoner-lite (3.492) | 8+ skills with exact match | Saturated — target compound terms instead |
+| "speech to text" | text-to-speech-heygen (3.480) | Our skill is "transcription" not "speech-to-text" | Rename or add skill |
+| "whisper" | openai-whisper (3.908) | 8+ whisper-specific skills | Saturated — don't compete |
+| "image generation" | best-image-generation (3.680) | Cloud-focused competitors | Different category — stay with "mflux" |
+
+### Uncontested keywords
 
 | Keyword | Status | Opportunity |
 |---------|--------|-------------|
-| "apple silicon ai" | No relevant results | Create skill or add to titles |
-| "fleet transcription" | 0 results | We should own this |
-| "multimodal router" | Only generic routers | We're the only multimodal fleet router |
-| "z-image-turbo" | Only Alicloud skill | Our mflux skill should rank |
+| "apple silicon ai" | No relevant results | High — add to titles |
+| "multimodal router" | Only generic routers | High — we're the only multimodal fleet router |
 
 ## Lesson 8: Publishing workflow
 
@@ -256,23 +268,38 @@ Before publishing a skill:
 - [ ] "Also available" section mentions other 3 model types
 - [ ] Links to Agent Setup Guide for full documentation
 
-## Results baseline (v1.2.0 — published 2026-03-30)
+## Results baseline (13 skills — 2026-03-30)
 
-### Keywords we rank for
+### #1 rankings (we own these keywords)
+
+| Keyword | Skill | Score |
+|---------|-------|-------|
+| "load balancer" | ollama-load-balancer | 3.251 |
+| "gpu cluster" | gpu-cluster-manager | 3.266 |
+| "inference routing" | local-llm-router | 1.711 |
+| "distributed inference" | distributed-inference | 3.132 |
+| "ollama herd" | ollama-ollama-herd | 2.875 |
+| "deepseek coder" | deepseek-deepseek-coder | 2.894 |
+
+### Top 5 rankings
 
 | Keyword | Skill | Rank | Score |
 |---------|-------|------|-------|
-| "gpu cluster" | gpu-cluster-manager | #1 | 3.268 |
-| "embeddings" | fleet-embeddings | #3 | 2.815 |
-| "mflux" | mflux-image-router | #2 | 2.860 |
+| "mflux" | mflux-image-router | #2 | 2.869 |
+| "qwen" | qwen-qwen3 | #3 | 2.862 |
+| "embeddings" | fleet-embeddings | #3 | 2.833 |
+| "qwen3" | qwen-qwen3 | #4 | 2.867 |
+| "qwen asr" | qwen-qwen3 | #5 | 1.452 |
+| "llama" | ollama-load-balancer | #4 | 1.696 |
+| "phi" | ollama-manager | #1 (niche) | 1.415 |
+| "mistral" | ollama-manager | #1 (niche) | 1.415 |
 
-### Keywords to improve (post-optimization targets)
+### Keywords to improve
 
 | Keyword | Target rank | Current | Blocker |
 |---------|------------|---------|---------|
-| "ollama" | Top 4 | Not ranked | Display name doesn't lead with "Ollama" |
-| "local llm" | Top 3 | Not ranked | Description doesn't match search intent |
-| "qwen asr" | Top 3 | Not ranked | Display name is "Local Transcription" not "Qwen ASR" |
-| "deepseek" | Top 5 | Not ranked | Only in tags |
-| "inference routing" | Top 3 | Not ranked | Not in any display name |
-| "multimodal router" | #1 | Not ranked | Nobody else is multimodal — should be easy |
+| "ollama" | Top 4 | Not ranked | 20+ skills with "ollama" slug — saturated keyword |
+| "deepseek" | Top 5 | Not ranked | 8+ skills with "deepseek" slug prefix |
+| "speech to text" | Top 4 | Not ranked | Our skill named "transcription" not "speech-to-text" |
+| "multimodal router" | #1 | Not ranked | Needs dedicated skill — nobody else is multimodal |
+| "apple silicon ai" | #1 | Not ranked | Unclaimed keyword — needs title mention |
