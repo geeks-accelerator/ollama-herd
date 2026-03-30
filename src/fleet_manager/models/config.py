@@ -55,6 +55,10 @@ class ServerSettings(BaseSettings):
     # Seconds before in-flight requests are considered zombied (15 min default)
     stale_timeout: float = 600.0
 
+    # Image generation routing
+    image_generation: bool = False  # Enable /api/generate-image endpoint
+    image_timeout: float = 120.0  # Max seconds to wait for image generation
+
     # Retry
     max_retries: int = 2
 

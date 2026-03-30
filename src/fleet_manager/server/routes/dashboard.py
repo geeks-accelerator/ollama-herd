@@ -333,6 +333,7 @@ async def dashboard_settings_data(request: Request):
         "toggles": {
             "auto_pull": settings.auto_pull,
             "vram_fallback": settings.vram_fallback,
+            "image_generation": settings.image_generation,
         },
         "server": {
             "host": hostname if settings.host == "0.0.0.0" else settings.host,
@@ -384,6 +385,9 @@ async def dashboard_settings_data(request: Request):
         models_count = 0
         if node.ollama:
             models_count = len(node.ollama.models_loaded)
+        image_models = []
+        if node.image:
+            image_models = [m.name for m in node.image.models_available]
         nodes_data.append({
             "node_id": node.node_id,
             "status": node.status.value,
@@ -391,6 +395,8 @@ async def dashboard_settings_data(request: Request):
             "ip": node.ollama_base_url,
             "models_loaded_count": models_count,
             "is_router": node.node_id == hostname,
+            "image_models": image_models,
+            "image_port": node.image_port,
         })
 
     return {
@@ -407,7 +413,7 @@ async def dashboard_settings_update(request: Request):
     body = await request.json()
     settings = request.app.state.settings
 
-    mutable_fields = {"auto_pull", "vram_fallback"}
+    mutable_fields = {"auto_pull", "vram_fallback", "image_generation"}
     updated = {}
 
     for field in mutable_fields:
@@ -2958,7 +2964,8 @@ _SETTINGS_BODY = """
 <script>
 var TOGGLE_META = {
   auto_pull: {label:'Auto-Pull Models', desc:'Automatically download models to nodes when requested but not available'},
-  vram_fallback: {label:'VRAM-Aware Fallback', desc:'Route to a loaded model in the same category instead of cold-loading the requested model'}
+  vram_fallback: {label:'VRAM-Aware Fallback', desc:'Route to a loaded model in the same category instead of cold-loading the requested model'},
+  image_generation: {label:'Image Generation', desc:'Route mflux image generation requests to nodes with image models available'}
 };
 
 var CONFIG_LABELS = {

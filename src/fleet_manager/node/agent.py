@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import shutil
 import signal
@@ -37,6 +38,8 @@ class NodeAgent:
         self._capacity_learner = None
         self._ollama_process: subprocess.Popen | None = None
         self._ollama_proxy: OllamaProxy | None = None
+        self._image_server_task: asyncio.Task | None = None
+        self._image_port: int = 0
 
     async def _ensure_ollama(self) -> bool:
         """Check if Ollama is running; if not, try to start it.
@@ -133,6 +136,9 @@ class NodeAgent:
         # Auto-start LAN proxy if Ollama is only on localhost
         await self._ensure_lan_proxy()
 
+        # Start image generation server if mflux is available
+        await self._ensure_image_server()
+
         # Install signal handlers for graceful drain
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -157,6 +163,8 @@ class NodeAgent:
                     self.settings.ollama_host,
                     capacity_learner=self._capacity_learner,
                 )
+                if self._image_port:
+                    payload.image_port = self._image_port
                 await self._send_heartbeat(payload)
                 self._ollama_failures = 0
                 heartbeat_count += 1
@@ -243,6 +251,46 @@ class NodeAgent:
         else:
             self._ollama_proxy = None
 
+    async def _ensure_image_server(self):
+        """Start a lightweight HTTP server for image generation if mflux is available."""
+        from fleet_manager.node.collector import _detect_image_models
+
+        image_metrics = _detect_image_models()
+        if not image_metrics or not image_metrics.models_available:
+            logger.debug("No mflux binaries found, skipping image server")
+            return
+
+        from urllib.parse import urlparse
+
+        parsed = urlparse(self.settings.ollama_host)
+        ollama_port = parsed.port or 11434
+        image_port = ollama_port + 2  # 11434 → 11436
+
+        try:
+            import uvicorn
+            from fastapi import FastAPI
+
+            from fleet_manager.node.image_server import router as image_router
+
+            app = FastAPI(title="Herd Image Server")
+            app.include_router(image_router)
+
+            config = uvicorn.Config(
+                app, host="0.0.0.0", port=image_port, log_level="warning"
+            )
+            server = uvicorn.Server(config)
+            self._image_server_task = asyncio.create_task(server.serve())
+            self._image_port = image_port
+
+            models = ", ".join(m.name for m in image_metrics.models_available)
+            logger.info(
+                f"Image server started on 0.0.0.0:{image_port} "
+                f"(models: {models})"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to start image server: {repr(e)}")
+            self._image_port = 0
+
     async def _send_heartbeat(self, payload):
         resp = await self._http.post(
             f"{self.router_url}/heartbeat",
@@ -266,6 +314,10 @@ class NodeAgent:
             except Exception as e:
                 logger.warning(f"Failed to send drain signal to router: {e}")
         self._running = False
+        if self._image_server_task:
+            self._image_server_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._image_server_task
         if self._ollama_proxy:
             await self._ollama_proxy.stop()
         await self.ollama.close()

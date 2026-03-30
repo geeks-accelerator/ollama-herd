@@ -160,7 +160,7 @@ class StreamingProxy:
                 start_time,
                 first_token_time,
                 "failed",
-                error_message=f"{type(e).__name__}: {e}" if str(e) else f"{type(e).__name__}: {repr(e)}",
+                error_message=str(e) or repr(e),
             )
             raise
         finally:
@@ -300,7 +300,7 @@ class StreamingProxy:
                         start_time,
                         first_token_time,
                         "failed",
-                        error_message=f"{type(e).__name__}: {e}" if str(e) else f"{type(e).__name__}: {repr(e)}",
+                        error_message=str(e) or repr(e),
                     )
                     if first_chunk_sent:
                         logger.error(
@@ -332,7 +332,7 @@ class StreamingProxy:
                     start_time,
                     None,
                     "retried",
-                    error_message=f"{type(e).__name__}: {e}" if str(e) else f"{type(e).__name__}: {repr(e)}",
+                    error_message=str(e) or repr(e),
                 )
 
                 if attempt > max_retries:
@@ -499,6 +499,33 @@ class StreamingProxy:
                 f"Delete {model} on {node_id} error: {type(e).__name__}: {e}"
             )
             return False
+
+    async def generate_image_on_node(
+        self, node_id: str, body: dict, timeout: float = 120.0
+    ) -> bytes:
+        """Proxy an image generation request to a node's image server.
+
+        Returns raw PNG bytes on success, raises on failure.
+        """
+        node = self._registry.get_node(node_id)
+        if not node:
+            raise ValueError(f"Node {node_id} not found")
+
+        # Build the image server URL from the node's Ollama URL + image port
+        from urllib.parse import urlparse
+
+        parsed = urlparse(node.ollama_base_url)
+        host = parsed.hostname or "localhost"
+        image_port = node.image_port or 11436
+        image_url = f"http://{host}:{image_port}"
+
+        async with httpx.AsyncClient(
+            base_url=image_url,
+            timeout=httpx.Timeout(connect=10.0, read=timeout, write=10.0, pool=10.0),
+        ) as client:
+            resp = await client.post("/api/generate-image", json=body)
+            resp.raise_for_status()
+            return resp.content
 
     async def query_node_models(self, node_id: str) -> list[dict]:
         """Query a node's Ollama /api/tags for model details including disk size."""

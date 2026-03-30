@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from urllib.parse import urlparse
 
 from fleet_manager import __version__
@@ -13,7 +14,13 @@ from fleet_manager.common.system_metrics import (
     get_local_ip,
     get_memory_metrics,
 )
-from fleet_manager.models.node import CapacityMetrics, HeartbeatPayload, OllamaMetrics
+from fleet_manager.models.node import (
+    CapacityMetrics,
+    HeartbeatPayload,
+    ImageMetrics,
+    ImageModel,
+    OllamaMetrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +32,38 @@ def _make_lan_reachable_url(ollama_host: str, lan_ip: str) -> str:
         port = parsed.port or 11434
         return f"http://{lan_ip}:{port}"
     return ollama_host
+
+
+# Known mflux binaries and their model names
+_MFLUX_BINARIES = [
+    ("mflux-generate-z-image-turbo", "z-image-turbo"),
+    ("mflux-generate", "flux-dev"),
+]
+
+
+def _detect_image_models() -> ImageMetrics | None:
+    """Detect available mflux image generation models on this system."""
+    models: list[ImageModel] = []
+    for binary, name in _MFLUX_BINARIES:
+        if shutil.which(binary):
+            models.append(ImageModel(name=name, binary=binary))
+    if not models:
+        return None
+
+    # Check if any mflux process is currently running
+    generating = False
+    try:
+        import psutil
+
+        for proc in psutil.process_iter(["name"]):
+            proc_name = proc.info.get("name", "") or ""
+            if "mflux" in proc_name.lower():
+                generating = True
+                break
+    except Exception:
+        pass
+
+    return ImageMetrics(models_available=models, generating=generating)
 
 
 async def collect_heartbeat(
@@ -71,6 +110,7 @@ async def collect_heartbeat(
         )
 
     lan_ip = get_local_ip()
+    image = _detect_image_models()
 
     return HeartbeatPayload(
         node_id=node_id,
@@ -86,4 +126,5 @@ async def collect_heartbeat(
         lan_ip=lan_ip,
         capacity=capacity,
         agent_version=__version__,
+        image=image,
     )

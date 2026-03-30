@@ -67,6 +67,20 @@ class CapacityMetrics(BaseModel):
     days_observed: int = 0
 
 
+class ImageModel(BaseModel):
+    """An image generation model available on a node."""
+
+    name: str  # e.g. "z-image-turbo", "flux-dev"
+    binary: str  # e.g. "mflux-generate-z-image-turbo"
+
+
+class ImageMetrics(BaseModel):
+    """Image generation capabilities reported by a node."""
+
+    models_available: list[ImageModel] = Field(default_factory=list)
+    generating: bool = False
+
+
 class HeartbeatPayload(BaseModel):
     node_id: str
     arch: str = "apple_silicon"
@@ -80,6 +94,8 @@ class HeartbeatPayload(BaseModel):
     draining: bool = False
     capacity: CapacityMetrics | None = None
     agent_version: str = ""
+    image: ImageMetrics | None = None
+    image_port: int = 0
 
 
 class HardwareProfile(BaseModel):
@@ -108,3 +124,7 @@ class NodeState(BaseModel):
     capacity: CapacityMetrics | None = None
     # Software version reported by the node agent
     agent_version: str = ""
+    # Image generation capabilities
+    image: ImageMetrics | None = None
+    # Port for image generation server on this node
+    image_port: int = 0
