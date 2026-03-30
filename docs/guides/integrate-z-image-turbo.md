@@ -138,7 +138,7 @@ def generate_image(
     width: int = 1024,
     height: int = 1024,
     steps: int = 4,
-    seed: int | None = None,
+    seed=None,
 ) -> bytes:
     """Generate an image via Ollama Herd and return PNG bytes."""
     body = {
@@ -230,9 +230,11 @@ async function generateImage(prompt, width = 1024, height = 1024) {
   return Buffer.from(await resp.arrayBuffer());
 }
 
-// Usage
-const png = await generateImage("a robot painting a landscape");
-fs.writeFileSync("output.png", png);
+// Usage (requires top-level await in ES modules, or wrap in async IIFE)
+(async () => {
+  const png = await generateImage("a robot painting a landscape");
+  fs.writeFileSync("output.png", png);
+})();
 ```
 
 ### curl
