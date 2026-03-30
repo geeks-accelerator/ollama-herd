@@ -8,7 +8,7 @@ metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"op
 
 # Ollama Herd Fleet Manager
 
-You are managing an Ollama Herd fleet — a smart inference router that distributes LLM requests across multiple Ollama instances. It scores nodes on 7 signals (thermal state, memory fit, queue depth, latency history, role affinity, availability trend, context fit) and routes each request to the optimal device.
+You are managing an Ollama Herd fleet — a smart multimodal router that distributes AI workloads across multiple devices. It handles 4 model types: LLM inference (Ollama), image generation (mflux), speech-to-text (Qwen3-ASR), and embeddings. It scores nodes on 7 signals (thermal state, memory fit, queue depth, latency history, role affinity, availability trend, context fit) and routes each request to the optimal device.
 
 ## Install
 
