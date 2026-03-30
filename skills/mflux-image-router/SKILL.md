@@ -1,6 +1,6 @@
 ---
 name: mflux-image-router
-description: Generate images with mflux (MLX-native Flux) across your Apple Silicon fleet. Fleet-routed image generation with queue management, dashboard visibility, and automatic node selection. Models include Z-Image-Turbo (~7s at 512px), Flux Dev, Flux Schnell. Use when the user wants to generate images locally without cloud APIs.
+description: mflux image generation on Apple Silicon — Z-Image-Turbo, Flux Dev, Flux Schnell routed across your device fleet. MLX-native Stable Diffusion alternative with queue management and dashboard visibility. ~7s at 512px, ~18s at 1024px. Use when the user wants to generate images locally without cloud APIs like DALL-E or Midjourney.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"art","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}

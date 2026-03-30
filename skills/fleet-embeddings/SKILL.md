@@ -1,6 +1,6 @@
 ---
 name: fleet-embeddings
-description: Generate embeddings across your device fleet for RAG, semantic search, and similarity matching. Fleet-routed via Ollama embedding models with automatic load balancing. Batch embed thousands of documents across nodes instead of bottlenecking on one machine. Use when the user needs to create embeddings, build a knowledge base, or set up semantic search.
+description: Embeddings with nomic-embed-text, mxbai-embed, and snowflake-arctic-embed across your device fleet. Fleet-routed via Ollama for RAG, semantic search, and vector similarity. Batch embed thousands of documents across nodes instead of bottlenecking on one machine. Use when the user needs to create embeddings, build a knowledge base, or set up semantic search.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"search","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}

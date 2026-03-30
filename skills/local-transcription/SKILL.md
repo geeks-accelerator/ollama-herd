@@ -1,6 +1,6 @@
 ---
 name: local-transcription
-description: Transcribe audio files locally using Qwen3-ASR across your device fleet. Fleet-routed speech-to-text with queue management, dashboard visibility, and automatic node selection. Supports WAV, MP3, M4A, FLAC. Use when the user wants to transcribe meetings, voice notes, podcasts, or any audio file without sending data to cloud APIs.
+description: Qwen ASR transcription — local speech-to-text routed across your device fleet. Transcribe meetings, voice notes, podcasts, and audio files without cloud APIs. Fleet-routed with queue management, dashboard visibility, and automatic node selection. Supports WAV, MP3, M4A, FLAC. Whisper alternative running on Apple Silicon via MLX.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"microphone","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}

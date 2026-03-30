@@ -1,6 +1,6 @@
 ---
 name: ollama-load-balancer
-description: Load balance Ollama across multiple machines with auto-discovery, health checks, queue management, and zero configuration. Automatic failover, retry on node failure, zombie request cleanup, and real-time monitoring dashboard. Use when the user needs high availability for Ollama, wants to distribute inference load, or needs operational visibility into their Ollama fleet.
+description: Ollama load balancer for Llama, Qwen, DeepSeek, and Mistral inference across multiple machines. Auto-discovery via mDNS, health checks, queue management, automatic failover, retry on node failure, and zombie request cleanup. Zero configuration. Use when the user needs high availability for Ollama or wants to distribute inference load across devices.
 version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"scales","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}

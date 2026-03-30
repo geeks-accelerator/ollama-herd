@@ -1,6 +1,6 @@
 ---
 name: gpu-cluster-manager
-description: Turn your spare GPUs into one inference endpoint. Auto-discovers machines on your network, routes requests to the best available device, learns when your machines are free, and pauses during meetings. Zero config, zero Docker — pip install and two commands. Use when the user wants to use multiple machines for local AI inference, manage a home lab GPU cluster, or combine Apple Silicon devices into a fleet.
+description: GPU cluster manager for Apple Silicon — run Llama, Qwen, DeepSeek, and Phi across your Mac fleet with one endpoint. Auto-discovers machines via mDNS, routes to the best device, manages queues. Zero config, zero Docker. Use when the user wants to combine spare GPUs into a home lab AI cluster or manage multiple Apple Silicon devices for local inference.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"desktop","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
