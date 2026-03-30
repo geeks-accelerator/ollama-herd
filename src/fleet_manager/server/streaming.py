@@ -500,6 +500,41 @@ class StreamingProxy:
             )
             return False
 
+    def make_image_process_fn(self, queue_key: str, queue_manager, timeout: float = 120.0):
+        """Create a process function for image generation queue entries.
+
+        Unlike LLM process functions that return async generators, this wraps
+        the image generation in a single-yield generator that marks completion
+        immediately after the image bytes are produced.
+        """
+        proxy = self
+
+        async def _generate_and_yield(entry: QueueEntry):
+            start_time = time.time()
+            try:
+                png_bytes = await proxy.generate_image_on_node(
+                    entry.assigned_node, entry.request.raw_body, timeout
+                )
+                elapsed_ms = (time.time() - start_time) * 1000
+                logger.info(
+                    f"Image {entry.request.request_id[:8]} completed "
+                    f"on {entry.assigned_node} in {elapsed_ms:.0f}ms"
+                )
+                queue_manager.mark_completed(queue_key, entry)
+                yield png_bytes
+            except Exception as e:
+                queue_manager.mark_failed(queue_key, entry)
+                logger.error(
+                    f"Image {entry.request.request_id[:8]} failed "
+                    f"on {entry.assigned_node}: {repr(e)}"
+                )
+                raise
+
+        def process(entry: QueueEntry):
+            return _generate_and_yield(entry)
+
+        return process
+
     async def generate_image_on_node(
         self, node_id: str, body: dict, timeout: float = 120.0
     ) -> bytes:

@@ -8,6 +8,8 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
+from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["images"])
@@ -125,12 +127,36 @@ async def generate_image(request: Request):
     height = body.get("height", 1024)
     logger.info(f"Image generation: model={model} {width}x{height} → {best.node_id}")
 
+    # Create an InferenceRequest so it flows through the queue like LLM requests
+    inference_req = InferenceRequest(
+        model=model,
+        original_model=model,
+        stream=False,
+        original_format=RequestFormat.OLLAMA,
+        raw_body=body,
+    )
+
+    queue_key = f"{best.node_id}:{inference_req.model}"
+    entry = QueueEntry(
+        request=inference_req,
+        assigned_node=best.node_id,
+        routing_score=0.0,
+    )
+
     proxy = request.app.state.streaming_proxy
+    queue_mgr = request.app.state.queue_mgr
+    process_fn = proxy.make_image_process_fn(
+        queue_key, queue_mgr, timeout=settings.image_timeout
+    )
+    response_future = await queue_mgr.enqueue(entry, process_fn)
+
     start = time.monotonic()
     try:
-        png_bytes = await proxy.generate_image_on_node(
-            best.node_id, body, timeout=settings.image_timeout
-        )
+        stream = await response_future
+        png_bytes = b""
+        async for chunk in stream:
+            png_bytes = chunk  # Single chunk — the full PNG
+
         elapsed_ms = int((time.monotonic() - start) * 1000)
         _record_image_gen(
             model, best.node_id, "completed",
