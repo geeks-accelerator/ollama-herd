@@ -19,7 +19,13 @@ skills/
 │   └── SKILL.md
 ├── ai-devops-toolkit/         # Ops/SRE framing — traces, analytics, health
 │   └── SKILL.md
-└── distributed-inference/     # Systems framing — architecture, scoring, fault tolerance
+├── distributed-inference/     # Systems framing — architecture, scoring, fault tolerance
+│   └── SKILL.md
+├── local-transcription/      # STT framing — fleet-routed transcription
+│   └── SKILL.md
+├── mflux-image-router/       # Image gen framing — Apple Silicon image routing
+│   └── SKILL.md
+└── fleet-embeddings/         # Embeddings framing — batch embed across fleet
     └── SKILL.md
 ```
 
@@ -34,8 +40,11 @@ skills/
 | `ollama-manager` | 1.0.0 | Individual Ollama users | Practical — "wrangle your models, clean up the mess" |
 | `ai-devops-toolkit` | 1.0.0 | Platform engineers, SRE | Analytical — traces, percentiles, per-app analytics |
 | `distributed-inference` | 1.0.0 | Systems engineers, researchers | Academic — architecture, scoring function, data model |
+| `local-transcription` | 1.0.0 | Audio/voice projects | Privacy-focused — "meetings stay on your devices" |
+| `mflux-image-router` | 1.0.0 | Image gen projects | Creative — "generate on any device in your fleet" |
+| `fleet-embeddings` | 1.0.0 | RAG/search projects | Scale-focused — "batch embed across your fleet" |
 
-All seven skills share the same API endpoints. Each is fully self-contained — installing any one skill gives the complete API reference. The difference is framing, voice, and which features are highlighted first.
+All ten skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types. The difference is framing, voice, and which capability leads.
 
 ## Prerequisites
 
