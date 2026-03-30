@@ -118,6 +118,14 @@ async def dashboard_events(request: Request):
                         "models_available_count": len(node.ollama.models_available),
                         "requests_active": node.ollama.requests_active,
                     }
+                if node.image and node.image.models_available:
+                    node_data["image_models"] = [
+                        m.name for m in node.image.models_available
+                    ]
+                if node.transcription and node.transcription.models_available:
+                    node_data["stt_models"] = [
+                        m.name for m in node.transcription.models_available
+                    ]
                 if node.capacity:
                     node_data["capacity"] = {
                         "mode": node.capacity.mode,
@@ -464,6 +472,32 @@ def _group_by(events: list[dict], key: str) -> dict[str, int]:
         val = e.get(key, "unknown")
         counts[val] = counts.get(val, 0) + 1
     return counts
+
+
+@router.get("/dashboard/api/transcription-stats")
+async def dashboard_transcription_stats():
+    """Transcription statistics from the last 24 hours."""
+    from fleet_manager.server.routes.transcription_compat import (
+        get_transcription_events,
+    )
+
+    events = get_transcription_events(hours=24)
+    completed = [e for e in events if e["status"] == "completed"]
+    failed = [e for e in events if e["status"] == "failed"]
+
+    return {
+        "total": len(events),
+        "completed": len(completed),
+        "failed": len(failed),
+        "avg_processing_ms": (
+            int(sum(e["processing_ms"] for e in completed) / len(completed))
+            if completed
+            else 0
+        ),
+        "by_node": _group_by(events, "node_id"),
+        "by_model": _group_by(events, "model"),
+        "recent": events[-10:],
+    }
 
 
 @router.post("/dashboard/api/pull")
@@ -1137,6 +1171,7 @@ function renderNodes(nodes) {
           </div>
           ${modelsHtml}
         </div>
+        ${(node.image_models && node.image_models.length) || (node.stt_models && node.stt_models.length) ? '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">' + ((node.image_models || []).map(m => '<span class="badge" style="background:rgba(249,115,22,0.15);color:var(--orange);font-size:10px">IMG ' + m + '</span>').join('')) + ((node.stt_models || []).map(m => '<span class="badge" style="background:rgba(59,130,246,0.15);color:var(--blue);font-size:10px">STT ' + m + '</span>').join('')) + '</div>' : ''}
         ${capacityHtml}
       </div>`;
   }).join('');
@@ -1159,9 +1194,12 @@ function renderQueues(queues) {
     totalCompleted += q.completed;
     const pendingColor = q.pending > 3 ? 'var(--orange)' : q.pending > 0 ? 'var(--yellow)' : 'var(--text-dim)';
     const inflightColor = q.in_flight > 0 ? 'var(--blue)' : 'var(--text-dim)';
+    const typeColors = {text:'var(--accent)',image:'var(--orange)',stt:'var(--blue)',embed:'var(--green)'};
+    const typeLabels = {text:'TEXT',image:'IMAGE',stt:'STT',embed:'EMBED'};
+    const rt = q.request_type || 'text';
     return `
       <div class="queue-card">
-        <div class="queue-name">${key}</div>
+        <div class="queue-name"><span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${typeColors[rt]}22;color:${typeColors[rt]}">${typeLabels[rt]}</span>${key}</div>
         <div class="queue-stats">
           <div class="queue-stat"><div class="num" style="color:${pendingColor}">${q.pending}</div><div class="lbl">Pending</div></div>
           <div class="queue-stat"><div class="num" style="color:${inflightColor}">${q.in_flight}/${q.concurrency || 1}</div><div class="lbl">In-Flight</div></div>
@@ -2130,7 +2168,9 @@ function renderHealth(report) {
     '<div class="vital-card"><div class="v-value" style="color:' + errorColor + '">' + v.overall_error_rate_pct.toFixed(1) + '%</div><div class="v-label">Error Rate (24h)</div></div>' +
     '<div class="vital-card"><div class="v-value" style="color:' + coldColor + '">' + v.cold_loads_24h + '</div><div class="v-label">Cold Loads (24h)</div></div>' +
     '<div class="vital-card"><div class="v-value">' + (v.avg_ttft_ms != null ? (v.avg_ttft_ms / 1000).toFixed(1) + 's' : '-') + '</div><div class="v-label">Avg TTFT (24h)</div></div>' +
-    '<div class="vital-card"><div class="v-value">' + v.total_retries_24h + '</div><div class="v-label">Retries (24h)</div></div>';
+    '<div class="vital-card"><div class="v-value">' + v.total_retries_24h + '</div><div class="v-label">Retries (24h)</div></div>' +
+    '<div class="vital-card"><div class="v-value" style="color:var(--orange)">' + (v.image_generations_24h || 0) + '</div><div class="v-label">Images (24h)</div></div>' +
+    '<div class="vital-card"><div class="v-value" style="color:var(--blue)">' + (v.transcriptions_24h || 0) + '</div><div class="v-label">STT (24h)</div></div>';
 
   const rl = document.getElementById('recs-list');
   if (recs.length === 0) {
@@ -3079,6 +3119,8 @@ function renderSettings(data) {
         '<div class="node-detail"><span class="nd-label">Version</span><span class="nd-value"' + verColor + '>' + ver + '</span></div>' +
         '<div class="node-detail"><span class="nd-label">Ollama</span><span class="nd-value">' + n.ip + '</span></div>' +
         '<div class="node-detail"><span class="nd-label">Models Loaded</span><span class="nd-value">' + n.models_loaded_count + '</span></div>' +
+        (n.image_models && n.image_models.length ? '<div class="node-detail"><span class="nd-label">Image Models</span><span class="nd-value" style="color:var(--orange)">' + n.image_models.join(', ') + '</span></div>' : '') +
+        (n.stt_models && n.stt_models.length ? '<div class="node-detail"><span class="nd-label">STT Models</span><span class="nd-value" style="color:var(--blue)">' + n.stt_models.join(', ') + '</span></div>' : '') +
       '</div>';
     }).join('');
   }

@@ -51,6 +51,8 @@ class InferenceRequest(BaseModel):
     fallback_models: list[str] = Field(default_factory=list)
     # Request tagging for per-app analytics
     tags: list[str] = Field(default_factory=list)
+    # Model type: "text", "image", "stt", "embed"
+    request_type: str = "text"
 
     @model_validator(mode="after")
     def _normalize_model_names(self) -> InferenceRequest:

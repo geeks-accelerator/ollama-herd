@@ -37,6 +37,12 @@ async def fleet_status(request: Request):
             node_data["ollama"] = node.ollama.model_dump()
             total_models_loaded += len(node.ollama.models_loaded)
             total_requests_active += node.ollama.requests_active
+        if node.image:
+            node_data["image"] = node.image.model_dump()
+            node_data["image_port"] = node.image_port
+        if node.transcription:
+            node_data["transcription"] = node.transcription.model_dump()
+            node_data["transcription_port"] = node.transcription_port
         nodes.append(node_data)
 
     online_count = sum(1 for n in registry.get_all_nodes() if n.status.value == "online")

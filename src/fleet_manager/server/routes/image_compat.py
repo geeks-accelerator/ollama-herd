@@ -134,6 +134,7 @@ async def generate_image(request: Request):
         stream=False,
         original_format=RequestFormat.OLLAMA,
         raw_body=body,
+        request_type="image",
     )
 
     queue_key = f"{best.node_id}:{inference_req.model}"

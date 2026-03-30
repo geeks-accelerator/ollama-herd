@@ -114,6 +114,7 @@ async def transcribe_audio(request: Request, audio: UploadFile):
         stream=False,
         original_format=RequestFormat.OLLAMA,
         raw_body={"_audio_bytes": audio_bytes, "_filename": filename},
+        request_type="stt",
     )
 
     queue_key = f"{best.node_id}:{inference_req.model}"

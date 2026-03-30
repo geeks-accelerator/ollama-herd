@@ -46,6 +46,8 @@ class FleetVitals(BaseModel):
     avg_ttft_ms: float | None = None
     total_requests_24h: int = 0
     total_retries_24h: int = 0
+    image_generations_24h: int = 0
+    transcriptions_24h: int = 0
     health_score: int = 100
 
 
@@ -88,6 +90,7 @@ class HealthEngine:
         recommendations.extend(self._check_context_protection())
         recommendations.extend(self._check_zombie_reaper())
         recommendations.extend(self._check_image_generation(nodes))
+        recommendations.extend(self._check_transcription(nodes))
 
         # Trace-based checks (async, queries SQLite)
         if trace_store:
@@ -153,6 +156,24 @@ class HealthEngine:
                     and r.node_id in nodes_with_load_issues
                 )
             ]
+
+        # Populate multimodal vitals
+        try:
+            from fleet_manager.server.routes.image_compat import get_image_gen_events
+            vitals.image_generations_24h = len(
+                [e for e in get_image_gen_events(24) if e["status"] == "completed"]
+            )
+        except Exception:
+            pass
+        try:
+            from fleet_manager.server.routes.transcription_compat import (
+                get_transcription_events,
+            )
+            vitals.transcriptions_24h = len(
+                [e for e in get_transcription_events(24) if e["status"] == "completed"]
+            )
+        except Exception:
+            pass
 
         # Compute health score
         vitals.health_score = self._compute_health_score(recommendations)
@@ -557,6 +578,82 @@ class HealthEngine:
                     "Install mflux on additional nodes: "
                     "`uv tool install mflux` — first image request "
                     "will download model weights (~3GB)."
+                ),
+            ))
+
+        return recs
+
+    def _check_transcription(self, nodes) -> list[Recommendation]:
+        """Surface transcription activity and suggest STT expansion."""
+        from fleet_manager.server.routes.transcription_compat import (
+            get_transcription_events,
+        )
+
+        events = get_transcription_events(hours=24)
+        if not events:
+            return []
+
+        recs: list[Recommendation] = []
+        completed = [e for e in events if e["status"] == "completed"]
+        failed = [e for e in events if e["status"] == "failed"]
+
+        avg_ms = (
+            sum(e["processing_ms"] for e in completed) / len(completed)
+            if completed
+            else 0
+        )
+        nodes_used = {e["node_id"] for e in events}
+        summary = (
+            f"{len(completed)} transcriptions"
+            f" ({len(failed)} failed) in 24h."
+            f" Avg processing: {avg_ms / 1000:.1f}s."
+            f" Nodes used: {', '.join(sorted(nodes_used))}."
+        )
+
+        severity = Severity.WARNING if failed else Severity.INFO
+        recs.append(Recommendation(
+            check_id="transcription_activity",
+            severity=severity,
+            title="Transcription Activity",
+            description=summary,
+            fix="Check failed transcriptions in router logs."
+            if failed
+            else "Transcription is healthy.",
+        ))
+
+        # Recommend mlx-qwen3-asr on nodes that don't have it
+        nodes_with_stt = {
+            n.node_id
+            for n in nodes
+            if n.transcription and n.transcription.models_available
+        }
+        nodes_without_stt = [
+            n
+            for n in nodes
+            if n.node_id not in nodes_with_stt
+            and n.status.value == "online"
+            and n.memory
+            and n.memory.available_gb >= 4.0
+        ]
+
+        if nodes_without_stt and len(completed) >= 3:
+            node_names = ", ".join(n.node_id for n in nodes_without_stt)
+            recs.append(Recommendation(
+                check_id="stt_expansion",
+                severity=Severity.INFO,
+                title="Expand Transcription to More Nodes",
+                description=(
+                    f"Transcription was used {len(completed)} times "
+                    f"in the last 24h but only {len(nodes_with_stt)} "
+                    f"node(s) have mlx-qwen3-asr installed. "
+                    f"{len(nodes_without_stt)} online node(s) with "
+                    f"sufficient memory could also serve STT: "
+                    f"{node_names}."
+                ),
+                fix=(
+                    "Install on additional nodes: "
+                    "`uv tool install 'mlx-qwen3-asr[serve]' --python 3.14` "
+                    "— first transcription downloads the model (~1.2GB)."
                 ),
             ))
 
