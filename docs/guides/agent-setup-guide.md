@@ -169,7 +169,9 @@ curl -o output.png http://localhost:11435/api/generate-image \
     "prompt": "a robot painting a sunset on a beach",
     "width": 1024,
     "height": 1024,
-    "steps": 4
+    "steps": 4,
+    "quantize": 8,
+    "metadata": {"tags": ["my-agent", "image-gen"]}
   }'
 ```
 
@@ -328,12 +330,14 @@ result = transcribe_with_timestamps("podcast-episode.mp3")
 ### Transcribe audio (JavaScript)
 
 ```javascript
-async function transcribe(audioPath) {
-  const fs = require("fs");
-  const FormData = require("form-data");
+// Node 18+ (native FormData + fetch)
+const fs = require("fs");
 
+async function transcribe(audioPath) {
+  const fileBuffer = fs.readFileSync(audioPath);
+  const blob = new Blob([fileBuffer]);
   const form = new FormData();
-  form.append("audio", fs.createReadStream(audioPath));
+  form.append("audio", blob, audioPath);
 
   const resp = await fetch("http://localhost:11435/api/transcribe", {
     method: "POST",
