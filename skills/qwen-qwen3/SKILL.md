@@ -1,6 +1,6 @@
 ---
-name: qwen
-description: Qwen models on your local fleet — Qwen3.5, Qwen3, Qwen3-Coder, Qwen2.5-Coder, and Qwen ASR routed across multiple devices via Ollama Herd. LLM inference, code generation, and speech-to-text from Alibaba's Qwen family. Run locally on Apple Silicon with zero cloud costs.
+name: qwen-qwen3
+description: Qwen Qwen3 — run Qwen3.5, Qwen3, Qwen3-Coder, Qwen2.5-Coder, and Qwen3-ASR across your local fleet. LLM inference, code generation, and speech-to-text from Alibaba's Qwen family via Ollama Herd. Zero cloud costs on Apple Silicon.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"sparkles","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}

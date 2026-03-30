@@ -21,6 +21,12 @@ skills/
 │   └── SKILL.md
 ├── distributed-inference/     # Systems framing — architecture, scoring, fault tolerance
 │   └── SKILL.md
+├── ollama-ollama-herd/       # Keyword-optimized — "Ollama" first, all 4 model types
+│   └── SKILL.md
+├── deepseek-deepseek-coder/  # Keyword-optimized — DeepSeek models specifically
+│   └── SKILL.md
+├── qwen-qwen3/              # Keyword-optimized — Qwen models specifically
+│   └── SKILL.md
 ├── local-transcription/      # STT framing — fleet-routed transcription
 │   └── SKILL.md
 ├── mflux-image-router/       # Image gen framing — Apple Silicon image routing
@@ -43,8 +49,11 @@ skills/
 | `local-transcription` | 1.0.0 | Audio/voice projects | Privacy-focused — "meetings stay on your devices" |
 | `mflux-image-router` | 1.0.0 | Image gen projects | Creative — "generate on any device in your fleet" |
 | `fleet-embeddings` | 1.0.0 | RAG/search projects | Scale-focused — "batch embed across your fleet" |
+| `ollama-ollama-herd` | 1.0.0 | Ollama keyword searchers | Direct — "herd your Ollama LLMs" |
+| `deepseek-deepseek-coder` | 1.0.0 | DeepSeek users | Model-specific — "run DeepSeek locally" |
+| `qwen-qwen3` | 1.0.0 | Qwen users | Model-specific — "run Qwen locally" |
 
-All ten skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types. The difference is framing, voice, and which capability leads.
+All thirteen skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types. The difference is framing, voice, and which capability leads.
 
 ## Prerequisites
 

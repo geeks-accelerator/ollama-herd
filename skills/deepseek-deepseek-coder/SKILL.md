@@ -1,6 +1,6 @@
 ---
-name: deepseek
-description: DeepSeek models on your local fleet — DeepSeek-V3, DeepSeek-V3.2, DeepSeek-R1, DeepSeek-Coder routed across multiple devices via Ollama Herd. 7-signal scoring picks the best machine for every request. Run DeepSeek locally on Apple Silicon with zero cloud costs.
+name: deepseek-deepseek-coder
+description: DeepSeek DeepSeek-Coder — run DeepSeek-V3, DeepSeek-R1, DeepSeek-Coder across your local fleet. 7-signal scoring routes every request to the best device. Run DeepSeek locally on Apple Silicon with zero cloud costs via Ollama Herd.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"brain","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}

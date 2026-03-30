@@ -1,6 +1,6 @@
 ---
-name: ollama
-description: Ollama fleet router — herd your Ollama LLMs into one smart endpoint. Route Llama, Qwen, DeepSeek, Phi, Mistral, and Gemma across multiple devices with 7-signal scoring, auto-retry, VRAM-aware fallback, and context protection. Plus image generation, speech-to-text, and embeddings. Drop-in OpenAI SDK compatible.
+name: ollama-ollama-herd
+description: Ollama Ollama Herd — herd your Ollama LLMs into one smart endpoint. Route Llama, Qwen, DeepSeek, Phi, Mistral across multiple devices with 7-signal scoring, auto-retry, VRAM-aware fallback. Plus image generation, speech-to-text, and embeddings. Drop-in OpenAI SDK compatible.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
