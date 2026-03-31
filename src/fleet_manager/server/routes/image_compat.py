@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
+from fleet_manager.server.model_knowledge import is_image_model
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,22 @@ async def generate_image(request: Request):
         and any(m.name == model for m in n.image.models_available)
     ]
 
+    if not candidates and is_image_model(model):
+        # Ollama native image model — route through the standard Ollama pipeline
+        from fleet_manager.server.routes.ollama_compat import ollama_generate
+
+        logger.info(f"Ollama native image model: {model} — routing through /api/generate")
+        # Forward to the Ollama generate handler which handles image response
+        ollama_body = {"model": model, "prompt": prompt, "stream": False}
+        # Merge any extra image params the client sent
+        for key in ("seed", "negative_prompt"):
+            if key in body:
+                ollama_body[key] = body[key]
+
+        # Stash the modified body so ollama_generate can read it
+        request._body = __import__("json").dumps(ollama_body).encode()
+        return await ollama_generate(request)
+
     if not candidates:
         # List available image models for helpful error
         all_image_models: set[str] = set()
@@ -114,6 +131,12 @@ async def generate_image(request: Request):
             if n.image:
                 for m in n.image.models_available:
                     all_image_models.add(m.name)
+        # Also include Ollama native image models
+        for n in registry.get_online_nodes():
+            if n.ollama:
+                for m in n.ollama.models_available:
+                    if is_image_model(m.name):
+                        all_image_models.add(m.name)
         available = ", ".join(sorted(all_image_models)) if all_image_models else "none"
         return JSONResponse(
             status_code=404,

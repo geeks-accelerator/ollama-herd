@@ -22,6 +22,7 @@ class ModelCategory(StrEnum):
     CODING = "coding"
     CREATIVE = "creative"
     FAST_CHAT = "fast-chat"
+    IMAGE = "image"
 
 
 class ModelSize(StrEnum):
@@ -461,6 +462,43 @@ MODEL_CATALOG: list[ModelSpec] = [
         benchmarks=ModelBenchmarks(mmlu=90.8, humaneval=90.2),
         notes="Frontier-class reasoning, needs server hardware",
     ),
+    # ── IMAGE — Ollama native image generation models ──────────
+    ModelSpec(
+        ollama_name="x/z-image-turbo",
+        display_name="Z-Image-Turbo",
+        family="z-image-turbo",
+        params_b=6.0,
+        ram_gb=8.0,
+        size_class=ModelSize.MEDIUM,
+        category=ModelCategory.IMAGE,
+        context_length=0,
+        benchmarks=ModelBenchmarks(),
+        notes="Ollama native image gen — fast photorealistic images",
+    ),
+    ModelSpec(
+        ollama_name="x/flux2-klein",
+        display_name="FLUX.2 Klein 4B",
+        family="flux2-klein",
+        params_b=4.0,
+        ram_gb=6.0,
+        size_class=ModelSize.SMALL,
+        category=ModelCategory.IMAGE,
+        context_length=0,
+        benchmarks=ModelBenchmarks(),
+        notes="Ollama native image gen — good text rendering",
+    ),
+    ModelSpec(
+        ollama_name="x/flux2-klein:9b",
+        display_name="FLUX.2 Klein 9B",
+        family="flux2-klein",
+        params_b=9.0,
+        ram_gb=12.0,
+        size_class=ModelSize.MEDIUM,
+        category=ModelCategory.IMAGE,
+        context_length=0,
+        benchmarks=ModelBenchmarks(),
+        notes="Ollama native image gen — higher quality variant",
+    ),
 ]
 
 # Index by name for quick lookups
@@ -496,7 +534,22 @@ def classify_model(name: str) -> ModelCategory:
         return ModelCategory.REASONING
     if any(k in lower for k in ("creative", "mistral-nemo", "story")):
         return ModelCategory.CREATIVE
+    # Ollama native image models use x/ prefix
+    if lower.startswith("x/"):
+        return ModelCategory.IMAGE
     return ModelCategory.GENERAL
+
+
+def is_image_model(name: str) -> bool:
+    """Check if a model name is an Ollama native image generation model.
+
+    Only matches models with the ``x/`` prefix (Ollama's image model namespace).
+    Does NOT match mflux model names like ``z-image-turbo`` — those are handled
+    by the separate mflux image server on port 11436.
+    """
+    if not name.lower().startswith("x/"):
+        return False
+    return classify_model(name) == ModelCategory.IMAGE
 
 
 def models_fitting_ram(available_gb: float) -> list[ModelSpec]:

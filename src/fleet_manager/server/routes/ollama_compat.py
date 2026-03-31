@@ -6,9 +6,10 @@ import json
 import logging
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
+from fleet_manager.server.model_knowledge import is_image_model
 from fleet_manager.server.routes.routing import (
     check_context_overflow,
     extract_tags,
@@ -56,18 +57,22 @@ async def ollama_generate(request: Request):
     prompt = body.get("prompt", "")
     messages = [{"role": "user", "content": prompt}] if prompt else []
 
+    # Detect Ollama native image generation models
+    image_model = is_image_model(model)
+
     tags = extract_tags(body, request.headers)
     inference_req = InferenceRequest(
         model=model,
         original_model=model,
         fallback_models=body.get("fallback_models", []),
         messages=messages,
-        stream=body.get("stream", True),
+        stream=False if image_model else body.get("stream", True),
         temperature=body.get("options", {}).get("temperature", 0.7),
         max_tokens=body.get("options", {}).get("num_predict"),
         original_format=RequestFormat.OLLAMA,
         raw_body=body,
         tags=tags,
+        request_type="image" if image_model else "text",
     )
 
     return await _route_and_stream(request, inference_req)
@@ -226,6 +231,34 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
 
         # Clean up token tracking
         proxy._request_tokens.pop(inference_req.request_id, None)
+
+        # Handle Ollama native image generation response
+        if final_data and final_data.get("image"):
+            import base64
+            import time as time_mod
+
+            from fleet_manager.server.routes.image_compat import _record_image_gen
+
+            png_bytes = base64.b64decode(final_data["image"])
+            elapsed_ms = int((time_mod.time() - inference_req.created_at) * 1000)
+            _record_image_gen(
+                model=inference_req.model,
+                node_id=winner.node_id,
+                status="completed",
+                generation_ms=elapsed_ms,
+            )
+            logger.info(
+                f"Ollama native image gen: model={inference_req.model} "
+                f"node={winner.node_id} {len(png_bytes)} bytes in {elapsed_ms}ms"
+            )
+            return Response(
+                content=png_bytes,
+                media_type="image/png",
+                headers={
+                    **headers,
+                    "X-Generation-Time": str(elapsed_ms),
+                },
+            )
 
         if final_data:
             final_data["message"] = {"role": "assistant", "content": full_response}
