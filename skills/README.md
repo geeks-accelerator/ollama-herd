@@ -293,7 +293,7 @@ ClawHub runs automated security scans via VirusTotal and OpenClaw on every publi
 
 | Skill | VirusTotal | OpenClaw | Confidence | Notes |
 |-------|-----------|----------|------------|-------|
-| `ollama-herd` | ✅ Benign | ⏳ Rescan pending | Medium | Fixed configPaths nesting at v1.5.0, awaiting rescan |
+| `ollama-herd` | ✅ Benign | ✅ Benign | High | Fixed at v1.5.0 — upgraded from Suspicious to Benign + High confidence |
 | `ollama-manager` | ✅ Benign | ✅ Benign | High | Highest confidence across all skills |
 | `gpu-cluster-manager` | ✅ Benign | ✅ Benign | Medium | Clean since v1.0.1 |
 | `ai-devops-toolkit` | ✅ Benign | ✅ Benign | High | Clean since v1.0.1 |
@@ -304,9 +304,9 @@ ClawHub runs automated security scans via VirusTotal and OpenClaw on every publi
 | `mflux-image-router` | ✅ Benign | ✅ Benign | Medium | Clean at v1.2.0 |
 | `fleet-embeddings` | ✅ Benign | ✅ Benign | Medium | Clean at v1.0.0 |
 | `ollama-ollama-herd` | ✅ Benign | ✅ Benign | Medium | Clean at v1.1.0 |
-| `deepseek-deepseek-coder` | ✅ Benign | ⏳ Rescan pending | Medium | Fixed at v1.0.2: removed pull from setup, added no-auto-download guardrails |
+| `deepseek-deepseek-coder` | ⏳ Pending | ✅ Benign | Medium | Fixed at v1.0.2 — was Suspicious, now Benign |
 | `qwen-qwen3` | ✅ Benign | ✅ Benign | High | Clean at v1.0.1 |
-| `apple-silicon-ai` | ⏳ Rescan pending | ⏳ Rescan pending | Medium | Fixed at v1.0.1: removed mDNS ref, added PyPI link, expanded guardrails |
+| `apple-silicon-ai` | ✅ Benign | ✅ Benign | High | Fixed at v1.0.1 — was Suspicious, now Benign + High confidence |
 
 ### What we fixed
 
@@ -319,15 +319,13 @@ ClawHub runs automated security scans via VirusTotal and OpenClaw on every publi
 
 **v1.1.0+ → v1.3.0:** All three previously Suspicious core skills (`local-llm-router`, `ollama-load-balancer`, `distributed-inference`) are now **Benign** after the metadata and description updates.
 
-### Fixes published, awaiting rescan (v1.5.0 / v1.0.2 / v1.0.1)
+### Latest fixes (all confirmed Benign)
 
-All three previously Suspicious skills were fixed and republished on 2026-03-30. Awaiting ClawHub security rescan:
+**`ollama-herd`** (v1.4.0 → v1.5.0) — `configPaths` was nested inside `requires` instead of at the `openclaw` level. Same bug we'd fixed in other skills but missed in the core skill. Now Benign with **High confidence**.
 
-**`ollama-herd`** (v1.4.0 → v1.5.0) — `configPaths` was nested inside `requires` instead of at the `openclaw` level. Same bug we'd fixed in other skills but missed in the core skill. Fixed.
+**`deepseek-deepseek-coder`** (v1.0.1 → v1.0.2) — Removed `ollama pull` from setup steps (was presented as required). Added "no models are downloaded during installation" language. Reframed hardware table as optional recommendations. Strengthened guardrails with explicit "no automatic downloads" and "all pulls are user-initiated". Now Benign.
 
-**`deepseek-deepseek-coder`** (v1.0.1 → v1.0.2) — Removed `ollama pull` from setup steps (was presented as required). Added "no models are downloaded during installation" language. Reframed hardware table as optional recommendations. Strengthened guardrails with explicit "no automatic downloads" and "all pulls are user-initiated".
-
-**`apple-silicon-ai`** (v1.0.0 → v1.0.1) — Removed "mDNS (Bonjour)" protocol reference that triggered LAN discovery flags. Softened to "automatically finds the router on your local network". Added PyPI link for install verification. Expanded guardrails with "no external network access" and "read-only local state" sections.
+**`apple-silicon-ai`** (v1.0.0 → v1.0.1) — Removed "mDNS (Bonjour)" protocol reference that triggered LAN discovery flags. Softened to "automatically finds the router on your local network". Added PyPI link for install verification. Expanded guardrails with "no external network access" and "read-only local state" sections. Now Benign with **High confidence**.
 
 ### How the scanner works
 
