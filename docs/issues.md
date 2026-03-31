@@ -6,6 +6,36 @@ Identified via code review of the full codebase. Organized by priority.
 
 ---
 
+## External Dependencies
+
+### DiffusionKit `argmaxtools` crashes on macOS 26+ `FIXED` (local patch)
+
+**File:** `argmaxtools/test_utils.py` (installed dependency, not our code)
+**Severity:** High (blocks all DiffusionKit image generation)
+
+The `os_spec()` function in `argmaxtools.test_utils` parses `sw_vers` output expecting exactly 3 lines. macOS 26 added a `ProductVersionExtra` field (4th line), causing `IndexError: list index out of range`. This crashes `diffusionkit-cli` on any image generation attempt.
+
+**Workaround applied:** Patched the installed `test_utils.py` to parse `sw_vers` output as a key-value dict instead of positional list. See [image generation guide](guides/image-generation.md) for the patch instructions.
+
+**Upstream status:** No fix as of `argmaxtools` v0.1.23 (2026-03-30). The `argmaxtools` repo appears to be private — no way to submit a PR directly. Filed on DiffusionKit GitHub as the integration surface.
+
+**Note:** This patch must be re-applied after any `uv tool upgrade diffusionkit` or `pip install --upgrade diffusionkit`.
+
+---
+
+### DiffusionKit SD3.5 Large — Python crash on cleanup `OPEN`
+
+**File:** `diffusionkit/mlx/__init__.py` (installed dependency)
+**Severity:** Low (image generates successfully, crash is post-generation)
+
+SD3.5 Large (11.6GB peak memory) occasionally triggers a "Python quit unexpectedly" crash dialog on macOS after the image has been written to disk. The image is valid — the crash happens during post-generation telemetry/cleanup. SD3 Medium (3.5GB peak) does not exhibit this behavior.
+
+**Workaround:** Use SD3 Medium for production workloads. SD3.5 Large works but may show the macOS crash dialog to users.
+
+**Root cause:** Likely a memory-related segfault in the MLX/Metal cleanup path when using system Python 3.9. May resolve with a newer Python version or future DiffusionKit update.
+
+---
+
 ## Performance (Will Bite at Scale)
 
 ### 1. `LatencyStore.get_percentile()` — Unbounded Memory Growth `OPEN`

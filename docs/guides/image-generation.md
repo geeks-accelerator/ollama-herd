@@ -1,32 +1,94 @@
 # Image Generation via Ollama Herd
 
-Route mflux image generation requests across your fleet — same endpoint, any node, zero configuration.
+Route image generation requests across your fleet — three backends, one endpoint, zero configuration.
+
+## Backends
+
+Ollama Herd supports three image generation backends:
+
+| Backend | Models | Install | How it works |
+|---------|--------|---------|-------------|
+| **mflux** | z-image-turbo, flux-dev, flux-schnell | `uv tool install mflux` | CLI subprocess on port 11436 |
+| **DiffusionKit** | sd3-medium, sd3.5-large | `uv tool install diffusionkit` | CLI subprocess on port 11436 |
+| **Ollama native** | x/z-image-turbo, x/flux2-klein | `ollama pull x/z-image-turbo` | Standard Ollama API proxy |
+
+All backends route through the same `/api/generate-image` endpoint. The router detects which backend handles each model and routes accordingly.
 
 ## Why route images through Herd?
 
 If you run AI agents that generate images (social media bots, content pipelines, creative tools), you have the same problem with image generation that you had with LLM inference: one machine isn't enough, and managing which machine has which model is painful.
 
 **The problem:**
-- mflux runs as a CLI subprocess on Apple Silicon — there's no HTTP API, no service discovery
-- In a fleet of Mac Minis with 24-64GB each, not every device has the image model loaded
-- Agents on other devices can't discover which node has mflux and route to it
+- Image models run as CLI subprocesses on Apple Silicon — there's no HTTP API, no service discovery
+- In a fleet of Mac Minis with 24-64GB each, not every device has the image model installed
+- Agents on other devices can't discover which node has image capabilities and route to it
 - No visibility into which node generated which image, or how long it took
 
 **The solution:**
-- Herd's node agents detect mflux availability and report it in heartbeats
-- A lightweight image server on each node wraps the mflux CLI as an HTTP endpoint
+- Herd's node agents detect mflux and DiffusionKit binaries and report them in heartbeats
+- Ollama native image models are detected through the standard Ollama model list
+- A lightweight image server on each node wraps CLI tools as an HTTP endpoint
 - The router scores candidates and proxies requests to the best available node
 - One endpoint (`/api/generate-image`) replaces direct subprocess calls
 
-## Prerequisites
+## Install image backends
 
-Install mflux on any node where you want image generation:
+### mflux (Flux models — fastest)
 
 ```bash
 uv tool install mflux
 ```
 
-The first image generation will download model weights (~3GB from Hugging Face). Subsequent runs use the local cache.
+The first image generation downloads model weights (~3GB from Hugging Face). Subsequent runs use the local cache.
+
+Verify: `mflux-generate-z-image-turbo --prompt "test" --width 512 --height 512 --steps 4 --output /tmp/test.png`
+
+### DiffusionKit (Stable Diffusion 3 / 3.5)
+
+```bash
+uv tool install diffusionkit
+```
+
+The first run downloads model weights from HuggingFace (~2-8GB depending on model).
+
+Verify: `diffusionkit-cli --prompt "test" --model-version argmaxinc/mlx-stable-diffusion-3-medium --width 512 --height 512 --steps 10 --output-path /tmp/test.png`
+
+**macOS 26 patch required:** DiffusionKit has a bug on macOS 26+ where `sw_vers` output parsing fails. Apply this one-time fix after installation:
+
+```bash
+# Find the installed file
+ARGMAX_FILE=$(python3 -c "import argmaxtools.test_utils; print(argmaxtools.test_utils.__file__)" 2>/dev/null || find ~/.local -name test_utils.py -path "*/argmaxtools/*" 2>/dev/null | head -1)
+
+# If installed via uv tool, it's typically at:
+# ~/.local/share/uv/tools/diffusionkit/lib/python*/site-packages/argmaxtools/test_utils.py
+
+# Apply the patch: replace the os_spec parsing (lines ~595-598)
+# Change this:
+#   os_type, os_version, os_build_number = [
+#       line.rsplit("\t\t")[1]
+#       for line in sw_vers.rsplit("\n")
+#   ]
+# To this:
+#   parsed = {
+#       line.rsplit("\t\t")[0].rstrip(":"): line.rsplit("\t\t")[1]
+#       for line in sw_vers.rsplit("\n")
+#       if "\t\t" in line
+#   }
+#   os_type = parsed.get("ProductName", "macOS")
+#   os_version = parsed.get("ProductVersion", "0.0")
+#   os_build_number = parsed.get("BuildVersion", "unknown")
+```
+
+This patch handles the `ProductVersionExtra` field that macOS 26 added to `sw_vers` output. Without it, DiffusionKit crashes with `IndexError: list index out of range`.
+
+### Ollama native (experimental, Ollama v0.14.3+)
+
+```bash
+ollama pull x/z-image-turbo      # 12GB
+ollama pull x/flux2-klein         # ~6GB
+```
+
+Ollama native image models work through the standard `/api/generate` endpoint. No separate image server needed — requests flow through the existing Ollama proxy pipeline.
 
 Verify it works:
 
@@ -80,7 +142,7 @@ curl -o image.png http://localhost:11435/api/generate-image \
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `model` | (required) | Image model name: `z-image-turbo`, `flux-dev`, `flux-schnell` |
+| `model` | (required) | Image model name: `z-image-turbo`, `flux-dev`, `flux-schnell`, `sd3-medium`, `sd3.5-large`, `x/z-image-turbo`, `x/flux2-klein` |
 | `prompt` | (required) | Text description of the image to generate |
 | `negative_prompt` | `""` | What to avoid in the image |
 | `width` | `1024` | Image width in pixels |
@@ -151,14 +213,21 @@ async function generateImage(prompt, width = 1024, height = 1024) {
 
 ### Node detection
 
-Every 5 seconds, each node agent checks for mflux binaries via `shutil.which()`:
+Every 5 seconds, each node agent checks for image generation binaries via `shutil.which()`:
 
+**mflux:**
 - `mflux-generate-z-image-turbo` found → reports `z-image-turbo` model
 - `mflux-generate` found → reports `flux-dev` model
 
-Active mflux processes are detected via `psutil` — if a generation is in progress, the node reports `generating: true`.
+**DiffusionKit:**
+- `diffusionkit-cli` found → reports `sd3-medium` and `sd3.5-large` models
 
-The node agent also starts a lightweight FastAPI server on port 11436 that wraps the mflux CLI as an HTTP endpoint. This port is reported in heartbeats so the router knows where to send image requests.
+**Ollama native:**
+- Image models (e.g., `x/z-image-turbo`) appear in the standard Ollama model list and are detected via the `x/` prefix
+
+Active mflux or DiffusionKit processes are detected via `psutil` — if a generation is in progress, the node reports `generating: true`.
+
+The node agent starts a lightweight FastAPI server on port 11436 that wraps CLI tools (mflux and DiffusionKit) as HTTP endpoints. Ollama native image models route through the standard Ollama proxy (port 11434) instead.
 
 ### Scoring
 
@@ -172,12 +241,23 @@ The highest-scoring node wins. This is intentionally simpler than the 7-signal L
 
 ### Request flow
 
+**mflux / DiffusionKit models:**
 ```
 Client → POST /api/generate-image → Router (:11435)
   → Score candidates (which nodes have the model + are idle?)
   → Proxy to best node's image server (:11436)
-  → Node runs mflux subprocess → writes PNG to temp file
+  → Node runs mflux or diffusionkit-cli subprocess → writes PNG to temp file
   → Returns PNG bytes → Router forwards to client
+```
+
+**Ollama native models (x/ prefix):**
+```
+Client → POST /api/generate or /api/generate-image → Router (:11435)
+  → Detect image model (x/ prefix) → force non-streaming
+  → Score with standard 7-signal engine → enqueue
+  → Proxy to Ollama (:11434) via standard streaming proxy
+  → Ollama returns JSON with base64 "image" field
+  → Router decodes base64 → returns PNG bytes to client
 ```
 
 ## Monitoring
@@ -223,11 +303,28 @@ for n in d['nodes']:
 
 ## Available models
 
-| Model | Binary | Speed (M3 Ultra) | Quality | Notes |
-|-------|--------|-------------------|---------|-------|
-| `z-image-turbo` | `mflux-generate-z-image-turbo` | ~7s (512px), ~18s (1024px) | Good | Optimized for 4-step generation |
-| `flux-dev` | `mflux-generate --model dev` | ~30s (1024px) | High | More detailed, slower |
-| `flux-schnell` | `mflux-generate --model schnell` | ~10s (1024px) | Medium | Fastest Flux variant |
+### mflux models (Flux family)
+
+| Model | Speed (M3 Ultra) | Quality | Notes |
+|-------|-------------------|---------|-------|
+| `z-image-turbo` | ~7s (512px), ~18s (1024px) | Good | Optimized for 4-step generation |
+| `flux-dev` | ~30s (1024px) | High | More detailed, slower |
+| `flux-schnell` | ~10s (1024px) | Medium | Fastest Flux variant |
+
+### DiffusionKit models (Stable Diffusion 3 family)
+
+| Model | Speed (M3 Ultra) | Quality | Peak RAM | Notes |
+|-------|-------------------|---------|----------|-------|
+| `sd3-medium` | ~9s (512px) | Good | 3.5GB | Stability AI's SD3 architecture |
+| `sd3.5-large` | ~67s (512px) | Highest | 11.6GB | Best quality, uses T5 encoder |
+
+### Ollama native models (experimental)
+
+| Model | Speed (M3 Ultra) | Quality | Notes |
+|-------|-------------------|---------|-------|
+| `x/z-image-turbo` | ~19s (1024px) | Good | Same model as mflux, runs via Ollama |
+| `x/flux2-klein` | ~20s (1024px) | Good | Good text rendering |
+| `x/flux2-klein:9b` | ~30s (1024px) | Higher | 9B variant |
 
 ## Configuration
 
