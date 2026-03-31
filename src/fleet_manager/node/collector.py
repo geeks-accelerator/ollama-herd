@@ -42,24 +42,39 @@ _MFLUX_BINARIES = [
     ("mflux-generate", "flux-dev"),
 ]
 
+# DiffusionKit binary and models it provides
+_DIFFUSIONKIT_BINARY = "diffusionkit-cli"
+_DIFFUSIONKIT_MODELS = [
+    "sd3-medium",
+    "sd3.5-large",
+]
+
 
 def _detect_image_models() -> ImageMetrics | None:
-    """Detect available mflux image generation models on this system."""
+    """Detect available image generation models on this system (mflux + DiffusionKit)."""
     models: list[ImageModel] = []
+
+    # Detect mflux models
     for binary, name in _MFLUX_BINARIES:
         if shutil.which(binary):
             models.append(ImageModel(name=name, binary=binary))
+
+    # Detect DiffusionKit models
+    if shutil.which(_DIFFUSIONKIT_BINARY):
+        for name in _DIFFUSIONKIT_MODELS:
+            models.append(ImageModel(name=name, binary=_DIFFUSIONKIT_BINARY))
+
     if not models:
         return None
 
-    # Check if any mflux process is currently running
+    # Check if any image generation process is currently running
     generating = False
     try:
         import psutil
 
         for proc in psutil.process_iter(["name"]):
             proc_name = proc.info.get("name", "") or ""
-            if "mflux" in proc_name.lower():
+            if "mflux" in proc_name.lower() or "diffusionkit" in proc_name.lower():
                 generating = True
                 break
     except Exception:

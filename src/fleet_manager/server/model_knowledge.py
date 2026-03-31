@@ -462,7 +462,33 @@ MODEL_CATALOG: list[ModelSpec] = [
         benchmarks=ModelBenchmarks(mmlu=90.8, humaneval=90.2),
         notes="Frontier-class reasoning, needs server hardware",
     ),
-    # ── IMAGE — Ollama native image generation models ──────────
+    # ── IMAGE — image generation models ─────────────────────────
+    # DiffusionKit models (Stable Diffusion 3.x via MLX)
+    ModelSpec(
+        ollama_name="sd3-medium",
+        display_name="Stable Diffusion 3 Medium",
+        family="stable-diffusion-3",
+        params_b=2.0,
+        ram_gb=8.0,
+        size_class=ModelSize.SMALL,
+        category=ModelCategory.IMAGE,
+        context_length=0,
+        benchmarks=ModelBenchmarks(),
+        notes="Stability AI's SD3 — MLX-native via DiffusionKit",
+    ),
+    ModelSpec(
+        ollama_name="sd3.5-large",
+        display_name="Stable Diffusion 3.5 Large",
+        family="stable-diffusion-3",
+        params_b=8.0,
+        ram_gb=16.0,
+        size_class=ModelSize.MEDIUM,
+        category=ModelCategory.IMAGE,
+        context_length=0,
+        benchmarks=ModelBenchmarks(),
+        notes="Highest quality SD model — MLX-native via DiffusionKit, uses T5 encoder",
+    ),
+    # Ollama native image generation models
     ModelSpec(
         ollama_name="x/z-image-turbo",
         display_name="Z-Image-Turbo",

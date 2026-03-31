@@ -20,10 +20,28 @@ router = APIRouter()
 
 # Model name → binary mapping
 _MODEL_BINARIES: dict[str, list[str]] = {
+    # mflux models
     "z-image-turbo": ["mflux-generate-z-image-turbo"],
     "flux-dev": ["mflux-generate", "--model", "dev"],
     "flux-schnell": ["mflux-generate", "--model", "schnell"],
+    # DiffusionKit models (Stable Diffusion 3.x via MLX)
+    "sd3-medium": [
+        "diffusionkit-cli",
+        "--model-version",
+        "argmaxinc/mlx-stable-diffusion-3-medium",
+    ],
+    "sd3.5-large": [
+        "diffusionkit-cli",
+        "--model-version",
+        "argmaxinc/mlx-stable-diffusion-3.5-large",
+        "--t5",
+    ],
 }
+
+
+def _is_diffusionkit(cmd_parts: list[str]) -> bool:
+    """Check if a command uses the DiffusionKit backend."""
+    return cmd_parts[0] == "diffusionkit-cli"
 
 
 def _resolve_binary(model: str) -> list[str] | None:
@@ -65,27 +83,50 @@ async def generate_image(request: Request):
 
     output_path = os.path.join(tempfile.gettempdir(), f"herd-image-{uuid.uuid4().hex}.png")
 
-    cmd = [
-        *cmd_parts,
-        "--prompt",
-        prompt,
-        "--width",
-        str(width),
-        "--height",
-        str(height),
-        "--steps",
-        str(steps),
-        "--quantize",
-        str(quantize),
-        "--output",
-        output_path,
-    ]
-    if guidance is not None:
-        cmd += ["--guidance", str(guidance)]
-    if seed is not None:
-        cmd += ["--seed", str(seed)]
-    if negative_prompt:
-        cmd += ["--negative-prompt", negative_prompt]
+    if _is_diffusionkit(cmd_parts):
+        # DiffusionKit CLI flags
+        cmd = [
+            *cmd_parts,
+            "--prompt",
+            prompt,
+            "--width",
+            str(width),
+            "--height",
+            str(height),
+            "--steps",
+            str(steps),
+            "--output-path",
+            output_path,
+        ]
+        if guidance is not None:
+            cmd += ["--cfg", str(guidance)]
+        if seed is not None:
+            cmd += ["--seed", str(seed)]
+        if negative_prompt:
+            cmd += ["--negative_prompt", negative_prompt]
+    else:
+        # mflux CLI flags (default)
+        cmd = [
+            *cmd_parts,
+            "--prompt",
+            prompt,
+            "--width",
+            str(width),
+            "--height",
+            str(height),
+            "--steps",
+            str(steps),
+            "--quantize",
+            str(quantize),
+            "--output",
+            output_path,
+        ]
+        if guidance is not None:
+            cmd += ["--guidance", str(guidance)]
+        if seed is not None:
+            cmd += ["--seed", str(seed)]
+        if negative_prompt:
+            cmd += ["--negative-prompt", negative_prompt]
 
     logger.info(f"Image generation: model={model} size={width}x{height} steps={steps}")
     start = time.monotonic()
