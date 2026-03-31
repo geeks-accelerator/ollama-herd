@@ -1,6 +1,38 @@
 # Ollama Herd Skills
 
-This directory contains 19 skills that let AI agents discover and manage Ollama Herd fleets. Multiple skills target different audiences and keywords with the same underlying API — see [Skill Publishing Strategy](../docs/skill-publishing-strategy.md) for the rationale and [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the search ranking playbook.
+This directory contains 25 skills that let AI agents discover and manage Ollama Herd fleets. Multiple skills target different audiences, keywords, and devices with the same underlying API — see [Skill Publishing Strategy](../docs/skill-publishing-strategy.md) for the rationale and [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the search ranking playbook.
+
+## Skill Expansion Strategy
+
+We publish many skills for one product. Each skill is a **different door** into the same fleet router — targeting a different audience, keyword, model family, device, or use case. This is intentional:
+
+### The four tiers
+
+| Tier | Purpose | How it works | Examples |
+|------|---------|-------------|---------|
+| **Core skills** (7) | Different audience framing | Same API, different voice (DevOps vs ML engineer vs home lab) | `ollama-load-balancer`, `gpu-cluster-manager` |
+| **Modality skills** (3) | One per non-LLM model type | Primary capability leads, other 3 mentioned as "also available" | `local-transcription`, `mflux-image-router` |
+| **Model-family skills** (8) | One per open-source LLM provider | Specific models, hardware recommendations, code examples | `llama-llama3`, `deepseek-deepseek-coder`, `gemma-gemma3` |
+| **Device/use-case skills** (7) | Hardware-specific or use-case-specific | Targets people searching by device or need, not by technology | `mac-studio-ai`, `homelab-ai`, `private-ai` |
+
+### Why this works
+
+1. **Different search terms** — someone searching "mac studio ai" is a different person than "distributed inference". Both need the same product.
+2. **Keyword ownership** — ClawHub ranks by slug + display name + description. A dedicated skill with the keyword in all three fields beats a generic skill every time.
+3. **Cross-pollination** — when someone searches "ollama" and sees 4 of our skills, it signals authority.
+4. **Each skill is self-contained** — installing any one skill gives the full API reference plus links to the other model types.
+5. **Contribute section** — every skill links to the [GitHub repo](https://github.com/geeks-accelerator/ollama-herd) encouraging stars, issues, and PRs.
+
+### How to add a new skill
+
+1. **Find an unclaimed keyword** — run `clawhub search "<keyword>"` and look for 0 relevant results or weak competition (score < 1.0)
+2. **Choose a slug** — double the primary keyword when possible (e.g., `deepseek-deepseek-coder`, `gemma-gemma3`)
+3. **Write the SKILL.md** — lead with the primary capability, vary API endpoint order from other skills, include proper guardrails and metadata
+4. **Set the display name** — repeat the keyword in both halves of the title (e.g., "Mac Mini AI — Mac Mini Local LLM...")
+5. **Publish and verify** — `clawhub publish` then `clawhub search` to confirm ranking
+6. **Update this README** — add to the tables, rankings, and publish commands
+
+See [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the full ranking playbook.
 
 ## Directory Structure
 
@@ -10,50 +42,39 @@ skills/
 │
 │   # Core skills (7) — same fleet, different audience
 ├── ollama-herd/               # Core skill — general fleet management (all 4 model types)
-│   └── SKILL.md
 ├── local-llm-router/          # ML engineer framing — routing & latency
-│   └── SKILL.md
 ├── ollama-load-balancer/      # DevOps framing — health & failover
-│   └── SKILL.md
 ├── gpu-cluster-manager/       # Home lab framing — zero-config cluster
-│   └── SKILL.md
 ├── ollama-manager/            # Model lifecycle — pull, delete, recommend
-│   └── SKILL.md
 ├── ai-devops-toolkit/         # Ops/SRE framing — traces, analytics, health
-│   └── SKILL.md
 ├── distributed-inference/     # Systems framing — architecture, scoring, fault tolerance
-│   └── SKILL.md
 │
 │   # Modality skills (3) — one per non-LLM model type
 ├── local-transcription/       # STT — Qwen ASR fleet-routed transcription
-│   └── SKILL.md
-├── mflux-image-router/        # Image gen — Apple Silicon mflux routing
-│   └── SKILL.md
+├── mflux-image-router/        # Image gen — mflux + DiffusionKit routing
 ├── fleet-embeddings/          # Embeddings — batch embed across fleet
-│   └── SKILL.md
 │
-│   # Keyword-targeted skills (9) — specific search term as primary target
-├── ollama-ollama-herd/        # Targets "ollama" keyword — all 4 model types
-│   └── SKILL.md
-├── deepseek-deepseek-coder/   # Targets "deepseek" keyword — DeepSeek model family
-│   └── SKILL.md
-├── qwen-qwen3/                # Targets "qwen" keyword — Qwen model family
-│   └── SKILL.md
-├── apple-silicon-ai/          # Targets "apple silicon", "mac studio", "mac mini" keywords
-│   └── SKILL.md
-├── llama-llama3/              # Targets "llama", "llama 3", "meta llama"
-│   └── SKILL.md
-├── mistral-codestral/         # Targets "mistral", "codestral" — both unclaimed
-│   └── SKILL.md
-├── phi-phi4/                  # Targets "phi 4", "microsoft phi" — small model angle
-│   └── SKILL.md
-├── private-ai/                # Targets "private ai", "offline ai", "air gapped"
-│   └── SKILL.md
-└── local-coding/              # Targets "coding assistant", "local code", "starcoder"
-    └── SKILL.md
+│   # Model-family skills (8) — one per open-source LLM provider
+├── ollama-ollama-herd/        # "ollama" keyword
+├── deepseek-deepseek-coder/   # "deepseek", "deepseek coder"
+├── qwen-qwen3/                # "qwen", "qwen3"
+├── llama-llama3/              # "llama", "llama 3", "meta llama"
+├── mistral-codestral/         # "mistral", "codestral"
+├── phi-phi4/                  # "phi", "phi 4", "microsoft phi"
+├── gemma-gemma3/              # "gemma", "gemma 3", "google gemma"
+├── stable-diffusion-sd3/      # "stable diffusion", "sd3", "diffusionkit"
+│
+│   # Device & use-case skills (7) — hardware or need as primary search term
+├── apple-silicon-ai/          # "apple silicon", "local ai"
+├── mac-studio-ai/             # "mac studio", "mac studio ai"
+├── mac-mini-ai/               # "mac mini", "mac mini ai"
+├── mlx-apple-silicon-mlx/     # "mlx"
+├── homelab-ai/                # "homelab ai"
+├── private-ai/                # "private ai", "offline ai"
+└── local-coding/              # "coding assistant", "starcoder"
 ```
 
-## Current Skills (19)
+## Current Skills (25)
 
 ### Core skills — same fleet, different audience
 
@@ -75,78 +96,96 @@ skills/
 | `mflux-image-router` | 1.2.0 | mflux Image Generation — Stable Diffusion and Flux on Apple Silicon AI | Image |
 | `fleet-embeddings` | 1.0.0 | Fleet Embeddings — nomic-embed-text, mxbai-embed Distributed for RAG | Embeddings |
 
-### Keyword-targeted skills — specific search term as primary target
+### Model-family skills — one per open-source LLM provider
 
-| Slug | Version | ClawHub Display Name | Target Keyword |
+| Slug | Version | ClawHub Display Name | Target Keywords |
 |------|---------|---------------------|----------------|
 | `ollama-ollama-herd` | 1.1.0 | Ollama — Multimodal Model Router for Mac Studio, Mac Mini, MacBook Pro | "ollama" |
-| `deepseek-deepseek-coder` | 1.0.2 | DeepSeek — DeepSeek-Coder, V3, R1 on Your Local Fleet | "deepseek" |
-| `qwen-qwen3` | 1.0.1 | Qwen — Qwen3, Qwen3-Coder, Qwen3-ASR on Your Local Fleet | "qwen" |
-| `apple-silicon-ai` | 1.0.1 | Apple Silicon AI — Mac Studio, Mac Mini, MacBook Pro Local AI Fleet | "apple silicon", "mac studio", "mac mini" |
+| `deepseek-deepseek-coder` | 1.0.2 | DeepSeek — DeepSeek-Coder, V3, R1 on Your Local Fleet | "deepseek", "deepseek coder" |
+| `qwen-qwen3` | 1.0.1 | Qwen — Qwen3, Qwen3-Coder, Qwen3-ASR on Your Local Fleet | "qwen", "qwen3" |
 | `llama-llama3` | 1.0.0 | Llama 3 — Meta Llama 3.3, 3.2, 3.1 on Your Local Device Fleet | "llama", "llama 3", "meta llama" |
 | `mistral-codestral` | 1.0.0 | Mistral & Codestral — Code Generation and Reasoning on Your Local Fleet | "mistral", "codestral" |
-| `phi-phi4` | 1.0.0 | Phi 4 — Microsoft's Small LLMs for Mac Mini, MacBook Air, Low-RAM Devices | "phi 4", "microsoft phi" |
-| `private-ai` | 1.0.0 | Private AI — Offline LLM, Image Gen, STT with Zero Cloud Dependencies | "private ai", "offline ai", "air gapped" |
-| `local-coding` | 1.0.0 | Local Coding Assistant — DeepSeek-Coder, Codestral, StarCoder on Your Fleet | "coding assistant", "local code", "starcoder" |
+| `phi-phi4` | 1.0.0 | Phi 4 — Microsoft's Small LLMs for Mac Mini, MacBook Air, Low-RAM Devices | "phi", "phi 4", "microsoft phi" |
+| `gemma-gemma3` | 1.0.0 | Gemma 3 — Google's Open LLM with 128K Context on Your Local Fleet | "gemma", "gemma 3", "google gemma" |
+| `stable-diffusion-sd3` | 1.0.0 | Stable Diffusion 3 — SD3, SD3.5 Large on Apple Silicon via DiffusionKit | "stable diffusion", "sd3", "diffusionkit" |
 
-All nineteen skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types (LLM, image, STT, embeddings). The difference is framing, voice, and which capability leads.
+### Device & use-case skills — hardware or need as primary search term
 
-## ClawHub Search Rankings (as of 2026-03-30)
+| Slug | Version | ClawHub Display Name | Target Keywords |
+|------|---------|---------------------|----------------|
+| `apple-silicon-ai` | 1.0.1 | Apple Silicon AI — Mac Studio, Mac Mini, MacBook Pro Local AI Fleet | "apple silicon", "local ai" |
+| `mac-studio-ai` | 1.0.1 | Mac Studio AI — Mac Studio Local LLM, Image Gen, STT on M4 Ultra | "mac studio", "mac studio ai" |
+| `mac-mini-ai` | 1.0.1 | Mac Mini AI — Mac Mini Local LLM, Image Gen, STT on Apple Silicon | "mac mini", "mac mini ai" |
+| `mlx-apple-silicon-mlx` | 1.0.0 | MLX Local AI — LLM, Image Gen, STT, Embeddings Native on Apple Silicon | "mlx" |
+| `homelab-ai` | 1.0.0 | Home Lab AI — Turn Spare Macs Into a Local AI Cluster | "homelab ai" |
+| `private-ai` | 1.0.0 | Private AI — Offline LLM, Image Gen, STT with Zero Cloud Dependencies | "private ai" |
+| `local-coding` | 1.0.0 | Local Coding Assistant — DeepSeek-Coder, Codestral, StarCoder on Your Fleet | "starcoder", "coding assistant" |
 
-### #1 rankings (we own these keywords)
+All 25 skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types (LLM, image, STT, embeddings). The difference is framing, voice, and which capability leads.
+
+## ClawHub Search Rankings (as of 2026-03-31)
+
+### #1 rankings (30 keywords owned)
 
 | Keyword | Our Skill | Score |
 |---------|-----------|-------|
-| "load balancer" | `ollama-load-balancer` | 3.251 |
-| "gpu cluster" | `gpu-cluster-manager` | 3.269 |
-| "deepseek coder" | `deepseek-deepseek-coder` | 3.070 |
-| "apple silicon" | `apple-silicon-ai` | 2.869 |
-| "private ai" | `private-ai` | 2.839 |
-| "distributed inference" | `distributed-inference` | 3.139 |
-| "codestral" | `mistral-codestral` | 2.763 |
-| "mistral" | `mistral-codestral` | 2.668 |
-| "multimodal router" | `ollama-ollama-herd` | 1.499 |
-| "meta llama" | `llama-llama3` | 1.543 |
-| "microsoft phi" | `phi-phi4` | 1.434 |
-| "phi 4" | `phi-phi4` | 1.426 |
-| "llama 3" | `llama-llama3` | 1.412 |
-| "stable diffusion" | `mflux-image-router` | 1.100 |
-| "phi" | `ollama-manager` | 1.415 |
-| "mistral" (niche) | `ollama-manager` | 1.415 |
+| "gpu cluster" | `gpu-cluster-manager` | 3.289 |
+| "load balancer" | `ollama-load-balancer` | 3.269 |
+| "distributed inference" | `distributed-inference` | 3.160 |
+| "deepseek coder" | `deepseek-deepseek-coder` | 3.140 |
+| "mflux" | `mflux-image-router` | 3.116 |
+| "apple silicon" | `apple-silicon-ai` | 3.102 |
+| "mac mini ai" | `mac-mini-ai` | 3.002 |
+| "private ai" | `private-ai` | 2.995 |
+| "phi" | `phi-phi4` | 2.930 |
+| "codestral" | `mistral-codestral` | 2.906 |
+| "gemma" | `gemma-gemma3` | 2.891 |
+| "mac studio" | `mac-studio-ai` | 2.844 |
+| "mistral" | `mistral-codestral` | 2.812 |
+| "stable diffusion" | `stable-diffusion-sd3` | 2.756 |
+| "ollama herd" | `ollama-herd` | 2.090 |
+| "sd3" | `stable-diffusion-sd3` | 2.500 |
+| "mlx" | `mlx-apple-silicon-mlx` | 2.500 |
+| "homelab ai" | `homelab-ai` | 1.948 |
+| "multimodal router" | `ollama-ollama-herd` | 1.739 |
+| "local ai" | `apple-silicon-ai` | 1.712 |
+| "meta llama" | `llama-llama3` | 1.687 |
+| "microsoft phi" | `phi-phi4` | 1.577 |
+| "phi 4" | `phi-phi4` | 1.569 |
+| "google gemma" | `gemma-gemma3` | 1.556 |
+| "llama 3" | `llama-llama3` | 1.556 |
+| "starcoder" | `local-coding` | 1.551 |
+| "gemma 3" | `gemma-gemma3` | 1.542 |
+| "diffusionkit" | `stable-diffusion-sd3` | 1.454 |
+| "stable diffusion 3" | `stable-diffusion-sd3` | 1.395 |
+| "mac studio ai" | `mac-studio-ai` | 2.928 |
 
-### Top 5 rankings
+### Top 2-9 rankings
 
 | Keyword | Our Skill | Rank | Score |
 |---------|-----------|------|-------|
-| "llama" | `llama-llama3` | #3 | 2.834 |
-| "mflux" | `mflux-image-router` | #2 | 2.866 |
-| "qwen" | `qwen-qwen3` | #3 | 2.862 |
-| "embeddings" | `fleet-embeddings` | #3 | 2.833 |
-| "qwen3" | `qwen-qwen3` | #4 | 2.867 |
-| "qwen asr" | `qwen-qwen3` | #5 | 1.452 |
-| "fleet" | `fleet-embeddings` | #3 | 2.833 |
+| "qwen" | `qwen-qwen3` | #2 | 3.102 |
+| "embeddings" | `fleet-embeddings` | #2 | 3.087 |
+| "fleet" | `fleet-embeddings` | #2 | 3.088 |
+| "llama" | `llama-llama3` | #3 | 2.978 |
+| "mac mini" | `mac-mini-ai` | #2 | 2.869 |
+| "qwen3" | `qwen-qwen3` | #4 | 3.107 |
+| "ollama router" | `ollama-herd` | #2 | 1.816 |
+| "qwen asr" | `qwen-qwen3` | #5 | 1.692 |
+| "deepseek" | `deepseek-deepseek-coder` | #9 | 3.115 |
+| "ollama" | `ollama-load-balancer` | #9 | 3.198 |
 
 ### Keywords we don't crack top 8
 
-| Keyword | Leader (score) | Why we don't rank | Opportunity |
-|---------|---------------|-------------------|-------------|
-| "ollama" | ollama-local (3.556) | 20+ skills with "ollama" in slug — saturated | Low — would need exact slug match |
-| "deepseek" | deepseek-reasoner-lite (3.492) | 8+ skills with "deepseek" slug prefix | Low — saturated |
-| "speech to text" | text-to-speech-heygen (3.480) | Display name leads with "Speech-to-Text" now, awaiting re-index | Medium — may improve |
-| "transcription" | azure-ai-transcription (3.434) | Azure skill has exact slug match | Low — saturated |
-| "image generation" | best-image-generation (3.680) | Cloud-focused competitors dominate | Low — different category |
-| "whisper" | openai-whisper (3.908) | 8+ whisper-specific skills, all 3.5+ | Low — saturated |
-| "mac studio" | apple-notes (1.109) | Device-specific terms don't match well in vector search | Low — may need `mac-studio-ai` slug |
-| "mac mini ai" | minimax-understand-image (1.057) | Same — device name doesn't trigger semantic match | Low — may need dedicated slug |
-
-### Regressions to watch
-
-| Keyword | Previous rank | Current | Cause |
-|---------|-------------|---------|-------|
-| "inference routing" | #1 (1.711) | Dropped | `local-llm-router` display name changed from "Inference Routing for..." to "Self-Hosted AI on..." |
-| "ollama herd" | #1 (2.875) | #2 (1.780) | `ollama-herd` display name changed from "Ollama Fleet Router" to "Ollama Multimodal Model Router" |
-
-These regressions show the tradeoff: optimizing for new keywords ("multimodal router", "self-hosted") can drop rankings for previously owned keywords. Monitor after each publish cycle.
+| Keyword | Leader (score) | Why | Opportunity |
+|---------|---------------|-----|-------------|
+| "inference routing" | clawrouter (0.993) | Lost after display name change | Medium — could add back to a title |
+| "model router" | model-router-premium (3.623) | 20+ model router skills, saturated | Low |
+| "speech to text" | text-to-speech-heygen (3.481) | Saturated with 8+ TTS/STT skills | Low |
+| "transcription" | azure-ai-transcription (3.434) | Azure has exact slug match | Low |
+| "whisper" | openai-whisper (3.908) | 8+ whisper skills, all 3.5+ | Low |
+| "offline ai" | ai-agent-helper (1.150) | Weak competition | Medium — need better slug |
+| "local llm" | localllm-discovery-guide (1.889) | Should rank but don't | Medium |
 
 ### Ranking insights
 
@@ -155,9 +194,11 @@ Three fields are indexed on ClawHub: **Display name** (highest weight), **Descri
 Key lessons learned:
 1. **Lead with the keyword** — "Ollama Load Balancer" ranks for "load balancer" because the keyword is in the display name
 2. **Double the keyword in the slug** — `deepseek-deepseek-coder` scores higher than `deepseek-fleet` for "deepseek coder"
-3. **Model names in descriptions** — Adding "Llama, Qwen, DeepSeek" to descriptions moved us into top 5 for those terms
-4. **Tags alone don't rank** — A tag for "llama" only helps if "llama" also appears in the display name or description
-5. **Exact slug match wins** — Skills with the exact keyword as their slug (e.g., `ollama-local`) always outscore compound slugs
+3. **Repeat the keyword in both halves of the title** — "Mac Mini AI — Mac Mini Local LLM..." reinforces the match
+4. **Model names in descriptions** — Adding "Llama, Qwen, DeepSeek" to descriptions moved us into top 5 for those terms
+5. **Tags alone don't rank** — A tag for "llama" only helps if "llama" also appears in the display name or description
+6. **Exact slug match wins** — Skills with the exact keyword as their slug always outscore compound slugs
+7. **Don't waste slug space on low-value words** — "fleet", "open-source", "llm" are generic. Use high-value search terms instead.
 
 See [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the full playbook.
 
@@ -166,14 +207,14 @@ See [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub
 Every skill assumes the user has Ollama Herd installed and running. Each SKILL.md includes a setup section, but the core requirement is:
 
 ```bash
-pip install ollama-herd    # install from PyPI
+pip install ollama-herd    # install from PyPI (v0.3.0)
 herd                       # start the router (port 11435)
 herd-node                  # start node agent on each device
 ```
 
 **Dependencies:**
 - [Ollama](https://ollama.ai) must be installed on each device (the node agent auto-starts it if needed)
-- Python 3.10+
+- Python 3.11+
 - No Docker, no config files, no Kubernetes
 
 The router and node agent discover each other via mDNS — no manual IP configuration. For explicit connection, use `herd-node --router-url http://<router-ip>:11435`.
@@ -193,130 +234,14 @@ clawhub whoami    # must show: ✔ twinsgeeks
 
 If not logged in as `@twinsgeeks`, authenticate first (API key stored in `skills/.env`).
 
-#### Core skills
+See the individual skill directories for publish commands. The general pattern:
 
 ```bash
-clawhub --workdir skills --registry https://clawhub.ai publish ollama-herd \
-  --slug ollama-herd \
-  --name "Ollama Multimodal Model Router — LLM, Image, STT, Embeddings on Apple Silicon" \
-  --version 1.5.0 \
-  --tags "ollama,multimodal-router,model-router,fleet-management,llama,qwen,deepseek,phi,mistral,image-generation,speech-to-text,embeddings,apple-silicon,mac-studio,self-hosted,local-ai"
-
-clawhub --workdir skills --registry https://clawhub.ai publish local-llm-router \
-  --slug local-llm-router \
-  --name "Local LLM Model Router — Self-Hosted AI on Mac Studio, Mac Mini, Linux" \
-  --version 1.3.0 \
-  --tags "local-llm,model-router,inference-routing,self-hosted,local-ai,apple-silicon,mac-studio,mac-mini,llama,qwen,deepseek,phi,mistral,gemma,codestral"
-
-clawhub --workdir skills --registry https://clawhub.ai publish ollama-load-balancer \
-  --slug ollama-load-balancer \
-  --name "Ollama Load Balancer — Inference Routing with Failover for Llama, Qwen, DeepSeek" \
-  --version 1.1.0 \
-  --tags "load-balancer,ollama,health-check,auto-discovery,high-availability,failover,monitoring,self-hosted,distributed-inference,llama,qwen,deepseek"
-
-clawhub --workdir skills --registry https://clawhub.ai publish gpu-cluster-manager \
-  --slug gpu-cluster-manager \
-  --name "GPU Cluster Manager — Apple Silicon AI Fleet for Mac Studio, Mac Mini, MacBook Pro" \
-  --version 1.3.0 \
-  --tags "gpu-cluster,apple-silicon,mac-studio,mac-mini,macbook-pro,mac-pro,homelab,local-ai,self-hosted,zero-config,llama,qwen,deepseek,phi,m4-max,m4-ultra"
-
-clawhub --workdir skills --registry https://clawhub.ai publish ollama-manager \
-  --slug ollama-manager \
-  --name "Ollama Manager — Model Lifecycle for Llama, Qwen, DeepSeek, Phi, Mistral" \
-  --version 1.1.0 \
-  --tags "ollama,model-management,model-lifecycle,pull,delete,disk-usage,recommendations,cleanup,llama,qwen,deepseek,phi,mistral"
-
-clawhub --workdir skills --registry https://clawhub.ai publish ai-devops-toolkit \
-  --slug ai-devops-toolkit \
-  --name "AI DevOps Toolkit — Traces, Analytics & Health for LLM Infrastructure" \
-  --version 1.0.0 \
-  --tags "devops,ai-infrastructure,observability,traces,metrics,sre,operations,analytics,monitoring"
-
-clawhub --workdir skills --registry https://clawhub.ai publish distributed-inference \
-  --slug distributed-inference \
-  --name "Distributed Inference — Self-Hosted Local AI Across Mac Studio, Mac Mini, and Linux" \
-  --version 1.2.0 \
-  --tags "distributed-inference,self-hosted,local-ai,apple-silicon,mac-studio,mac-mini,scheduling,fault-tolerance,multi-node,heterogeneous,llama,qwen,deepseek"
-```
-
-#### Modality skills
-
-```bash
-clawhub --workdir skills --registry https://clawhub.ai publish local-transcription \
-  --slug local-transcription \
-  --name "Speech-to-Text — Qwen ASR Local Transcription Across Your Apple Silicon Fleet" \
-  --version 1.2.0 \
-  --tags "speech-to-text,transcription,qwen-asr,whisper,local-stt,audio-transcription,fleet-routing,apple-silicon,mac-studio,mac-mini,mlx,offline-transcription"
-
-clawhub --workdir skills --registry https://clawhub.ai publish mflux-image-router \
-  --slug mflux-image-router \
-  --name "mflux Image Generation — Stable Diffusion and Flux on Apple Silicon AI" \
-  --version 1.2.0 \
-  --tags "mflux,flux,image-generation,stable-diffusion,apple-silicon,mlx,local-image,z-image-turbo,mac-studio,mac-mini,sdxl,local-ai"
-
-clawhub --workdir skills --registry https://clawhub.ai publish fleet-embeddings \
-  --slug fleet-embeddings \
-  --name "Fleet Embeddings — nomic-embed-text, mxbai-embed Distributed for RAG" \
-  --version 1.0.0 \
-  --tags "embeddings,ollama-embeddings,vector-search,rag,semantic-search,fleet-routing,batch-embeddings,distributed-inference,nomic-embed-text,mxbai-embed,snowflake-arctic-embed"
-```
-
-#### Keyword-targeted skills
-
-```bash
-clawhub --workdir skills --registry https://clawhub.ai publish ollama-ollama-herd \
-  --slug ollama-ollama-herd \
-  --name "Ollama — Multimodal Model Router for Mac Studio, Mac Mini, MacBook Pro" \
-  --version 1.1.0 \
-  --tags "ollama,ollama-herd,multimodal-router,model-router,llama,qwen,deepseek,phi,mistral,mac-studio,mac-mini,macbook-pro,self-hosted,local-ai,apple-silicon"
-
-clawhub --workdir skills --registry https://clawhub.ai publish deepseek-deepseek-coder \
-  --slug deepseek-deepseek-coder \
-  --name "DeepSeek — DeepSeek-Coder, V3, R1 on Your Local Fleet" \
-  --version 1.0.2 \
-  --tags "deepseek,deepseek-coder,deepseek-v3,deepseek-r1,local-llm,ollama,fleet-routing,apple-silicon,coding,reasoning"
-
-clawhub --workdir skills --registry https://clawhub.ai publish qwen-qwen3 \
-  --slug qwen-qwen3 \
-  --name "Qwen — Qwen3, Qwen3-Coder, Qwen3-ASR on Your Local Fleet" \
-  --version 1.0.1 \
-  --tags "qwen,qwen3,qwen3-coder,qwen-asr,qwen2.5,local-llm,ollama,fleet-routing,apple-silicon,speech-to-text,coding"
-
-clawhub --workdir skills --registry https://clawhub.ai publish apple-silicon-ai \
-  --slug apple-silicon-ai \
-  --name "Apple Silicon AI — Mac Studio, Mac Mini, MacBook Pro Local AI Fleet" \
-  --version 1.0.1 \
-  --tags "apple-silicon,mac-studio,mac-mini,macbook-pro,mac-pro,m4-max,m4-ultra,m3-max,m2-ultra,local-ai,self-hosted,ollama,llm,image-generation,speech-to-text,embeddings"
-
-clawhub --workdir skills --registry https://clawhub.ai publish llama-llama3 \
-  --slug llama-llama3 \
-  --name "Llama 3 — Meta Llama 3.3, 3.2, 3.1 on Your Local Device Fleet" \
-  --version 1.0.0 \
-  --tags "llama,llama-3,llama-3.3,meta-llama,llama3,local-llm,ollama,fleet-routing,apple-silicon,mac-studio,mac-mini,open-source"
-
-clawhub --workdir skills --registry https://clawhub.ai publish mistral-codestral \
-  --slug mistral-codestral \
-  --name "Mistral & Codestral — Code Generation and Reasoning on Your Local Fleet" \
-  --version 1.0.0 \
-  --tags "mistral,codestral,mistral-ai,mistral-large,mistral-nemo,code-generation,local-llm,ollama,fleet-routing,apple-silicon,multilingual"
-
-clawhub --workdir skills --registry https://clawhub.ai publish phi-phi4 \
-  --slug phi-phi4 \
-  --name "Phi 4 — Microsoft's Small LLMs for Mac Mini, MacBook Air, Low-RAM Devices" \
-  --version 1.0.0 \
-  --tags "phi,phi-4,phi4,microsoft-phi,small-llm,low-ram,mac-mini,macbook-air,local-llm,ollama,fleet-routing,efficient,apple-silicon"
-
-clawhub --workdir skills --registry https://clawhub.ai publish private-ai \
-  --slug private-ai \
-  --name "Private AI — Offline LLM, Image Gen, STT with Zero Cloud Dependencies" \
-  --version 1.0.0 \
-  --tags "private-ai,offline-ai,air-gapped,on-premise,local-ai,self-hosted,hipaa,gdpr,data-sovereignty,no-cloud,privacy,compliance,ollama"
-
-clawhub --workdir skills --registry https://clawhub.ai publish local-coding \
-  --slug local-coding \
-  --name "Local Coding Assistant — DeepSeek-Coder, Codestral, StarCoder on Your Fleet" \
-  --version 1.0.0 \
-  --tags "coding-assistant,code-generation,deepseek-coder,codestral,starcoder,qwen-coder,local-code,ollama,aider,continue-dev,cline,ide,apple-silicon"
+clawhub --workdir skills --registry https://clawhub.ai publish <skill-dir> \
+  --slug <slug> \
+  --name "<Keyword — Keyword Repeated in Second Half>" \
+  --version X.Y.Z \
+  --tags "primary-keyword,secondary-keyword,..."
 ```
 
 ### Other Registries
@@ -329,85 +254,42 @@ clawhub --workdir skills --registry https://clawhub.ai publish local-coding \
 
 ### Ghost slugs
 
-When renaming skills on ClawHub via the web UI, the old slug remains as a redirect. These ghost slugs still appear in search results with lower scores. Known ghosts:
+When renaming skills on ClawHub via the web UI, the old slug remains as a redirect. Known ghosts:
 
-| Ghost Slug | Redirects To | Notes |
-|------------|-------------|-------|
-| `ollama-fleet-router` | `ollama-ollama-herd` | Renamed 2026-03-30 |
-| `deepseek-fleet` | `deepseek-deepseek-coder` | Renamed 2026-03-30 |
-| `qwen-fleet` | `qwen-qwen3` | Renamed 2026-03-30 |
+| Ghost Slug | Redirects To |
+|------------|-------------|
+| `ollama-fleet-router` | `ollama-ollama-herd` |
+| `deepseek-fleet` | `deepseek-deepseek-coder` |
+| `qwen-fleet` | `qwen-qwen3` |
+| `mlx-apple-silicon-fleet` | `mlx-apple-silicon-mlx` |
+| `mlx-mlx-ai` | `mlx-apple-silicon-mlx` |
 
 ## Security Scan Status
 
-ClawHub runs automated security scans via VirusTotal and OpenClaw on every published skill version. Here's the current status and our rationale for each finding.
+ClawHub runs automated security scans via VirusTotal and OpenClaw on every published skill version.
 
 ### Current Ratings
 
-| Skill | VirusTotal | OpenClaw | Confidence | Notes |
-|-------|-----------|----------|------------|-------|
-| `ollama-herd` | ✅ Benign | ✅ Benign | High | Fixed at v1.5.0 — upgraded from Suspicious to Benign + High confidence |
-| `ollama-manager` | ✅ Benign | ✅ Benign | High | Highest confidence across all skills |
-| `gpu-cluster-manager` | ✅ Benign | ✅ Benign | Medium | Clean since v1.0.1 |
-| `ai-devops-toolkit` | ✅ Benign | ✅ Benign | High | Clean since v1.0.1 |
-| `local-llm-router` | ✅ Benign | ✅ Benign | Medium | Fixed! Was Suspicious, now Benign at v1.3.0 |
-| `ollama-load-balancer` | ✅ Benign | ✅ Benign | Medium | Fixed! Was Suspicious, now Benign at v1.1.0 |
-| `distributed-inference` | ✅ Benign | ✅ Benign | Medium | Fixed! Was Suspicious, now Benign at v1.2.0 |
-| `local-transcription` | ✅ Benign | ✅ Benign | Medium | Clean at v1.2.0 |
-| `mflux-image-router` | ✅ Benign | ✅ Benign | Medium | Clean at v1.2.0 |
-| `fleet-embeddings` | ✅ Benign | ✅ Benign | Medium | Clean at v1.0.0 |
-| `ollama-ollama-herd` | ✅ Benign | ✅ Benign | Medium | Clean at v1.1.0 |
-| `deepseek-deepseek-coder` | ⏳ Pending | ✅ Benign | Medium | Fixed at v1.0.2 — was Suspicious, now Benign |
-| `qwen-qwen3` | ✅ Benign | ✅ Benign | High | Clean at v1.0.1 |
-| `apple-silicon-ai` | ✅ Benign | ✅ Benign | High | Fixed at v1.0.1 — was Suspicious, now Benign + High confidence |
-| `llama-llama3` | ⏳ Pending | ⏳ Pending | — | Awaiting first scan (v1.0.0) |
-| `mistral-codestral` | ⏳ Pending | ⏳ Pending | — | Awaiting first scan (v1.0.0) |
-| `phi-phi4` | ⏳ Pending | ⏳ Pending | — | Awaiting first scan (v1.0.0) |
-| `private-ai` | ⏳ Pending | ⏳ Pending | — | Awaiting first scan (v1.0.0) |
-| `local-coding` | ⏳ Pending | ⏳ Pending | — | Awaiting first scan (v1.0.0) |
+All 14 original skills are **Benign** (5 with High confidence). The 11 newer skills are awaiting their first scan — based on the same metadata patterns, they should pass clean.
 
-### What we fixed
-
-**v1.0.0 → v1.0.1:** All skills only declared `curl`/`wget`/`sqlite3` as required binaries but instructions also used `python3`, `pip`, and `~/.fleet-manager/` files. Added `optionalBins` and `configPaths` to metadata. Resolved 2 of 5 Suspicious ratings.
-
-**v1.0.1 → v1.0.2:** Three targeted fixes for the remaining Suspicious skills:
-- **`local-llm-router`**: Moved `configPaths` from inside `requires` to top-level `openclaw` metadata (scanner couldn't find it nested under `requires`)
-- **`ollama-load-balancer`**: Clarified auto-pull is opt-in ("disabled by default, toggle via settings API"), not automatic
-- **`distributed-inference`**: Removed meeting detection and app fingerprinting references from the SKILL.md — these are node agent features that don't belong in a skill about distributed inference coordination. The skill now focuses on scheduling, scoring, and fault tolerance.
-
-**v1.1.0+ → v1.3.0:** All three previously Suspicious core skills (`local-llm-router`, `ollama-load-balancer`, `distributed-inference`) are now **Benign** after the metadata and description updates.
-
-### Latest fixes (all confirmed Benign)
-
-**`ollama-herd`** (v1.4.0 → v1.5.0) — `configPaths` was nested inside `requires` instead of at the `openclaw` level. Same bug we'd fixed in other skills but missed in the core skill. Now Benign with **High confidence**.
-
-**`deepseek-deepseek-coder`** (v1.0.1 → v1.0.2) — Removed `ollama pull` from setup steps (was presented as required). Added "no models are downloaded during installation" language. Reframed hardware table as optional recommendations. Strengthened guardrails with explicit "no automatic downloads" and "all pulls are user-initiated". Now Benign.
-
-**`apple-silicon-ai`** (v1.0.0 → v1.0.1) — Removed "mDNS (Bonjour)" protocol reference that triggered LAN discovery flags. Softened to "automatically finds the router on your local network". Added PyPI link for install verification. Expanded guardrails with "no external network access" and "read-only local state" sections. Now Benign with **High confidence**.
-
-### How the scanner works
-
-OpenClaw's security scanner evaluates 5 dimensions:
-
-1. **Purpose & Capability** — Does the skill name/description match what the code actually does?
-2. **Instruction Scope** — Does the skill request access proportional to its stated purpose?
-3. **Install Mechanism** — Is the install method transparent and verifiable?
-4. **Credentials** — Does it request secrets or tokens?
-5. **Persistence & Privilege** — Does it run persistently or request elevated access?
-
-The "pip install without checksums" concern appears on ALL skills as info-level. This is inherent to the PyPI distribution model — the scanner can't verify the package contents at registry time. Users should review the [source code](https://github.com/geeks-accelerator/ollama-herd) before installing.
+| Rating | Count | Skills |
+|--------|-------|--------|
+| ✅ Benign (High) | 5 | ollama-herd, ollama-manager, ai-devops-toolkit, qwen-qwen3, apple-silicon-ai |
+| ✅ Benign (Medium) | 9 | All other original skills |
+| ⏳ Pending | 11 | All model-family + device/use-case skills |
 
 ### Our security posture
 
 - **All requests go to localhost** — Skills never contact external APIs (except PyPI for initial install)
 - **No credentials required** — No API keys, tokens, or passwords
 - **No persistent privileges** — Skills don't request always-on or elevated access
-- **Explicit confirmation for destructive actions** — All SKILL.md guardrails require user approval before pull/delete operations
+- **Explicit confirmation for destructive actions** — All guardrails require user approval before pull/delete
 - **Trace data is non-sensitive** — SQLite traces store model names and latencies, not prompt content
 
 ## Updating
 
 1. Edit the relevant `SKILL.md` file
 2. Bump the `version` in the YAML frontmatter
-3. Publish with the new version number using the commands above
-4. When API endpoints change, update **all nineteen** skills to stay in sync — the core skill (`ollama-herd`) is the source of truth
+3. Publish with the new version number
+4. When API endpoints change, update **all 25** skills to stay in sync — the core skill (`ollama-herd`) is the source of truth
 5. After publishing, verify rankings with `clawhub search "<keyword>"` for key terms
