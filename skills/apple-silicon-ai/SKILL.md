@@ -1,7 +1,7 @@
 ---
 name: apple-silicon-ai
 description: Apple Silicon AI — run LLMs, image generation, speech-to-text, and embeddings on Mac Studio, Mac Mini, MacBook Pro, and Mac Pro. Turn your Apple Silicon devices into a local AI fleet. M1, M2, M3, M4 Max and Ultra chips with unified memory make these machines ideal for local inference. No cloud APIs, no GPU rentals — your Macs are the cluster.
-version: 1.0.0
+version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"apple","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin"]}}
 ---
@@ -30,7 +30,7 @@ Unified memory means the entire model stays in one address space — no PCIe bot
 ### 1. Install on every Mac
 
 ```bash
-pip install ollama-herd
+pip install ollama-herd    # PyPI: https://pypi.org/project/ollama-herd/
 ```
 
 ### 2. Start the router (pick one Mac)
@@ -42,10 +42,10 @@ herd    # starts on port 11435
 ### 3. Start the node agent on every Mac
 
 ```bash
-herd-node    # auto-discovers router via mDNS (Bonjour)
+herd-node    # automatically finds the router on your local network
 ```
 
-That's it. Every Mac on your local network joins the fleet automatically. No IP addresses to configure, no config files, no manual registration.
+That's it. Nodes discover the router automatically on your local network. No IP addresses to configure, no config files, no manual registration. For explicit connection, use `herd-node --router-url http://<router-ip>:11435`.
 
 ### How it works
 
@@ -55,7 +55,7 @@ Mac Mini (M4, 32GB)          ├──→  Router (:11435)  ←──  Your apps
 Mac Studio (M4 Ultra, 256GB) ─┘
 ```
 
-The router scores each device on 7 signals (thermal state, memory fit, queue depth, wait time, role affinity, availability trend, context fit) and routes every request to the best available Mac.
+The router scores each device on 7 signals and routes every request to the best available Mac — thermal state, memory fit, queue depth, and more.
 
 ## LLM inference
 
@@ -170,7 +170,9 @@ The router's model recommender analyzes your fleet hardware and suggests the opt
 
 ## Guardrails
 
-- **Model pulls**: Downloading models (2-70GB) requires explicit user confirmation
-- **Model deletion**: Removing models from nodes requires explicit user confirmation
-- **All requests stay local**: No data leaves your network — all inference happens on your Macs
-- **No API keys**: No accounts, no tokens, no cloud dependencies
+- **No automatic downloads**: No models are downloaded during installation. Model pulls are always user-initiated and require explicit confirmation. Downloads range from 2GB to 70GB+ depending on model size.
+- **Model deletion requires confirmation**: Never remove models without explicit user approval.
+- **All requests stay local**: No data leaves your local network — all inference happens on your Macs.
+- **No API keys**: No accounts, no tokens, no cloud dependencies.
+- **No external network access**: The router and nodes communicate only on your local network. No telemetry, no cloud callbacks.
+- **Read-only local state**: The only local files created are `~/.fleet-manager/latency.db` (routing metrics) and `~/.fleet-manager/logs/herd.jsonl` (structured logs). Never delete or modify these files without user confirmation.

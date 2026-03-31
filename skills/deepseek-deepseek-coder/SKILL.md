@@ -1,7 +1,7 @@
 ---
 name: deepseek-deepseek-coder
 description: DeepSeek DeepSeek-Coder — run DeepSeek-V3, DeepSeek-R1, DeepSeek-Coder across your local fleet. 7-signal scoring routes every request to the best device. Run DeepSeek locally on Apple Silicon with zero cloud costs via Ollama Herd.
-version: 1.0.0
+version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"brain","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
 ---
@@ -27,12 +27,11 @@ Run DeepSeek-V3, DeepSeek-R1, and DeepSeek-Coder on your own hardware. The fleet
 pip install ollama-herd
 herd              # start the router (port 11435)
 herd-node         # run on each machine
-
-# Pull a DeepSeek model
-ollama pull deepseek-r1:70b
 ```
 
 Package: [ollama-herd](https://pypi.org/project/ollama-herd/) | Repo: [github.com/geeks-accelerator/ollama-herd](https://github.com/geeks-accelerator/ollama-herd)
+
+Models are pulled on demand — the router auto-pulls when a request arrives for a model not yet on any node, or you can pull manually via the dashboard. No models are downloaded during installation.
 
 ## Use DeepSeek through the fleet
 
@@ -81,9 +80,9 @@ curl http://localhost:11435/api/chat -d '{
 }'
 ```
 
-## Hardware recommendations
+## Hardware recommendations (optional — choose models that fit your RAM)
 
-DeepSeek models are large. Here's what fits where:
+DeepSeek offers models at every size. Pick the one that fits your available memory — smaller models work great for most tasks:
 
 | Model | Min RAM | Recommended hardware |
 |-------|---------|---------------------|
@@ -149,6 +148,8 @@ curl http://localhost:11435/api/embeddings -d '{"model":"nomic-embed-text","prom
 
 ## Guardrails
 
-- Never pull or delete DeepSeek models without user confirmation — downloads are 4-400+ GB.
+- **Model downloads require explicit user confirmation** — DeepSeek models range from 1GB (1.5B) to 400GB+ (671B). Always confirm before pulling.
+- **Model deletion requires explicit user confirmation** — never remove models without asking.
 - Never delete or modify files in `~/.fleet-manager/`.
-- If a DeepSeek model is too large for available memory, suggest a smaller variant.
+- If a DeepSeek model is too large for available memory, suggest a smaller variant (e.g., `deepseek-r1:7b` instead of `:70b`).
+- No models are downloaded automatically — all pulls are user-initiated or require opt-in via the `auto_pull` setting.
