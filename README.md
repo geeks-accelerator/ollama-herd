@@ -106,6 +106,45 @@ Copy-paste this to any AI coding agent to have it update your Ollama configurati
 
 > Tag all requests to Ollama Herd so we can track usage per project and process. Add a `metadata` field with a `tags` array to every request body. Use two tags: one for the project name and one for the script or process making the request. For example: `"metadata": {"tags": ["my-project", "code-review"]}`. If you're using the OpenAI SDK, pass it via `extra_body`: `client.chat.completions.create(..., extra_body={"metadata": {"tags": ["my-project", "code-review"]}})`. If you can't modify the request body (e.g., reverse proxy or middleware), use the `X-Herd-Tags` header instead: `X-Herd-Tags: my-project, code-review`. Tags appear in the Herd dashboard under the Apps tab with per-tag latency, token counts, error rates, and daily trends. Keep tag names short, lowercase, and hyphenated.
 
+## Beyond LLMs — image generation, speech-to-text, embeddings
+
+The same router handles four model types. Install the backend on any node and it's automatically detected:
+
+### Image generation
+
+```bash
+# Install backends (any combination — install what you need)
+uv tool install mflux           # Flux models (fastest: ~7s at 512px)
+uv tool install diffusionkit    # Stable Diffusion 3/3.5 (~9s at 512px)
+ollama pull x/z-image-turbo     # Ollama native (experimental)
+
+# macOS 26 users: DiffusionKit needs a one-time patch
+./scripts/patch-diffusionkit-macos26.sh
+```
+
+Generate an image through the fleet:
+
+```bash
+curl -o sunset.png http://router-ip:11435/api/generate-image \
+  -H "Content-Type: application/json" \
+  -d '{"model": "z-image-turbo", "prompt": "a sunset over mountains", "width": 1024, "height": 1024}'
+```
+
+Available models: `z-image-turbo`, `flux-dev`, `flux-schnell` (mflux), `sd3-medium`, `sd3.5-large` (DiffusionKit), `x/z-image-turbo`, `x/flux2-klein` (Ollama native). See [Image Generation Guide](docs/guides/image-generation.md).
+
+### Speech-to-text
+
+```bash
+curl http://router-ip:11435/api/transcribe -F "file=@meeting.wav" -F "model=qwen3-asr"
+```
+
+### Embeddings
+
+```bash
+curl http://router-ip:11435/api/embed \
+  -d '{"model": "nomic-embed-text", "input": "your text here"}'
+```
+
 ## How routing works
 
 Every request goes through a scoring pipeline that picks the best device in real time:

@@ -122,16 +122,20 @@ class QueueManager:
         """Return detailed queue information for the fleet status endpoint."""
         info = {}
         for key, q in self._queues.items():
-            # Infer request type from in-flight entries or model name
+            # Infer request type from in-flight entries or model knowledge
             request_type = "text"
             if q.in_flight:
                 request_type = getattr(q.in_flight[0].request, "request_type", "text")
-            elif "image" in q.model or "flux" in q.model or "turbo" in q.model:
-                request_type = "image"
-            elif "asr" in q.model or "whisper" in q.model:
-                request_type = "stt"
-            elif "embed" in q.model:
-                request_type = "embed"
+            else:
+                from fleet_manager.server.model_knowledge import ModelCategory, classify_model
+
+                category = classify_model(q.model)
+                if category == ModelCategory.IMAGE:
+                    request_type = "image"
+                elif "asr" in q.model or "whisper" in q.model:
+                    request_type = "stt"
+                elif "embed" in q.model:
+                    request_type = "embed"
             info[key] = {
                 "node_id": q.node_id,
                 "model": q.model,

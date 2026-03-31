@@ -20,6 +20,7 @@ uv run pytest -v                 # verbose output
 uv run ruff check src/           # lint
 uv run ruff format src/          # format
 ./scripts/health.sh              # full project health check
+./scripts/patch-diffusionkit-macos26.sh  # fix DiffusionKit on macOS 26+
 ```
 
 ## Architecture
