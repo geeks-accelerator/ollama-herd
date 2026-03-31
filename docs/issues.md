@@ -6,6 +6,27 @@ Identified via code review of the full codebase. Organized by priority.
 
 ---
 
+## Routing Safety
+
+### Ollama native image models can evict LLMs from memory `OPEN`
+
+**File:** `src/fleet_manager/server/routes/ollama_compat.py`
+**Severity:** High
+
+When an Ollama native image model (e.g., `x/z-image-turbo` at 12GB) is requested via `/api/generate`, Ollama may evict the resident LLM to make room. On a single-node fleet, this means ALL text inference fails with 500 errors until the LLM is reloaded.
+
+**Observed:** 2026-03-30. After generating images with `x/z-image-turbo`, `gpt-oss:120b` was evicted. All DriftsBot text requests failed with 500 for several minutes.
+
+**Proposed fixes (in order of complexity):**
+1. **Prefer mflux over Ollama native** — when both mflux `z-image-turbo` and Ollama `x/z-image-turbo` are available, prefer mflux since it doesn't compete for Ollama VRAM
+2. **Guard single-LLM nodes** — don't route Ollama native image requests to a node if it's the only node serving text LLM requests and the image model isn't already loaded
+3. **Memory budget check** — before routing, verify that loading the image model won't push total VRAM past available memory (Ollama reports `size_vram` per model)
+4. **Auto-unload after generation** — send `keep_alive: 0` after image generation completes to immediately free VRAM for the LLM
+
+**Workaround:** Use mflux (`z-image-turbo`) instead of Ollama native (`x/z-image-turbo`) for image generation — mflux runs as a separate subprocess and doesn't affect Ollama's model memory.
+
+---
+
 ## External Dependencies
 
 ### DiffusionKit `argmaxtools` crashes on macOS 26+ `FIXED` (local patch)
