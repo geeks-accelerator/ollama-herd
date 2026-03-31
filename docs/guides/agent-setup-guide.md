@@ -140,7 +140,23 @@ Every response includes fleet metadata:
 
 ## 2. Image Generation
 
-Generate images using mflux (MLX-native Flux models) on any node with the model installed.
+Generate images using three backends: mflux (Flux models), DiffusionKit (Stable Diffusion 3/3.5), and Ollama native (experimental). All route through the same `/api/generate-image` endpoint.
+
+### Install image backends
+
+```bash
+# mflux — Flux models (fastest, recommended)
+uv tool install mflux
+
+# DiffusionKit — Stable Diffusion 3/3.5 (requires macOS 26 patch)
+uv tool install diffusionkit
+./scripts/patch-diffusionkit-macos26.sh
+
+# Ollama native — experimental (caution: can evict LLMs from VRAM)
+ollama pull x/z-image-turbo
+```
+
+**Note:** When both mflux and Ollama native can serve the same model, the router automatically prefers mflux to avoid evicting LLMs from VRAM.
 
 ### Check if enabled
 
@@ -226,7 +242,7 @@ async function generateImage(prompt, width = 1024, height = 1024) {
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `model` | (required) | `z-image-turbo`, `flux-dev`, or `flux-schnell` |
+| `model` | (required) | mflux: `z-image-turbo`, `flux-dev`, `flux-schnell`; DiffusionKit: `sd3-medium`, `sd3.5-large`; Ollama native: `x/z-image-turbo`, `x/flux2-klein` |
 | `prompt` | (required) | Text description of the image |
 | `width` | `1024` | Image width in pixels |
 | `height` | `1024` | Image height in pixels |
