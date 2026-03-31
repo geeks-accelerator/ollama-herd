@@ -1,6 +1,6 @@
 # Ollama Herd Skills
 
-This directory contains 25 skills that let AI agents discover and manage Ollama Herd fleets. Multiple skills target different audiences, keywords, and devices with the same underlying API — see [Skill Publishing Strategy](../docs/skill-publishing-strategy.md) for the rationale and [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the search ranking playbook.
+This directory contains 28 skills that let AI agents discover and manage Ollama Herd fleets. Multiple skills target different audiences, keywords, and devices with the same underlying API — see [Skill Publishing Strategy](../docs/skill-publishing-strategy.md) for the rationale and [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the search ranking playbook.
 
 ## Skill Expansion Strategy
 
@@ -12,8 +12,8 @@ We publish many skills for one product. Each skill is a **different door** into 
 |------|---------|-------------|---------|
 | **Core skills** (7) | Different audience framing | Same API, different voice (DevOps vs ML engineer vs home lab) | `ollama-load-balancer`, `gpu-cluster-manager` |
 | **Modality skills** (3) | One per non-LLM model type | Primary capability leads, other 3 mentioned as "also available" | `local-transcription`, `mflux-image-router` |
-| **Model-family skills** (8) | One per open-source LLM provider | Specific models, hardware recommendations, code examples | `llama-llama3`, `deepseek-deepseek-coder`, `gemma-gemma3` |
-| **Device/use-case skills** (7) | Hardware-specific or use-case-specific | Targets people searching by device or need, not by technology | `mac-studio-ai`, `homelab-ai`, `private-ai` |
+| **Model-family skills** (9) | One per open-source LLM provider/version | Specific models, hardware recommendations, code examples | `llama-llama3`, `deepseek-deepseek-coder`, `qwen-qwen3-5` |
+| **Device/use-case skills** (9) | Hardware-specific or use-case-specific | Targets people searching by device or need, not by technology | `mac-studio-ai`, `ollama-proxy`, `self-hosted-ai` |
 
 ### Why this works
 
@@ -54,27 +54,30 @@ skills/
 ├── mflux-image-router/        # Image gen — mflux + DiffusionKit routing
 ├── fleet-embeddings/          # Embeddings — batch embed across fleet
 │
-│   # Model-family skills (8) — one per open-source LLM provider
+│   # Model-family skills (9) — one per open-source LLM provider/version
 ├── ollama-ollama-herd/        # "ollama" keyword
 ├── deepseek-deepseek-coder/   # "deepseek", "deepseek coder"
 ├── qwen-qwen3/                # "qwen", "qwen3"
+├── qwen-qwen3-5/             # "qwen 3.5", "qwen3.5"
 ├── llama-llama3/              # "llama", "llama 3", "meta llama"
 ├── mistral-codestral/         # "mistral", "codestral"
 ├── phi-phi4/                  # "phi", "phi 4", "microsoft phi"
 ├── gemma-gemma3/              # "gemma", "gemma 3", "google gemma"
 ├── stable-diffusion-sd3/      # "stable diffusion", "sd3", "diffusionkit"
 │
-│   # Device & use-case skills (7) — hardware or need as primary search term
+│   # Device & use-case skills (9) — hardware or need as primary search term
 ├── apple-silicon-ai/          # "apple silicon", "local ai"
 ├── mac-studio-ai/             # "mac studio", "mac studio ai"
 ├── mac-mini-ai/               # "mac mini", "mac mini ai"
 ├── mlx-apple-silicon-mlx/     # "mlx"
 ├── homelab-ai/                # "homelab ai"
 ├── private-ai/                # "private ai", "offline ai"
-└── local-coding/              # "coding assistant", "starcoder"
+├── local-coding/              # "coding assistant", "starcoder"
+├── ollama-proxy/              # "ollama proxy", "ollama multi node"
+└── self-hosted-ai/            # "self hosted ai", "self hosted llm"
 ```
 
-## Current Skills (25)
+## Current Skills (28)
 
 ### Core skills — same fleet, different audience
 
@@ -103,6 +106,7 @@ skills/
 | `ollama-ollama-herd` | 1.1.0 | Ollama — Multimodal Model Router for Mac Studio, Mac Mini, MacBook Pro | "ollama" |
 | `deepseek-deepseek-coder` | 1.0.2 | DeepSeek — DeepSeek-Coder, V3, R1 on Your Local Fleet | "deepseek", "deepseek coder" |
 | `qwen-qwen3` | 1.0.1 | Qwen — Qwen3, Qwen3-Coder, Qwen3-ASR on Your Local Fleet | "qwen", "qwen3" |
+| `qwen-qwen3-5` | 1.0.0 | Qwen 3.5 — Alibaba's Latest LLM Rivaling GPT-4o on Your Local Fleet | "qwen 3.5", "qwen3.5" |
 | `llama-llama3` | 1.0.0 | Llama 3 — Meta Llama 3.3, 3.2, 3.1 on Your Local Device Fleet | "llama", "llama 3", "meta llama" |
 | `mistral-codestral` | 1.0.0 | Mistral & Codestral — Code Generation and Reasoning on Your Local Fleet | "mistral", "codestral" |
 | `phi-phi4` | 1.0.0 | Phi 4 — Microsoft's Small LLMs for Mac Mini, MacBook Air, Low-RAM Devices | "phi", "phi 4", "microsoft phi" |
@@ -120,12 +124,14 @@ skills/
 | `homelab-ai` | 1.0.0 | Home Lab AI — Turn Spare Macs Into a Local AI Cluster | "homelab ai" |
 | `private-ai` | 1.0.0 | Private AI — Offline LLM, Image Gen, STT with Zero Cloud Dependencies | "private ai" |
 | `local-coding` | 1.0.0 | Local Coding Assistant — DeepSeek-Coder, Codestral, StarCoder on Your Fleet | "starcoder", "coding assistant" |
+| `ollama-proxy` | 1.0.0 | Ollama Proxy — Ollama Multi-Node Proxy for Load Balancing and Failover | "ollama proxy", "ollama multi node" |
+| `self-hosted-ai` | 1.0.0 | Self-Hosted AI — Self-Hosted LLM, Image Gen, STT Replacing Cloud APIs | "self hosted ai", "self hosted llm" |
 
-All 25 skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types (LLM, image, STT, embeddings). The difference is framing, voice, and which capability leads.
+All 28 skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types (LLM, image, STT, embeddings). The difference is framing, voice, and which capability leads.
 
 ## ClawHub Search Rankings (as of 2026-03-31)
 
-### #1 rankings (30 keywords owned)
+### #1 rankings (36+ keywords owned)
 
 | Keyword | Our Skill | Score |
 |---------|-----------|-------|
@@ -159,6 +165,13 @@ All 25 skills share the same fleet router. Each is fully self-contained — inst
 | "diffusionkit" | `stable-diffusion-sd3` | 1.454 |
 | "stable diffusion 3" | `stable-diffusion-sd3` | 1.395 |
 | "mac studio ai" | `mac-studio-ai` | 2.928 |
+| "self hosted ai" | `self-hosted-ai` | 3.010 |
+| "self hosted llm" | `self-hosted-ai` | 1.471 |
+| "self hosted" | `self-hosted-ai` | 2.857 |
+| "ollama proxy" | `ollama-proxy` | 2.970 |
+| "ollama multi node" | `ollama-proxy` | 1.498 |
+| "qwen 3.5" | `qwen-qwen3-5` | 1.510 |
+| "qwen3.5" | `qwen-qwen3-5` | 1.799 |
 
 ### Top 2-9 rankings
 
@@ -263,6 +276,7 @@ When renaming skills on ClawHub via the web UI, the old slug remains as a redire
 | `qwen-fleet` | `qwen-qwen3` |
 | `mlx-apple-silicon-fleet` | `mlx-apple-silicon-mlx` |
 | `mlx-mlx-ai` | `mlx-apple-silicon-mlx` |
+| `qwen-qwen35` | `qwen-qwen3-5` |
 
 ## Security Scan Status
 
@@ -291,5 +305,5 @@ All 14 original skills are **Benign** (5 with High confidence). The 11 newer ski
 1. Edit the relevant `SKILL.md` file
 2. Bump the `version` in the YAML frontmatter
 3. Publish with the new version number
-4. When API endpoints change, update **all 25** skills to stay in sync — the core skill (`ollama-herd`) is the source of truth
+4. When API endpoints change, update **all 28** skills to stay in sync — the core skill (`ollama-herd`) is the source of truth
 5. After publishing, verify rankings with `clawhub search "<keyword>"` for key terms
