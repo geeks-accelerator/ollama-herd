@@ -293,20 +293,20 @@ ClawHub runs automated security scans via VirusTotal and OpenClaw on every publi
 
 | Skill | VirusTotal | OpenClaw | Confidence | Notes |
 |-------|-----------|----------|------------|-------|
-| `ollama-herd` | ✅ Benign | ✅ Benign | Medium | Clean — all requirements declared |
+| `ollama-herd` | ✅ Benign | ⚠️ Suspicious | Medium | Metadata mismatches flagged at v1.4.0 |
 | `ollama-manager` | ✅ Benign | ✅ Benign | High | Highest confidence across all skills |
-| `gpu-cluster-manager` | ✅ Benign | ✅ Benign | Medium | Fixed in v1.0.1 |
-| `ai-devops-toolkit` | ✅ Benign | ✅ Benign | Medium | Fixed in v1.0.1 |
-| `local-llm-router` | ✅ Benign | ⚠️ Suspicious | Medium | Awaiting rescan after v1.0.2 metadata fix |
-| `ollama-load-balancer` | ✅ Benign | ⚠️ Suspicious | Medium | Auto-pull side effects (legitimate, guarded) |
-| `distributed-inference` | ✅ Benign | ⚠️ Suspicious | Medium | Awaiting rescan after v1.0.2 privacy fix |
-| `local-transcription` | — | — | — | Not yet scanned (v1.0.0) |
-| `mflux-image-router` | — | — | — | Not yet scanned (v1.0.0) |
-| `fleet-embeddings` | — | — | — | Not yet scanned (v1.0.0) |
-| `ollama-ollama-herd` | — | — | — | Not yet scanned (v1.0.0) |
-| `deepseek-deepseek-coder` | — | — | — | Not yet scanned (v1.0.1) |
-| `qwen-qwen3` | — | — | — | Not yet scanned (v1.0.1) |
-| `apple-silicon-ai` | — | — | — | Not yet scanned (v1.0.0) |
+| `gpu-cluster-manager` | ✅ Benign | ✅ Benign | Medium | Clean since v1.0.1 |
+| `ai-devops-toolkit` | ✅ Benign | ✅ Benign | High | Clean since v1.0.1 |
+| `local-llm-router` | ✅ Benign | ✅ Benign | Medium | Fixed! Was Suspicious, now Benign at v1.3.0 |
+| `ollama-load-balancer` | ✅ Benign | ✅ Benign | Medium | Fixed! Was Suspicious, now Benign at v1.1.0 |
+| `distributed-inference` | ✅ Benign | ✅ Benign | Medium | Fixed! Was Suspicious, now Benign at v1.2.0 |
+| `local-transcription` | ✅ Benign | ✅ Benign | Medium | Clean at v1.2.0 |
+| `mflux-image-router` | ✅ Benign | ✅ Benign | Medium | Clean at v1.2.0 |
+| `fleet-embeddings` | ✅ Benign | ✅ Benign | Medium | Clean at v1.0.0 |
+| `ollama-ollama-herd` | ✅ Benign | ✅ Benign | Medium | Clean at v1.1.0 |
+| `deepseek-deepseek-coder` | ✅ Benign | ⚠️ Suspicious | Medium | Undeclared config access, large-model pulls |
+| `qwen-qwen3` | ✅ Benign | ✅ Benign | High | Clean at v1.0.1 |
+| `apple-silicon-ai` | ⏳ Pending | ⚠️ Suspicious | Medium | Undocumented pip install, mDNS discovery flagged |
 
 ### What we fixed
 
@@ -316,6 +316,16 @@ ClawHub runs automated security scans via VirusTotal and OpenClaw on every publi
 - **`local-llm-router`**: Moved `configPaths` from inside `requires` to top-level `openclaw` metadata (scanner couldn't find it nested under `requires`)
 - **`ollama-load-balancer`**: Clarified auto-pull is opt-in ("disabled by default, toggle via settings API"), not automatic
 - **`distributed-inference`**: Removed meeting detection and app fingerprinting references from the SKILL.md — these are node agent features that don't belong in a skill about distributed inference coordination. The skill now focuses on scheduling, scoring, and fault tolerance.
+
+**v1.1.0+ → v1.3.0:** All three previously Suspicious core skills (`local-llm-router`, `ollama-load-balancer`, `distributed-inference`) are now **Benign** after the metadata and description updates.
+
+### Remaining Suspicious ratings
+
+**`ollama-herd`** (v1.4.0) — Regressed from Benign to Suspicious after the v1.4.0 description update. OpenClaw notes metadata mismatches between the registry metadata and the SKILL.md content (pip install, service start commands). Needs metadata alignment.
+
+**`deepseek-deepseek-coder`** (v1.0.1) — Flagged for undeclared config access and large-model pull side effects. Similar to the original `ollama-load-balancer` issue — the skill documents model pulling without explicit guardrails in the metadata.
+
+**`apple-silicon-ai`** (v1.0.0) — VirusTotal scan still pending. OpenClaw flagged undocumented pip installation and mDNS-based LAN discovery. Same metadata pattern as other skills — needs `optionalBins` and explicit guardrails section review.
 
 ### How the scanner works
 
