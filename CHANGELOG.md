@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-03-30
+
+### Added
+
+- **Expanded image generation** — three backends through one endpoint
+  - DiffusionKit backend: Stable Diffusion 3 Medium and SD 3.5 Large via MLX-native `diffusionkit-cli`
+  - Ollama native backend: `x/z-image-turbo` and `x/flux2-klein` via standard `/api/generate`
+  - mflux preferred over Ollama native to prevent LLM eviction from VRAM
+  - 8 image models total across 3 backends
+- **IMAGE model category** in model knowledge catalog with `is_image_model()` helper
+- **DiffusionKit macOS 26 patch script** (`scripts/patch-diffusionkit-macos26.sh`)
+- 19 ClawHub skills (5 new: `llama-llama3`, `mistral-codestral`, `phi-phi4`, `private-ai`, `local-coding`)
+- 16 #1 keyword rankings on ClawHub
+- ClawHub SEO optimization guide (`docs/guides/optimizing-skills-for-clawhub.md`)
+- 34 new tests (412 total)
+
+### Changed
+
+- Queue type badge uses `classify_model()` from model knowledge instead of string heuristic — DiffusionKit models now correctly show `[IMAGE]` badge
+- `/api/generate` detects Ollama native image models, forces non-streaming, decodes base64 PNG response
+- `/api/generate-image` accepts Ollama native models alongside mflux, falls through to Ollama pipeline when needed
+- Node collector detects DiffusionKit binary and reports SD3 models in heartbeat
+- Image server generalized CLI builder handles both mflux and DiffusionKit flag differences
+
+### Fixed
+
+- mflux preferred over Ollama native to prevent LLM eviction from VRAM (was causing 500 errors on text requests)
+
+## [0.2.0] - 2026-03-30
+
+### Added
+
+- **Multimodal routing** — 4 model types through one fleet
+  - Image generation via mflux (`z-image-turbo`, `flux-dev`, `flux-schnell`)
+  - Speech-to-text via Qwen3-ASR
+  - Embeddings via Ollama (nomic-embed-text, mxbai-embed)
+  - `request_type` field on InferenceRequest (text, image, stt, embed)
+- **Dashboard multimodal badges** — `[TEXT]`, `[IMAGE]`, `[STT]`, `[EMBED]` on queue cards
+- **Node capability badges** — `IMG z-image-turbo`, `STT qwen3-asr` on node cards
+- **Transcription health check** and `/dashboard/api/transcription-stats` endpoint
+- **Fleet status** includes image and transcription data per node
+- **SSE events** include `image_models` and `stt_models` for real-time updates
+- **Settings page** shows Image Models and STT Models rows with ports per node
+- **Health vitals** grid adds Images (24h) and STT (24h) counters
+- Image generation event tracking for health monitoring (last 200 events)
+- 7 ClawHub skills published (ollama-herd, local-llm-router, ollama-load-balancer, gpu-cluster-manager, ollama-manager, ai-devops-toolkit, distributed-inference)
+- Context protection for streaming requests
+- VRAM-aware model fallback
+- Request tagging with per-app analytics dashboard
+- Model recommendations engine based on hardware capabilities
+- Settings dashboard page with runtime toggles
+
+### Changed
+
+- Scoring engine updated with context fit signal (7th signal)
+- Dashboard rewritten with 8 tabs (overview, trends, insights, apps, benchmarks, health, recommendations, settings)
+
 ## [0.1.0] - 2025-03-10
 
 ### Added
@@ -31,4 +88,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graceful drain on SIGTERM
 - 212 tests with full async coverage
 
+[0.3.0]: https://github.com/geeks-accelerator/ollama-herd/releases/tag/v0.3.0
+[0.2.0]: https://github.com/geeks-accelerator/ollama-herd/releases/tag/v0.2.0
 [0.1.0]: https://github.com/geeks-accelerator/ollama-herd/releases/tag/v0.1.0

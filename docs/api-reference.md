@@ -904,7 +904,7 @@ Current router configuration, toggleable settings, and registered node list with
 
 ```json
 {
-  "router_version": "0.2.0",
+  "router_version": "0.3.0",
   "router_hostname": "Neons-Mac-Studio",
   "config": {
     "toggles": { "auto_pull": true, "vram_fallback": true },
@@ -920,7 +920,7 @@ Current router configuration, toggleable settings, and registered node list with
     {
       "node_id": "Neons-Mac-Studio",
       "status": "online",
-      "agent_version": "0.2.0",
+      "agent_version": "0.3.0",
       "ip": "http://localhost:11434",
       "models_loaded_count": 2,
       "is_router": true
