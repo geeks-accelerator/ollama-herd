@@ -8,7 +8,7 @@ Identified via code review of the full codebase. Organized by priority.
 
 ## Routing Safety
 
-### Ollama native image models can evict LLMs from memory `OPEN`
+### Ollama native image models can evict LLMs from memory `PARTIAL`
 
 **File:** `src/fleet_manager/server/routes/ollama_compat.py`
 **Severity:** High
@@ -23,7 +23,9 @@ When an Ollama native image model (e.g., `x/z-image-turbo` at 12GB) is requested
 3. **Memory budget check** — before routing, verify that loading the image model won't push total VRAM past available memory (Ollama reports `size_vram` per model)
 4. **Auto-unload after generation** — send `keep_alive: 0` after image generation completes to immediately free VRAM for the LLM
 
-**Workaround:** Use mflux (`z-image-turbo`) instead of Ollama native (`x/z-image-turbo`) for image generation — mflux runs as a separate subprocess and doesn't affect Ollama's model memory.
+**Fix #1 implemented:** The router now prefers mflux over Ollama native when both are available. If a client requests `x/z-image-turbo` via `/api/generate` and mflux has `z-image-turbo` on any node, the router redirects to the mflux image server automatically. Ollama native is only used as a fallback when mflux isn't installed. This prevents LLM eviction because mflux runs as a separate subprocess outside Ollama's VRAM.
+
+**Remaining:** Fixes #2 (guard single-LLM nodes) and #3 (memory budget check) are not yet implemented. These would protect against Ollama native image models on multi-node fleets where some nodes have mflux and others don't.
 
 ---
 

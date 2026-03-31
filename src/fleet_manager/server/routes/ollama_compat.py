@@ -60,6 +60,45 @@ async def ollama_generate(request: Request):
     # Detect Ollama native image generation models
     image_model = is_image_model(model)
 
+    # Prefer mflux over Ollama native for image generation.
+    # mflux runs as a separate subprocess and doesn't evict LLMs from Ollama's VRAM.
+    if image_model:
+        registry = request.app.state.registry
+        # Map Ollama native model names to their mflux equivalents
+        _OLLAMA_TO_MFLUX = {
+            "x/z-image-turbo": "z-image-turbo",
+            "x/z-image-turbo:latest": "z-image-turbo",
+        }
+        mflux_model = _OLLAMA_TO_MFLUX.get(model)
+        if mflux_model:
+            # Check if any node has this model via mflux (image server on port 11436)
+            mflux_available = any(
+                n.image
+                and n.image_port > 0
+                and any(m.name == mflux_model for m in n.image.models_available)
+                for n in registry.get_online_nodes()
+            )
+            if mflux_available:
+                logger.info(
+                    f"Preferring mflux '{mflux_model}' over Ollama native '{model}' "
+                    f"(avoids LLM eviction from VRAM)"
+                )
+                # Redirect to the image endpoint with the mflux model name
+                from fleet_manager.server.routes.image_compat import generate_image
+
+                image_body = {
+                    "model": mflux_model,
+                    "prompt": prompt,
+                }
+                # Forward image-specific params
+                for key in ("width", "height", "steps", "guidance", "seed",
+                            "negative_prompt", "quantize"):
+                    val = body.get(key)
+                    if val is not None:
+                        image_body[key] = val
+                request._body = __import__("json").dumps(image_body).encode()
+                return await generate_image(request)
+
     tags = extract_tags(body, request.headers)
     inference_req = InferenceRequest(
         model=model,

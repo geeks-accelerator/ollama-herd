@@ -90,6 +90,8 @@ ollama pull x/flux2-klein         # ~6GB
 
 Ollama native image models work through the standard `/api/generate` endpoint. No separate image server needed — requests flow through the existing Ollama proxy pipeline.
 
+**Important: mflux is preferred over Ollama native.** When both mflux and Ollama native can serve the same model (e.g., `z-image-turbo` via mflux and `x/z-image-turbo` via Ollama), the router automatically prefers mflux. This is because Ollama native image models load into the same VRAM pool as LLMs — loading a 12GB image model can evict your resident LLM, causing text inference failures. mflux runs as a separate subprocess and doesn't affect Ollama's memory. Ollama native is only used as a fallback when mflux isn't installed.
+
 Verify it works:
 
 ```bash

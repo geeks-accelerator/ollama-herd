@@ -294,5 +294,5 @@ All models use the same `/api/generate-image` endpoint. The router detects the b
 |------|-----------|------------|
 | Ollama image gen API changes (experimental) | Medium | Pin to v0.14.3+ behavior, add version check |
 | DiffusionKit CLI flag changes | Low | Pin version in docs, test on update |
-| Memory contention (image models evicting LLM models) | Medium | Scoring engine already handles this via memory fit signal |
+| Memory contention (image models evicting LLM models) | **Confirmed** | **Fixed:** Router prefers mflux over Ollama native to avoid VRAM eviction. See `docs/issues.md` for details. |
 | Slow image gen blocking queues | Low | Image requests already use dedicated queue entries with custom timeouts |
