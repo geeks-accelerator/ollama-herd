@@ -1,6 +1,6 @@
 # Ollama Herd Skills
 
-This directory contains 14 skills that let AI agents discover and manage Ollama Herd fleets. Multiple skills target different audiences and keywords with the same underlying API — see [Skill Publishing Strategy](../docs/skill-publishing-strategy.md) for the rationale and [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the search ranking playbook.
+This directory contains 19 skills that let AI agents discover and manage Ollama Herd fleets. Multiple skills target different audiences and keywords with the same underlying API — see [Skill Publishing Strategy](../docs/skill-publishing-strategy.md) for the rationale and [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the search ranking playbook.
 
 ## Directory Structure
 
@@ -32,18 +32,28 @@ skills/
 ├── fleet-embeddings/          # Embeddings — batch embed across fleet
 │   └── SKILL.md
 │
-│   # Keyword-targeted skills (4) — specific search term as primary target
+│   # Keyword-targeted skills (9) — specific search term as primary target
 ├── ollama-ollama-herd/        # Targets "ollama" keyword — all 4 model types
 │   └── SKILL.md
 ├── deepseek-deepseek-coder/   # Targets "deepseek" keyword — DeepSeek model family
 │   └── SKILL.md
 ├── qwen-qwen3/                # Targets "qwen" keyword — Qwen model family
 │   └── SKILL.md
-└── apple-silicon-ai/          # Targets "apple silicon", "mac studio", "mac mini" keywords
+├── apple-silicon-ai/          # Targets "apple silicon", "mac studio", "mac mini" keywords
+│   └── SKILL.md
+├── llama-llama3/              # Targets "llama", "llama 3", "meta llama"
+│   └── SKILL.md
+├── mistral-codestral/         # Targets "mistral", "codestral" — both unclaimed
+│   └── SKILL.md
+├── phi-phi4/                  # Targets "phi 4", "microsoft phi" — small model angle
+│   └── SKILL.md
+├── private-ai/                # Targets "private ai", "offline ai", "air gapped"
+│   └── SKILL.md
+└── local-coding/              # Targets "coding assistant", "local code", "starcoder"
     └── SKILL.md
 ```
 
-## Current Skills (14)
+## Current Skills (19)
 
 ### Core skills — same fleet, different audience
 
@@ -73,8 +83,13 @@ skills/
 | `deepseek-deepseek-coder` | 1.0.2 | DeepSeek — DeepSeek-Coder, V3, R1 on Your Local Fleet | "deepseek" |
 | `qwen-qwen3` | 1.0.1 | Qwen — Qwen3, Qwen3-Coder, Qwen3-ASR on Your Local Fleet | "qwen" |
 | `apple-silicon-ai` | 1.0.1 | Apple Silicon AI — Mac Studio, Mac Mini, MacBook Pro Local AI Fleet | "apple silicon", "mac studio", "mac mini" |
+| `llama-llama3` | 1.0.0 | Llama 3 — Meta Llama 3.3, 3.2, 3.1 on Your Local Device Fleet | "llama", "llama 3", "meta llama" |
+| `mistral-codestral` | 1.0.0 | Mistral & Codestral — Code Generation and Reasoning on Your Local Fleet | "mistral", "codestral" |
+| `phi-phi4` | 1.0.0 | Phi 4 — Microsoft's Small LLMs for Mac Mini, MacBook Air, Low-RAM Devices | "phi 4", "microsoft phi" |
+| `private-ai` | 1.0.0 | Private AI — Offline LLM, Image Gen, STT with Zero Cloud Dependencies | "private ai", "offline ai", "air gapped" |
+| `local-coding` | 1.0.0 | Local Coding Assistant — DeepSeek-Coder, Codestral, StarCoder on Your Fleet | "coding assistant", "local code", "starcoder" |
 
-All fourteen skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types (LLM, image, STT, embeddings). The difference is framing, voice, and which capability leads.
+All nineteen skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types (LLM, image, STT, embeddings). The difference is framing, voice, and which capability leads.
 
 ## ClawHub Search Rankings (as of 2026-03-30)
 
@@ -84,24 +99,31 @@ All fourteen skills share the same fleet router. Each is fully self-contained �
 |---------|-----------|-------|
 | "load balancer" | `ollama-load-balancer` | 3.251 |
 | "gpu cluster" | `gpu-cluster-manager` | 3.269 |
+| "deepseek coder" | `deepseek-deepseek-coder` | 3.070 |
 | "apple silicon" | `apple-silicon-ai` | 2.869 |
+| "private ai" | `private-ai` | 2.839 |
 | "distributed inference" | `distributed-inference` | 3.139 |
-| "deepseek coder" | `deepseek-deepseek-coder` | 2.894 |
+| "codestral" | `mistral-codestral` | 2.763 |
+| "mistral" | `mistral-codestral` | 2.668 |
 | "multimodal router" | `ollama-ollama-herd` | 1.499 |
+| "meta llama" | `llama-llama3` | 1.543 |
+| "microsoft phi" | `phi-phi4` | 1.434 |
+| "phi 4" | `phi-phi4` | 1.426 |
+| "llama 3" | `llama-llama3` | 1.412 |
 | "stable diffusion" | `mflux-image-router` | 1.100 |
 | "phi" | `ollama-manager` | 1.415 |
-| "mistral" | `ollama-manager` | 1.415 |
+| "mistral" (niche) | `ollama-manager` | 1.415 |
 
 ### Top 5 rankings
 
 | Keyword | Our Skill | Rank | Score |
 |---------|-----------|------|-------|
+| "llama" | `llama-llama3` | #3 | 2.834 |
 | "mflux" | `mflux-image-router` | #2 | 2.866 |
 | "qwen" | `qwen-qwen3` | #3 | 2.862 |
 | "embeddings" | `fleet-embeddings` | #3 | 2.833 |
 | "qwen3" | `qwen-qwen3` | #4 | 2.867 |
 | "qwen asr" | `qwen-qwen3` | #5 | 1.452 |
-| "llama" | `ollama-load-balancer` | #4 | 1.696 |
 | "fleet" | `fleet-embeddings` | #3 | 2.833 |
 
 ### Keywords we don't crack top 8
@@ -265,6 +287,36 @@ clawhub --workdir skills --registry https://clawhub.ai publish apple-silicon-ai 
   --name "Apple Silicon AI — Mac Studio, Mac Mini, MacBook Pro Local AI Fleet" \
   --version 1.0.1 \
   --tags "apple-silicon,mac-studio,mac-mini,macbook-pro,mac-pro,m4-max,m4-ultra,m3-max,m2-ultra,local-ai,self-hosted,ollama,llm,image-generation,speech-to-text,embeddings"
+
+clawhub --workdir skills --registry https://clawhub.ai publish llama-llama3 \
+  --slug llama-llama3 \
+  --name "Llama 3 — Meta Llama 3.3, 3.2, 3.1 on Your Local Device Fleet" \
+  --version 1.0.0 \
+  --tags "llama,llama-3,llama-3.3,meta-llama,llama3,local-llm,ollama,fleet-routing,apple-silicon,mac-studio,mac-mini,open-source"
+
+clawhub --workdir skills --registry https://clawhub.ai publish mistral-codestral \
+  --slug mistral-codestral \
+  --name "Mistral & Codestral — Code Generation and Reasoning on Your Local Fleet" \
+  --version 1.0.0 \
+  --tags "mistral,codestral,mistral-ai,mistral-large,mistral-nemo,code-generation,local-llm,ollama,fleet-routing,apple-silicon,multilingual"
+
+clawhub --workdir skills --registry https://clawhub.ai publish phi-phi4 \
+  --slug phi-phi4 \
+  --name "Phi 4 — Microsoft's Small LLMs for Mac Mini, MacBook Air, Low-RAM Devices" \
+  --version 1.0.0 \
+  --tags "phi,phi-4,phi4,microsoft-phi,small-llm,low-ram,mac-mini,macbook-air,local-llm,ollama,fleet-routing,efficient,apple-silicon"
+
+clawhub --workdir skills --registry https://clawhub.ai publish private-ai \
+  --slug private-ai \
+  --name "Private AI — Offline LLM, Image Gen, STT with Zero Cloud Dependencies" \
+  --version 1.0.0 \
+  --tags "private-ai,offline-ai,air-gapped,on-premise,local-ai,self-hosted,hipaa,gdpr,data-sovereignty,no-cloud,privacy,compliance,ollama"
+
+clawhub --workdir skills --registry https://clawhub.ai publish local-coding \
+  --slug local-coding \
+  --name "Local Coding Assistant — DeepSeek-Coder, Codestral, StarCoder on Your Fleet" \
+  --version 1.0.0 \
+  --tags "coding-assistant,code-generation,deepseek-coder,codestral,starcoder,qwen-coder,local-code,ollama,aider,continue-dev,cline,ide,apple-silicon"
 ```
 
 ### Other Registries
@@ -307,6 +359,11 @@ ClawHub runs automated security scans via VirusTotal and OpenClaw on every publi
 | `deepseek-deepseek-coder` | ⏳ Pending | ✅ Benign | Medium | Fixed at v1.0.2 — was Suspicious, now Benign |
 | `qwen-qwen3` | ✅ Benign | ✅ Benign | High | Clean at v1.0.1 |
 | `apple-silicon-ai` | ✅ Benign | ✅ Benign | High | Fixed at v1.0.1 — was Suspicious, now Benign + High confidence |
+| `llama-llama3` | ⏳ Pending | ⏳ Pending | — | Awaiting first scan (v1.0.0) |
+| `mistral-codestral` | ⏳ Pending | ⏳ Pending | — | Awaiting first scan (v1.0.0) |
+| `phi-phi4` | ⏳ Pending | ⏳ Pending | — | Awaiting first scan (v1.0.0) |
+| `private-ai` | ⏳ Pending | ⏳ Pending | — | Awaiting first scan (v1.0.0) |
+| `local-coding` | ⏳ Pending | ⏳ Pending | — | Awaiting first scan (v1.0.0) |
 
 ### What we fixed
 
@@ -352,5 +409,5 @@ The "pip install without checksums" concern appears on ALL skills as info-level.
 1. Edit the relevant `SKILL.md` file
 2. Bump the `version` in the YAML frontmatter
 3. Publish with the new version number using the commands above
-4. When API endpoints change, update **all fourteen** skills to stay in sync — the core skill (`ollama-herd`) is the source of truth
+4. When API endpoints change, update **all nineteen** skills to stay in sync — the core skill (`ollama-herd`) is the source of truth
 5. After publishing, verify rankings with `clawhub search "<keyword>"` for key terms
