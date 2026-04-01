@@ -74,14 +74,14 @@ Single Python package (`fleet_manager`), two CLI entry points:
 
 ### Configuration
 
-All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix (node). See [`docs/configuration-reference.md`](docs/configuration-reference.md) for the complete 31+ variable reference.
+All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix (node). See [`docs/configuration-reference.md`](docs/configuration-reference.md) for the complete 44+ variable reference.
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
 | [`docs/api-reference.md`](docs/api-reference.md) | All endpoints with request/response schemas |
-| [`docs/configuration-reference.md`](docs/configuration-reference.md) | All 30+ env vars with tuning guidance |
+| [`docs/configuration-reference.md`](docs/configuration-reference.md) | All 44+ env vars with tuning guidance |
 | [`docs/operations-guide.md`](docs/operations-guide.md) | Logging, traces, fallbacks, retry, drain, pre-warm, streaming, context protection |
 | [`docs/adaptive-capacity.md`](docs/adaptive-capacity.md) | Capacity learner, meeting detection, app fingerprinting |
 | [`docs/fleet-manager-routing-engine.md`](docs/fleet-manager-routing-engine.md) | 5-stage scoring pipeline deep dive |

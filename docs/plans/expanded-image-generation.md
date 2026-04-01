@@ -286,7 +286,7 @@ All models use the same `/api/generate-image` endpoint. The router detects the b
 1. Phase 1 first — near-zero effort, unlocks Ollama native image gen immediately
 2. Phase 2 second — extends the proven mflux pattern to DiffusionKit
 3. Update skills/docs after each phase
-4. Run full test suite after each phase (378+ tests should still pass, plus new image tests)
+4. Run full test suite after each phase (412 tests should still pass)
 
 ## Risk assessment
 

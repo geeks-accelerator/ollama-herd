@@ -51,7 +51,7 @@ The settings API resolves `0.0.0.0` (the bind-all address) to the actual hostnam
 **`GET /dashboard/api/settings`** returns:
 ```json
 {
-  "router_version": "0.1.0",
+  "router_version": "0.3.0",
   "router_hostname": "Neons-Mac-Studio",
   "config": {
     "toggles": { "auto_pull": true, "vram_fallback": true },
@@ -63,7 +63,7 @@ The settings API resolves `0.0.0.0` (the bind-all address) to the actual hostnam
     "auto_pull_config": { "auto_pull_timeout": 300.0 }
   },
   "nodes": [
-    { "node_id": "Neons-Mac-Studio", "status": "online", "agent_version": "0.1.0",
+    { "node_id": "Neons-Mac-Studio", "status": "online", "agent_version": "0.3.0",
       "ip": "http://localhost:11434", "models_loaded_count": 2, "is_router": true }
   ]
 }

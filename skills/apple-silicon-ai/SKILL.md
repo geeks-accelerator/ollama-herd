@@ -165,7 +165,7 @@ The Apple Silicon router's model recommender analyzes your fleet hardware and su
 ## Full documentation
 
 - [Agent Setup Guide](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/guides/agent-setup-guide.md) — complete Apple Silicon setup for all 4 model types
-- [Configuration Reference](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/configuration-reference.md) — all 30+ environment variables
+- [Configuration Reference](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/configuration-reference.md) — all 44+ environment variables
 - [API Reference](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/api-reference.md) — all endpoints with request/response schemas
 - [Troubleshooting](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/troubleshooting.md) — common Apple Silicon issues and fixes
 

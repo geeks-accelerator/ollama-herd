@@ -364,7 +364,7 @@ If you see a timestamp instead of "Forever", your keep-alive is too short.
 
 ## Configuration
 
-All settings via environment variables. See [Configuration Reference](docs/configuration-reference.md) for the complete list of 31+ variables with tuning guidance.
+All settings via environment variables. See [Configuration Reference](docs/configuration-reference.md) for the complete list of 44+ variables with tuning guidance.
 
 ### Common variables
 
@@ -405,7 +405,7 @@ uv run ruff format src/              # format
 | Document | Description |
 |----------|-------------|
 | [API Reference](docs/api-reference.md) | All endpoints with request/response schemas |
-| [Configuration Reference](docs/configuration-reference.md) | All 29+ environment variables with tuning guidance |
+| [Configuration Reference](docs/configuration-reference.md) | All 44+ environment variables with tuning guidance |
 | [Operations Guide](docs/operations-guide.md) | Logging, traces, fallbacks, retry, drain, pre-warm, streaming |
 | [Adaptive Capacity](docs/adaptive-capacity.md) | Capacity learner, meeting detection, app fingerprinting |
 | [Routing Engine](docs/fleet-manager-routing-engine.md) | 5-stage scoring pipeline deep dive |

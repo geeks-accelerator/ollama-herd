@@ -341,7 +341,7 @@ ClawHub runs automated security scans via VirusTotal and OpenClaw on every publi
 
 ### Current Ratings
 
-All 14 original skills are **Benign** (5 with High confidence). The 11 newer skills are awaiting their first scan — based on the same metadata patterns, they should pass clean.
+The first 14 published skills are all **Benign** (5 with High confidence). The remaining 14 newer skills are awaiting their first scan — based on the same metadata patterns, they should pass clean.
 
 | Rating | Count | Skills |
 |--------|-------|--------|
