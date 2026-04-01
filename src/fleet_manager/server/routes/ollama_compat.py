@@ -146,6 +146,21 @@ async def ollama_tags(request: Request):
             elif node.node_id not in seen[name]["details"]["fleet_nodes"]:
                 seen[name]["details"]["fleet_nodes"].append(node.node_id)
 
+    # Include image models (mflux + DiffusionKit) in the unified list
+    for node in registry.get_online_nodes():
+        if not node.image:
+            continue
+        for m in node.image.models_available:
+            if m.name not in seen:
+                seen[m.name] = {
+                    "name": m.name,
+                    "model": m.name,
+                    "size": 0,
+                    "details": {"fleet_nodes": [node.node_id], "type": "image"},
+                }
+            elif node.node_id not in seen[m.name]["details"].get("fleet_nodes", []):
+                seen[m.name]["details"]["fleet_nodes"].append(node.node_id)
+
     return {"models": list(seen.values())}
 
 
@@ -167,6 +182,30 @@ async def ollama_ps(request: Request):
                 }
             )
     return {"models": models}
+
+
+@router.post("/api/embed")
+@router.post("/api/embeddings")
+async def ollama_embed(request: Request):
+    """Ollama-compatible embeddings endpoint. Routes to best node with the model."""
+    body = await request.json()
+    model = body.get("model", "")
+    if not model:
+        return JSONResponse(status_code=400, content={"error": "model is required"})
+
+    tags = extract_tags(body, request.headers)
+    inference_req = InferenceRequest(
+        model=model,
+        original_model=model,
+        messages=[],
+        stream=False,
+        original_format=RequestFormat.OLLAMA,
+        raw_body=body,
+        tags=tags,
+        request_type="embed",
+    )
+
+    return await _route_and_stream(request, inference_req)
 
 
 async def _route_and_stream(request: Request, inference_req: InferenceRequest):

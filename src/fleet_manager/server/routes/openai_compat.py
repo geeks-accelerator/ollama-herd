@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
 import uuid
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.routes.routing import (
@@ -33,6 +34,10 @@ async def list_models(request: Request):
                 models.add(m.name)
             for m in node.ollama.models_available:
                 models.add(m)
+        # Include image models (mflux + DiffusionKit)
+        if node.image:
+            for m in node.image.models_available:
+                models.add(m.name)
 
     return {
         "object": "list",
@@ -204,3 +209,81 @@ async def chat_completions(request: Request):
                 "total_tokens": prompt_tok + completion_tok,
             },
         }
+
+
+@router.post("/v1/images/generations")
+async def openai_images_generations(request: Request):
+    """OpenAI-compatible image generation endpoint.
+
+    Wraps the fleet's /api/generate-image and returns the response
+    in OpenAI's image API format (base64 JSON or raw PNG).
+    """
+    body = await request.json()
+    model = body.get("model", "")
+    prompt = body.get("prompt", "")
+    if not model:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "model is required", "type": "invalid_request_error"}},
+        )
+    if not prompt:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "prompt is required", "type": "invalid_request_error"}},
+        )
+
+    # Map OpenAI parameters to our image endpoint parameters
+    size = body.get("size", "1024x1024")
+    width, height = (int(x) for x in size.split("x")) if "x" in size else (1024, 1024)
+    response_format = body.get("response_format", "b64_json")
+
+    # Forward to the internal image generation endpoint
+    from fleet_manager.server.routes.image_compat import generate_image
+
+    image_body = {
+        "model": model,
+        "prompt": prompt,
+        "width": width,
+        "height": height,
+    }
+    # Pass through optional params
+    for key in ("steps", "guidance", "seed", "negative_prompt"):
+        if key in body:
+            image_body[key] = body[key]
+
+    request._body = json.dumps(image_body).encode()
+    image_response = await generate_image(request)
+
+    # If the image endpoint returned an error, pass it through in OpenAI format
+    if hasattr(image_response, "status_code") and image_response.status_code >= 400:
+        error_body = image_response.body.decode() if hasattr(image_response, "body") else "{}"
+        try:
+            error_data = json.loads(error_body)
+            error_msg = error_data.get("error", "Image generation failed")
+        except (json.JSONDecodeError, AttributeError):
+            error_msg = "Image generation failed"
+        return JSONResponse(
+            status_code=image_response.status_code,
+            content={"error": {"message": str(error_msg), "type": "server_error"}},
+        )
+
+    # Extract PNG bytes from the response
+    png_bytes = image_response.body if hasattr(image_response, "body") else b""
+
+    if response_format == "b64_json":
+        return {
+            "created": int(time.time()),
+            "data": [
+                {
+                    "b64_json": base64.b64encode(png_bytes).decode(),
+                    "revised_prompt": prompt,
+                }
+            ],
+        }
+    else:
+        # Return raw PNG for "url" format (we don't host URLs, so return the image directly)
+        return Response(
+            content=png_bytes,
+            media_type="image/png",
+            headers={"X-Fleet-Model": model},
+        )

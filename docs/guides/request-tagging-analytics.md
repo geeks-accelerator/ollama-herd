@@ -1,6 +1,6 @@
 # Request Tagging & Analytics Guide
 
-Tag your LLM requests so you can answer questions like "which bot is burning the most tokens?" and "why did latency spike at 3am?" without digging through logs.
+Tag your requests (LLM, image, embeddings, speech-to-text) so you can answer questions like "which bot is burning the most tokens?" and "why did latency spike at 3am?" without digging through logs.
 
 ## The problem
 
@@ -112,6 +112,27 @@ Tags are an array — use multiple dimensions:
 ```
 
 All three sources (body, header, user field) merge and deduplicate automatically.
+
+### Image generation and STT
+
+Tagging works for all model types, not just LLMs:
+
+```bash
+# Image generation with tags
+curl -H "X-Herd-Tags: image-pipeline, batch" \
+  http://localhost:11435/api/generate-image \
+  -d '{"model":"z-image-turbo","prompt":"a sunset","metadata":{"tags":["my-app"]}}'
+
+# Embeddings with tags
+curl http://localhost:11435/api/embed \
+  -d '{"model":"nomic-embed-text","input":"text","metadata":{"tags":["rag-pipeline"]}}'
+
+# Speech-to-text with tags (header only — multipart uploads)
+curl -H "X-Herd-Tags: transcription, meeting-notes" \
+  http://localhost:11435/api/transcribe -F "audio=@recording.wav"
+```
+
+Image, embedding, and STT tags appear in the same Apps dashboard alongside LLM tags.
 
 ## Seeing the results
 

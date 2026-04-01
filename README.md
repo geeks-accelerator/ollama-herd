@@ -213,11 +213,15 @@ See [Operations Guide](docs/operations-guide.md) for log queries, trace access, 
 | Endpoint | Description |
 |----------|-------------|
 | `POST /v1/chat/completions` | OpenAI-compatible chat (streaming + non-streaming) |
-| `GET /v1/models` | List all models across the herd |
+| `POST /v1/images/generations` | OpenAI-compatible image generation |
+| `GET /v1/models` | List all models across the herd (LLM + image) |
 | `POST /api/chat` | Ollama-compatible chat |
 | `POST /api/generate` | Ollama-compatible generate |
-| `GET /api/tags` | Ollama-compatible model list |
+| `POST /api/embed` | Ollama-compatible embeddings |
+| `POST /api/embeddings` | Ollama-compatible embeddings (alias) |
+| `GET /api/tags` | Ollama-compatible model list (LLM + image) |
 | `GET /api/ps` | Running models across all nodes |
+| `GET /api/image-models` | List image models across the fleet |
 | `GET /fleet/status` | Herd state: nodes, queues, metrics |
 | `GET /dashboard` | Real-time web dashboard |
 | `GET /dashboard/events` | SSE stream for live fleet updates |
@@ -395,7 +399,7 @@ uv sync                              # install deps
 uv run herd                          # start router
 uv run herd-node                     # start node agent
 
-uv run pytest -v                     # run all 412 tests (~5s)
+uv run pytest -v                     # run all 436 tests (~5s)
 uv run ruff check src/               # lint
 uv run ruff format src/              # format
 ```

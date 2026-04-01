@@ -99,9 +99,55 @@ data: [DONE]\n\n
 
 ---
 
+### `POST /v1/images/generations`
+
+OpenAI-compatible image generation. Wraps `/api/generate-image` in OpenAI's image API format.
+
+**Request body:**
+
+```json
+{
+  "model": "z-image-turbo",
+  "prompt": "a cat sitting on a laptop",
+  "size": "1024x1024",
+  "response_format": "b64_json"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model` | string | *required* | Image model name |
+| `prompt` | string | *required* | Text description of the image |
+| `size` | string | `1024x1024` | Image dimensions (`WIDTHxHEIGHT`) |
+| `response_format` | string | `b64_json` | `b64_json` returns base64 PNG; `url` returns raw PNG bytes |
+| `steps` | integer | model default | Inference steps |
+| `guidance` | float | model default | Guidance scale |
+| `seed` | integer | random | Seed for reproducibility |
+| `negative_prompt` | string | `""` | What to avoid in the image |
+
+**Response** (`b64_json`):
+
+```json
+{
+  "created": 1710000000,
+  "data": [
+    {
+      "b64_json": "iVBORw0KGgo...",
+      "revised_prompt": "a cat sitting on a laptop"
+    }
+  ]
+}
+```
+
+**Response** (`url`): Raw PNG bytes with `Content-Type: image/png`.
+
+**Error responses:** `400` (missing fields), `404` (model not available), `502` (generation failed), `503` (disabled).
+
+---
+
 ### `GET /v1/models`
 
-List all models across the fleet (loaded + available on disk).
+List all models across the fleet — LLM, image, and embedding models (loaded + available on disk).
 
 **Response:**
 
@@ -211,7 +257,7 @@ Response format is the same as `/api/chat`.
 
 ### `GET /api/tags`
 
-List all models across the fleet with node information.
+List all models across the fleet with node information. Includes LLM models and image models (mflux + DiffusionKit).
 
 **Response:**
 
@@ -225,12 +271,21 @@ List all models across the fleet with node information.
       "details": {
         "fleet_nodes": ["mac-studio-ultra", "macbook-pro-m4"]
       }
+    },
+    {
+      "name": "z-image-turbo",
+      "model": "z-image-turbo",
+      "size": 0,
+      "details": {
+        "fleet_nodes": ["mac-studio-ultra"],
+        "type": "image"
+      }
     }
   ]
 }
 ```
 
-The `fleet_nodes` array shows which nodes have each model (loaded or available on disk). The `size` field is in bytes.
+The `fleet_nodes` array shows which nodes have each model (loaded or available on disk). The `size` field is in bytes. Image models include a `"type": "image"` field in details.
 
 ---
 
@@ -258,6 +313,74 @@ List all currently loaded (hot) models across the fleet.
   ]
 }
 ```
+
+---
+
+### `POST /api/embed`
+### `POST /api/embeddings`
+
+Ollama-compatible embeddings endpoints. Routes to the best node with the requested embedding model. Both endpoints accept the same body — `/api/embed` uses `input` field, `/api/embeddings` uses `prompt` field (both are accepted on either endpoint).
+
+**Request body:**
+
+```json
+{
+  "model": "nomic-embed-text",
+  "input": "The quick brown fox jumps over the lazy dog"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model` | string | *required* | Embedding model name |
+| `input` | string/array | — | Text(s) to embed (preferred for `/api/embed`) |
+| `prompt` | string | — | Text to embed (preferred for `/api/embeddings`) |
+| `metadata.tags` | array | `[]` | Tags for per-app analytics |
+
+The raw body is proxied to Ollama's embedding endpoint on the selected node. Response format matches Ollama's native response.
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing `model` field |
+| 404 | Model not found on any node |
+| 503 | Model exists but no node can serve it |
+
+---
+
+### `GET /api/image-models`
+
+List all image models across the fleet (mflux, DiffusionKit, and Ollama native).
+
+**Response:**
+
+```json
+{
+  "models": [
+    {
+      "name": "z-image-turbo",
+      "type": "image",
+      "backend": "mflux",
+      "fleet_nodes": ["mac-studio-ultra"]
+    },
+    {
+      "name": "sd3-medium",
+      "type": "image",
+      "backend": "mflux",
+      "fleet_nodes": ["macbook-pro-m4"]
+    },
+    {
+      "name": "x/z-image-turbo:latest",
+      "type": "image",
+      "backend": "ollama",
+      "fleet_nodes": ["mac-studio-ultra"]
+    }
+  ]
+}
+```
+
+The `backend` field indicates which system handles the model: `mflux` (mflux/DiffusionKit via port 11436) or `ollama` (Ollama native image models with `x/` prefix).
 
 ---
 

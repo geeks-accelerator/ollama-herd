@@ -12,7 +12,7 @@ Ollama Herd supports three image generation backends:
 | **DiffusionKit** | sd3-medium, sd3.5-large | `uv tool install diffusionkit` | CLI subprocess on port 11436 |
 | **Ollama native** | x/z-image-turbo, x/flux2-klein | `ollama pull x/z-image-turbo` | Standard Ollama API proxy |
 
-All backends route through the same `/api/generate-image` endpoint. The router detects which backend handles each model and routes accordingly.
+All backends route through `/api/generate-image` (Ollama format) or `/v1/images/generations` (OpenAI format). The router detects which backend handles each model and routes accordingly. Use `GET /api/image-models` to discover available image models and their backends.
 
 ## Why route images through Herd?
 
@@ -120,6 +120,14 @@ FLEET_IMAGE_GENERATION=true uv run herd
 
 Open `http://localhost:11435/dashboard/settings` and toggle "Image Generation" on.
 
+## Discover available image models
+
+```bash
+curl -s http://localhost:11435/api/image-models | python3 -m json.tool
+```
+
+Returns all image models across the fleet with backend type (`mflux` or `ollama`) and which nodes have them. Image models also appear in `/api/tags` and `/v1/models`.
+
 ## Generate an image
 
 ```bash
@@ -179,6 +187,24 @@ def generate_image(prompt: str, width=1024, height=1024) -> bytes:
 # Generate and save
 png_bytes = generate_image("a cat coding on a laptop")
 with open("cat.png", "wb") as f:
+    f.write(png_bytes)
+```
+
+### Example: OpenAI SDK (Python)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:11435/v1", api_key="not-needed")
+response = client.images.generate(
+    model="z-image-turbo",
+    prompt="a neon-lit Tokyo alley at midnight",
+    size="1024x1024",
+    response_format="b64_json",
+)
+import base64
+png_bytes = base64.b64decode(response.data[0].b64_json)
+with open("tokyo.png", "wb") as f:
     f.write(png_bytes)
 ```
 

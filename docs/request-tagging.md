@@ -38,6 +38,22 @@ How other platforms handle request tagging and per-app analytics:
 
 ---
 
+## Supported Endpoints
+
+Tagging works across all four model types:
+
+| Endpoint | Tag sources |
+|----------|------------|
+| `/v1/chat/completions` | `metadata.tags` in body, `X-Herd-Tags` header, `user` field |
+| `/api/chat`, `/api/generate` | `metadata.tags` in body, `X-Herd-Tags` header, `user` field |
+| `/api/embed`, `/api/embeddings` | `metadata.tags` in body, `X-Herd-Tags` header |
+| `/api/generate-image` | `metadata.tags` in body, `X-Herd-Tags` header |
+| `/api/transcribe` | `X-Herd-Tags` header (multipart upload — no JSON body) |
+
+All tagged requests flow through the same per-app analytics dashboard regardless of model type.
+
+---
+
 ## How to Tag Requests
 
 Tags can come from three sources, which are merged and deduplicated:

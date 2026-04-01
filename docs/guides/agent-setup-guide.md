@@ -15,10 +15,11 @@ This is the only URL your agent needs. All four model types route through it. Th
 | Capability | Endpoint | What it does |
 |------------|----------|-------------|
 | **LLM inference** | `/v1/chat/completions` or `/api/chat` | Text generation, reasoning, code, chat |
-| **Image generation** | `/api/generate-image` | Generate images from text prompts |
+| **Image generation** | `/api/generate-image` or `/v1/images/generations` | Generate images from text prompts (Ollama or OpenAI format) |
 | **Speech-to-text** | `/api/transcribe` | Transcribe audio files to text |
-| **Embeddings** | `/api/embeddings` | Convert text to vectors for search/RAG |
-| **Model list** | `/api/tags` or `/v1/models` | See all available models |
+| **Embeddings** | `/api/embed` or `/api/embeddings` | Convert text to vectors for search/RAG |
+| **Model list** | `/api/tags` or `/v1/models` | See all available models (LLM + image) |
+| **Image models** | `/api/image-models` | List image models with backend info |
 | **Fleet status** | `/fleet/status` | Node health, queue depths, loaded models |
 
 ## Prerequisites

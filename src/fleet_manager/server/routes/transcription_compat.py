@@ -10,6 +10,7 @@ from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
+from fleet_manager.server.routes.routing import extract_tags
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,9 @@ async def transcribe_audio(request: Request, audio: UploadFile):
     audio_bytes = await audio.read()
     filename = audio.filename or "audio.wav"
 
+    # Extract tags from headers (multipart uploads don't have JSON body)
+    tags = extract_tags({}, request.headers)
+
     # Create request for queue tracking
     inference_req = InferenceRequest(
         model=model,
@@ -114,6 +118,7 @@ async def transcribe_audio(request: Request, audio: UploadFile):
         stream=False,
         original_format=RequestFormat.OLLAMA,
         raw_body={"_audio_bytes": audio_bytes, "_filename": filename},
+        tags=tags,
         request_type="stt",
     )
 

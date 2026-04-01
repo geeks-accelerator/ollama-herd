@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, Response
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.model_knowledge import is_image_model
+from fleet_manager.server.routes.routing import extract_tags
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,42 @@ def _score_image_candidates(candidates, registry) -> object:
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[0][1]
+
+
+@router.get("/api/image-models")
+async def list_image_models(request: Request):
+    """List all available image models across the fleet."""
+    registry = request.app.state.registry
+    models: dict[str, dict] = {}
+
+    for node in registry.get_online_nodes():
+        # mflux / DiffusionKit models
+        if node.image:
+            for m in node.image.models_available:
+                if m.name not in models:
+                    models[m.name] = {
+                        "name": m.name,
+                        "type": "image",
+                        "backend": "mflux",
+                        "fleet_nodes": [node.node_id],
+                    }
+                elif node.node_id not in models[m.name]["fleet_nodes"]:
+                    models[m.name]["fleet_nodes"].append(node.node_id)
+
+        # Ollama native image models (x/ prefix)
+        if node.ollama:
+            for name in node.ollama.models_available:
+                if is_image_model(name) and name not in models:
+                    models[name] = {
+                        "name": name,
+                        "type": "image",
+                        "backend": "ollama",
+                        "fleet_nodes": [node.node_id],
+                    }
+                elif name in models and node.node_id not in models[name]["fleet_nodes"]:
+                    models[name]["fleet_nodes"].append(node.node_id)
+
+    return {"models": list(models.values())}
 
 
 @router.post("/api/generate-image")
@@ -151,12 +188,14 @@ async def generate_image(request: Request):
     logger.info(f"Image generation: model={model} {width}x{height} → {best.node_id}")
 
     # Create an InferenceRequest so it flows through the queue like LLM requests
+    tags = extract_tags(body, request.headers)
     inference_req = InferenceRequest(
         model=model,
         original_model=model,
         stream=False,
         original_format=RequestFormat.OLLAMA,
         raw_body=body,
+        tags=tags,
         request_type="image",
     )
 
