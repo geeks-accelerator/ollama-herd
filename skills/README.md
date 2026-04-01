@@ -27,12 +27,66 @@ We publish many skills for one product. Each skill is a **different door** into 
 
 1. **Find an unclaimed keyword** — run `clawhub search "<keyword>"` and look for 0 relevant results or weak competition (score < 1.0)
 2. **Choose a slug** — double the primary keyword when possible (e.g., `deepseek-deepseek-coder`, `gemma-gemma3`)
-3. **Write the SKILL.md** — lead with the primary capability, vary API endpoint order from other skills, include proper guardrails and metadata
-4. **Set the display name** — repeat the keyword in both halves of the title (e.g., "Mac Mini AI — Mac Mini Local LLM...")
+3. **Write the SKILL.md** — keyword-stuff the body (see below), vary API endpoint order, include guardrails and metadata
+4. **Set the display name** — short, keyword-dense, multilingual (see below)
 5. **Publish and verify** — `clawhub publish` then `clawhub search` to confirm ranking
 6. **Update this README** — add to the tables, rankings, and publish commands
 
-See [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the full ranking playbook.
+## ClawHub Scoring System (confirmed from source code)
+
+We verified ClawHub's actual ranking algorithm from the [open-source codebase](https://github.com/openclaw/clawhub):
+
+```
+finalScore = vectorScore + lexicalBoost + popularityBoost
+```
+
+| Component | How it works | Contribution |
+|-----------|-------------|-------------|
+| **Vector score** | Cosine similarity via OpenAI `text-embedding-3-small` (1536 dims) | ~0.5-0.9 |
+| **Slug exact match** | All query tokens found in slug tokens | **+1.4** |
+| **Slug prefix match** | Partial slug match | +0.8 |
+| **Display name exact** | All query tokens found in name tokens | **+1.1** |
+| **Display name prefix** | Partial name match | +0.6 |
+| **Popularity** | `log1p(downloads) × 0.08` | +0.37 at 100 downloads |
+
+### Critical finding: the FULL body is indexed
+
+The `buildEmbeddingText()` function concatenates frontmatter fields + **the entire SKILL.md body** + other text files, then **truncates at 12,000 characters**. The embedding model doesn't distinguish between prose, code blocks, JSON examples, and comments — **every token counts**.
+
+This means a `curl` example with `"prompt": "Mac Studio rendering AI art"` contributes "Mac Studio" tokens to the vector, just like a heading or description would.
+
+### Keyword optimization techniques (validated with A/B test)
+
+We tested these techniques on 3 skills (mac-studio-ai, mistral-codestral, private-ai) on 2026-03-31. Results:
+
+| Technique | Evidence | Impact |
+|-----------|----------|--------|
+| **Body keyword stuffing** | "mac studio" went from not-ranked to #1 (3.178) after increasing mentions from ~15 to ~40 | **Highest impact** — body density is the biggest vector score lever |
+| **Keyword in code examples** | Variable names (`mac_studio`), prompts (`"Mac Studio rendering AI"`), JSON fields (`"node_id": "Mac-Studio-Ultra"`) | **High impact** — embedding model treats code tokens equally |
+| **Multilingual description** | Added Chinese (本地AI推理) and Spanish (IA local) to frontmatter description | **Medium impact** — text-embedding-3-small supports 90+ languages |
+| **Short multilingual title** | "Mac Studio AI. Mac Studio本地AI. Mac Studio IA Local." | **Mixed** — helps single-keyword queries but loses compound keywords that were in the old long title |
+| **Keyword in section headers** | Every `##` heading includes the target keyword | **Medium impact** — headers are prominent tokens in the embedding |
+| **Keyword in guardrails** | "Mac Studio model pulls require confirmation" instead of generic "Model pulls require confirmation" | **Low-medium impact** — adds a few more keyword tokens |
+
+### Before/After results (2026-03-31)
+
+| Keyword | Before optimization | After optimization | Change |
+|---------|--------------------|--------------------|--------|
+| "mac studio" | not ranked | **#1 (3.178)** | Body stuffing works |
+| "mistral" | empty results | **#2 (2.948)** | Body stuffing works |
+| "offline ai" | not ranked | **#1 (1.842)** | Body stuffing works |
+| "private ai" | not ranked | **#1 (3.187)** | Body stuffing works |
+| "mistral local" | not ranked | **#1 (1.600)** | New compound keyword captured |
+| "m4 ultra" | #1 (1.610) | #4 (0.485) | **Regression** — shorter title lost this keyword |
+
+### Tradeoffs discovered
+
+- **Short titles vs long titles**: Short multilingual titles ("Mac Studio AI. Mac Studio本地AI.") score better for the primary keyword but can lose compound keywords ("m4 ultra", "mac studio llm") that were in the old long title
+- **Optimal title strategy**: Medium-length title that includes the top 2-3 compound keywords + one multilingual keyword. Don't go full short unless you only care about one keyword.
+- **Body stuffing has diminishing returns**: 40+ mentions is effective. 100+ might feel spammy to the security scanner. Stay natural-sounding.
+- **12K char limit**: Skills must stay under 12,000 characters or the end gets truncated from the embedding.
+
+See [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the full playbook.
 
 ## Directory Structure
 
@@ -142,11 +196,11 @@ All 28 skills share the same fleet router. Each is fully self-contained — inst
 | "mflux" | `mflux-image-router` | 3.116 |
 | "apple silicon" | `apple-silicon-ai` | 3.102 |
 | "mac mini ai" | `mac-mini-ai` | 3.002 |
-| "private ai" | `private-ai` | 2.995 |
+| "private ai" | `private-ai` | 3.187 |
 | "phi" | `phi-phi4` | 2.930 |
-| "codestral" | `mistral-codestral` | 2.906 |
+| "codestral" | `mistral-codestral` | 3.005 |
 | "gemma" | `gemma-gemma3` | 2.891 |
-| "mac studio" | `mac-studio-ai` | 2.844 |
+| "mac studio" | `mac-studio-ai` | 3.178 |
 | "mistral" | `mistral-codestral` | 2.812 |
 | "stable diffusion" | `stable-diffusion-sd3` | 2.756 |
 | "ollama herd" | `ollama-herd` | 2.090 |
@@ -164,7 +218,9 @@ All 28 skills share the same fleet router. Each is fully self-contained — inst
 | "gemma 3" | `gemma-gemma3` | 1.542 |
 | "diffusionkit" | `stable-diffusion-sd3` | 1.454 |
 | "stable diffusion 3" | `stable-diffusion-sd3` | 1.395 |
-| "mac studio ai" | `mac-studio-ai` | 2.928 |
+| "mac studio ai" | `mac-studio-ai` | 3.251 |
+| "offline ai" | `private-ai` | 1.842 |
+| "mistral local" | `mistral-codestral` | 1.600 |
 | "self hosted ai" | `self-hosted-ai` | 3.010 |
 | "self hosted llm" | `self-hosted-ai` | 1.471 |
 | "self hosted" | `self-hosted-ai` | 2.857 |
@@ -177,6 +233,7 @@ All 28 skills share the same fleet router. Each is fully self-contained — inst
 
 | Keyword | Our Skill | Rank | Score |
 |---------|-----------|------|-------|
+| "mistral" | `mistral-codestral` | #2 | 2.948 |
 | "qwen" | `qwen-qwen3` | #2 | 3.102 |
 | "embeddings" | `fleet-embeddings` | #2 | 3.087 |
 | "fleet" | `fleet-embeddings` | #2 | 3.088 |
@@ -202,18 +259,18 @@ All 28 skills share the same fleet router. Each is fully self-contained — inst
 
 ### Ranking insights
 
-Three fields are indexed on ClawHub: **Display name** (highest weight), **Description** (medium), **Tags** (lower). The body content of SKILL.md is NOT indexed for search.
+ClawHub indexes: **Slug** (lexical +1.4), **Display name** (lexical +1.1), **Description** (embedding), **Full SKILL.md body** (embedding), **Tags** (embedding). The body IS indexed — every token counts.
 
 Key lessons learned:
-1. **Lead with the keyword** — "Ollama Load Balancer" ranks for "load balancer" because the keyword is in the display name
-2. **Double the keyword in the slug** — `deepseek-deepseek-coder` scores higher than `deepseek-fleet` for "deepseek coder"
-3. **Repeat the keyword in both halves of the title** — "Mac Mini AI — Mac Mini Local LLM..." reinforces the match
-4. **Model names in descriptions** — Adding "Llama, Qwen, DeepSeek" to descriptions moved us into top 5 for those terms
-5. **Tags alone don't rank** — A tag for "llama" only helps if "llama" also appears in the display name or description
-6. **Exact slug match wins** — Skills with the exact keyword as their slug always outscore compound slugs
-7. **Don't waste slug space on low-value words** — "fleet", "open-source", "llm" are generic. Use high-value search terms instead.
-
-See [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the full playbook.
+1. **Body keyword stuffing is the biggest lever** — "mac studio" went from not-ranked to #1 (3.178) by increasing body mentions from ~15 to ~40
+2. **Code examples are keyword real estate** — variable names, prompts, JSON fields, comments all contribute tokens to the embedding
+3. **Double the keyword in the slug** — `deepseek-deepseek-coder` scores higher than `deepseek-fleet` for "deepseek coder"
+4. **Slug exact match gives +1.4** — the single biggest scoring boost. Name exact match gives +1.1. Both stack.
+5. **Multilingual descriptions help** — Chinese + Spanish in the description widens the semantic surface via text-embedding-3-small
+6. **Short titles help single keywords but hurt compounds** — "Mac Studio AI." scores better for "mac studio" but loses "m4 ultra" that was in the old long title
+7. **Stay under 12K characters** — ClawHub truncates the embedding text at 12,000 chars
+8. **Tags have the lowest weight** — they contribute to the embedding but not to the lexical boost
+9. **Don't waste slug space on low-value words** — "fleet", "open-source", "llm" are generic. Use high-value search terms instead.
 
 ## Prerequisites
 

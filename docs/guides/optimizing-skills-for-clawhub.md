@@ -4,15 +4,46 @@ A practical guide for getting Ollama Herd skills discovered, installed, and pass
 
 > **Skills reference:** [skills/README.md](../../skills/README.md) — current skill inventory, descriptions, tags, publish commands, ranking data, and security scan status.
 
-## How ClawHub search works
+## How ClawHub search works (confirmed from source code)
 
-ClawHub uses vector search (semantic embeddings) to match agent queries against published skills. Three fields are indexed, in order of weight:
+We verified ClawHub's ranking algorithm from the [open-source codebase](https://github.com/openclaw/clawhub). The scoring formula:
 
-1. **Display name** (set via `--name` at publish time) — highest weight
-2. **Description** (from SKILL.md frontmatter `description` field) — medium weight
-3. **Tags** (set via `--tags` at publish time) — lower weight
+```
+finalScore = vectorScore + lexicalBoost + popularityBoost
+```
 
-The body content of SKILL.md is **not** indexed for search. It matters for security scans and agent consumption after install, but discovery depends almost entirely on name, description, and tags.
+### Vector score (cosine similarity)
+
+ClawHub uses OpenAI's `text-embedding-3-small` (1536 dimensions) with cosine similarity. The embedding text is built by `buildEmbeddingText()` which concatenates:
+
+1. **Frontmatter fields** (name, description) — positioned first in the embedding text
+2. **The entire SKILL.md body** — every heading, paragraph, code block, JSON example, comment
+3. **Other text files** in the skill package
+
+**Truncated at 12,000 characters** (`DEFAULT_EMBEDDING_MAX_CHARS`). Content beyond 12K is lost.
+
+**Critical: The body IS indexed.** The embedding model treats prose, code blocks, and JSON examples equally — every token contributes to the vector score.
+
+### Lexical boost (slug + display name matching)
+
+| Match type | Boost |
+|-----------|-------|
+| Slug exact match (all query tokens in slug) | **+1.4** |
+| Slug prefix match | +0.8 |
+| Display name exact match (all query tokens in name) | **+1.1** |
+| Display name prefix match | +0.6 |
+
+These are **additive** — a skill matching both slug AND name gets up to +2.5.
+
+### Popularity boost
+
+`log1p(downloads) × 0.08` — small but cumulative. 100 downloads = +0.37, 1000 = +0.55.
+
+### What this means
+
+- **Skills with keyword in slug score 3.0+** (vector ~0.7 + slug +1.4 + name +1.1)
+- **Body-only keyword matches score ~1.5-2.0** (vector ~0.7-0.9, no lexical boost)
+- **The body is the biggest lever for vector score** — keyword stuffing in code examples, prompts, JSON fields, and comments directly increases cosine similarity
 
 ## Lesson 1: Lead with your keyword
 
@@ -143,7 +174,54 @@ We use 10-15 tags per skill. Tags are distributed by relevance:
 
 Every skill having every tag dilutes ranking. "deepseek" on the image gen skill hurts because it's irrelevant — the scanner may flag intent mismatch.
 
-## Lesson 6: Keyword ranking analysis
+## Lesson 6: Body keyword stuffing (the biggest lever)
+
+The SKILL.md body is fully indexed by the embedding model. Every token — in prose, code blocks, JSON examples, variable names, comments — contributes to the vector score. This is the **single most impactful optimization** we've found.
+
+### Validated results (2026-03-31 A/B test)
+
+We optimized 3 skills by increasing keyword density in the body:
+
+| Skill | Keyword | Before | After | Body mentions before → after |
+|-------|---------|--------|-------|-----|
+| `mac-studio-ai` | "mac studio" | not ranked | **#1 (3.178)** | ~15 → ~40 |
+| `mistral-codestral` | "mistral" | not ranked | **#2 (2.948)** | ~20 → ~50 |
+| `private-ai` | "private ai" | not ranked | **#1 (3.187)** | ~10 → ~60 |
+| `private-ai` | "offline ai" | not ranked | **#1 (1.842)** | ~2 → ~8 |
+
+### Where to put keywords in the body
+
+Every free-text string is an opportunity:
+
+| Location | Example (for "Mac Studio" keyword) |
+|----------|-------------------------------------|
+| **Python variable names** | `mac_studio = OpenAI(base_url="http://mac-studio:11435/v1")` |
+| **Code comments** | `# 120B model — loaded in Mac Studio unified memory` |
+| **curl prompts** | `"prompt": "Mac Studio rendering AI art on Apple Silicon"` |
+| **JSON response examples** | `{"node_id": "Mac-Studio-Ultra", "memory": {"total_gb": 256}}` |
+| **Section headers** | `## Mac Studio image generation` (not just `## Image generation`) |
+| **Table headers/cells** | `| Mac Studio Config | Models for this Mac Studio |` |
+| **Guardrails text** | `Mac Studio model pulls require explicit user confirmation` |
+| **File names in examples** | `curl -o mac_studio_art.png`, `-F "file=@mac_studio_meeting.wav"` |
+
+### Multilingual description boost
+
+OpenAI's `text-embedding-3-small` supports 90+ languages. Adding Chinese and Spanish keywords to the `description` field widens the semantic surface:
+
+```yaml
+description: Mac Studio AI — run LLMs on Mac Studio. Mac Studio本地AI推理。Mac Studio IA local.
+```
+
+This helps when users search in other languages and adds more keyword tokens to the embedding text (description appears first in `buildEmbeddingText()`).
+
+### Tradeoffs
+
+- **40+ mentions is effective**. 100+ risks feeling spammy to the security scanner.
+- **Short multilingual titles** help single-keyword queries but lose compound keywords. Use medium-length titles that include the top 2-3 compound keywords + one multilingual phrase.
+- **Stay under 12,000 characters** or the end of your skill gets truncated from the embedding.
+- **Vary the phrasing** slightly to avoid exact repetition — "Mac Studio AI", "Mac Studio inference", "Mac Studio fleet" all reinforce the keyword while sounding natural.
+
+## Lesson 7: Keyword ranking analysis
 
 ### Running a sweep
 
@@ -173,7 +251,7 @@ Each line: `slug  display-name  (score)`
 - **Cross-pollination** — multiple skills for same keyword (good if intentional)
 - **Competitor with 3.0+** — hard to displace without title-level keyword match
 
-## Lesson 7: Competitive landscape
+## Lesson 8: Competitive landscape
 
 See [skills/README.md](../../skills/README.md#clawhub-search-rankings) for current ranking data. Key patterns to watch:
 
@@ -193,7 +271,7 @@ See [skills/README.md](../../skills/README.md#clawhub-search-rankings) for curre
 - **We don't rank but 3+ competitors score 3.0+** → Saturated, target compound terms instead
 - **Single competitor scores 3.0+** → Can potentially displace with exact slug match + better description
 
-## Lesson 8: Publishing workflow
+## Lesson 9: Publishing workflow
 
 ```bash
 # 1. Verify account
@@ -212,7 +290,7 @@ clawhub search "[primary keyword]"
 
 Always bump the version number. ClawHub rejects duplicate versions.
 
-## Lesson 9: The cross-pollination effect
+## Lesson 10: The cross-pollination effect
 
 When someone searches "ollama" and sees 4 of our skills in the results, it signals authority. The `ollama-herd` (core), `ollama-load-balancer` (DevOps), `ollama-manager` (lifecycle), and `gpu-cluster-manager` (home lab) all surface for "ollama" — different voices, same fleet.
 
