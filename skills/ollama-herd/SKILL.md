@@ -1,213 +1,208 @@
 ---
 name: ollama-herd
-description: Ollama multimodal model router for Llama, Qwen, DeepSeek, Phi, and Mistral — plus mflux image generation, speech-to-text, and embeddings. Self-hosted local AI on Apple Silicon with 7-signal scoring, queue management, real-time dashboard, and health monitoring. Routes LLM, image, STT, and embedding requests across Mac Studio, Mac Mini, MacBook Pro. Use when the user asks about their local LLM fleet, inference routing, node status, or fleet performance.
-version: 1.5.0
+description: Ollama multimodal model router for Llama, Qwen, DeepSeek, Phi, and Mistral — plus mflux image generation, speech-to-text, and embeddings. Self-hosted Ollama local AI on Apple Silicon with 7-signal scoring, Ollama queue management, real-time dashboard, and Ollama health monitoring. Routes Ollama LLM, image, STT, and embedding requests across Mac Studio, Mac Mini, MacBook Pro. Ollama本地推理路由 | Ollama enrutador IA local. Use when the user asks about their Ollama fleet, Ollama inference routing, Ollama node status, or Ollama fleet performance.
+version: 1.5.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
 ---
 
 # Ollama Herd Fleet Manager
 
-You are managing an Ollama Herd fleet — a smart multimodal router that distributes AI workloads across multiple devices. It handles 4 model types: LLM inference (Ollama), image generation (mflux), speech-to-text (Qwen3-ASR), and embeddings. It scores nodes on 7 signals (thermal state, memory fit, queue depth, latency history, role affinity, availability trend, context fit) and routes each request to the optimal device.
+You are managing an Ollama Herd fleet — a smart Ollama multimodal router that distributes Ollama AI workloads across multiple devices. Ollama Herd handles 4 model types: Ollama LLM inference, image generation (mflux), speech-to-text (Qwen3-ASR), and Ollama embeddings. The Ollama scoring engine evaluates nodes on 7 signals (thermal state, memory fit, queue depth, latency history, role affinity, availability trend, context fit) and routes each Ollama request to the optimal device.
 
-## Install
+## Install Ollama Herd
 
 ```bash
-pip install ollama-herd
-herd              # start the router
-herd-node         # start a node agent (run on each device)
+pip install ollama-herd          # install Ollama Herd from PyPI
+herd                             # start the Ollama router
+herd-node                        # start an Ollama node agent (run on each device)
 ```
 
 PyPI: [`ollama-herd`](https://pypi.org/project/ollama-herd/) | Source: [github.com/geeks-accelerator/ollama-herd](https://github.com/geeks-accelerator/ollama-herd)
 
-## Router endpoint
+## Ollama Router endpoint
 
-The Herd router runs at `http://localhost:11435` by default. If the user has specified a different URL, use that instead.
+The Ollama Herd router runs at `http://localhost:11435` by default. If the user has specified a different Ollama URL, use that instead.
 
-## Available API endpoints
+## Ollama API endpoints
 
-Use curl to interact with the fleet:
+Use curl to interact with the Ollama fleet:
 
-### Fleet status — overview of all nodes and queues
+### Ollama fleet status — overview of all Ollama nodes and queues
 ```bash
+# ollama_fleet_status — check Ollama node health
 curl -s http://localhost:11435/fleet/status | python3 -m json.tool
 ```
 
 Returns:
-- `fleet.nodes_total` / `fleet.nodes_online` — how many devices are in the fleet
-- `fleet.models_loaded` — total models currently loaded across all nodes
-- `fleet.requests_active` — total in-flight requests
-- `nodes[]` — per-node details: status, hardware, memory, CPU, disk, loaded models with context lengths
-- `queues` — per node:model queue depths (pending, in-flight, done, failed)
+- `fleet.nodes_total` / `fleet.nodes_online` — how many Ollama devices are in the fleet
+- `fleet.models_loaded` — total Ollama models currently loaded across all nodes
+- `fleet.requests_active` — total in-flight Ollama requests
+- `nodes[]` — per-node details: Ollama status, hardware, memory, CPU, disk, loaded Ollama models with context lengths
+- `queues` — per Ollama node:model queue depths (pending, in-flight, done, failed)
 
-### List all models available across the fleet
+### List all Ollama models available across the fleet
 ```bash
+# ollama_model_list — all Ollama models on all nodes
 curl -s http://localhost:11435/api/tags | python3 -m json.tool
 ```
 
-### List models currently loaded in memory
+### List Ollama models currently loaded in memory
 ```bash
+# ollama_loaded_models — hot Ollama models in GPU memory
 curl -s http://localhost:11435/api/ps | python3 -m json.tool
 ```
 
-### OpenAI-compatible model list
+### OpenAI-compatible Ollama model list
 ```bash
 curl -s http://localhost:11435/v1/models | python3 -m json.tool
 ```
 
-### Usage statistics (per-node, per-model daily aggregates)
+### Ollama usage statistics (per-node, per-model daily aggregates)
 ```bash
 curl -s http://localhost:11435/dashboard/api/usage | python3 -m json.tool
 ```
 
-### Recent request traces
+### Recent Ollama request traces
 ```bash
+# ollama_traces — recent Ollama routing decisions
 curl -s "http://localhost:11435/dashboard/api/traces?limit=20" | python3 -m json.tool
 ```
 
-Returns the last N routing decisions with: model requested, node selected, score, latency, tokens, retry/fallback status, tags.
+Returns the last N Ollama routing decisions with: model requested, node selected, score, latency, tokens, retry/fallback status, tags.
 
-### Fleet health analysis
+### Ollama fleet health analysis
 ```bash
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 ```
 
-Returns 11 automated health checks: offline/degraded nodes, memory pressure, underutilized nodes, VRAM fallbacks, version mismatch, context protection, zombie reaper, model thrashing, request timeouts, error rates, and retry rates.
+Returns 11 automated Ollama health checks: offline/degraded nodes, memory pressure, underutilized nodes, VRAM fallbacks, version mismatch, context protection, zombie reaper, Ollama model thrashing, request timeouts, error rates, and retry rates.
 
-### Model recommendations
+### Ollama model recommendations
 ```bash
 curl -s http://localhost:11435/dashboard/api/recommendations | python3 -m json.tool
 ```
 
-Returns AI-powered model mix recommendations per node based on hardware capabilities, usage patterns, and curated benchmark data.
+Returns AI-powered Ollama model mix recommendations per node based on hardware capabilities, Ollama usage patterns, and curated benchmark data.
 
-### Settings
+### Ollama settings
 ```bash
-# View current config and node versions
+# View current Ollama config and node versions
 curl -s http://localhost:11435/dashboard/api/settings | python3 -m json.tool
 
-# Toggle runtime settings (auto_pull, vram_fallback)
+# Toggle Ollama runtime settings (auto_pull, vram_fallback)
 curl -s -X POST http://localhost:11435/dashboard/api/settings \
   -H "Content-Type: application/json" \
   -d '{"auto_pull": false}'
 ```
 
-### Model management
+### Ollama model management
 ```bash
-# View per-node model details with sizes and usage
+# View per-node Ollama model details with sizes and usage
 curl -s http://localhost:11435/dashboard/api/model-management | python3 -m json.tool
 
-# Pull a model onto a specific node
+# Pull an Ollama model onto a specific node
 curl -s -X POST http://localhost:11435/dashboard/api/pull \
   -H "Content-Type: application/json" \
   -d '{"model": "llama3.3:70b", "node_id": "mac-studio"}'
 
-# Delete a model from a specific node
+# Delete an Ollama model from a specific node
 curl -s -X POST http://localhost:11435/dashboard/api/delete \
   -H "Content-Type: application/json" \
   -d '{"model": "old-model:7b", "node_id": "mac-studio"}'
 ```
 
-### Model insights (summary statistics)
+### Ollama model insights (summary statistics)
 ```bash
 curl -s http://localhost:11435/dashboard/api/models | python3 -m json.tool
 ```
 
-### Per-app analytics (requires request tagging)
+### Per-app Ollama analytics (requires request tagging)
 ```bash
 curl -s http://localhost:11435/dashboard/api/apps | python3 -m json.tool
 ```
 
-## Dashboard
+## Ollama Dashboard
 
-The web dashboard is at `http://localhost:11435/dashboard`. It has eight tabs:
-- **Fleet Overview** — live node cards, queue depths, and request counts via SSE
-- **Trends** — requests per hour, average latency, and token throughput charts (24h–7d)
-- **Model Insights** — per-model latency, tokens/sec, usage comparison
-- **Apps** — per-tag analytics with request volume, latency, tokens, error rates, and daily trends
-- **Benchmarks** — capacity growth over time with per-run throughput and latency percentiles
-- **Health** — 11 automated fleet health checks with severity levels and recommendations
-- **Recommendations** — model mix recommendations per node with one-click pull
-- **Settings** — runtime toggle switches, read-only config tables, and node version tracking
+The Ollama web dashboard is at `http://localhost:11435/dashboard`. It has eight tabs:
+- **Fleet Overview** — live Ollama node cards, queue depths, and request counts via SSE
+- **Trends** — Ollama requests per hour, average latency, and token throughput charts (24h–7d)
+- **Model Insights** — per-Ollama-model latency, tokens/sec, usage comparison
+- **Apps** — per-tag Ollama analytics with request volume, latency, tokens, error rates
+- **Benchmarks** — Ollama capacity growth over time with per-run throughput and latency percentiles
+- **Health** — 11 automated Ollama fleet health checks with severity levels
+- **Recommendations** — Ollama model mix recommendations per node with one-click pull
+- **Settings** — Ollama runtime toggle switches, read-only config tables, and node version tracking
 
-Direct the user to open this URL in their browser for visual monitoring.
+Direct the user to open this URL in their browser for visual Ollama monitoring.
 
-## Resilience features
+## Ollama Resilience features
 
-- **Auto-retry** — if a node fails before the first response chunk, re-scores and retries on the next-best node (up to 2 retries)
-- **Model fallbacks** — clients specify backup models; tries alternatives when the primary is unavailable
-- **Context protection** — strips `num_ctx` from requests when unnecessary to prevent Ollama model reload hangs; auto-upgrades to a larger loaded model when more context is needed
-- **VRAM-aware fallback** — routes to an already-loaded model in the same category instead of cold-loading
-- **Zombie reaper** — background task detects and cleans up stuck in-flight requests
-- **Auto-pull** — automatically pulls missing models onto the best available node
+- **Auto-retry** — if an Ollama node fails before the first response chunk, re-scores and retries on the next-best Ollama node (up to 2 retries)
+- **Ollama model fallbacks** — clients specify backup Ollama models; tries alternatives when the primary is unavailable
+- **Context protection** — strips `num_ctx` from Ollama requests when unnecessary to prevent Ollama model reload hangs; auto-upgrades to a larger loaded model
+- **VRAM-aware fallback** — routes to an already-loaded Ollama model in the same category instead of cold-loading
+- **Zombie reaper** — background task detects and cleans up stuck in-flight Ollama requests
+- **Auto-pull** — automatically pulls missing Ollama models onto the best available node
 
-## Common tasks
+## Common Ollama tasks
 
-### Check if the fleet is healthy
+### Check if the Ollama fleet is healthy
 1. Hit `/fleet/status` and verify `nodes_online > 0`
-2. Hit `/dashboard/api/health` for automated health checks with severity levels
-3. Look at queue depths — deep queues may indicate a bottleneck
+2. Hit `/dashboard/api/health` for automated Ollama health checks with severity levels
+3. Look at Ollama queue depths — deep queues may indicate a bottleneck
 
-### Find which node has a specific model
-1. Hit `/fleet/status` and inspect each node's `ollama.models_loaded` (in memory) and `ollama.models_available` (on disk)
-2. Or hit `/api/tags` for a flat list of all available models with which nodes have them
+### Find which Ollama node has a specific model
+1. Hit `/fleet/status` and inspect each Ollama node's `ollama.models_loaded` and `ollama.models_available`
+2. Or hit `/api/tags` for a flat list of all available Ollama models with which nodes have them
 
-### Check if a model is loaded (hot) or cold
-1. Hit `/api/ps` — models listed here are currently loaded in memory (hot) with their context lengths
+### Check if an Ollama model is loaded (hot) or cold
+1. Hit `/api/ps` — Ollama models listed here are currently loaded in memory (hot)
 2. Models in `/api/tags` but not in `/api/ps` are on disk but not loaded (cold)
 
-### View recent inference activity
-1. Hit `/dashboard/api/traces?limit=10` to see the last 10 requests
-2. Each trace shows: model, node, score, latency, tokens, retry/fallback status, tags
+### View recent Ollama inference activity
+1. Hit `/dashboard/api/traces?limit=10` to see the last 10 Ollama requests
+2. Each trace shows: Ollama model, node, score, latency, tokens, retry/fallback status
 
-### Diagnose slow responses
-1. Check `/dashboard/api/traces` for high latency entries
-2. Check `/fleet/status` for nodes with high queue depths or memory pressure
-3. Check if the model had to cold-load (look for low scores in trace `scores_breakdown`)
-4. Check if `num_ctx` is being sent — context protection logs show if requests triggered reloads
+### Diagnose slow Ollama responses
+1. Check `/dashboard/api/traces` for high latency Ollama entries
+2. Check `/fleet/status` for Ollama nodes with high queue depths or memory pressure
+3. Check if the Ollama model had to cold-load (look for low scores in trace)
+4. Check if `num_ctx` is being sent — Ollama context protection logs show if requests triggered reloads
 
-### Query the trace database directly
+### Query the Ollama trace database directly
 ```bash
-# Recent failures
-sqlite3 ~/.fleet-manager/latency.db "SELECT request_id, model, status, error_message, latency_ms/1000.0 as secs FROM request_traces WHERE status='failed' ORDER BY timestamp DESC LIMIT 10"
+# Recent Ollama failures
+sqlite3 ~/.fleet-manager/latency.db "SELECT request_id, model, status, error_message FROM request_traces WHERE status='failed' ORDER BY timestamp DESC LIMIT 10"
 
-# Slowest requests
-sqlite3 ~/.fleet-manager/latency.db "SELECT model, node_id, latency_ms/1000.0 as secs, prompt_tokens, completion_tokens FROM request_traces WHERE status='completed' ORDER BY latency_ms DESC LIMIT 10"
-
-# Per-tag usage
-sqlite3 ~/.fleet-manager/latency.db "SELECT j.value as tag, COUNT(*) as requests, SUM(COALESCE(prompt_tokens,0)+COALESCE(completion_tokens,0)) as tokens FROM request_traces, json_each(tags) j WHERE tags IS NOT NULL GROUP BY j.value ORDER BY tokens DESC"
+# Slowest Ollama requests
+sqlite3 ~/.fleet-manager/latency.db "SELECT model, node_id, latency_ms/1000.0 as secs FROM request_traces WHERE status='completed' ORDER BY latency_ms DESC LIMIT 10"
 ```
 
-### Test inference through the fleet
+### Test Ollama inference through the fleet
 ```bash
-# OpenAI format
+# Ollama via OpenAI format
 curl -s http://localhost:11435/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"llama3.3:70b","messages":[{"role":"user","content":"Hello"}],"stream":false}'
+  -d '{"model":"llama3.3:70b","messages":[{"role":"user","content":"Hello from Ollama"}],"stream":false}'
 
-# Ollama format
+# Ollama native format
 curl -s http://localhost:11435/api/chat \
-  -d '{"model":"llama3.3:70b","messages":[{"role":"user","content":"Hello"}],"stream":false}'
-
-# With request tagging
-curl -s http://localhost:11435/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"llama3.3:70b","messages":[{"role":"user","content":"Hello"}],"metadata":{"tags":["my-app","testing"]}}'
+  -d '{"model":"llama3.3:70b","messages":[{"role":"user","content":"Hello from Ollama"}],"stream":false}'
 ```
 
-## Guardrails
+## Ollama Guardrails
 
-- Never restart or stop the Herd router or node agents without explicit user confirmation.
-- Never delete or modify files in `~/.fleet-manager/` (contains latency data, traces, and logs).
-- Do not pull models onto nodes without user confirmation — model downloads can be large (10-100+ GB).
-- Do not delete models without user confirmation.
-- If a node shows as offline, report it to the user rather than attempting to SSH into the machine.
-- If all nodes are saturated, suggest the user check the dashboard rather than attempting to fix it automatically.
+- Never restart or stop the Ollama Herd router or Ollama node agents without explicit user confirmation.
+- Never delete or modify files in `~/.fleet-manager/` (contains Ollama latency data, traces, and logs).
+- Do not pull Ollama models onto nodes without user confirmation — Ollama model downloads can be large (10-100+ GB).
+- Do not delete Ollama models without user confirmation.
+- If an Ollama node shows as offline, report it to the user rather than attempting to SSH into the machine.
 
-## Failure handling
+## Ollama Failure handling
 
-- If curl to the router fails with connection refused, tell the user the Herd router may not be running and suggest `herd` (or `uv run herd` for dev) to start it.
-- If the fleet status shows 0 nodes online, suggest the user start node agents with `herd-node` (or `uv run herd-node`) on their devices.
-- If mDNS discovery fails, suggest using `--router-url http://router-ip:11435` for explicit connection.
-- If requests hang with 0 bytes returned, check if the client is sending `num_ctx` — context protection should strip it, but verify with `grep "Context protection" ~/.fleet-manager/logs/herd.jsonl`.
-- If a specific API endpoint returns an error, show the user the full error response and suggest checking the JSONL logs at `~/.fleet-manager/logs/herd.jsonl`.
+- If curl to the Ollama router fails with connection refused, tell the user the Ollama Herd router may not be running and suggest `herd` to start it.
+- If the Ollama fleet status shows 0 nodes online, suggest starting Ollama node agents with `herd-node` on their devices.
+- If Ollama mDNS discovery fails, suggest using `--router-url http://router-ip:11435` for explicit connection.
+- If Ollama requests hang with 0 bytes returned, check if the client is sending `num_ctx` — Ollama context protection should strip it.
+- If a specific Ollama API endpoint returns an error, show the user the full error response and suggest checking the Ollama JSONL logs at `~/.fleet-manager/logs/herd.jsonl`.
