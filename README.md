@@ -12,6 +12,14 @@ You have multiple machines with GPUs sitting around. You want one endpoint that 
 pip install ollama-herd
 ```
 
+**Upgrading?**
+
+```bash
+pip install --upgrade ollama-herd
+```
+
+See [CHANGELOG.md](CHANGELOG.md) for what's new in each release.
+
 **On your router machine:**
 
 ```bash
@@ -523,6 +531,7 @@ uv run ruff format src/              # format
 | [Request Tagging](docs/request-tagging.md) | Per-app analytics, tagging strategies, competitive landscape |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues, LAN debugging, operational gotchas |
 | [Architecture Decisions](docs/architecture-decisions.md) | Port selection, design trade-offs, rationale |
+| [Changelog](CHANGELOG.md) | What's new in each release |
 
 ## What's Next
 

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-01
+
+### Added
+
+- **Embeddings proxy** — `/api/embed` and `/api/embeddings` endpoints route embedding requests to the best available node. Supports both `input` (single or batch) and `prompt` (legacy) fields. Response proxied directly from Ollama.
+- **OpenAI-compatible image generation** — `/v1/images/generations` wraps the fleet's image generation in OpenAI's standard API format. Works with the OpenAI SDK (`client.images.generate()`). Supports `size`, `response_format`, `steps`, `guidance`, `seed`, and `negative_prompt`.
+- **Image model discovery** — `/api/image-models` lists all image models across the fleet with backend type and which nodes have them. Image models also now appear in `/api/tags` and `/v1/models` responses.
+- **Request tagging for image and STT** — `metadata.tags` and `X-Herd-Tags` header now work on `/api/generate-image` and `/api/transcribe`, not just LLM endpoints. All four model types appear in the Apps dashboard tab.
+- **DeepSeek-V3 in model catalog** — 3 variants added to model knowledge: `deepseek-v3:7b` (7B distill), `deepseek-v3:32b` (32B distill), and `deepseek-v3:671b` (671B MoE, 404GB). Model recommender can now suggest V3 alongside R1.
+- **Expanded README** — comprehensive usage docs for all 4 model types with SDK examples, model comparison tables, discovery endpoints, and batch examples
+- 24 new tests (436 total)
+
+### Changed
+
+- `/api/tags` response includes mflux, DiffusionKit, and Ollama native image models alongside LLM models
+- `/v1/models` response includes image models with `type: "image"` in metadata
+
 ## [0.3.0] - 2026-03-30
 
 ### Added
@@ -88,6 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graceful drain on SIGTERM
 - 212 tests with full async coverage
 
+[0.4.0]: https://github.com/geeks-accelerator/ollama-herd/releases/tag/v0.4.0
 [0.3.0]: https://github.com/geeks-accelerator/ollama-herd/releases/tag/v0.3.0
 [0.2.0]: https://github.com/geeks-accelerator/ollama-herd/releases/tag/v0.2.0
 [0.1.0]: https://github.com/geeks-accelerator/ollama-herd/releases/tag/v0.1.0
