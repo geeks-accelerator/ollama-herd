@@ -23,6 +23,23 @@ uv run ruff format src/          # format
 ./scripts/patch-diffusionkit-macos26.sh  # fix DiffusionKit on macOS 26+
 ```
 
+## Release to PyPI
+
+```bash
+# 1. Bump version in pyproject.toml
+# 2. Update CHANGELOG.md with new version entry
+# 3. Commit, push to main
+# 4. Build and publish
+uv build
+uv publish --username __token__ --password "$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('$HOME/.pypirc'); print(c['pypi']['password'])")"
+```
+
+- **Package name:** `ollama-herd` on [PyPI](https://pypi.org/project/ollama-herd/)
+- **Credentials:** PyPI API token stored in `~/.pypirc` under `[pypi]`
+- **Build system:** hatchling (configured in `pyproject.toml`)
+- **Version:** single source of truth in `pyproject.toml` (`version = "x.y.z"`)
+- **Changelog:** `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/) format — update it before every release
+
 ## Architecture
 
 Single Python package (`fleet_manager`), two CLI entry points:
