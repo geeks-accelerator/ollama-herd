@@ -108,9 +108,22 @@ Copy-paste this to any AI coding agent to have it update your Ollama configurati
 
 ## Beyond LLMs — image generation, speech-to-text, embeddings
 
-The same router handles four model types. Install the backend on any node and it's automatically detected:
+The same router handles four model types. Install the backend on any node and it's automatically detected. Discover everything available across your fleet:
+
+```bash
+# All models (LLM + image)
+curl http://router-ip:11435/api/tags
+
+# Image models only
+curl http://router-ip:11435/api/image-models
+
+# OpenAI-compatible model list
+curl http://router-ip:11435/v1/models
+```
 
 ### Image generation
+
+Install one or more backends on any node — the router detects them automatically via heartbeats:
 
 ```bash
 # Install backends (any combination — install what you need)
@@ -122,7 +135,17 @@ ollama pull x/z-image-turbo     # Ollama native (experimental)
 ./scripts/patch-diffusionkit-macos26.sh
 ```
 
-Generate an image through the fleet:
+| Model | Backend | Speed | Notes |
+|-------|---------|-------|-------|
+| `flux-schnell` | mflux | ~7s at 512px | Fast, good quality |
+| `flux-dev` | mflux | ~20s at 512px | Higher quality, slower |
+| `z-image-turbo` | mflux | ~7s at 512px | Fastest option |
+| `sd3-medium` | DiffusionKit | ~9s at 512px | Stable Diffusion 3 |
+| `sd3.5-large` | DiffusionKit | ~15s at 512px | Best SD quality |
+| `x/z-image-turbo` | Ollama native | varies | Experimental |
+| `x/flux2-klein` | Ollama native | varies | Experimental |
+
+**Generate with curl:**
 
 ```bash
 curl -o sunset.png http://router-ip:11435/api/generate-image \
@@ -130,20 +153,103 @@ curl -o sunset.png http://router-ip:11435/api/generate-image \
   -d '{"model": "z-image-turbo", "prompt": "a sunset over mountains", "width": 1024, "height": 1024}'
 ```
 
-Available models: `z-image-turbo`, `flux-dev`, `flux-schnell` (mflux), `sd3-medium`, `sd3.5-large` (DiffusionKit), `x/z-image-turbo`, `x/flux2-klein` (Ollama native). See [Image Generation Guide](docs/guides/image-generation.md).
+**Generate with the OpenAI SDK:**
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://router-ip:11435/v1", api_key="not-needed")
+response = client.images.generate(
+    model="flux-schnell",
+    prompt="a sunset over mountains",
+    size="1024x1024",
+    response_format="b64_json",
+)
+image_data = response.data[0].b64_json
+```
+
+Optional parameters: `steps`, `guidance`, `seed`, `negative_prompt`. See [Image Generation Guide](docs/guides/image-generation.md).
 
 ### Speech-to-text
 
+Transcribe audio files using Qwen3-ASR, routed to the best available node:
+
 ```bash
-curl http://router-ip:11435/api/transcribe -F "file=@meeting.wav" -F "model=qwen3-asr"
+# Install the backend on any node
+pip install 'mlx-qwen3-asr[serve]'
 ```
 
+**Transcribe with curl:**
+
+```bash
+curl http://router-ip:11435/api/transcribe \
+  -F "file=@meeting.wav" \
+  -F "model=qwen3-asr"
+```
+
+The response includes the transcribed text. Supports WAV, MP3, and other common audio formats. Enable transcription on the router with `FLEET_TRANSCRIPTION=true` or via the Settings dashboard.
+
 ### Embeddings
+
+Generate embeddings for text using any Ollama embedding model, routed to the best available node:
+
+```bash
+# Pull an embedding model on any node
+ollama pull nomic-embed-text
+```
+
+| Model | Dimensions | Notes |
+|-------|-----------|-------|
+| `nomic-embed-text` | 768 | Good general-purpose, fast |
+| `mxbai-embed-large` | 1024 | Higher quality, slower |
+| `all-minilm` | 384 | Smallest, fastest |
+| `snowflake-arctic-embed` | 1024 | Strong retrieval performance |
+
+**Single input:**
 
 ```bash
 curl http://router-ip:11435/api/embed \
   -d '{"model": "nomic-embed-text", "input": "your text here"}'
 ```
+
+**Batch input:**
+
+```bash
+curl http://router-ip:11435/api/embed \
+  -d '{"model": "nomic-embed-text", "input": ["first document", "second document", "third document"]}'
+```
+
+**Using the `prompt` field** (Ollama legacy format — also supported):
+
+```bash
+curl http://router-ip:11435/api/embeddings \
+  -d '{"model": "nomic-embed-text", "prompt": "your text here"}'
+```
+
+Both `/api/embed` and `/api/embeddings` are supported — they're identical. The response is proxied directly from Ollama, so you get the same JSON format you'd get calling Ollama directly.
+
+### Request tagging for all model types
+
+All four model types support per-app analytics via tags:
+
+```bash
+# LLM — via body
+curl http://router-ip:11435/api/chat \
+  -d '{"model": "llama3.2:3b", "metadata": {"tags": ["my-app"]}, "messages": [...]}'
+
+# Image — via body
+curl http://router-ip:11435/api/generate-image \
+  -d '{"model": "flux-schnell", "metadata": {"tags": ["my-app"]}, "prompt": "..."}'
+
+# Embeddings — via body
+curl http://router-ip:11435/api/embed \
+  -d '{"model": "nomic-embed-text", "metadata": {"tags": ["my-app"]}, "input": "..."}'
+
+# STT — via header (multipart upload, no JSON body)
+curl -H "X-Herd-Tags: my-app" http://router-ip:11435/api/transcribe -F "file=@audio.wav"
+```
+
+Tags appear in the **Apps** dashboard tab. See [Request Tagging](docs/request-tagging.md).
 
 ## How routing works
 
