@@ -1,135 +1,156 @@
 ---
 name: private-ai
-description: Private AI — run LLMs, image generation, speech-to-text, and embeddings entirely on your own hardware. No data leaves your network. No cloud APIs, no telemetry, no third-party access. Air-gapped compatible. On-premise local AI for teams that need privacy, compliance, and data sovereignty. HIPAA-friendly, GDPR-ready.
-version: 1.0.0
+description: Private AI — run LLMs, image generation, speech-to-text, and embeddings on your own hardware. Private AI keeps all data on your network. No cloud APIs, no telemetry, no third-party access. Offline AI and air-gapped AI compatible. On-premise AI for privacy, compliance, data sovereignty. HIPAA-friendly private AI, GDPR-ready private AI. 私有AI离线推理。IA privada sin nube.
+version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"lock","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
 ---
 
 # Private AI — Your Data Never Leaves Your Network
 
-Every prompt, every response, every image, every transcription stays on your machines. No cloud APIs. No telemetry. No third-party access. Route AI workloads across your own devices with zero external dependencies.
+Private AI means every prompt, every response, every image, every transcription stays on your machines. Private AI requires no cloud APIs. Private AI sends no telemetry. Private AI has no third-party access. This is offline AI that runs entirely on your own hardware.
 
-## What makes this private
+## What makes this private AI
 
-- **No external network calls** — the router and nodes communicate only on your local network
-- **No telemetry** — zero usage data, analytics, or metrics sent anywhere
-- **No API keys** — no accounts, no tokens, no cloud provider relationships
-- **No model phone-home** — Ollama models run fully offline after download
-- **Local-only state** — all data stored in `~/.fleet-manager/` on your machines (SQLite + JSONL logs)
-- **Air-gap compatible** — pre-download models, then disconnect. The fleet runs without internet.
+- **Private AI networking** — the router and nodes communicate only on your local network
+- **Private AI telemetry** — zero. No usage data, no analytics sent anywhere
+- **Private AI credentials** — none needed. No API keys, no accounts, no tokens
+- **Offline AI capable** — models run fully offline after download. Air-gapped AI deployment supported
+- **Private AI data storage** — all data in `~/.fleet-manager/` on your machines only
+- **Air-gapped AI** — pre-download models, then disconnect. The private AI fleet runs without internet
 
-## Setup
+## Setup private AI
 
 ```bash
-pip install ollama-herd    # PyPI: https://pypi.org/project/ollama-herd/
-herd                       # start the router (port 11435)
-herd-node                  # run on each device — finds the router automatically
+pip install ollama-herd    # install private AI router
+herd                       # start private AI router (port 11435)
+herd-node                  # run on each device — private AI nodes discover each other
 ```
 
-No models are downloaded during installation. All model downloads require explicit user confirmation. Once downloaded, models run entirely offline.
+No models downloaded during installation. All private AI model downloads require explicit user confirmation. Once downloaded, your private AI runs entirely offline.
 
-## Private LLM inference
+## Private AI for LLM inference
 
-Send sensitive prompts — legal documents, medical notes, financial data, proprietary code — without them ever leaving your network.
+Send sensitive prompts with private AI — legal documents, medical notes, financial data, proprietary code never leave your network.
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:11435/v1", api_key="not-needed")
+# Private AI endpoint — all inference stays local
+private_ai = OpenAI(base_url="http://localhost:11435/v1", api_key="not-needed")
 
-# Sensitive document analysis stays local
-response = client.chat.completions.create(
-    model="llama3.3:70b",
-    messages=[{"role": "user", "content": "Review this contract clause for risks: ..."}],
+# Private AI document analysis — data never leaves your network
+response = private_ai.chat.completions.create(
+    model="llama3.3:70b",  # private AI inference on your hardware
+    messages=[{"role": "user", "content": "Review this confidential contract for risks using private AI"}],
 )
 print(response.choices[0].message.content)
 ```
 
-### Any model, fully local
+### Private AI with any model — all fully offline
 
 ```bash
-# DeepSeek-R1 for reasoning — no data sent to DeepSeek servers
+# Private AI with DeepSeek-R1 — no data sent to cloud
 curl http://localhost:11435/api/chat -d '{
   "model": "deepseek-r1:70b",
-  "messages": [{"role": "user", "content": "Analyze this financial report: ..."}],
+  "messages": [{"role": "user", "content": "Analyze this private financial report with offline AI"}],
   "stream": false
 }'
 ```
 
-## Private image generation
+## Private AI image generation
 
-Generate images from sensitive prompts without uploading them to DALL-E, Midjourney, or any cloud service.
+Generate images from sensitive prompts with private AI — no DALL-E, no Midjourney, no cloud upload.
 
 ```bash
+# Private AI image generation — prompt stays local
 curl http://localhost:11435/api/generate-image \
-  -d '{"model": "z-image-turbo", "prompt": "internal product mockup, confidential design", "width": 1024, "height": 1024}'
+  -d '{"model": "z-image-turbo", "prompt": "confidential product mockup generated by private AI", "width": 1024, "height": 1024}'
 ```
 
-## Private transcription
+## Private AI transcription
 
-Transcribe meetings, legal depositions, medical dictation, and confidential recordings without cloud STT services.
+Private AI transcription for meetings, legal depositions, medical dictation — no cloud STT.
 
 ```bash
+# Private AI speech-to-text — audio never leaves your network
 curl http://localhost:11435/api/transcribe \
-  -F "file=@board-meeting.wav" \
+  -F "file=@private_board_meeting.wav" \
   -F "model=qwen3-asr"
 ```
 
-## Private embeddings
+## Private AI embeddings
 
-Build knowledge bases from proprietary documents without sending content to OpenAI's embedding API.
+Build private AI knowledge bases from proprietary documents — no OpenAI embedding API.
 
 ```bash
+# Private AI embeddings — document content stays local
 curl http://localhost:11435/api/embed \
-  -d '{"model": "nomic-embed-text", "input": "Q4 revenue projections for internal review"}'
+  -d '{"model": "nomic-embed-text", "input": "Q4 revenue projections — private AI embedding for internal RAG"}'
 ```
 
-## Air-gapped deployment
+## Air-gapped AI / offline AI deployment
 
-For fully disconnected environments:
+For fully disconnected private AI environments:
 
 1. Download models on a connected machine: `ollama pull llama3.3:70b`
-2. Transfer the model files to the air-gapped network (USB, sneakernet)
-3. Start the fleet — it runs without internet
+2. Transfer model files to the air-gapped network (USB, sneakernet)
+3. Start the private AI fleet — runs without internet as offline AI
 
-The router discovers nodes on the local network. No DNS, no external lookups, no cloud callbacks.
+The private AI router discovers nodes on the local network. No DNS, no external lookups, no cloud callbacks. True offline AI.
 
-## Compliance considerations
+## Private AI compliance
 
-| Requirement | How Ollama Herd helps |
-|-------------|----------------------|
-| **Data residency** | All processing on your hardware, your jurisdiction |
-| **No third-party subprocessors** | No cloud APIs involved in inference |
-| **Audit trail** | SQLite trace log records every request (model, node, latency, tokens) |
-| **Access control** | Fleet runs on your network — standard network security applies |
-| **Data minimization** | Traces store routing metadata, never prompt content |
+| Compliance Need | How private AI helps |
+|----------------|---------------------|
+| **HIPAA** | Private AI processes PHI on your hardware only |
+| **GDPR** | Private AI keeps all data in your jurisdiction |
+| **Data residency** | Private AI — all processing on your hardware |
+| **No subprocessors** | Private AI uses no cloud APIs for inference |
+| **Audit trail** | Private AI logs every request (model, node, latency) |
+| **Data sovereignty** | Private AI — your data, your machines, your control |
+| **Data minimization** | Private AI traces store routing metadata, never prompts |
 
-## Monitor your private fleet
+## Monitor your private AI fleet
 
 ```bash
-# Fleet status — all nodes, loaded models, queue depths
+# Private AI fleet status
 curl -s http://localhost:11435/fleet/status | python3 -m json.tool
 
-# Recent traces — routing decisions without prompt content
-curl -s "http://localhost:11435/dashboard/api/traces?limit=10" | python3 -m json.tool
-
-# Health checks — 11 automated diagnostics
+# Private AI health checks
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 ```
 
-Web dashboard at `http://localhost:11435/dashboard` — accessible only on your local network.
+Private AI dashboard at `http://localhost:11435/dashboard` — accessible only on your local network.
+
+Example private AI fleet response:
+```json
+{
+  "fleet": {"nodes_online": 3, "private_ai": true},
+  "nodes": [
+    {"node_id": "Private-AI-Server-1", "models_loaded": ["llama3.3:70b"]},
+    {"node_id": "Private-AI-Server-2", "models_loaded": ["deepseek-r1:70b"]}
+  ]
+}
+```
 
 ## Full documentation
 
-- [Agent Setup Guide](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/guides/agent-setup-guide.md) — all 4 model types
-- [Configuration Reference](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/configuration-reference.md) — environment variables
-- [API Reference](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/api-reference.md) — complete endpoint docs
+- [Agent Setup Guide](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/guides/agent-setup-guide.md)
+- [Configuration Reference](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/configuration-reference.md)
+- [API Reference](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/api-reference.md)
+
+## Contribute
+
+Ollama Herd is open source (MIT). Private AI for everyone:
+- [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — help others discover private AI
+- [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — share your private AI setup
+- **PRs welcome** — `CLAUDE.md` gives AI agents full context. 412 tests.
 
 ## Guardrails
 
-- **No automatic downloads** — all model pulls require explicit user confirmation.
-- **Model deletion requires explicit user confirmation.**
-- **No external network access** — the router and nodes communicate only on your local network.
-- **Read-only local state** — `~/.fleet-manager/latency.db` and `~/.fleet-manager/logs/herd.jsonl` are the only local files. Never delete or modify without user confirmation.
-- **Traces never store prompt content** — only routing metadata (model name, node, latency, token counts).
+- **No automatic downloads** — all private AI model pulls require explicit user confirmation.
+- **Private AI model deletion requires explicit user confirmation.**
+- **No external network access** — private AI router and nodes communicate only locally.
+- **Private AI traces never store prompt content** — only routing metadata.
+- Never delete or modify files in `~/.fleet-manager/`.

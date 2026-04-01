@@ -1,118 +1,135 @@
 ---
 name: mac-studio-ai
-description: Mac Studio AI — run LLMs, image generation, speech-to-text, and embeddings on your Mac Studio. M2 Ultra (192GB), M3 Ultra (512GB), M4 Max (128GB), and M4 Ultra (256GB) configurations make the Mac Studio the most powerful local AI device available. Load 120B+ parameter models entirely in unified memory. Route requests across multiple Mac Studios with zero configuration.
-version: 1.0.0
+description: Mac Studio AI — run LLMs, image generation, speech-to-text, and embeddings on your Mac Studio. M2 Ultra (192GB), M3 Ultra (512GB), M4 Max (128GB), and M4 Ultra (256GB) make the Mac Studio the most powerful local AI device. Load 120B+ models in Mac Studio unified memory. Route across multiple Mac Studios automatically. Mac Studio本地AI推理。Mac Studio IA local.
+version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"desktop","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin"]}}
 ---
 
 # Mac Studio AI — The Most Powerful Local AI Machine
 
-The Mac Studio is the best hardware for local AI inference. M4 Ultra with 256GB of unified memory runs 120B+ parameter models that would need multiple NVIDIA A100s. M3 Ultra with 512GB loads frontier models that don't fit on any single GPU. No PCIe bottleneck, no CPU-GPU transfer — everything in one memory pool.
+The Mac Studio is the best hardware for local AI. Mac Studio M4 Ultra with 256GB of unified memory runs 120B+ parameter models. Mac Studio M3 Ultra with 512GB loads frontier models that need 4-8 NVIDIA A100s elsewhere. The Mac Studio runs everything in one memory pool — no PCIe bottleneck.
 
-This skill turns one Mac Studio into a powerhouse and multiple Mac Studios into a fleet.
+One Mac Studio is a powerhouse. Multiple Mac Studios become a fleet.
 
 ## Mac Studio configurations for AI
 
-| Config | Chip | Unified Memory | GPU Cores | LLM Sweet Spot | Image Gen |
-|--------|------|---------------|-----------|----------------|-----------|
-| Mac Studio M4 Max | M4 Max | 128GB | 40 | 70B models | Fast |
-| Mac Studio M4 Ultra | M4 Ultra | 256GB | 80 | 120B+ models | Very fast |
-| Mac Studio M3 Ultra | M3 Ultra | 192-512GB | 76 | 120B-236B models | Very fast |
-| Mac Studio M2 Ultra | M2 Ultra | 192GB | 76 | 70B-120B models | Fast |
+| Mac Studio Config | Chip | Memory | GPU Cores | Mac Studio LLM Sweet Spot |
+|-------------------|------|--------|-----------|--------------------------|
+| Mac Studio M4 Max | M4 Max | 128GB | 40 | 70B models on Mac Studio |
+| Mac Studio M4 Ultra | M4 Ultra | 256GB | 80 | 120B+ models on Mac Studio |
+| Mac Studio M3 Ultra | M3 Ultra | 192-512GB | 76 | 236B models on Mac Studio |
+| Mac Studio M2 Ultra | M2 Ultra | 192GB | 76 | 70B-120B on Mac Studio |
 
-A Mac Studio M3 Ultra with 512GB runs models like `deepseek-v3:236b` (quantized) entirely in memory — something that requires 4-8 NVIDIA A100s in a data center.
-
-## Setup
+## Setup your Mac Studio
 
 ```bash
-pip install ollama-herd    # PyPI: https://pypi.org/project/ollama-herd/
-herd                       # start the router on your Mac Studio
-herd-node                  # run on additional Mac Studios or other devices
+pip install ollama-herd    # install on your Mac Studio
+herd                       # start Mac Studio as the router (port 11435)
+herd-node                  # connect additional Mac Studios or other devices
 ```
 
-Devices discover each other automatically on your local network. No IP configuration needed.
+Mac Studios discover each other automatically on your local network.
 
-### Add image generation
+### Add Mac Studio image generation
 
 ```bash
-uv tool install mflux           # Flux models (~5s at 512px on M4 Ultra)
-uv tool install diffusionkit    # Stable Diffusion 3/3.5
+uv tool install mflux           # Flux models (~5s at 512px on Mac Studio M4 Ultra)
+uv tool install diffusionkit    # Stable Diffusion 3/3.5 on Mac Studio
 ```
 
-## Use your Mac Studio
+## Use your Mac Studio for AI inference
 
-### LLM inference — run the biggest models
+### Mac Studio LLM inference — run the biggest models
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:11435/v1", api_key="not-needed")
+# Connect to Mac Studio running Ollama Herd
+mac_studio = OpenAI(base_url="http://mac-studio:11435/v1", api_key="not-needed")
 
-# 120B model — runs smoothly on Mac Studio M4 Ultra (256GB)
-response = client.chat.completions.create(
-    model="gpt-oss:120b",
-    messages=[{"role": "user", "content": "Explain the transformer architecture in detail"}],
+# 120B model — runs smoothly on Mac Studio M4 Ultra (256GB unified memory)
+response = mac_studio.chat.completions.create(
+    model="gpt-oss:120b",  # loaded entirely in Mac Studio unified memory
+    messages=[{"role": "user", "content": "How does Mac Studio handle large AI models?"}],
     stream=True,
 )
 for chunk in response:
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
-### Image generation
+### Mac Studio image generation
 
 ```bash
 # Flux via mflux — ~5s on Mac Studio M4 Ultra
-curl -o image.png http://localhost:11435/api/generate-image \
+curl -o mac_studio_art.png http://mac-studio:11435/api/generate-image \
   -H "Content-Type: application/json" \
-  -d '{"model": "z-image-turbo", "prompt": "a Mac Studio on a minimalist desk", "width": 1024, "height": 1024}'
+  -d '{"model": "z-image-turbo", "prompt": "a Mac Studio on a minimalist desk with holographic AI display", "width": 1024, "height": 1024}'
 
-# Stable Diffusion 3 — ~9s on Mac Studio
-curl -o sd3.png http://localhost:11435/api/generate-image \
+# Stable Diffusion 3 on Mac Studio — ~9s
+curl -o mac_studio_sd3.png http://mac-studio:11435/api/generate-image \
   -H "Content-Type: application/json" \
-  -d '{"model": "sd3-medium", "prompt": "cinematic landscape", "width": 1024, "height": 1024, "steps": 20}'
+  -d '{"model": "sd3-medium", "prompt": "Mac Studio M4 Ultra rendering AI art", "width": 1024, "height": 1024, "steps": 20}'
 ```
 
-### Speech-to-text
+### Mac Studio speech-to-text
 
 ```bash
-curl http://localhost:11435/api/transcribe -F "file=@recording.wav" -F "model=qwen3-asr"
+# Transcribe on Mac Studio via Qwen3-ASR
+curl http://mac-studio:11435/api/transcribe \
+  -F "file=@mac_studio_meeting.wav" \
+  -F "model=qwen3-asr"
 ```
 
-### Embeddings
+### Mac Studio embeddings
 
 ```bash
-curl http://localhost:11435/api/embed \
-  -d '{"model": "nomic-embed-text", "input": "Mac Studio unified memory architecture"}'
+# Generate embeddings on Mac Studio
+curl http://mac-studio:11435/api/embed \
+  -d '{"model": "nomic-embed-text", "input": "Mac Studio M4 Ultra unified memory AI inference"}'
 ```
 
 ## Recommended models for Mac Studio
 
-| Mac Studio Config | Recommended models |
-|-------------------|-------------------|
-| M4 Max (128GB) | `llama3.3:70b`, `qwen3:72b`, `deepseek-r1:70b`, `codestral` |
-| M4 Ultra (256GB) | `gpt-oss:120b`, `qwen3:110b`, `deepseek-r1:70b` + `codestral` simultaneously |
-| M3 Ultra (512GB) | `deepseek-v3:236b` (quantized), multiple 70B models loaded at once |
+| Mac Studio Config | Models for this Mac Studio |
+|-------------------|--------------------------|
+| Mac Studio M4 Max (128GB) | `llama3.3:70b`, `qwen3:72b`, `deepseek-r1:70b`, `codestral` |
+| Mac Studio M4 Ultra (256GB) | `gpt-oss:120b`, `qwen3:110b`, two 70B models simultaneously |
+| Mac Studio M3 Ultra (512GB) | `deepseek-v3:236b` (quantized), multiple 70B models at once |
 
-The router's model recommender analyzes your Mac Studio's specs: `GET /dashboard/api/recommendations`.
+Ask the Mac Studio for recommendations: `GET http://mac-studio:11435/dashboard/api/recommendations`
 
-## Multiple Mac Studios
+## Multiple Mac Studios as a fleet
 
 ```
 Mac Studio #1 (M4 Ultra, 256GB)  ─┐
-Mac Studio #2 (M4 Max, 128GB)    ├──→  Router (:11435)  ←──  Your apps
+Mac Studio #2 (M4 Max, 128GB)    ├──→  Mac Studio Router (:11435)  ←──  Your apps
 Mac Mini (32GB)                   ─┘
 ```
 
-The router scores each device on 7 signals and routes every request to the best one. Big models go to the Mac Studio with the most memory; small models can go to the Mac Mini.
+The Mac Studio router scores each device on 7 signals. Big models route to the Mac Studio with the most memory.
 
-## Monitor your Mac Studio fleet
+## Monitor your Mac Studio
 
-Dashboard at `http://localhost:11435/dashboard` — see loaded models, queue depths, thermal state, memory usage per device.
+Mac Studio dashboard at `http://mac-studio:11435/dashboard` — models loaded on each Mac Studio, queue depths, thermal state, memory.
 
 ```bash
-curl -s http://localhost:11435/fleet/status | python3 -m json.tool
-curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
+# Mac Studio fleet status
+curl -s http://mac-studio:11435/fleet/status | python3 -m json.tool
+
+# Mac Studio health checks
+curl -s http://mac-studio:11435/dashboard/api/health | python3 -m json.tool
+```
+
+Example Mac Studio fleet status response:
+```json
+{
+  "fleet": {"nodes_online": 2, "nodes_total": 2},
+  "nodes": [
+    {"node_id": "Mac-Studio-Ultra", "memory": {"total_gb": 256, "used_gb": 120}},
+    {"node_id": "Mac-Studio-Max", "memory": {"total_gb": 128, "used_gb": 85}}
+  ]
+}
 ```
 
 ## Full documentation
@@ -124,13 +141,13 @@ curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 ## Contribute
 
 Ollama Herd is open source (MIT). Built by Mac Studio owners for Mac Studio owners:
-- [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — help others discover local AI
-- [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — share your Mac Studio setup
+- [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — help other Mac Studio users find us
+- [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — share your Mac Studio AI setup
 - **PRs welcome** — `CLAUDE.md` gives AI agents full context. 412 tests, async Python.
 
 ## Guardrails
 
-- **No automatic downloads** — model pulls require explicit user confirmation (some models are 70-230GB).
+- **No automatic downloads** — Mac Studio model pulls require explicit user confirmation.
 - **Model deletion requires explicit user confirmation.**
-- **All requests stay local** — no data leaves your network.
+- **All Mac Studio requests stay local** — no data leaves your network.
 - Never delete or modify files in `~/.fleet-manager/`.

@@ -1,127 +1,155 @@
 ---
 name: mistral-codestral
-description: Mistral and Codestral — run Mistral Large, Mistral-Nemo, Codestral, and Mistral-Small across your local fleet. Code generation and general reasoning from Mistral AI routed to the best device. Codestral trained on 80+ languages. OpenAI-compatible, zero cloud costs.
-version: 1.0.0
+description: Mistral and Codestral — run Mistral Large, Mistral-Nemo, Codestral, and Mistral-Small locally. Mistral AI's open-source LLMs for code generation and reasoning. Codestral by Mistral trained on 80+ languages. Mistral routed across your fleet. Mistral本地推理。Mistral IA local. Codestral código local.
+version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"sparkles","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
 ---
 
-# Mistral & Codestral — Code Generation and Reasoning on Your Fleet
+# Mistral & Codestral — Mistral AI Models on Your Local Fleet
 
-Mistral AI's models excel at code generation (Codestral) and multilingual reasoning (Mistral Large). Route them across your devices — the fleet picks the optimal machine for every request.
+Mistral AI's open-source models run locally on your hardware. Mistral Large for frontier reasoning, Mistral-Nemo for efficiency, Codestral for code generation. The fleet router picks the best device for every Mistral request.
 
 ## Supported Mistral models
 
-| Model | Parameters | Ollama name | Best for |
-|-------|-----------|-------------|----------|
-| **Codestral** | 22B | `codestral` | Code generation — trained on 80+ programming languages |
-| **Mistral Large** | 123B | `mistral-large` | Frontier reasoning, multilingual, function calling |
-| **Mistral-Nemo** | 12B | `mistral-nemo` | Efficient general-purpose, great quality/size ratio |
-| **Mistral-Small** | 22B | `mistral-small` | Fast reasoning, lower resource usage than Large |
-| **Mistral 7B** | 7B | `mistral:7b` | Lightweight, runs on any hardware |
+| Mistral Model | Parameters | Ollama name | Best for |
+|---------------|-----------|-------------|----------|
+| **Codestral** (by Mistral) | 22B | `codestral` | Mistral's code specialist — 80+ languages |
+| **Mistral Large** | 123B | `mistral-large` | Mistral's frontier reasoning, multilingual |
+| **Mistral-Nemo** | 12B | `mistral-nemo` | Mistral's efficient general-purpose model |
+| **Mistral-Small** | 22B | `mistral-small` | Mistral's fast reasoning model |
+| **Mistral 7B** | 7B | `mistral:7b` | Mistral's lightweight model |
 
-## Quick start
+## Setup Mistral locally
 
 ```bash
-pip install ollama-herd    # PyPI: https://pypi.org/project/ollama-herd/
-herd                       # start the router (port 11435)
-herd-node                  # run on each device — finds the router automatically
+pip install ollama-herd    # install Mistral fleet router
+herd                       # start the Mistral-compatible router
+herd-node                  # run on each device — Mistral requests route automatically
 ```
 
-No models are downloaded during installation. All model pulls are user-initiated and require confirmation.
+No Mistral models downloaded during installation. All Mistral model pulls are user-initiated.
 
-## Code generation with Codestral
+## Codestral code generation
 
-Codestral is Mistral's dedicated coding model — trained on 80+ languages with fill-in-the-middle support.
+Codestral is Mistral AI's dedicated coding model — trained on 80+ programming languages with fill-in-the-middle support.
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:11435/v1", api_key="not-needed")
+# Connect to local Mistral fleet
+mistral_fleet = OpenAI(base_url="http://localhost:11435/v1", api_key="not-needed")
 
-response = client.chat.completions.create(
-    model="codestral",
+# Codestral by Mistral for code generation
+codestral_response = mistral_fleet.chat.completions.create(
+    model="codestral",  # Mistral's Codestral model
     messages=[{"role": "user", "content": "Write a Redis-backed rate limiter in Go"}],
 )
-print(response.choices[0].message.content)
+print(codestral_response.choices[0].message.content)
 ```
 
 ### Codestral via curl
 
 ```bash
+# Codestral code generation on local Mistral fleet
 curl http://localhost:11435/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "codestral", "messages": [{"role": "user", "content": "Implement a B-tree in Rust"}]}'
+  -d '{"model": "codestral", "messages": [{"role": "user", "content": "Implement a B-tree in Rust — Mistral Codestral excels at systems programming"}]}'
 ```
 
-## General reasoning with Mistral Large
+## Mistral Large reasoning
 
 ```bash
+# Mistral Large for complex reasoning
 curl http://localhost:11435/api/chat -d '{
   "model": "mistral-large",
-  "messages": [{"role": "user", "content": "Compare microservices vs monolith for a 5-person startup"}],
+  "messages": [{"role": "user", "content": "Compare Mistral vs GPT-4 for enterprise deployments"}],
   "stream": false
 }'
 ```
 
-## Hardware fit (choose what matches your RAM)
-
-| Model | Min RAM | Recommended Mac |
-|-------|---------|----------------|
-| `mistral:7b` | 8GB | Any Mac — even 8GB MacBook Air |
-| `mistral-nemo` | 10GB | Mac Mini (16GB) |
-| `codestral` | 16GB | Mac Mini (24GB) or MacBook Pro |
-| `mistral-small` | 16GB | Mac Mini (24GB) or MacBook Pro |
-| `mistral-large` | 80GB | Mac Studio M4 Max (128GB) |
-
-## Fleet features
-
-The router handles all the complexity:
+### Mistral-Nemo for efficiency
 
 ```bash
-# What's loaded right now
+# Mistral-Nemo — best quality/size ratio from Mistral AI
+curl http://localhost:11435/api/chat -d '{
+  "model": "mistral-nemo",
+  "messages": [{"role": "user", "content": "Summarize this Mistral AI technical paper"}],
+  "stream": false
+}'
+```
+
+## Mistral hardware recommendations
+
+| Mistral Model | Min RAM | Recommended for Mistral |
+|---------------|---------|------------------------|
+| `mistral:7b` | 8GB | Any Mac — lightweight Mistral |
+| `mistral-nemo` | 10GB | Mac Mini (16GB) — efficient Mistral |
+| `codestral` | 16GB | Mac Mini (24GB) — Mistral's code model |
+| `mistral-small` | 16GB | Mac Mini (24GB) — fast Mistral |
+| `mistral-large` | 80GB | Mac Studio (128GB) — Mistral's best |
+
+## Monitor Mistral fleet
+
+```bash
+# See which Mistral models are loaded
 curl -s http://localhost:11435/api/ps | python3 -m json.tool
 
-# Fleet overview — nodes, queues, loaded models
+# Mistral fleet overview
 curl -s http://localhost:11435/fleet/status | python3 -m json.tool
 
-# Per-model performance stats
+# Mistral model performance stats
 curl -s http://localhost:11435/dashboard/api/models | python3 -m json.tool
 ```
 
-Web dashboard at `http://localhost:11435/dashboard` for visual monitoring.
+Example Mistral fleet response:
+```json
+{
+  "node_id": "Mistral-Server",
+  "models_loaded": ["codestral:22b", "mistral-nemo:12b"],
+  "mistral_inference": "active"
+}
+```
 
-## Also available on this fleet
+Mistral dashboard at `http://localhost:11435/dashboard`.
 
-### Other LLMs
-Llama 3.3, Qwen 3.5, DeepSeek-V3, DeepSeek-R1, Phi 4, Gemma 3 — same endpoint, same routing.
+## Also available alongside Mistral
+
+### Other LLMs (same Mistral-compatible endpoint)
+Llama 3.3, Qwen 3.5, DeepSeek-V3, Phi 4, Gemma 3 — route alongside Mistral models.
 
 ### Image generation
 ```bash
 curl http://localhost:11435/api/generate-image \
-  -d '{"model": "z-image-turbo", "prompt": "abstract code visualization", "width": 512, "height": 512}'
+  -d '{"model": "z-image-turbo", "prompt": "Mistral AI logo reimagined as abstract art", "width": 512, "height": 512}'
 ```
 
 ### Speech-to-text
 ```bash
-curl http://localhost:11435/api/transcribe -F "file=@standup.wav" -F "model=qwen3-asr"
+curl http://localhost:11435/api/transcribe -F "file=@mistral_meeting.wav" -F "model=qwen3-asr"
 ```
 
 ### Embeddings
 ```bash
 curl http://localhost:11435/api/embed \
-  -d '{"model": "nomic-embed-text", "input": "Mistral AI open source models"}'
+  -d '{"model": "nomic-embed-text", "input": "Mistral AI open source language models Codestral"}'
 ```
 
 ## Full documentation
 
-- [Agent Setup Guide](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/guides/agent-setup-guide.md) — all 4 model types
-- [API Reference](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/api-reference.md) — complete endpoint docs
+- [Agent Setup Guide](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/guides/agent-setup-guide.md)
+- [API Reference](https://github.com/geeks-accelerator/ollama-herd/blob/main/docs/api-reference.md)
+
+## Contribute
+
+Ollama Herd is open source (MIT). Run Mistral locally, contribute globally:
+- [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — help Mistral users find local inference
+- [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — share your Mistral setup
+- **PRs welcome** — `CLAUDE.md` gives AI agents full context. 412 tests.
 
 ## Guardrails
 
-- **Model downloads require explicit user confirmation** — Mistral models range from 4GB (7B) to 70GB+ (123B). Always confirm before pulling.
-- **Model deletion requires explicit user confirmation.**
+- **Mistral model downloads require explicit user confirmation** — Mistral models range from 4GB to 70GB+.
+- **Mistral model deletion requires explicit user confirmation.**
 - Never delete or modify files in `~/.fleet-manager/`.
-- If a model is too large for available memory, suggest a smaller variant (e.g., `mistral-nemo` instead of `mistral-large`).
-- No models are downloaded automatically — all pulls are user-initiated or require opt-in.
+- No Mistral models downloaded automatically — all pulls are user-initiated.
