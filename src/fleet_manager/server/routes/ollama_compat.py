@@ -252,7 +252,7 @@ async def ollama_embed(request: Request):
         start = time.time()
         resp = await client.post(
             "/api/embed", json=embed_body,
-            timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+            timeout=httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0),
         )
         elapsed_ms = (time.time() - start) * 1000
 
@@ -279,10 +279,12 @@ async def ollama_embed(request: Request):
                      f"{e.response.text[:200]}"},
         )
     except Exception as e:
-        logger.error(f"Embed failed on {winner.node_id}: {type(e).__name__}: {e}")
+        error_detail = str(e) or repr(e)
+        logger.error(f"Embed failed on {winner.node_id}: {type(e).__name__}: {error_detail}")
         return JSONResponse(
             status_code=502,
-            content={"error": f"Failed to reach Ollama on {winner.node_id}: {e}"},
+            content={"error": f"Failed to reach Ollama on {winner.node_id}: "
+                     f"{type(e).__name__}: {error_detail}"},
         )
 
 
