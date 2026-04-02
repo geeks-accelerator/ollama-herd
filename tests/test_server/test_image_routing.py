@@ -58,15 +58,17 @@ class TestImageRoute:
     """Tests for the /api/generate-image endpoint."""
 
     def test_image_disabled_returns_503(self, client):
+        # Disable first (defaults to True now)
+        client.post("/dashboard/api/settings", json={"image_generation": False})
         resp = client.post(
             "/api/generate-image",
             json={"model": "z-image-turbo", "prompt": "a cat"},
         )
         assert resp.status_code == 503
         assert "disabled" in resp.json()["error"]
+        client.post("/dashboard/api/settings", json={"image_generation": True})
 
     def test_image_enabled_no_nodes_returns_404(self, client):
-        # Enable image generation
         client.post(
             "/dashboard/api/settings",
             json={"image_generation": True},
@@ -247,8 +249,9 @@ class TestImageSettings:
     def test_settings_includes_image_toggle(self, client):
         resp = client.get("/dashboard/api/settings")
         data = resp.json()
-        assert "image_generation" in data["config"]["toggles"]
-        assert data["config"]["toggles"]["image_generation"] is False
+        toggles = data["config"]["toggles"]
+        assert "image_generation" in toggles
+        assert data["config"]["toggles"]["image_generation"] is True
 
     def test_toggle_image_generation(self, client):
         resp = client.post(

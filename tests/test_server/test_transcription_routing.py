@@ -66,12 +66,16 @@ class TestTranscriptionRoute:
     """Tests for the /api/transcribe endpoint."""
 
     def test_transcription_disabled_returns_503(self, client):
+        # Disable transcription first (defaults to True now)
+        client.post("/dashboard/api/settings", json={"transcription": False})
         resp = client.post(
             "/api/transcribe",
             files={"audio": ("test.wav", b"fake-audio-data")},
         )
         assert resp.status_code == 503
         assert "disabled" in resp.json()["error"]
+        # Re-enable for other tests
+        client.post("/dashboard/api/settings", json={"transcription": True})
 
     def test_transcription_enabled_no_nodes_returns_404(self, client):
         client.post(
@@ -328,7 +332,7 @@ class TestSettingsMultimodal:
         resp = client.get("/dashboard/api/settings")
         data = resp.json()
         assert "transcription" in data["config"]["toggles"]
-        assert data["config"]["toggles"]["transcription"] is False
+        assert data["config"]["toggles"]["transcription"] is True
 
     def test_toggle_transcription(self, client):
         resp = client.post(
