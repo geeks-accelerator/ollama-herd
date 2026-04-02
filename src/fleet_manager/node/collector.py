@@ -50,19 +50,45 @@ _DIFFUSIONKIT_MODELS = [
 ]
 
 
+def _which_extended(binary: str) -> str | None:
+    """Find a binary, checking common tool install paths beyond $PATH.
+
+    uv tool, pipx, and Homebrew install binaries in locations that may not
+    be in PATH when the node agent starts (e.g., via launchd or cron).
+    """
+    found = shutil.which(binary)
+    if found:
+        return found
+    # Check common tool binary locations
+    from pathlib import Path
+
+    extra_dirs = [
+        Path.home() / ".local" / "bin",           # uv tool, pipx
+        Path("/opt/homebrew/bin"),                  # Homebrew (Apple Silicon)
+        Path("/usr/local/bin"),                     # Homebrew (Intel), system
+    ]
+    for d in extra_dirs:
+        candidate = d / binary
+        if candidate.exists() and candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def _detect_image_models() -> ImageMetrics | None:
     """Detect available image generation models on this system (mflux + DiffusionKit)."""
     models: list[ImageModel] = []
 
     # Detect mflux models
     for binary, name in _MFLUX_BINARIES:
-        if shutil.which(binary):
-            models.append(ImageModel(name=name, binary=binary))
+        path = _which_extended(binary)
+        if path:
+            models.append(ImageModel(name=name, binary=path))
 
     # Detect DiffusionKit models
-    if shutil.which(_DIFFUSIONKIT_BINARY):
+    if _which_extended(_DIFFUSIONKIT_BINARY):
         for name in _DIFFUSIONKIT_MODELS:
-            models.append(ImageModel(name=name, binary=_DIFFUSIONKIT_BINARY))
+            dk_path = _which_extended(_DIFFUSIONKIT_BINARY)
+            models.append(ImageModel(name=name, binary=dk_path or _DIFFUSIONKIT_BINARY))
 
     if not models:
         return None

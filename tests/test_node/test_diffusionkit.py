@@ -49,21 +49,21 @@ class TestResolveBinary:
     """Tests for _resolve_binary with DiffusionKit models."""
 
     def test_resolve_sd3_when_installed(self, monkeypatch):
-        monkeypatch.setattr("shutil.which", lambda name: f"/usr/local/bin/{name}")
+        monkeypatch.setattr("fleet_manager.node.collector._which_extended", lambda name: f"/usr/local/bin/{name}")
         result = _resolve_binary("sd3-medium")
         assert result is not None
-        assert result[0] == "diffusionkit-cli"
+        assert "diffusionkit-cli" in result[0]
 
     def test_resolve_sd3_when_not_installed(self, monkeypatch):
-        monkeypatch.setattr("shutil.which", lambda _: None)
+        monkeypatch.setattr("fleet_manager.node.collector._which_extended", lambda _: None)
         result = _resolve_binary("sd3-medium")
         assert result is None
 
     def test_resolve_mflux_still_works(self, monkeypatch):
-        monkeypatch.setattr("shutil.which", lambda name: f"/usr/local/bin/{name}")
+        monkeypatch.setattr("fleet_manager.node.collector._which_extended", lambda name: f"/usr/local/bin/{name}")
         result = _resolve_binary("z-image-turbo")
         assert result is not None
-        assert result[0] == "mflux-generate-z-image-turbo"
+        assert "mflux-generate-z-image-turbo" in result[0]
 
 
 class TestDiffusionKitDetection:
@@ -77,7 +77,7 @@ class TestDiffusionKitDetection:
                 return "/usr/local/bin/diffusionkit-cli"
             return None
 
-        monkeypatch.setattr("shutil.which", fake_which)
+        monkeypatch.setattr("fleet_manager.node.collector._which_extended", fake_which)
         monkeypatch.setattr(
             "fleet_manager.node.collector.psutil",
             type("FakePsutil", (), {"process_iter": staticmethod(lambda attrs: [])}),
@@ -98,7 +98,7 @@ class TestDiffusionKitDetection:
                 return f"/usr/local/bin/{name}"
             return None
 
-        monkeypatch.setattr("shutil.which", fake_which)
+        monkeypatch.setattr("fleet_manager.node.collector._which_extended", fake_which)
         monkeypatch.setattr(
             "fleet_manager.node.collector.psutil",
             type("FakePsutil", (), {"process_iter": staticmethod(lambda attrs: [])}),
@@ -114,7 +114,7 @@ class TestDiffusionKitDetection:
     def test_detect_neither_returns_none(self, monkeypatch):
         from fleet_manager.node.collector import _detect_image_models
 
-        monkeypatch.setattr("shutil.which", lambda _: None)
+        monkeypatch.setattr("fleet_manager.node.collector._which_extended", lambda _: None)
         result = _detect_image_models()
         assert result is None
 

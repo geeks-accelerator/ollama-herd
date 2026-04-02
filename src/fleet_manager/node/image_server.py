@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import logging
 import os
-import shutil
 import tempfile
 import time
 import uuid
@@ -46,13 +45,17 @@ def _is_diffusionkit(cmd_parts: list[str]) -> bool:
 
 def _resolve_binary(model: str) -> list[str] | None:
     """Resolve a model name to the mflux CLI command."""
+    from fleet_manager.node.collector import _which_extended
+
     parts = _MODEL_BINARIES.get(model)
     if not parts:
         return None
-    # Verify the binary exists
-    if not shutil.which(parts[0]):
+    # Verify the binary exists (check extended paths for uv tool installs)
+    resolved = _which_extended(parts[0])
+    if not resolved:
         return None
-    return parts
+    # Use the full path so subprocess can find it regardless of PATH
+    return [resolved] + parts[1:]
 
 
 @router.post("/api/generate-image")

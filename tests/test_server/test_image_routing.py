@@ -217,7 +217,9 @@ class TestImageDetection:
     def test_detect_no_mflux(self, monkeypatch):
         from fleet_manager.node.collector import _detect_image_models
 
-        monkeypatch.setattr("shutil.which", lambda _: None)
+        monkeypatch.setattr(
+            "fleet_manager.node.collector._which_extended", lambda _: None
+        )
         result = _detect_image_models()
         assert result is None
 
@@ -229,7 +231,9 @@ class TestImageDetection:
                 return "/usr/local/bin/mflux-generate-z-image-turbo"
             return None
 
-        monkeypatch.setattr("shutil.which", fake_which)
+        monkeypatch.setattr(
+            "fleet_manager.node.collector._which_extended", fake_which
+        )
         # Mock psutil to avoid real process scanning
         monkeypatch.setattr(
             "fleet_manager.node.collector.psutil",
