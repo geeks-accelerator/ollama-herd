@@ -241,19 +241,20 @@ async def ollama_embed(request: Request):
     if not node:
         return JSONResponse(status_code=503, content={"error": "Selected node unavailable"})
 
-    # Proxy directly to Ollama's /api/embed endpoint
+    # Proxy directly to Ollama's /api/embed endpoint using the proxy's
+    # managed HTTP client (handles LAN IP rewriting, connection pooling).
     embed_body = dict(body)
     embed_body.pop("metadata", None)
     embed_body.setdefault("keep_alive", -1)
 
     try:
-        async with httpx.AsyncClient(
-            base_url=node.ollama_base_url,
+        client = proxy._get_client(winner.node_id)
+        start = time.time()
+        resp = await client.post(
+            "/api/embed", json=embed_body,
             timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
-        ) as client:
-            start = time.time()
-            resp = await client.post("/api/embed", json=embed_body)
-            elapsed_ms = (time.time() - start) * 1000
+        )
+        elapsed_ms = (time.time() - start) * 1000
 
         resp.raise_for_status()
         result = resp.json()
