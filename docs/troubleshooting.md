@@ -225,7 +225,9 @@ Meeting detection is disabled by default — it only activates when `FLEET_NODE_
 
    - **Short keep-alive** — `OLLAMA_KEEP_ALIVE` defaults to `5m`, so idle models get evicted. Fix: `OLLAMA_KEEP_ALIVE=-1` and `OLLAMA_MAX_LOADED_MODELS=-1`.
 
-   - **`OLLAMA_NUM_PARALLEL` too high** — on high-memory machines, Ollama auto-calculates a high parallel slot count (e.g., 16). Each slot pre-allocates KV cache for the full context window. With 16 slots × 262K context, a **single model consumes 384 GB of KV cache** on top of its weights — leaving no room for other models even on a 512GB machine. Fix: `OLLAMA_NUM_PARALLEL=2` (or 3–4). This drops KV cache to ~20 GB per model, allowing multiple models to coexist.
+   - **`OLLAMA_NUM_PARALLEL` too high** — on high-memory machines, Ollama auto-calculates a high parallel slot count (e.g., 16). Each slot pre-allocates KV cache for the full context window. With 16 slots × 262K context, a **single model consumes 384 GB of KV cache** on top of its weights — leaving no room for other models even on a 512GB machine. Fix: `OLLAMA_NUM_PARALLEL=2` (or 3–4). This drops KV cache to ~20 GB per model, allowing multiple models to coexist. The Health dashboard detects this as "KV cache bloat."
+
+   - **`launchctl setenv` gets overridden by shell profile** — if `~/.zshrc` or `~/.bash_profile` contains `launchctl setenv OLLAMA_NUM_PARALLEL 16`, every new terminal session resets the value. You must update BOTH the shell profile file AND run `launchctl setenv` for immediate effect. Verify with `launchctl getenv OLLAMA_NUM_PARALLEL`. The Ollama process only reads the value at startup, so you also need to restart Ollama after changing it.
 
 3. **Queue congestion** — check the dashboard for queue depths. If one node has a deep queue, the rebalancer should redistribute, but you may want to add more nodes.
 

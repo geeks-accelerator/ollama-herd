@@ -25,11 +25,28 @@ uv run ruff format src/          # format
 
 ## Release to PyPI
 
+**IMPORTANT: Never publish without running locally first.** The release process has mandatory soak time between deploy and publish. AI agents: do NOT publish to PyPI unless the user explicitly says "publish" — deploying locally is not the same as publishing.
+
+### Release checklist
+
+1. **Bump version** in `pyproject.toml`
+2. **Update `CHANGELOG.md`** with new version entry (follow Keep a Changelog format)
+3. **Run full test suite** — `uv run pytest` must pass with 0 failures
+4. **Run lint** — `uv run ruff check src/` must pass
+5. **Commit and push to main**
+6. **Deploy locally** — restart `herd` and `herd-node`, verify all endpoints work:
+   - `curl http://localhost:11435/fleet/status` — node online, models loaded
+   - `curl http://localhost:11435/api/embed -d '{"model":"nomic-embed-text","input":"test"}'` — embeddings work
+   - `curl http://localhost:11435/api/generate-image -d '{"model":"z-image-turbo","prompt":"test"}'` — image gen works
+   - `curl http://localhost:11435/dashboard/api/health` — health score reasonable
+   - `curl http://localhost:11435/fleet/queue` — queue endpoint responds
+7. **Soak for several hours minimum** — let the fleet handle real traffic, check logs for errors:
+   - `grep '"level":"ERROR"' ~/.fleet-manager/logs/herd.jsonl.$(date +%Y-%m-%d)`
+   - `sqlite3 ~/.fleet-manager/latency.db "SELECT status, COUNT(*) FROM request_traces WHERE timestamp > strftime('%s','now') - 3600 GROUP BY status"`
+8. **Review logs and traces** — confirm zero (or near-zero) errors, no regressions
+9. **Only then: build and publish** (requires explicit user approval)
+
 ```bash
-# 1. Bump version in pyproject.toml
-# 2. Update CHANGELOG.md with new version entry
-# 3. Commit, push to main
-# 4. Build and publish
 uv build
 uv publish --username __token__ --password "$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('$HOME/.pypirc'); print(c['pypi']['password'])")"
 ```
@@ -39,6 +56,23 @@ uv publish --username __token__ --password "$(python3 -c "import configparser; c
 - **Build system:** hatchling (configured in `pyproject.toml`)
 - **Version:** single source of truth in `pyproject.toml` (`version = "x.y.z"`)
 - **Changelog:** `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/) format — update it before every release
+
+### Local deployment commands
+
+```bash
+# Restart router + node agent (from repo root)
+pkill -f "bin/herd" && sleep 2
+uv sync && uv run herd &>/dev/null & disown
+sleep 3 && uv run herd-node &>/dev/null & disown
+```
+
+### Gotchas learned the hard way
+
+- **`uv run` uses `.venv` from the repo root** — if you're in a worktree, changes must be merged to main and `uv sync` run from the main repo before restarting
+- **`launchctl setenv` is overridden by `~/.zshrc`** — always update both the shell profile AND run `launchctl setenv` for immediate effect. Verify with `launchctl getenv VAR_NAME`
+- **`shutil.which()` can't find `uv tool` binaries** — `~/.local/bin` isn't in PATH when processes start via `uv run`. The `_which_extended()` helper in `collector.py` handles this
+- **Image gen and transcription default to enabled** — but if a node doesn't have the backend installed, the endpoint returns 404 (no models), not 503 (disabled). This is correct UX
+- **Thinking models eat `num_predict` budgets** — the router auto-inflates by 4× for known thinking models. If a new thinking model isn't detected, add it to `is_thinking_model()` in `model_knowledge.py`
 
 ## Architecture
 
