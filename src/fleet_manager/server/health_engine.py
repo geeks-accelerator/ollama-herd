@@ -46,6 +46,8 @@ class FleetVitals(BaseModel):
     avg_ttft_ms: float | None = None
     total_requests_24h: int = 0
     total_retries_24h: int = 0
+    client_disconnects_24h: int = 0
+    incomplete_streams_24h: int = 0
     image_generations_24h: int = 0
     transcriptions_24h: int = 0
     health_score: int = 100
@@ -112,6 +114,17 @@ class HealthEngine:
             vitals.total_retries_24h = overall_24h["total_retries"]
             vitals.overall_error_rate_pct = overall_24h["error_rate_pct"]
             vitals.avg_ttft_ms = overall_24h["avg_ttft_ms"]
+
+            stream_reliability = await trace_store.get_stream_reliability_24h()
+            recent_reliability = await trace_store.get_stream_reliability_24h(
+                lookback_s=self.RECENT_WINDOW_S
+            )
+            vitals.client_disconnects_24h = stream_reliability["client_disconnected"]
+            vitals.incomplete_streams_24h = stream_reliability["incomplete"]
+
+            recommendations.extend(
+                self._check_stream_reliability(stream_reliability, recent_reliability)
+            )
 
             model_timeouts = await trace_store.get_model_timeouts_24h()
             recent_timeouts = await trace_store.get_model_timeouts_24h(
@@ -879,6 +892,152 @@ class HealthEngine:
                     },
                 )
             )
+        return recs
+
+    def _check_stream_reliability(
+        self, reliability, recent_reliability
+    ) -> list[Recommendation]:
+        """Surface client disconnects and incomplete streams as health cards."""
+        recs = []
+        disconnected = reliability["client_disconnected"]
+        incomplete = reliability["incomplete"]
+        total = reliability["total_requests"]
+
+        if total == 0:
+            return recs
+
+        # Client disconnects — clients timing out or dropping connections
+        if disconnected >= 3:
+            recent_disc = recent_reliability["client_disconnected"]
+            still_active = recent_disc >= 1
+            rate = (disconnected / total) * 100
+
+            # Which models are most affected?
+            model_lines = ", ".join(
+                f"{m} ({v['client_disconnected']}x)"
+                for m, v in sorted(
+                    reliability["by_model"].items(),
+                    key=lambda x: x[1].get("client_disconnected", 0),
+                    reverse=True,
+                )[:5]
+                if v.get("client_disconnected", 0) > 0
+            )
+
+            if still_active:
+                recs.append(
+                    Recommendation(
+                        check_id="client_disconnects",
+                        severity=Severity.WARNING if rate > 1.0 else Severity.INFO,
+                        title=f"Client disconnects: {disconnected} in 24h ({rate:.1f}%)",
+                        description=(
+                            f"{disconnected} requests ended because the client disconnected "
+                            f"before the response completed ({recent_disc} in the last hour). "
+                            f"This usually means client-side timeouts are too short for "
+                            f"large generations. Affected models: {model_lines}."
+                        ),
+                        fix=(
+                            "Increase client-side timeout (e.g., httpx timeout, "
+                            "OpenAI SDK timeout). Large models on slower hardware "
+                            "can take minutes for long generations."
+                        ),
+                        data={
+                            "disconnects_24h": disconnected,
+                            "disconnects_1h": recent_disc,
+                            "rate_pct": round(rate, 1),
+                            "by_model": {
+                                m: v.get("client_disconnected", 0)
+                                for m, v in reliability["by_model"].items()
+                                if v.get("client_disconnected", 0) > 0
+                            },
+                        },
+                    )
+                )
+            else:
+                recs.append(
+                    Recommendation(
+                        check_id="client_disconnects",
+                        severity=Severity.INFO,
+                        title=f"Client disconnects resolved ({disconnected} in 24h, none recent)",
+                        description=(
+                            f"{disconnected} client disconnects in 24h but none in the "
+                            f"last hour."
+                        ),
+                        fix="No action needed. This will clear as historical data ages out.",
+                        data={
+                            "disconnects_24h": disconnected,
+                            "disconnects_1h": 0,
+                            "resolved": True,
+                        },
+                    )
+                )
+
+        # Incomplete streams — Ollama dropping connections mid-response
+        if incomplete >= 2:
+            recent_inc = recent_reliability["incomplete"]
+            still_active = recent_inc >= 1
+            rate = (incomplete / total) * 100
+
+            model_lines = ", ".join(
+                f"{m} ({v['incomplete']}x)"
+                for m, v in sorted(
+                    reliability["by_model"].items(),
+                    key=lambda x: x[1].get("incomplete", 0),
+                    reverse=True,
+                )[:5]
+                if v.get("incomplete", 0) > 0
+            )
+
+            if still_active:
+                recs.append(
+                    Recommendation(
+                        check_id="incomplete_streams",
+                        severity=Severity.WARNING if rate > 0.5 else Severity.INFO,
+                        title=f"Incomplete streams: {incomplete} in 24h ({rate:.1f}%)",
+                        description=(
+                            f"{incomplete} responses were truncated — Ollama dropped the "
+                            f"connection before sending the final chunk "
+                            f"({recent_inc} in the last hour). This indicates Ollama "
+                            f"process instability (OOM, crash, or connection limits). "
+                            f"Affected models: {model_lines}."
+                        ),
+                        fix=(
+                            "Check Ollama process health and system memory. "
+                            "Common causes: out-of-memory kills during large generations, "
+                            "Ollama process crashes, or TCP connection limits. "
+                            "Check: journalctl -u ollama (Linux) or "
+                            "Console.app > crash reports (macOS)."
+                        ),
+                        data={
+                            "incomplete_24h": incomplete,
+                            "incomplete_1h": recent_inc,
+                            "rate_pct": round(rate, 1),
+                            "by_model": {
+                                m: v.get("incomplete", 0)
+                                for m, v in reliability["by_model"].items()
+                                if v.get("incomplete", 0) > 0
+                            },
+                        },
+                    )
+                )
+            else:
+                recs.append(
+                    Recommendation(
+                        check_id="incomplete_streams",
+                        severity=Severity.INFO,
+                        title=f"Incomplete streams resolved ({incomplete} in 24h, none recent)",
+                        description=(
+                            f"{incomplete} incomplete streams in 24h but none in the "
+                            f"last hour."
+                        ),
+                        fix="No action needed. This will clear as historical data ages out.",
+                        data={
+                            "incomplete_24h": incomplete,
+                            "incomplete_1h": 0,
+                            "resolved": True,
+                        },
+                    )
+                )
+
         return recs
 
     # ------------------------------------------------------------------

@@ -496,7 +496,8 @@ class TraceStore:
             SELECT
                 node_id,
                 COUNT(*) AS total,
-                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+                SUM(CASE WHEN status != 'completed' AND status != 'retried'
+                    THEN 1 ELSE 0 END) AS failed
             FROM request_traces
             WHERE timestamp >= ?
             GROUP BY node_id
@@ -547,7 +548,8 @@ class TraceStore:
             """
             SELECT
                 COUNT(*) AS total,
-                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                SUM(CASE WHEN status != 'completed' AND status != 'retried'
+                    THEN 1 ELSE 0 END) AS failed,
                 AVG(time_to_first_token_ms) AS avg_ttft,
                 SUM(retry_count) AS retries
             FROM request_traces
@@ -568,6 +570,56 @@ class TraceStore:
             "error_rate_pct": round((row[1] / row[0]) * 100, 1),
             "avg_ttft_ms": round(row[2], 1) if row[2] else None,
             "total_retries": row[3] or 0,
+        }
+
+    async def get_stream_reliability_24h(self, lookback_s: int = 86400) -> dict:
+        """Count client disconnects and incomplete streams in the given window."""
+        if not self._db:
+            return {
+                "client_disconnected": 0,
+                "incomplete": 0,
+                "total_requests": 0,
+                "by_model": {},
+            }
+        cutoff = time.time() - lookback_s
+        cursor = await self._db.execute(
+            """
+            SELECT
+                status,
+                model,
+                COUNT(*) AS cnt
+            FROM request_traces
+            WHERE timestamp >= ? AND status IN ('client_disconnected', 'incomplete')
+            GROUP BY status, model
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        disconnected = 0
+        incomplete = 0
+        by_model: dict[str, dict] = {}
+        for status, model, cnt in rows:
+            if status == "client_disconnected":
+                disconnected += cnt
+            elif status == "incomplete":
+                incomplete += cnt
+            if model not in by_model:
+                by_model[model] = {"client_disconnected": 0, "incomplete": 0}
+            by_model[model][status] = cnt
+
+        # Get total requests for rate calculation
+        cursor2 = await self._db.execute(
+            "SELECT COUNT(*) FROM request_traces WHERE timestamp >= ?",
+            (cutoff,),
+        )
+        row = await cursor2.fetchone()
+        total = row[0] if row else 0
+
+        return {
+            "client_disconnected": disconnected,
+            "incomplete": incomplete,
+            "total_requests": total,
+            "by_model": by_model,
         }
 
     async def get_model_timeouts_24h(
