@@ -23,6 +23,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["ollama"])
 
 
+def _build_thinking_headers(proxy, request_id: str) -> dict[str, str]:
+    """Build X-Thinking-* response headers from streaming metadata.
+
+    Returns headers for thinking token breakdown, budget usage, and done reason.
+    Only includes headers when there's meaningful data (thinking tokens > 0 or
+    done_reason is present).
+    """
+    meta = proxy._request_meta.pop(request_id, None)
+    if not meta:
+        return {}
+    headers = {}
+    if meta.get("thinking_tokens", 0) > 0:
+        headers["X-Thinking-Tokens"] = str(meta["thinking_tokens"])
+    if meta.get("output_tokens", 0) > 0:
+        headers["X-Output-Tokens"] = str(meta["output_tokens"])
+    if meta.get("done_reason"):
+        headers["X-Done-Reason"] = meta["done_reason"]
+    # Budget: completion_tokens / num_predict
+    completion = meta.get("completion_tokens")
+    num_predict = meta.get("num_predict")
+    if completion is not None and num_predict:
+        headers["X-Budget-Used"] = f"{completion}/{num_predict}"
+    return headers
+
+
 @router.post("/api/chat")
 async def ollama_chat(request: Request):
     """Ollama-compatible chat endpoint. Routes to best available node."""
@@ -364,7 +389,9 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         async def _stream_and_cleanup():
             async for chunk in stream:
                 yield chunk
+            # Add thinking headers for streaming (trailer-style — available after stream)
             proxy._request_tokens.pop(inference_req.request_id, None)
+            proxy._request_meta.pop(inference_req.request_id, None)
 
         return StreamingResponse(
             _stream_and_cleanup(),
@@ -386,6 +413,9 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
                         final_data = data
                 except json.JSONDecodeError as e:
                     logger.debug(f"Skipping malformed Ollama chunk: {e}")
+
+        # Add thinking-aware headers to non-streaming response
+        headers.update(_build_thinking_headers(proxy, inference_req.request_id))
 
         # Clean up token tracking
         proxy._request_tokens.pop(inference_req.request_id, None)

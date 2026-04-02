@@ -275,6 +275,16 @@ The highest-scoring node wins. If no node is available, the request enters a hol
 
 For full details on the scoring algorithm, pre-warm triggers, and rebalancer: [Fleet Manager Routing Engine](docs/fleet-manager-routing-engine.md).
 
+## Thinking model support
+
+Models like `gpt-oss:120b`, `deepseek-r1`, and `qwq` use chain-of-thought reasoning — they "think" before responding, consuming part of the token budget on internal reasoning. Herd is thinking-model-aware:
+
+- **Auto-inflates `num_predict`** — small budgets (e.g., 200 tokens) get multiplied by 4× before forwarding to Ollama, preventing empty responses where thinking consumed the entire budget
+- **Diagnostic headers** — `X-Thinking-Tokens`, `X-Output-Tokens`, `X-Budget-Used`, `X-Done-Reason` on non-streaming responses for instant debugging
+- **Auto-detection** — recognizes thinking model families (deepseek-r1, gpt-oss, qwq, phi-4-reasoning) and applies overhead automatically
+
+Configure via `FLEET_THINKING_OVERHEAD` (default 4.0×) and `FLEET_THINKING_MIN_PREDICT` (default 1024). See [Thinking Models Guide](docs/guides/thinking-models.md).
+
 ## Resilience
 
 - **Auto-retry** — if a node fails before the first response chunk, the router re-scores and retries on the next-best node (up to 2 retries)
@@ -337,6 +347,7 @@ See [Operations Guide](docs/operations-guide.md) for log queries, trace access, 
 | `GET /api/ps` | Running models across all nodes |
 | `GET /api/image-models` | List image models across the fleet |
 | `GET /fleet/status` | Herd state: nodes, queues, metrics |
+| `GET /fleet/queue` | Lightweight queue depths + estimated wait (for client backoff) |
 | `GET /dashboard` | Real-time web dashboard |
 | `GET /dashboard/events` | SSE stream for live fleet updates |
 | `GET /dashboard/api/trends` | Hourly aggregated stats (JSON) |
@@ -530,6 +541,7 @@ uv run ruff format src/              # format
 | [OpenClaw Integration](docs/openclaw-integration.md) | Setup guide for OpenClaw agents |
 | [Request Tagging](docs/request-tagging.md) | Per-app analytics, tagging strategies, competitive landscape |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues, LAN debugging, operational gotchas |
+| [Thinking Models](docs/guides/thinking-models.md) | Working with chain-of-thought models, budget inflation, diagnostic headers |
 | [Architecture Decisions](docs/architecture-decisions.md) | Port selection, design trade-offs, rationale |
 | [Changelog](CHANGELOG.md) | What's new in each release |
 

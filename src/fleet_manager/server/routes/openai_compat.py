@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
+from fleet_manager.server.routes.ollama_compat import _build_thinking_headers
 from fleet_manager.server.routes.routing import (
     check_context_overflow,
     extract_tags,
@@ -191,24 +192,30 @@ async def chat_completions(request: Request):
         prompt_tok = tokens[0] or 0
         completion_tok = tokens[1] or 0
 
-        return {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": actual_model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": full_content},
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {
-                "prompt_tokens": prompt_tok,
-                "completion_tokens": completion_tok,
-                "total_tokens": prompt_tok + completion_tok,
+        # Add thinking-aware headers
+        headers.update(_build_thinking_headers(proxy, inference_req.request_id))
+
+        return JSONResponse(
+            content={
+                "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": actual_model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": full_content},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": prompt_tok,
+                    "completion_tokens": completion_tok,
+                    "total_tokens": prompt_tok + completion_tok,
+                },
             },
-        }
+            headers=headers,
+        )
 
 
 @router.post("/v1/images/generations")

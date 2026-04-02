@@ -606,6 +606,36 @@ def classify_model(name: str) -> ModelCategory:
     return ModelCategory.GENERAL
 
 
+def is_thinking_model(name: str) -> bool:
+    """Check if a model uses chain-of-thought reasoning (thinking tokens).
+
+    Thinking models split their token budget between internal reasoning
+    (message.thinking) and visible output (message.content). This means
+    small num_predict values can result in empty responses because the
+    entire budget was consumed by thinking.
+
+    Known thinking model families: deepseek-r1, gpt-oss, qwq, phi-4-reasoning.
+    """
+    lower = name.lower().removesuffix(":latest")
+    spec = lookup_model(name)
+    if spec and spec.category == ModelCategory.REASONING:
+        return True
+    # Heuristic fallback for unknown models
+    thinking_patterns = (
+        "deepseek-r1", "gpt-oss", "qwq", "phi-4-reasoning",
+        "phi4-reasoning", "reasoning",
+    )
+    return any(p in lower for p in thinking_patterns)
+
+
+# Default thinking overhead multiplier: num_predict is multiplied by this
+# for thinking models to ensure enough budget for both reasoning and output.
+THINKING_OVERHEAD_MULTIPLIER = 4.0
+
+# Minimum num_predict for thinking models to avoid empty responses.
+THINKING_MIN_NUM_PREDICT = 1024
+
+
 def is_image_model(name: str) -> bool:
     """Check if a model name is an Ollama native image generation model.
 

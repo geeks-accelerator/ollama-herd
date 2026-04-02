@@ -63,6 +63,10 @@ class ServerSettings(BaseSettings):
     transcription: bool = False  # Enable /api/transcribe endpoint
     transcription_timeout: float = 300.0  # Max seconds for transcription
 
+    # Thinking model support
+    thinking_overhead: float = 4.0  # Multiply num_predict by this for thinking models
+    thinking_min_predict: int = 1024  # Minimum num_predict for thinking models
+
     # Retry
     max_retries: int = 2
 

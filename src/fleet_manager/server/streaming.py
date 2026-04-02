@@ -73,6 +73,8 @@ class StreamingProxy:
         self._settings = settings
         # Token counts extracted from Ollama final chunks, keyed by request_id
         self._request_tokens: dict[str, tuple[int | None, int | None]] = {}
+        # Extended request metadata: thinking tokens, done_reason, num_predict budget
+        self._request_meta: dict[str, dict] = {}
 
     def _get_client(self, node_id: str) -> httpx.AsyncClient:
         node = self._registry.get_node(node_id)
@@ -463,6 +465,10 @@ class StreamingProxy:
         if request.raw_body.get("prompt") is not None and "messages" not in request.raw_body:
             endpoint = "/api/generate"
 
+        # Track thinking vs output tokens for thinking-model awareness
+        thinking_token_count = 0
+        output_token_count = 0
+
         async with client.stream("POST", endpoint, json=ollama_body) as response:
             if response.status_code >= 400:
                 body = await response.aread()
@@ -474,16 +480,40 @@ class StreamingProxy:
             async for line in response.aiter_lines():
                 if not line:
                     continue
-                # Extract token counts from the final Ollama chunk
+                # Extract token counts and thinking/output breakdown
                 try:
                     parsed = json.loads(line)
+                    # Count thinking vs output tokens from streaming chunks.
+                    # Ollama sends thinking content in message.thinking and
+                    # regular content in message.content.
+                    msg = parsed.get("message", {})
+                    thinking_text = msg.get("thinking", "")
+                    content_text = msg.get("content", "") or parsed.get("response", "")
+                    if thinking_text:
+                        # Rough token estimate: ~4 chars per token
+                        thinking_token_count += max(1, len(thinking_text) // 4)
+                    if content_text and not parsed.get("done", False):
+                        output_token_count += max(1, len(content_text) // 4)
+
                     if parsed.get("done", False):
                         prompt_tok = parsed.get("prompt_eval_count")
                         completion_tok = parsed.get("eval_count")
+                        done_reason = parsed.get("done_reason", "")
                         self._request_tokens[request.request_id] = (
                             prompt_tok,
                             completion_tok,
                         )
+                        # Store extended metadata for headers
+                        self._request_meta[request.request_id] = {
+                            "thinking_tokens": thinking_token_count,
+                            "output_tokens": output_token_count,
+                            "done_reason": done_reason,
+                            "prompt_tokens": prompt_tok,
+                            "completion_tokens": completion_tok,
+                            "num_predict": ollama_body.get("options", {}).get(
+                                "num_predict"
+                            ),
+                        }
                 except json.JSONDecodeError:
                     logger.warning(f"Malformed JSON from Ollama on {node_id}: {line[:200]}")
                 # Yield in the appropriate format
@@ -879,6 +909,8 @@ class StreamingProxy:
             body.setdefault("keep_alive", -1)
             # Protect against num_ctx triggering expensive model reloads
             self._apply_context_protection(body, request.model, node_id)
+            # Auto-inflate num_predict for thinking models
+            self._apply_thinking_overhead(body, request.model)
             return body
 
         body = {
@@ -900,7 +932,52 @@ class StreamingProxy:
         if options:
             body["options"] = options
 
+        # Auto-inflate num_predict for thinking models
+        self._apply_thinking_overhead(body, request.model)
+
         return body
+
+    def _apply_thinking_overhead(self, body: dict, model: str) -> None:
+        """Auto-inflate num_predict for thinking models.
+
+        Thinking models (deepseek-r1, gpt-oss, qwq) split their token budget
+        between internal chain-of-thought reasoning and visible output. Small
+        num_predict values result in empty responses because the entire budget
+        is consumed by thinking. This inflates the budget to ensure enough
+        tokens for both reasoning and output.
+
+        Only applies when num_predict is explicitly set by the client. If the
+        client doesn't set num_predict, Ollama uses the model's default (usually
+        large enough), so no inflation is needed.
+        """
+        from fleet_manager.server.model_knowledge import is_thinking_model
+
+        if not is_thinking_model(model):
+            return
+
+        options = body.get("options", {})
+        num_predict = options.get("num_predict")
+        if num_predict is None:
+            return  # Client didn't set a limit, Ollama will use model default
+
+        # Get overhead settings
+        overhead = 4.0
+        min_predict = 1024
+        if self._settings:
+            overhead = getattr(self._settings, "thinking_overhead", 4.0)
+            min_predict = getattr(self._settings, "thinking_min_predict", 1024)
+
+        # Apply: inflate by multiplier, enforce minimum
+        original = num_predict
+        inflated = max(int(num_predict * overhead), min_predict)
+        if inflated != original:
+            if "options" not in body:
+                body["options"] = {}
+            body["options"]["num_predict"] = inflated
+            logger.info(
+                f"Thinking overhead: inflated num_predict {original} → {inflated} "
+                f"for {model} (×{overhead}, min={min_predict})"
+            )
 
     def _ollama_to_openai_sse(self, ollama_json_line: str, model: str) -> str:
         """Convert a single Ollama NDJSON line to OpenAI SSE format."""

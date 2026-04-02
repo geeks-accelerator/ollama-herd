@@ -58,3 +58,65 @@ async def fleet_status(request: Request):
         "queues": queue_mgr.get_queue_info(),
         "timestamp": time.time(),
     }
+
+
+@router.get("/fleet/queue")
+async def fleet_queue(request: Request):
+    """Lightweight queue status for client-side backoff decisions.
+
+    Returns current queue depths, estimated wait, and per-tag active request
+    counts. Designed for high-frequency polling (sub-second response).
+    Clients can use this to decide whether to send a request now or wait.
+    """
+    queue_mgr = request.app.state.queue_mgr
+    registry = request.app.state.registry
+
+    queue_info = queue_mgr.get_queue_info()
+    total_pending = sum(q["pending"] for q in queue_info.values())
+    total_in_flight = sum(q["in_flight"] for q in queue_info.values())
+    total_completed = sum(q["completed"] for q in queue_info.values())
+    total_failed = sum(q["failed"] for q in queue_info.values())
+
+    # Estimate wait time from recent latency (rough: pending * avg_latency / concurrency)
+    latency_store = getattr(request.app.state, "latency_store", None)
+    estimated_wait_ms = None
+    if total_pending > 0 and latency_store:
+        # Use cached p75 latencies across all queues
+        latencies = []
+        for _key, q in queue_info.items():
+            p75 = latency_store.get_cached_percentile(q["node_id"], q["model"])
+            if p75 is not None:
+                latencies.append(p75)
+        if latencies:
+            avg_latency = sum(latencies) / len(latencies)
+            total_concurrency = sum(
+                q.get("concurrency", 1) for q in queue_info.values()
+            )
+            estimated_wait_ms = int(
+                total_pending * avg_latency / max(total_concurrency, 1)
+            )
+
+    online_count = sum(
+        1 for n in registry.get_all_nodes() if n.status.value == "online"
+    )
+
+    return {
+        "queue_depth": total_pending + total_in_flight,
+        "pending": total_pending,
+        "in_flight": total_in_flight,
+        "completed": total_completed,
+        "failed": total_failed,
+        "estimated_wait_ms": estimated_wait_ms,
+        "nodes_online": online_count,
+        "queues": {
+            key: {
+                "pending": q["pending"],
+                "in_flight": q["in_flight"],
+                "concurrency": q.get("concurrency", 1),
+                "model": q["model"],
+                "node_id": q["node_id"],
+            }
+            for key, q in queue_info.items()
+        },
+        "timestamp": time.time(),
+    }
