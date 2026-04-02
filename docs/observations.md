@@ -200,4 +200,36 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+## 2026-04-02: shutil.which() blind spots in tool-installed binaries
+
+**Evidence:** Image generation stopped working after every Herd restart. The node agent couldn't find `mflux-generate-z-image-turbo` even though `uv tool list` confirmed it was installed. Root cause: `uv tool install` puts binaries in `~/.local/bin/` via symlinks, but when `uv run herd-node` launches the Python process, `~/.local/bin` isn't in `$PATH`. `shutil.which()` only checks `$PATH`. The fleet status showed `image=none, port=none` — zero image capabilities reported despite mflux being fully functional if called with the full path.
+
+**Insight:** Any system that discovers external tool capabilities via `shutil.which()` or `subprocess` is vulnerable to PATH blindness. The fix isn't to manipulate PATH (fragile, platform-specific) — it's to check known installation directories explicitly. We added `_which_extended()` that checks `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin` as fallbacks. This pattern applies to any agent/collector that needs to discover installed CLI tools.
+
+---
+
+## 2026-04-02: Silent success is worse than loud failure
+
+**Evidence:** Two bugs masked failures as successes for weeks: (1) Client disconnects (`GeneratorExit`) were caught and marked "completed" — 0 failures in the dashboard while the other agent reported 4 fetch failures. (2) Streams ending without Ollama's `done: true` (process crash, TCP drop) also marked "completed". The dashboard showed 24,650 completed, 1 failed. The real failure count was hidden.
+
+**Insight:** In distributed systems, the most dangerous bugs aren't the ones that crash — they're the ones that silently succeed. A streaming proxy must distinguish between "stream completed normally (got done:true)" and "stream ended without error but without completion signal." The `GeneratorExit` exception in Python async generators is especially treacherous — it's the correct way for consumers to signal "I'm done" but it looks identical to "I crashed/timed out." Always check for a positive completion signal (`done: true`, final chunk, etc.) rather than assuming "no error = success."
+
+---
+
+## 2026-04-02: Thinking models break the num_predict contract
+
+**Evidence:** Agent reported empty responses from `gpt-oss:120b` with `num_predict=200`. All 200 tokens went to chain-of-thought reasoning (`message.thinking`), leaving 0 for visible output. Ollama returned `done_reason: "length"` and empty `message.content`. From the client's perspective: successful completion, no error, no content. The fix was router-level: auto-detect thinking models and inflate `num_predict` by 4× (200 → 1024) before forwarding to Ollama.
+
+**Insight:** Thinking models fundamentally change the token budget contract. `num_predict` no longer means "max output tokens" — it means "max thinking + output tokens." This is a breaking semantic change that no client-side code expects. The router is the ideal place to fix it because: (1) it sees all requests, (2) it knows which models are thinking models via the catalog, (3) it can inflate transparently without client changes. The pattern: when an upstream system changes semantics, the proxy layer should absorb the translation. Same principle as context protection.
+
+---
+
+## 2026-04-02: launchctl setenv is a lie (on macOS)
+
+**Evidence:** Set `OLLAMA_NUM_PARALLEL=2` via `launchctl setenv` and confirmed it worked (`launchctl getenv` returned 2). Ollama restarted fine with the new value. But `~/.zshrc` contained `launchctl setenv OLLAMA_NUM_PARALLEL 16`. The next time any terminal opened, the zshrc re-ran and silently overwrote the value back to 16. Ollama kept running with 2 (already loaded), but the next Ollama restart would pick up 16 again. Another agent caught it.
+
+**Insight:** `launchctl setenv` is session-scoped and overridden by shell profile scripts. For persistent macOS environment changes, you must update both `launchctl setenv` (immediate) AND the shell profile (`~/.zshrc`, `~/.bash_profile`). The KV cache bloat health check we added detects the symptom (VRAM > expected weights) but can't detect the env var revert itself. Defense in depth: fix the config file, apply the runtime change, and add monitoring for the downstream effect.
+
+---
+
 *Add new observations above this line. Date them. Link evidence. Extract the transferable insight.*

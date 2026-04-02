@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-04-02
+
+### Added
+
+- **Thinking model support** — auto-detects thinking models (gpt-oss, deepseek-r1, qwq, phi-4-reasoning) and inflates `num_predict` by 4× (configurable via `FLEET_THINKING_OVERHEAD`) to prevent empty responses where reasoning consumes the entire token budget
+- **Thinking-aware response headers** — `X-Thinking-Tokens`, `X-Output-Tokens`, `X-Budget-Used`, `X-Done-Reason` on non-streaming responses
+- **Queue depth API** — `GET /fleet/queue` for client-side backoff decisions with `estimated_wait_ms`
+- **KV cache bloat health check** — detects when `OLLAMA_NUM_PARALLEL` is too high by comparing VRAM vs estimated weights. Surfaces actionable fix
+- **Stream reliability health checks** — "Client Disconnects" and "Incomplete Streams" dashboard cards with per-model breakdowns
+- **Embedding model badges** — purple EMBED badges on Fleet Overview and Settings
+- **Thinking models guide** — `docs/guides/thinking-models.md`
+- 15 health checks total (up from 11 in 0.4.0)
+
+### Fixed
+
+- **Embeddings proxy routed to `/api/chat`** — embed requests went through the chat streaming pipeline. Now proxies directly to Ollama's `/api/embed` via the managed HTTP client with 600s timeout
+- **Image/STT binary detection** — `shutil.which()` couldn't find mflux/DiffusionKit installed via `uv tool` because `~/.local/bin` wasn't in PATH. Added `_which_extended()` that checks common tool install locations
+- **Client disconnects recorded as "completed"** — `GeneratorExit` now records as `client_disconnected`
+- **Incomplete streams recorded as "completed"** — missing `done: true` now detected and recorded as `incomplete`
+- **Error rate queries undercounting** — now counts all non-success statuses
+- **LatencyStore unbounded memory** — capped to last 500 observations
+- **N+1 query on cache refresh** — single SQL query with window functions
+- **O(n) in-flight tracking** — dict keyed by request_id, all O(1)
+- **Ollama non-streaming missing headers** — changed to explicit JSONResponse
+
+### Changed
+
+- `image_generation` and `transcription` default to `true` (was `false` — caused silent 503s after every restart)
+- SSE stream and fleet/status include `embed_models` per node
+- Queue EMBED badge color changed to purple
+
 ## [0.4.0] - 2026-04-02
 
 ### Added
@@ -128,6 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graceful drain on SIGTERM
 - 212 tests with full async coverage
 
+[0.4.1]: https://github.com/geeks-accelerator/ollama-herd/releases/tag/v0.4.1
 [0.4.0]: https://github.com/geeks-accelerator/ollama-herd/releases/tag/v0.4.0
 [0.3.0]: https://github.com/geeks-accelerator/ollama-herd/releases/tag/v0.3.0
 [0.2.0]: https://github.com/geeks-accelerator/ollama-herd/releases/tag/v0.2.0
