@@ -53,11 +53,11 @@ Single Python package (`fleet_manager`), two CLI entry points:
 | `server/registry.py` | In-memory node state tracking via heartbeats |
 | `server/scorer.py` | 7-signal scoring: thermal, memory fit, queue depth, wait time, role affinity, availability trend, context fit |
 | `server/queue_manager.py` | Per `node:model` queues with dynamic concurrent workers + stale in-flight reaper |
-| `server/streaming.py` | httpx proxy to Ollama + format conversion (NDJSON ↔ SSE) + auto-retry + context-size protection |
+| `server/streaming.py` | httpx proxy to Ollama + format conversion (NDJSON ↔ SSE) + auto-retry + context-size protection + thinking model auto-inflate + X-Thinking-* headers |
 | `server/latency_store.py` | aiosqlite persistence at `~/.fleet-manager/latency.db` |
 | `server/trace_store.py` | Per-request trace log + usage stats + benchmark results + timeout detection in SQLite |
 | `server/health_engine.py` | Fleet health analysis: 15 checks (offline, degraded, memory pressure, underutilized, VRAM fallbacks, KV cache bloat, thrashing, timeouts, error rates, retries, client disconnects, incomplete streams, version mismatch, context protection, zombie reaper) |
-| `server/model_knowledge.py` | Curated catalog of 30+ Ollama models with benchmarks, RAM requirements, and category classifications |
+| `server/model_knowledge.py` | Curated catalog of 30+ Ollama models with benchmarks, RAM requirements, category classifications, and thinking model detection (`is_thinking_model()`) |
 | `server/model_recommender.py` | Analyzes fleet hardware + usage patterns to recommend optimal model mix per node |
 | `server/routes/routing.py` | Shared scoring logic with model fallback + holding queue + auto-pull + tag extraction |
 | `server/rebalancer.py` | Background queue rebalancer + pre-warm trigger |

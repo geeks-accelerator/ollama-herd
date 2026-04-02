@@ -112,6 +112,17 @@ Pre-warm proactively loads models on runner-up nodes before they're needed.
 | `FLEET_TRANSCRIPTION` | `false` | Enable `/api/transcribe` endpoint for Qwen3-ASR routing |
 | `FLEET_TRANSCRIPTION_TIMEOUT` | `300.0` | Max seconds to wait for transcription |
 
+### Thinking Models
+
+Thinking models (deepseek-r1, gpt-oss, qwq) split `num_predict` between internal reasoning and visible output. Small budgets result in empty responses. The router auto-detects thinking models and inflates the budget.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_THINKING_OVERHEAD` | `4.0` | Multiply client's `num_predict` by this factor for thinking models |
+| `FLEET_THINKING_MIN_PREDICT` | `1024` | Minimum `num_predict` sent to Ollama for thinking models (floor) |
+
+Only applies when the client explicitly sets `num_predict` / `max_tokens`. If omitted, Ollama uses the model's default. See [Thinking Models Guide](guides/thinking-models.md).
+
 ### mDNS Discovery
 
 | Variable | Default | Description |

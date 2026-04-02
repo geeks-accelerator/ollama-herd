@@ -88,6 +88,10 @@ data: [DONE]\n\n
 | `X-Fleet-Fallback` | Fallback model used (only if primary was unavailable) |
 | `X-Fleet-Retries` | Number of retries (only if retry occurred) |
 | `X-Fleet-Context-Overflow` | Context overflow warning: `estimated_tokens=N; context_length=M` (only if estimated tokens exceed the node's context window) |
+| `X-Thinking-Tokens` | Estimated tokens spent on chain-of-thought reasoning (thinking models only, non-streaming) |
+| `X-Output-Tokens` | Estimated tokens of visible output content (thinking models only, non-streaming) |
+| `X-Budget-Used` | `completion_tokens/num_predict` — at-a-glance budget check (non-streaming only) |
+| `X-Done-Reason` | Ollama's done_reason: `stop` (natural end) or `length` (budget exhausted) (non-streaming only) |
 
 **Error responses:**
 
@@ -558,6 +562,38 @@ curl http://localhost:11435/api/transcribe -F "audio=@recording.wav"
 | `X-Transcription-Time` | Processing time in ms |
 
 **Error responses:** `404` (no STT models available), `502` (transcription failed), `503` (disabled).
+
+---
+
+### `GET /fleet/queue`
+
+Lightweight queue status for client-side backoff decisions. Designed for high-frequency polling.
+
+**Response:**
+
+```json
+{
+  "queue_depth": 5,
+  "pending": 2,
+  "in_flight": 3,
+  "completed": 1250,
+  "failed": 3,
+  "estimated_wait_ms": 15000,
+  "nodes_online": 2,
+  "queues": {
+    "Studio:gpt-oss:120b": {
+      "pending": 2,
+      "in_flight": 3,
+      "concurrency": 2,
+      "model": "gpt-oss:120b",
+      "node_id": "Studio"
+    }
+  },
+  "timestamp": 1712345678.123
+}
+```
+
+Use `estimated_wait_ms` to decide whether to send a request now or back off. `queue_depth` = `pending` + `in_flight`.
 
 ---
 

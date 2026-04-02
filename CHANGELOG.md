@@ -17,8 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **KV cache bloat health check** — detects when OLLAMA_NUM_PARALLEL is too high by comparing loaded model VRAM against estimated weight sizes. Surfaces actionable fix with exact commands
 - **Stream reliability health checks** — "Client Disconnects" and "Incomplete Streams" cards on the Health dashboard with per-model breakdowns and active/resolved state
 - **Stream reliability vitals** — `client_disconnects_24h` and `incomplete_streams_24h` counters on the Health page
+- **Thinking model support** — auto-detects thinking models (gpt-oss, deepseek-r1, qwq, phi-4-reasoning) and inflates `num_predict` by 4× (configurable via `FLEET_THINKING_OVERHEAD`) with 1024 minimum to prevent empty responses where reasoning consumes the entire token budget
+- **Thinking-aware response headers** — `X-Thinking-Tokens`, `X-Output-Tokens`, `X-Budget-Used`, `X-Done-Reason` on non-streaming responses for instant debugging of thinking model behavior
+- **Queue depth API** — `GET /fleet/queue` returns lightweight queue depths, estimated wait time, and per-queue concurrency for client-side backoff decisions
 - **Embedding model badges** — purple EMBED badges on Fleet Overview node cards and Settings page for models like nomic-embed-text
 - **Expanded README** — comprehensive usage docs for all 4 model types with SDK examples, model comparison tables, discovery endpoints, and batch examples
+- **Thinking models guide** — `docs/guides/thinking-models.md` with recommended settings, client-side tips, and debugging patterns
 - **PyPI release process** documented in CLAUDE.md (build commands, credential location, changelog expectations)
 - 32 new tests (444 total)
 
