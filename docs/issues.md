@@ -326,6 +326,30 @@ Failed request traces in the trace store have empty `error_message` fields. The 
 
 ---
 
+### 22. Client Disconnects Recorded as "completed" `FIXED`
+
+**File:** `src/fleet_manager/server/streaming.py`
+**Severity:** High
+
+When a client disconnects mid-stream (HTTP timeout, connection drop), FastAPI sends `GeneratorExit` to the streaming generator. Both `_stream_with_tracking` and `_stream_with_retry` caught this but marked the request as **completed** — silently hiding failures from the dashboard and trace store.
+
+**Observed:** 2026-04-01. Another agent reported "4 fetch failed — Ollama connection drops on large payloads" but the dashboard showed only 1 failed request out of 24,650. The disconnect failures were all recorded as successful completions.
+
+**Fix:** `GeneratorExit` now records status `"client_disconnected"` and calls `mark_failed` instead of `mark_completed`. The trace store gets the real status so the dashboard accurately reflects failure rates.
+
+---
+
+### 23. Incomplete Streams (No done:true) Recorded as "completed" `FIXED`
+
+**File:** `src/fleet_manager/server/streaming.py`
+**Severity:** High
+
+If Ollama drops the TCP connection after sending partial data but without raising an exception, httpx's `aiter_lines()` stops iterating cleanly. The `finally` block saw `error_occurred = False` and marked it "completed" — even though the response was truncated and Ollama never sent the final `done: true` chunk.
+
+**Fix:** After the stream loop completes without error, check if `_request_tokens` has an entry for this request (only populated when `done: true` is parsed in `stream_from_node`). If missing, record as `"incomplete"` and call `mark_failed`. This catches Ollama process deaths, OOM kills, and silent connection drops.
+
+---
+
 ## Future Considerations
 
 - **Extract dashboard frontend** — see issue #9 above

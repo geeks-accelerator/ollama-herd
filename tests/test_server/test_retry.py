@@ -90,6 +90,8 @@ class TestStreamWithRetry:
         async def fake_stream(node_id, request):
             yield "data: {}\n\n"
             yield "data: [DONE]\n\n"
+            # Simulate done:true token extraction (normally done in stream_from_node)
+            proxy._request_tokens[request.request_id] = (10, 20)
 
         proxy.stream_from_node = fake_stream
 
@@ -128,6 +130,8 @@ class TestStreamWithRetry:
                 raise httpx.ConnectError("Connection refused")
             yield "data: {}\n\n"
             yield "data: [DONE]\n\n"
+            # Simulate done:true token extraction (normally done in stream_from_node)
+            proxy._request_tokens[request.request_id] = (10, 20)
 
         proxy.stream_from_node = failing_then_succeeding
 

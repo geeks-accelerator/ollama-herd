@@ -141,8 +141,23 @@ class StreamingProxy:
                     first_token_time = time.time()
                 yield chunk
         except GeneratorExit:
-            # Consumer stopped consuming (e.g., non-streaming accumulated enough)
-            logger.debug(f"Stream consumer stopped early for {entry.request.request_id[:8]}")
+            # Client disconnected (HTTP timeout, connection drop, etc.)
+            # This is NOT a successful completion — the client never got the full response.
+            error_occurred = True
+            queue_manager.mark_failed(queue_key, entry)
+            logger.warning(
+                f"Client disconnected for {entry.request.request_id[:8]} "
+                f"on {entry.assigned_node}"
+            )
+            self._record_trace(
+                entry,
+                entry.assigned_node,
+                start_time,
+                first_token_time,
+                "client_disconnected",
+                error_message="Client disconnected before stream completed",
+            )
+            self._request_tokens.pop(entry.request.request_id, None)
         except Exception as e:
             error_occurred = True
             # Invalidate stale client on connection errors so next request gets a fresh one
@@ -153,7 +168,6 @@ class StreamingProxy:
                 f"Stream error for {entry.request.request_id[:8]}: {type(e).__name__}: {e}"
             )
             # Record failed trace
-            elapsed_ms = (time.time() - start_time) * 1000
             self._record_trace(
                 entry,
                 entry.assigned_node,
@@ -165,38 +179,61 @@ class StreamingProxy:
             raise
         finally:
             if not error_occurred:
-                queue_manager.mark_completed(queue_key, entry)
-                elapsed_ms = (time.time() - start_time) * 1000
-                # Read (don't pop) token counts — the route handler may still
-                # need them for the OpenAI-compat usage response.
-                prompt_tokens, completion_tokens = self._request_tokens.get(
-                    entry.request.request_id, (None, None)
-                )
-                logger.info(
-                    f"Request {entry.request.request_id[:8]} completed on {entry.assigned_node} "
-                    f"in {elapsed_ms / 1000:.1f}s "
-                    f"(prompt={prompt_tokens}, completion={completion_tokens})"
-                )
-                # Record latency + tokens for dashboard and Signal 4
-                if self._latency_store:
-                    _create_logged_task(
-                        self._latency_store.record(
-                            entry.assigned_node,
-                            entry.request.model,
-                            elapsed_ms,
-                            prompt_tokens=prompt_tokens,
-                            completion_tokens=completion_tokens,
-                        ),
-                        name=f"latency-record-{entry.request.request_id[:8]}",
+                # Check if Ollama sent the final done:true chunk.
+                # _request_tokens is only populated when done:true is parsed in stream_from_node.
+                # If missing, the stream ended without completing (Ollama dropped connection).
+                got_done = entry.request.request_id in self._request_tokens
+
+                if got_done:
+                    queue_manager.mark_completed(queue_key, entry)
+                    elapsed_ms = (time.time() - start_time) * 1000
+                    # Read (don't pop) token counts — the route handler may still
+                    # need them for the OpenAI-compat usage response.
+                    prompt_tokens, completion_tokens = self._request_tokens.get(
+                        entry.request.request_id, (None, None)
                     )
-                # Record completed trace
-                self._record_trace(
-                    entry,
-                    entry.assigned_node,
-                    start_time,
-                    first_token_time,
-                    "completed",
-                )
+                    logger.info(
+                        f"Request {entry.request.request_id[:8]} completed on "
+                        f"{entry.assigned_node} in {elapsed_ms / 1000:.1f}s "
+                        f"(prompt={prompt_tokens}, completion={completion_tokens})"
+                    )
+                    # Record latency + tokens for dashboard and Signal 4
+                    if self._latency_store:
+                        _create_logged_task(
+                            self._latency_store.record(
+                                entry.assigned_node,
+                                entry.request.model,
+                                elapsed_ms,
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=completion_tokens,
+                            ),
+                            name=f"latency-record-{entry.request.request_id[:8]}",
+                        )
+                    # Record completed trace
+                    self._record_trace(
+                        entry,
+                        entry.assigned_node,
+                        start_time,
+                        first_token_time,
+                        "completed",
+                    )
+                else:
+                    # Stream ended without done:true — Ollama dropped the connection
+                    queue_manager.mark_failed(queue_key, entry)
+                    elapsed_ms = (time.time() - start_time) * 1000
+                    logger.warning(
+                        f"Incomplete stream for {entry.request.request_id[:8]} on "
+                        f"{entry.assigned_node} — no done:true received after "
+                        f"{elapsed_ms / 1000:.1f}s"
+                    )
+                    self._record_trace(
+                        entry,
+                        entry.assigned_node,
+                        start_time,
+                        first_token_time,
+                        "incomplete",
+                        error_message="Stream ended without done:true from Ollama",
+                    )
             else:
                 # Clean up token tracking on error
                 self._request_tokens.pop(entry.request.request_id, None)
@@ -283,8 +320,18 @@ class StreamingProxy:
                         first_token_time = time.time()
                     yield chunk
             except GeneratorExit:
-                queue_manager.mark_completed(current_queue_key, entry)
-                self._record_trace(entry, current_node, start_time, first_token_time, "completed")
+                # Client disconnected — not a successful completion
+                queue_manager.mark_failed(current_queue_key, entry)
+                logger.warning(
+                    f"Client disconnected for {entry.request.request_id[:8]} "
+                    f"on {current_node}"
+                )
+                self._record_trace(
+                    entry, current_node, start_time, first_token_time,
+                    "client_disconnected",
+                    error_message="Client disconnected before stream completed",
+                )
+                self._request_tokens.pop(entry.request.request_id, None)
                 return
             except Exception as e:
                 # Invalidate stale client on connection errors
@@ -363,29 +410,47 @@ class StreamingProxy:
                 )
                 continue
             else:
-                # Stream completed successfully
-                queue_manager.mark_completed(current_queue_key, entry)
+                # Stream ended — check if Ollama sent the final done:true chunk
+                got_done = entry.request.request_id in self._request_tokens
                 elapsed_ms = (time.time() - start_time) * 1000
-                prompt_tokens, completion_tokens = self._request_tokens.get(
-                    entry.request.request_id, (None, None)
-                )
-                logger.info(
-                    f"Request {entry.request.request_id[:8]} completed on {current_node} "
-                    f"in {elapsed_ms / 1000:.1f}s "
-                    f"(prompt={prompt_tokens}, completion={completion_tokens})"
-                )
-                if self._latency_store:
-                    _create_logged_task(
-                        self._latency_store.record(
-                            current_node,
-                            entry.request.model,
-                            elapsed_ms,
-                            prompt_tokens=prompt_tokens,
-                            completion_tokens=completion_tokens,
-                        ),
-                        name=f"latency-record-{entry.request.request_id[:8]}",
+
+                if got_done:
+                    queue_manager.mark_completed(current_queue_key, entry)
+                    prompt_tokens, completion_tokens = self._request_tokens.get(
+                        entry.request.request_id, (None, None)
                     )
-                self._record_trace(entry, current_node, start_time, first_token_time, "completed")
+                    logger.info(
+                        f"Request {entry.request.request_id[:8]} completed on {current_node} "
+                        f"in {elapsed_ms / 1000:.1f}s "
+                        f"(prompt={prompt_tokens}, completion={completion_tokens})"
+                    )
+                    if self._latency_store:
+                        _create_logged_task(
+                            self._latency_store.record(
+                                current_node,
+                                entry.request.model,
+                                elapsed_ms,
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=completion_tokens,
+                            ),
+                            name=f"latency-record-{entry.request.request_id[:8]}",
+                        )
+                    self._record_trace(
+                        entry, current_node, start_time, first_token_time, "completed",
+                    )
+                else:
+                    # Stream ended without done:true — Ollama dropped the connection
+                    queue_manager.mark_failed(current_queue_key, entry)
+                    logger.warning(
+                        f"Incomplete stream for {entry.request.request_id[:8]} on "
+                        f"{current_node} — no done:true received after "
+                        f"{elapsed_ms / 1000:.1f}s"
+                    )
+                    self._record_trace(
+                        entry, current_node, start_time, first_token_time,
+                        "incomplete",
+                        error_message="Stream ended without done:true from Ollama",
+                    )
                 return
 
     async def stream_from_node(self, node_id: str, request: InferenceRequest) -> AsyncIterator[str]:
