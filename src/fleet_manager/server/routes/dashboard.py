@@ -126,6 +126,14 @@ async def dashboard_events(request: Request):
                     node_data["stt_models"] = [
                         m.name for m in node.transcription.models_available
                     ]
+                # Embedding models: Ollama models with "embed" in the name
+                if node.ollama:
+                    embed_models = [
+                        m for m in node.ollama.models_available
+                        if "embed" in m.lower()
+                    ]
+                    if embed_models:
+                        node_data["embed_models"] = embed_models
                 if node.capacity:
                     node_data["capacity"] = {
                         "mode": node.capacity.mode,
@@ -400,6 +408,12 @@ async def dashboard_settings_data(request: Request):
         stt_models = []
         if node.transcription:
             stt_models = [m.name for m in node.transcription.models_available]
+        embed_models = []
+        if node.ollama:
+            embed_models = [
+                m for m in node.ollama.models_available
+                if "embed" in m.lower()
+            ]
         nodes_data.append({
             "node_id": node.node_id,
             "status": node.status.value,
@@ -411,6 +425,7 @@ async def dashboard_settings_data(request: Request):
             "image_port": node.image_port,
             "stt_models": stt_models,
             "transcription_port": node.transcription_port,
+            "embed_models": embed_models,
         })
 
     return {
@@ -1171,7 +1186,7 @@ function renderNodes(nodes) {
           </div>
           ${modelsHtml}
         </div>
-        ${(node.image_models && node.image_models.length) || (node.stt_models && node.stt_models.length) ? '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">' + ((node.image_models || []).map(m => '<span class="badge" style="background:rgba(249,115,22,0.15);color:var(--orange);font-size:10px">IMG ' + m + '</span>').join('')) + ((node.stt_models || []).map(m => '<span class="badge" style="background:rgba(59,130,246,0.15);color:var(--blue);font-size:10px">STT ' + m + '</span>').join('')) + '</div>' : ''}
+        ${(node.image_models && node.image_models.length) || (node.stt_models && node.stt_models.length) || (node.embed_models && node.embed_models.length) ? '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">' + ((node.image_models || []).map(m => '<span class="badge" style="background:rgba(249,115,22,0.15);color:var(--orange);font-size:10px">IMG ' + m + '</span>').join('')) + ((node.stt_models || []).map(m => '<span class="badge" style="background:rgba(59,130,246,0.15);color:var(--blue);font-size:10px">STT ' + m + '</span>').join('')) + ((node.embed_models || []).map(m => '<span class="badge" style="background:rgba(168,85,247,0.15);color:var(--purple,#a855f7);font-size:10px">EMBED ' + m + '</span>').join('')) + '</div>' : ''}
         ${capacityHtml}
       </div>`;
   }).join('');
@@ -1194,7 +1209,7 @@ function renderQueues(queues) {
     totalCompleted += q.completed;
     const pendingColor = q.pending > 3 ? 'var(--orange)' : q.pending > 0 ? 'var(--yellow)' : 'var(--text-dim)';
     const inflightColor = q.in_flight > 0 ? 'var(--blue)' : 'var(--text-dim)';
-    const typeColors = {text:'var(--accent)',image:'var(--orange)',stt:'var(--blue)',embed:'var(--green)'};
+    const typeColors = {text:'var(--accent)',image:'var(--orange)',stt:'var(--blue)',embed:'var(--purple,#a855f7)'};
     const typeLabels = {text:'TEXT',image:'IMAGE',stt:'STT',embed:'EMBED'};
     const rt = q.request_type || 'text';
     return `
@@ -2170,7 +2185,9 @@ function renderHealth(report) {
     '<div class="vital-card"><div class="v-value">' + (v.avg_ttft_ms != null ? (v.avg_ttft_ms / 1000).toFixed(1) + 's' : '-') + '</div><div class="v-label">Avg TTFT (24h)</div></div>' +
     '<div class="vital-card"><div class="v-value">' + v.total_retries_24h + '</div><div class="v-label">Retries (24h)</div></div>' +
     '<div class="vital-card"><div class="v-value" style="color:var(--orange)">' + (v.image_generations_24h || 0) + '</div><div class="v-label">Images (24h)</div></div>' +
-    '<div class="vital-card"><div class="v-value" style="color:var(--blue)">' + (v.transcriptions_24h || 0) + '</div><div class="v-label">STT (24h)</div></div>';
+    '<div class="vital-card"><div class="v-value" style="color:var(--blue)">' + (v.transcriptions_24h || 0) + '</div><div class="v-label">STT (24h)</div></div>' +
+    (v.client_disconnects_24h ? '<div class="vital-card"><div class="v-value" style="color:var(--yellow)">' + v.client_disconnects_24h + '</div><div class="v-label">Disconnects (24h)</div></div>' : '') +
+    (v.incomplete_streams_24h ? '<div class="vital-card"><div class="v-value" style="color:var(--red)">' + v.incomplete_streams_24h + '</div><div class="v-label">Incomplete (24h)</div></div>' : '');
 
   const rl = document.getElementById('recs-list');
   if (recs.length === 0) {
@@ -3121,6 +3138,7 @@ function renderSettings(data) {
         '<div class="node-detail"><span class="nd-label">Models Loaded</span><span class="nd-value">' + n.models_loaded_count + '</span></div>' +
         (n.image_models && n.image_models.length ? '<div class="node-detail"><span class="nd-label">Image Models</span><span class="nd-value" style="color:var(--orange)">' + n.image_models.join(', ') + '</span></div>' : '') +
         (n.stt_models && n.stt_models.length ? '<div class="node-detail"><span class="nd-label">STT Models</span><span class="nd-value" style="color:var(--blue)">' + n.stt_models.join(', ') + '</span></div>' : '') +
+        (n.embed_models && n.embed_models.length ? '<div class="node-detail"><span class="nd-label">Embed Models</span><span class="nd-value" style="color:var(--purple,#a855f7)">' + n.embed_models.join(', ') + '</span></div>' : '') +
       '</div>';
     }).join('');
   }
