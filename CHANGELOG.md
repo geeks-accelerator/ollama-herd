@@ -5,22 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] - 2026-04-01
+## [0.4.0] - 2026-04-02
 
 ### Added
 
-- **Embeddings proxy** — `/api/embed` and `/api/embeddings` endpoints route embedding requests to the best available node. Supports both `input` (single or batch) and `prompt` (legacy) fields. Response proxied directly from Ollama.
-- **OpenAI-compatible image generation** — `/v1/images/generations` wraps the fleet's image generation in OpenAI's standard API format. Works with the OpenAI SDK (`client.images.generate()`). Supports `size`, `response_format`, `steps`, `guidance`, `seed`, and `negative_prompt`.
-- **Image model discovery** — `/api/image-models` lists all image models across the fleet with backend type and which nodes have them. Image models also now appear in `/api/tags` and `/v1/models` responses.
-- **Request tagging for image and STT** — `metadata.tags` and `X-Herd-Tags` header now work on `/api/generate-image` and `/api/transcribe`, not just LLM endpoints. All four model types appear in the Apps dashboard tab.
-- **DeepSeek-V3 in model catalog** — 3 variants added to model knowledge: `deepseek-v3:7b` (7B distill), `deepseek-v3:32b` (32B distill), and `deepseek-v3:671b` (671B MoE, 404GB). Model recommender can now suggest V3 alongside R1.
+- **Embeddings proxy** — `/api/embed` and `/api/embeddings` endpoints route embedding requests to the best available node via Ollama's native `/api/embed`. Supports both `input` (single or batch) and `prompt` (legacy) fields
+- **OpenAI-compatible image generation** — `/v1/images/generations` wraps the fleet's image generation in OpenAI's standard API format. Works with the OpenAI SDK (`client.images.generate()`)
+- **Image model discovery** — `/api/image-models` lists all image models across the fleet with backend type and which nodes have them. Image models also now appear in `/api/tags` and `/v1/models` responses
+- **Request tagging for image and STT** — `metadata.tags` and `X-Herd-Tags` header now work on `/api/generate-image` and `/api/transcribe`. All four model types appear in the Apps dashboard tab
+- **DeepSeek-V3 in model catalog** — 3 variants: `deepseek-v3:7b`, `deepseek-v3:32b`, `deepseek-v3:671b` (671B MoE, 404GB)
+- **KV cache bloat health check** — detects when OLLAMA_NUM_PARALLEL is too high by comparing loaded model VRAM against estimated weight sizes. Surfaces actionable fix with exact commands
+- **Stream reliability health checks** — "Client Disconnects" and "Incomplete Streams" cards on the Health dashboard with per-model breakdowns and active/resolved state
+- **Stream reliability vitals** — `client_disconnects_24h` and `incomplete_streams_24h` counters on the Health page
+- **Embedding model badges** — purple EMBED badges on Fleet Overview node cards and Settings page for models like nomic-embed-text
 - **Expanded README** — comprehensive usage docs for all 4 model types with SDK examples, model comparison tables, discovery endpoints, and batch examples
-- 24 new tests (436 total)
+- **PyPI release process** documented in CLAUDE.md (build commands, credential location, changelog expectations)
+- 32 new tests (444 total)
+
+### Fixed
+
+- **Client disconnects recorded as "completed"** — `GeneratorExit` (HTTP timeout, connection drop) was caught but silently marked successful. Now records as `client_disconnected` and increments `failed_count`
+- **Incomplete streams recorded as "completed"** — when Ollama drops the connection without `done: true` (process death, OOM, TCP drop), the request was marked completed. Now detects missing `done: true` and records as `incomplete`
+- **Embeddings proxy routing** — embed requests were going through `/api/chat` instead of Ollama's `/api/embed`. Now proxies directly to the correct Ollama endpoint via the managed HTTP client
+- **Error rate queries undercounting** — `get_error_rates_24h` and `get_overall_stats_24h` only counted `status = 'failed'`, missing `client_disconnected` and `incomplete`. Now counts all non-success statuses
+- **LatencyStore unbounded memory** — `get_percentile()` loaded all history into memory. Now capped to last 500 observations per (node, model) pair
+- **N+1 query on cache refresh** — startup queried each (node, model) pair individually. Replaced with single SQL query using `ROW_NUMBER()` + `PERCENT_RANK()` window functions
+- **O(n) in-flight tracking** — queue `in_flight` changed from list to dict keyed by request_id. All operations now O(1)
 
 ### Changed
 
 - `/api/tags` response includes mflux, DiffusionKit, and Ollama native image models alongside LLM models
 - `/v1/models` response includes image models with `type: "image"` in metadata
+- SSE stream and `/fleet/status` include `embed_models` per node
+- Queue EMBED type badge color changed to purple for consistency
+- Embed proxy timeout increased to 600s to handle first-time model loading
+- Health check count: 11 → 15 (added KV cache bloat, client disconnects, incomplete streams, stream reliability)
 
 ## [0.3.0] - 2026-03-30
 

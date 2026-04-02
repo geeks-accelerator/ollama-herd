@@ -145,7 +145,7 @@ curl http://localhost:11435/api/embed \
 Ollama Herd is open source (MIT). Run Mistral locally, contribute globally:
 - [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — help Mistral users find local inference
 - [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — share your Mistral setup
-- **PRs welcome** — `CLAUDE.md` gives AI agents full context. 412 tests.
+- **PRs welcome** — `CLAUDE.md` gives AI agents full context. 444 tests.
 
 ## Guardrails
 

@@ -138,7 +138,7 @@ curl -s http://ollama-proxy:11435/dashboard/api/health | python3 -m json.tool
 Ollama Herd (the Ollama proxy) is open source (MIT). We welcome contributions:
 - [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — help others find the Ollama proxy
 - [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — bug reports, feature requests
-- **PRs welcome** — `CLAUDE.md` gives AI agents full Ollama proxy context. 412 tests, async Python.
+- **PRs welcome** — `CLAUDE.md` gives AI agents full Ollama proxy context. 444 tests, async Python.
 
 ## Guardrails
 
