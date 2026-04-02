@@ -117,7 +117,7 @@ Open `http://localhost:11435/dashboard` in your browser — your home lab comman
 
 - **Home Lab Fleet Overview** — see every device, loaded models, queue depths, health
 - **Trends** — home lab requests per hour, latency, token throughput over 24h-7d
-- **Health** — 13 automated home lab checks with recommendations
+- **Health** — 15 automated home lab checks with recommendations
 - **Recommendations** — optimal home lab model mix per device based on your hardware
 
 ## Recommended Home Lab Models by Device

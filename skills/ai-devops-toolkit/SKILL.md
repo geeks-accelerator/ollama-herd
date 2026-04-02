@@ -43,7 +43,7 @@ devops_health=$(curl -s http://localhost:11435/dashboard/api/health)
 echo "$devops_health" | python3 -m json.tool
 ```
 
-Thirteen DevOps checks, each returning a severity (info/warning/critical) and recommendation:
+Fifteen DevOps checks, each returning a severity (info/warning/critical) and recommendation:
 
 | DevOps Check | What it detects |
 |-------|----------------|

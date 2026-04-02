@@ -83,7 +83,7 @@ ollama_proxy_response = ollama_proxy_client.chat.completions.create(
 | Model discovery | Per-machine Ollama | Ollama proxy aggregates fleet-wide |
 | Queue management | None | Ollama proxy manages per-node:model queues |
 | Dashboard | None | Ollama proxy provides real-time web UI |
-| Health checks | None | Ollama proxy runs 13 automated checks |
+| Health checks | None | Ollama proxy runs 15 automated checks |
 | Request tracing | None | Ollama proxy logs to SQLite trace store |
 | Image generation | None | Ollama proxy routes mflux + DiffusionKit |
 | Speech-to-text | None | Ollama proxy routes Qwen3-ASR |

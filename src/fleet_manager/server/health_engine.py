@@ -91,6 +91,7 @@ class HealthEngine:
         recommendations.extend(self._check_version_mismatch(nodes))
         recommendations.extend(self._check_context_protection())
         recommendations.extend(self._check_zombie_reaper())
+        recommendations.extend(self._check_kv_cache_bloat(nodes))
         recommendations.extend(self._check_image_generation(nodes))
         recommendations.extend(self._check_transcription(nodes))
 
@@ -312,6 +313,126 @@ class HealthEngine:
                     )
                 )
         return recs
+
+    def _check_kv_cache_bloat(self, nodes) -> list[Recommendation]:
+        """Detect OLLAMA_NUM_PARALLEL being too high, causing KV cache bloat.
+
+        When OLLAMA_NUM_PARALLEL is high (e.g., 16), each parallel slot
+        pre-allocates KV cache for the full context window. A single model
+        can consume 100+ GB of KV cache on top of its weights, preventing
+        other models from loading. This check compares VRAM used by loaded
+        models against expected weight sizes to detect the bloat.
+        """
+        recs = []
+        for node in nodes:
+            if not node.ollama or not node.memory:
+                continue
+            if node.status.value != "online":
+                continue
+
+            # Sum up VRAM used by loaded models
+            total_vram_gb = sum(m.size_gb for m in node.ollama.models_loaded)
+            if total_vram_gb == 0:
+                continue
+
+            # Estimate expected weight sizes from parameter counts
+            # Rough heuristic: parameter_size like "116.8B" at Q4 ≈ 0.5 bytes/param
+            total_expected_gb = 0.0
+            bloated_models = []
+            for m in node.ollama.models_loaded:
+                # Estimate expected size from parameter count
+                expected_gb = self._estimate_weight_size(m.parameter_size)
+                if expected_gb > 0:
+                    overhead_ratio = m.size_gb / expected_gb
+                    if overhead_ratio > 1.5:
+                        # VRAM is 50%+ more than expected weights = KV cache bloat
+                        bloated_models.append({
+                            "name": m.name,
+                            "vram_gb": round(m.size_gb, 1),
+                            "expected_gb": round(expected_gb, 1),
+                            "overhead_pct": round((overhead_ratio - 1) * 100),
+                            "context_length": m.context_length,
+                        })
+                    total_expected_gb += expected_gb
+
+            if not bloated_models:
+                continue
+
+            # Calculate how much is KV cache vs weights
+            kv_cache_gb = total_vram_gb - total_expected_gb
+            kv_pct = (kv_cache_gb / total_vram_gb) * 100 if total_vram_gb > 0 else 0
+
+            model_lines = ", ".join(
+                f"{m['name']} ({m['vram_gb']}GB VRAM, ~{m['expected_gb']}GB "
+                f"weights, {m['overhead_pct']}% overhead, ctx={m['context_length']})"
+                for m in bloated_models
+            )
+
+            # Severity: WARNING if KV cache > 30% of VRAM, CRITICAL if >50%
+            severity = Severity.INFO
+            if kv_pct > 50:
+                severity = Severity.CRITICAL
+            elif kv_pct > 30:
+                severity = Severity.WARNING
+
+            recs.append(
+                Recommendation(
+                    check_id="kv_cache_bloat",
+                    severity=severity,
+                    title=(
+                        f"KV cache bloat on {node.node_id}: "
+                        f"~{kv_cache_gb:.0f} GB overhead"
+                    ),
+                    description=(
+                        f"Loaded models use {total_vram_gb:.1f} GB VRAM but only "
+                        f"~{total_expected_gb:.0f} GB is model weights. "
+                        f"The remaining ~{kv_cache_gb:.0f} GB ({kv_pct:.0f}%) is "
+                        f"KV cache from OLLAMA_NUM_PARALLEL being too high. "
+                        f"Bloated models: {model_lines}. "
+                        f"This prevents other models from loading."
+                    ),
+                    fix=(
+                        f"Set OLLAMA_NUM_PARALLEL=2 on {node.node_id}: "
+                        f"`launchctl setenv OLLAMA_NUM_PARALLEL 2` (macOS) or "
+                        f"add to systemd service (Linux), then restart Ollama. "
+                        f"This reduces KV cache from ~{kv_cache_gb:.0f} GB to "
+                        f"~{kv_cache_gb / 8:.0f} GB, freeing memory for more models."
+                    ),
+                    node_id=node.node_id,
+                    data={
+                        "total_vram_gb": round(total_vram_gb, 1),
+                        "estimated_weights_gb": round(total_expected_gb, 1),
+                        "kv_cache_gb": round(kv_cache_gb, 1),
+                        "kv_cache_pct": round(kv_pct, 1),
+                        "bloated_models": bloated_models,
+                    },
+                )
+            )
+        return recs
+
+    @staticmethod
+    def _estimate_weight_size(parameter_size: str) -> float:
+        """Estimate model weight size in GB from parameter_size string.
+
+        Uses ~0.5 bytes/param for Q4 quantization (most common),
+        ~1.0 bytes/param for Q8, ~2.0 bytes/param for F16.
+        Returns 0 if parameter_size can't be parsed.
+        """
+        if not parameter_size:
+            return 0.0
+        try:
+            # Parse "116.8B", "7B", "137M" etc.
+            size_str = parameter_size.upper().strip()
+            if size_str.endswith("B"):
+                params = float(size_str[:-1])
+            elif size_str.endswith("M"):
+                params = float(size_str[:-1]) / 1000
+            else:
+                return 0.0
+            # Assume Q4-ish quantization (~0.5 bytes/param)
+            return params * 0.5
+        except (ValueError, IndexError):
+            return 0.0
 
     def _check_vram_fallbacks(self) -> list[Recommendation]:
         """Surface VRAM fallback events as an INFO health card."""
