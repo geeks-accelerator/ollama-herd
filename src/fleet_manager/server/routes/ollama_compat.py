@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -187,7 +189,11 @@ async def ollama_ps(request: Request):
 @router.post("/api/embed")
 @router.post("/api/embeddings")
 async def ollama_embed(request: Request):
-    """Ollama-compatible embeddings endpoint. Routes to best node with the model."""
+    """Ollama-compatible embeddings endpoint. Routes to best node with the model.
+
+    Unlike chat/generate, embeddings are non-streaming — we proxy the request
+    directly to Ollama's /api/embed endpoint and return the JSON response.
+    """
     body = await request.json()
     model = body.get("model", "")
     if not model:
@@ -205,7 +211,78 @@ async def ollama_embed(request: Request):
         request_type="embed",
     )
 
-    return await _route_and_stream(request, inference_req)
+    scorer = request.app.state.scorer
+    queue_mgr = request.app.state.queue_mgr
+    proxy = request.app.state.streaming_proxy
+    registry = request.app.state.registry
+    settings = request.app.state.settings
+
+    results, actual_model = await score_with_fallbacks(
+        inference_req, scorer, queue_mgr, registry,
+        proxy=proxy, settings=settings,
+    )
+
+    if not results:
+        all_fleet_models = get_all_fleet_models(registry)
+        if model not in all_fleet_models:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"model '{model}' not found on any node. "
+                         f"Run 'ollama pull {model}' on a fleet device."},
+            )
+        return JSONResponse(
+            status_code=503,
+            content={"error": f"model '{model}' exists but no node can serve it "
+                     f"right now. Try again shortly."},
+        )
+
+    winner = results[0]
+    node = registry.get_node(winner.node_id)
+    if not node:
+        return JSONResponse(status_code=503, content={"error": "Selected node unavailable"})
+
+    # Proxy directly to Ollama's /api/embed endpoint
+    embed_body = dict(body)
+    embed_body.pop("metadata", None)
+    embed_body.setdefault("keep_alive", -1)
+
+    try:
+        async with httpx.AsyncClient(
+            base_url=node.ollama_base_url,
+            timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+        ) as client:
+            start = time.time()
+            resp = await client.post("/api/embed", json=embed_body)
+            elapsed_ms = (time.time() - start) * 1000
+
+        resp.raise_for_status()
+        result = resp.json()
+
+        logger.info(
+            f"Embed {inference_req.request_id[:8]} completed on {winner.node_id} "
+            f"in {elapsed_ms:.0f}ms model={actual_model}"
+        )
+
+        return JSONResponse(
+            content=result,
+            headers={
+                "X-Fleet-Node": winner.node_id,
+                "X-Fleet-Score": str(int(winner.score)),
+            },
+        )
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Embed failed on {winner.node_id}: HTTP {e.response.status_code}")
+        return JSONResponse(
+            status_code=e.response.status_code,
+            content={"error": f"Ollama returned {e.response.status_code}: "
+                     f"{e.response.text[:200]}"},
+        )
+    except Exception as e:
+        logger.error(f"Embed failed on {winner.node_id}: {type(e).__name__}: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"Failed to reach Ollama on {winner.node_id}: {e}"},
+        )
 
 
 async def _route_and_stream(request: Request, inference_req: InferenceRequest):
