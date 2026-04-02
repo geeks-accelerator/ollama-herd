@@ -97,10 +97,14 @@ class LatencyStore:
     ) -> float | None:
         if not self._db:
             return None
+        # Cap to the most recent 500 observations to bound memory usage.
+        # Uses a subquery to get the latest rows, then sorts for percentile calc.
         cursor = await self._db.execute(
-            "SELECT latency_ms FROM latency_observations "
-            "WHERE node_id = ? AND model_name = ? "
-            "ORDER BY latency_ms",
+            "SELECT latency_ms FROM ("
+            "  SELECT latency_ms FROM latency_observations "
+            "  WHERE node_id = ? AND model_name = ? "
+            "  ORDER BY timestamp DESC LIMIT 500"
+            ") ORDER BY latency_ms",
             (node_id, model_name),
         )
         rows = await cursor.fetchall()
@@ -256,17 +260,45 @@ class LatencyStore:
         ]
 
     async def _refresh_cache(self):
-        """Pre-populate the percentile cache from all existing data."""
+        """Pre-populate the percentile cache from all existing data.
+
+        Uses a single SQL query with window functions to compute all p75 values
+        at once, avoiding the N+1 pattern of querying each (node, model) pair
+        individually. Caps to the most recent 500 observations per pair.
+        """
         if not self._db:
             return
+        # Single query: rank observations within each (node, model) group by
+        # recency, keep only the latest 500, then compute p75 via percent_rank.
         cursor = await self._db.execute(
-            "SELECT DISTINCT node_id, model_name FROM latency_observations"
+            """
+            WITH recent AS (
+                SELECT node_id, model_name, latency_ms,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY node_id, model_name
+                           ORDER BY timestamp DESC
+                       ) AS rn
+                FROM latency_observations
+            ),
+            capped AS (
+                SELECT node_id, model_name, latency_ms,
+                       PERCENT_RANK() OVER (
+                           PARTITION BY node_id, model_name
+                           ORDER BY latency_ms
+                       ) AS pct
+                FROM recent
+                WHERE rn <= 500
+            )
+            SELECT node_id, model_name, latency_ms
+            FROM capped
+            WHERE pct >= 0.75
+            GROUP BY node_id, model_name
+            HAVING latency_ms = MIN(latency_ms)
+            """
         )
-        pairs = await cursor.fetchall()
-        for node_id, model_name in pairs:
-            p75 = await self.get_percentile(node_id, model_name, 75)
-            if p75 is not None:
-                self._percentile_cache[f"{node_id}:{model_name}"] = p75
+        rows = await cursor.fetchall()
+        for node_id, model_name, p75 in rows:
+            self._percentile_cache[f"{node_id}:{model_name}"] = p75
         logger.info(f"Loaded p75 latency cache for {len(self._percentile_cache)} node:model pairs")
 
     async def close(self):

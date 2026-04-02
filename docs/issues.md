@@ -61,36 +61,36 @@ SD3.5 Large (11.6GB peak memory) occasionally triggers a "Python quit unexpected
 
 ## Performance (Will Bite at Scale)
 
-### 1. `LatencyStore.get_percentile()` — Unbounded Memory Growth `OPEN`
+### 1. `LatencyStore.get_percentile()` — Unbounded Memory Growth `FIXED`
 
 **File:** `src/fleet_manager/server/latency_store.py`
 **Severity:** High
 
-`get_percentile()` loads ALL historical latency rows into memory every time a latency observation is recorded. For a high-traffic deployment with thousands of observations per `(node, model)` pair, this grows without bound.
+`get_percentile()` loaded ALL historical latency rows into memory every time a latency observation was recorded. For a high-traffic deployment with thousands of observations per `(node, model)` pair, this grew without bound.
 
-**Fix:** Cap to the last N observations (e.g., 100–1000) using a `LIMIT` clause, or use SQLite's `percent_rank()` window function to compute percentiles in SQL.
+**Fix:** Capped to the most recent 500 observations per `(node, model)` pair using a subquery with `ORDER BY timestamp DESC LIMIT 500`. Memory usage is now bounded regardless of history size.
 
 ---
 
-### 2. `_refresh_cache()` — N+1 Query Pattern `OPEN`
+### 2. `_refresh_cache()` — N+1 Query Pattern `FIXED`
 
 **File:** `src/fleet_manager/server/latency_store.py`
 **Severity:** Medium
 
-On startup, `_refresh_cache()` first queries all distinct `(node_id, model_name)` pairs, then issues a separate `get_percentile()` call for each pair. For a fleet with many node/model combinations, this means dozens of sequential SQLite round-trips.
+On startup, `_refresh_cache()` first queried all distinct `(node_id, model_name)` pairs, then issued a separate `get_percentile()` call for each pair. For a fleet with many node/model combinations, this meant dozens of sequential SQLite round-trips.
 
-**Fix:** Replace with a single query that computes all percentiles at once, or fetch all observations in one `SELECT` and compute percentiles in Python.
+**Fix:** Replaced with a single SQL query using `ROW_NUMBER()` and `PERCENT_RANK()` window functions to compute all p75 values at once. Also caps to the latest 500 observations per pair. Startup is now one query regardless of fleet size.
 
 ---
 
-### 3. `in_flight` List — O(n) Membership and Removal `OPEN`
+### 3. `in_flight` List — O(n) Membership and Removal `FIXED`
 
-**File:** `src/fleet_manager/server/queue_manager.py` (lines ~117–129)
+**File:** `src/fleet_manager/server/queue_manager.py`
 **Severity:** Low–Medium
 
-The `in_flight` field on each queue is a `list`. Both `in` checks and `.remove()` are O(n). Under high concurrency with deep queues, this becomes a bottleneck.
+The `in_flight` field on each queue was a `list`. Both `in` checks and `.remove()` were O(n). Under high concurrency with deep queues, this was a bottleneck.
 
-**Fix:** Use a `set` or `dict` keyed by `request_id` for O(1) operations.
+**Fix:** Changed to `dict[str, QueueEntry]` keyed by `request_id`. All operations (`__contains__`, `pop`, `[]`) are now O(1). The reaper, `mark_completed`, `mark_failed`, and worker all use dict operations.
 
 ---
 

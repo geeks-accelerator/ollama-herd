@@ -56,7 +56,7 @@ class DeviceModelQueue:
     node_id: str
     model: str
     pending: asyncio.Queue = field(default_factory=asyncio.Queue)
-    in_flight: list[QueueEntry] = field(default_factory=list)
+    in_flight: dict[str, QueueEntry] = field(default_factory=dict)  # keyed by request_id
     worker_tasks: list[asyncio.Task] = field(default_factory=list)
     concurrency: int = _MIN_CONCURRENCY
     completed_count: int = 0
@@ -88,11 +88,11 @@ class QueueManager:
                 now = time.time()
                 for key, q in list(self._queues.items()):
                     stale = [
-                        e for e in q.in_flight
+                        (rid, e) for rid, e in q.in_flight.items()
                         if e.started_at and (now - e.started_at) > self._stale_timeout
                     ]
-                    for entry in stale:
-                        q.in_flight.remove(entry)
+                    for rid, entry in stale:
+                        del q.in_flight[rid]
                         entry.status = RequestStatus.FAILED
                         entry.completed_at = now
                         q.failed_count += 1
@@ -125,7 +125,8 @@ class QueueManager:
             # Infer request type from in-flight entries or model knowledge
             request_type = "text"
             if q.in_flight:
-                request_type = getattr(q.in_flight[0].request, "request_type", "text")
+                first_entry = next(iter(q.in_flight.values()))
+                request_type = getattr(first_entry.request, "request_type", "text")
             else:
                 from fleet_manager.server.model_knowledge import ModelCategory, classify_model
 
@@ -234,7 +235,7 @@ class QueueManager:
 
             entry.status = RequestStatus.IN_FLIGHT
             entry.started_at = time.time()
-            q.in_flight.append(entry)
+            q.in_flight[entry.request.request_id] = entry
 
             try:
                 stream = process_fn(entry)
@@ -252,8 +253,7 @@ class QueueManager:
             q = self._queues[queue_key]
             entry.status = RequestStatus.COMPLETED
             entry.completed_at = time.time()
-            if entry in q.in_flight:
-                q.in_flight.remove(entry)
+            q.in_flight.pop(entry.request.request_id, None)
             q.completed_count += 1
             logger.debug(f"Completed {entry.request.request_id[:8]} on {queue_key}")
 
@@ -263,8 +263,7 @@ class QueueManager:
             q = self._queues[queue_key]
             entry.status = RequestStatus.FAILED
             entry.completed_at = time.time()
-            if entry in q.in_flight:
-                q.in_flight.remove(entry)
+            q.in_flight.pop(entry.request.request_id, None)
             q.failed_count += 1
             logger.warning(f"Failed {entry.request.request_id[:8]} on {queue_key}")
 

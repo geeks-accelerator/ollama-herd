@@ -252,7 +252,7 @@ class TestRequestType:
             assigned_node="studio",
         )
         q = DeviceModelQueue(node_id="studio", model="z-image-turbo:latest")
-        q.in_flight.append(entry)
+        q.in_flight[entry.request.request_id] = entry
         qm._queues["studio:z-image-turbo:latest"] = q
 
         info = qm.get_queue_info()
