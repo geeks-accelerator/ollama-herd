@@ -42,7 +42,7 @@ load_balanced_response = load_balancer_client.chat.completions.create(
 
 ## Load Balancer Health Monitoring
 
-### Fleet-wide load balancer health check (11 automated checks)
+### Fleet-wide load balancer health check (13 automated checks)
 ```bash
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 ```

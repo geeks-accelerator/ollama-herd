@@ -572,7 +572,7 @@ curl http://localhost:11435/api/transcribe -F "audio=@recording.wav"
 | `GET /dashboard/models` | Model Insights — per-model latency, tokens/sec, usage comparison |
 | `GET /dashboard/apps` | Apps — per-tag analytics with latency, tokens, errors, daily trends |
 | `GET /dashboard/benchmarks` | Benchmarks — capacity growth charts, per-run results |
-| `GET /dashboard/health` | Health — 11 automated fleet health checks with severity and recommendations |
+| `GET /dashboard/health` | Health — 13 automated fleet health checks with severity and recommendations |
 | `GET /dashboard/recommendations` | Recommendations — AI-powered model mix per node with one-click pull |
 | `GET /dashboard/settings` | Settings — runtime toggles, config tables, node versions |
 

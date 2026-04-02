@@ -76,7 +76,7 @@ Returns the last N Ollama routing decisions with: model requested, node selected
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 ```
 
-Returns 11 automated Ollama health checks: offline/degraded nodes, memory pressure, underutilized nodes, VRAM fallbacks, version mismatch, context protection, zombie reaper, Ollama model thrashing, request timeouts, error rates, and retry rates.
+Returns 13 automated Ollama health checks: offline/degraded nodes, memory pressure, underutilized nodes, VRAM fallbacks, version mismatch, context protection, zombie reaper, Ollama model thrashing, request timeouts, error rates, retry rates, client disconnects, and incomplete streams.
 
 ### Ollama model recommendations
 ```bash
@@ -130,7 +130,7 @@ The Ollama web dashboard is at `http://localhost:11435/dashboard`. It has eight 
 - **Model Insights** — per-Ollama-model latency, tokens/sec, usage comparison
 - **Apps** — per-tag Ollama analytics with request volume, latency, tokens, error rates
 - **Benchmarks** — Ollama capacity growth over time with per-run throughput and latency percentiles
-- **Health** — 11 automated Ollama fleet health checks with severity levels
+- **Health** — 13 automated Ollama fleet health checks with severity levels
 - **Recommendations** — Ollama model mix recommendations per node with one-click pull
 - **Settings** — Ollama runtime toggle switches, read-only config tables, and node version tracking
 
