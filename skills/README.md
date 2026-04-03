@@ -1,6 +1,6 @@
 # Ollama Herd Skills
 
-This directory contains 28 skills that let AI agents discover and manage Ollama Herd fleets on **macOS, Linux, and Windows**. Multiple skills target different audiences, keywords, and devices with the same underlying API — see [Skill Publishing Strategy](../docs/skill-publishing-strategy.md) for the rationale and [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the search ranking playbook.
+This directory contains 37 skills that let AI agents discover and manage Ollama Herd fleets on **macOS, Linux, and Windows**. Multiple skills target different audiences, keywords, and devices with the same underlying API — see [Skill Publishing Strategy](../docs/skill-publishing-strategy.md) for the rationale and [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the search ranking playbook.
 
 ## Skill Expansion Strategy
 
@@ -13,6 +13,7 @@ We publish many skills for one product. Each skill is a **different door** into 
 | **Core skills** (7) | Different audience framing | Same API, different voice (DevOps vs ML engineer vs home lab) | `ollama-load-balancer`, `gpu-cluster-manager` |
 | **Modality skills** (3) | One per non-LLM model type | Primary capability leads, other 3 mentioned as "also available" | `local-transcription`, `mflux-image-router` |
 | **Model-family skills** (9) | One per open-source LLM provider/version | Specific models, hardware recommendations, code examples | `llama-llama3`, `deepseek-deepseek-coder`, `qwen-qwen3-5` |
+| **Platform skills** (9) | OS or GPU as primary search term | Targets people searching by platform, GPU, or OS | `windows-ollama`, `linux-ollama`, `cuda-ollama`, `ubuntu-ai` |
 | **Device/use-case skills** (9) | Hardware-specific or use-case-specific | Targets people searching by device or need, not by technology | `mac-studio-ai`, `ollama-proxy`, `self-hosted-ai` |
 
 ### Why this works
@@ -119,6 +120,17 @@ skills/
 ├── gemma-gemma3/              # "gemma", "gemma 3", "google gemma"
 ├── stable-diffusion-sd3/      # "stable diffusion", "sd3", "diffusionkit"
 │
+│   # Platform skills (9) — OS or GPU as primary search term
+├── cuda-ollama/               # "cuda ollama", "nvidia ollama"
+├── rtx-local-ai/              # "rtx ai", "rtx 4090", "gaming pc ai"
+├── windows-ollama/            # "windows ollama", "ollama windows"
+├── windows-ai/                # "windows ai", "windows llm"
+├── wsl2-local-ai/             # "wsl2 ai", "wsl ollama"
+├── linux-ollama/              # "linux ollama", "ollama linux"
+├── linux-ai-server/           # "linux ai", "linux llm server", "headless ai"
+├── ubuntu-ollama/             # "ubuntu ollama", "ubuntu ollama setup"
+├── ubuntu-ai/                 # "ubuntu ai", "debian ai", "arm ai"
+│
 │   # Device & use-case skills (9) — hardware or need as primary search term
 ├── apple-silicon-ai/          # "apple silicon", "local ai"
 ├── mac-studio-ai/             # "mac studio", "mac studio ai"
@@ -131,7 +143,7 @@ skills/
 └── self-hosted-ai/            # "self hosted ai", "self hosted llm"
 ```
 
-## Current Skills (28)
+## Current Skills (37)
 
 ### Core skills — same fleet, different audience
 
@@ -167,6 +179,20 @@ skills/
 | `gemma-gemma3` | 1.0.1 | Gemma 3 — Google's Open LLM with 128K Context on Your Local Fleet | "gemma", "gemma 3", "google gemma" |
 | `stable-diffusion-sd3` | 1.0.2 | Stable Diffusion 3 — SD3, SD3.5 Large on Apple Silicon via DiffusionKit | "stable diffusion", "sd3", "diffusionkit" |
 
+### Platform skills — OS or GPU as primary search term
+
+| Slug | Version | ClawHub Display Name | Target Keywords |
+|------|---------|---------------------|----------------|
+| `cuda-ollama` | 1.0.0 | CUDA Ollama — NVIDIA GPU Inference Router | "cuda ollama", "nvidia ollama" |
+| `rtx-local-ai` | 1.0.0 | RTX Local AI — Gaming PC to AI Server | "rtx ai", "rtx 4090", "gaming pc ai" |
+| `windows-ollama` | 1.0.0 | Windows Ollama — Fleet Routing for Ollama on Windows | "windows ollama", "ollama windows" |
+| `windows-ai` | 1.0.0 | Windows AI — Local AI on Your Windows PCs | "windows ai", "windows llm" |
+| `wsl2-local-ai` | 1.0.0 | WSL2 Local AI — Windows Developer LLM Stack | "wsl2 ai", "wsl ollama" |
+| `linux-ollama` | 1.0.0 | Linux Ollama — Fleet Routing for Ollama on Linux | "linux ollama", "ollama linux" |
+| `linux-ai-server` | 1.0.0 | Linux AI Server — Headless AI Inference Cluster | "linux ai", "linux llm server", "headless ai" |
+| `ubuntu-ollama` | 1.0.0 | Ubuntu Ollama — Fleet Routing for Ollama on Ubuntu | "ubuntu ollama" |
+| `ubuntu-ai` | 1.0.1 | Ubuntu AI — Local AI Platform on Ubuntu and Debian | "ubuntu ai", "debian ai", "arm ai" |
+
 ### Device & use-case skills — hardware or need as primary search term
 
 | Slug | Version | ClawHub Display Name | Target Keywords |
@@ -181,7 +207,7 @@ skills/
 | `ollama-proxy` | 1.0.2 | Ollama Proxy — Ollama Multi-Node Proxy for Load Balancing and Failover | "ollama proxy", "ollama multi node" |
 | `self-hosted-ai` | 1.0.2 | Self-Hosted AI — Self-Hosted LLM, Image Gen, STT Replacing Cloud APIs | "self hosted ai", "self hosted llm" |
 
-All 28 skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types (LLM, image, STT, embeddings). The difference is framing, voice, and which capability leads.
+All 37 skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types (LLM, image, STT, embeddings). The difference is framing, voice, and which capability leads.
 
 ### Platform support by skill category
 
@@ -189,6 +215,7 @@ All 28 skills share the same fleet router. Each is fully self-contained — inst
 |----------|----------|-------|
 | Core skills (7) | macOS, Linux, Windows | Full cross-platform |
 | Model-family skills (9) | macOS, Linux, Windows | LLM routing works everywhere |
+| Platform skills (9) | Varies | GPU skills (cuda-ollama, rtx-local-ai) target Linux + Windows; OS skills target their specific platform |
 | Device/use-case skills (9) | Varies | Apple-specific skills (apple-silicon-ai, mac-studio-ai, mac-mini-ai, mlx-apple-silicon-mlx) are macOS-only; rest are cross-platform |
 | Modality: embeddings | macOS, Linux, Windows | Cross-platform via Ollama |
 | Modality: image gen (mflux) | macOS only | MLX/Apple Silicon required |
