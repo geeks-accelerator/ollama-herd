@@ -1,6 +1,6 @@
 # Ollama Herd Skills
 
-This directory contains 28 skills that let AI agents discover and manage Ollama Herd fleets. Multiple skills target different audiences, keywords, and devices with the same underlying API — see [Skill Publishing Strategy](../docs/skill-publishing-strategy.md) for the rationale and [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the search ranking playbook.
+This directory contains 28 skills that let AI agents discover and manage Ollama Herd fleets on **macOS, Linux, and Windows**. Multiple skills target different audiences, keywords, and devices with the same underlying API — see [Skill Publishing Strategy](../docs/skill-publishing-strategy.md) for the rationale and [Optimizing Skills for ClawHub](../docs/guides/optimizing-skills-for-clawhub.md) for the search ranking playbook.
 
 ## Skill Expansion Strategy
 
@@ -137,51 +137,62 @@ skills/
 
 | Slug | Version | ClawHub Display Name | Audience |
 |------|---------|---------------------|----------|
-| `ollama-herd` | 1.5.0 | Ollama Multimodal Model Router — LLM, Image, STT, Embeddings on Apple Silicon | Fleet operators |
-| `local-llm-router` | 1.3.0 | Local LLM Model Router — Self-Hosted AI on Mac Studio, Mac Mini, Linux | ML engineers |
-| `ollama-load-balancer` | 1.1.0 | Ollama Load Balancer — Inference Routing with Failover for Llama, Qwen, DeepSeek | DevOps, sysadmins |
-| `gpu-cluster-manager` | 1.3.0 | GPU Cluster Manager — Apple Silicon AI Fleet for Mac Studio, Mac Mini, MacBook Pro | Home lab enthusiasts |
-| `ollama-manager` | 1.1.0 | Ollama Manager — Model Lifecycle for Llama, Qwen, DeepSeek, Phi, Mistral | Individual Ollama users |
-| `ai-devops-toolkit` | 1.0.0 | AI DevOps Toolkit — Traces, Analytics & Health for LLM Infrastructure | Platform engineers, SRE |
-| `distributed-inference` | 1.2.0 | Distributed Inference — Self-Hosted Local AI Across Mac Studio, Mac Mini, and Linux | Systems engineers |
+| `ollama-herd` | 1.5.2 | Ollama Multimodal Model Router — LLM, Image, STT, Embeddings (macOS, Linux, Windows) | Fleet operators |
+| `local-llm-router` | 1.0.4 | Local LLM Model Router — Self-Hosted AI on macOS, Linux, Windows | ML engineers |
+| `ollama-load-balancer` | 1.0.4 | Ollama Load Balancer — Inference Routing with Failover for Llama, Qwen, DeepSeek | DevOps, sysadmins |
+| `gpu-cluster-manager` | 1.4.1 | GPU Cluster Manager — Local AI Fleet for macOS, Linux, Windows | Home lab enthusiasts |
+| `ollama-manager` | 1.3.1 | Ollama Manager — Model Lifecycle for Llama, Qwen, DeepSeek, Phi, Mistral | Individual Ollama users |
+| `ai-devops-toolkit` | 1.2.1 | AI DevOps Toolkit — Traces, Analytics & Health for LLM Infrastructure | Platform engineers, SRE |
+| `distributed-inference` | 1.0.4 | Distributed Inference — Self-Hosted Local AI Across macOS, Linux, and Windows | Systems engineers |
 
 ### Modality skills — one per non-LLM model type
 
-| Slug | Version | ClawHub Display Name | Model Type |
-|------|---------|---------------------|------------|
-| `local-transcription` | 1.2.0 | Speech-to-Text — Qwen ASR Local Transcription Across Your Apple Silicon Fleet | STT |
-| `mflux-image-router` | 1.2.0 | mflux Image Generation — Stable Diffusion and Flux on Apple Silicon AI | Image |
-| `fleet-embeddings` | 1.0.0 | Fleet Embeddings — nomic-embed-text, mxbai-embed Distributed for RAG | Embeddings |
+| Slug | Version | ClawHub Display Name | Model Type | Platform |
+|------|---------|---------------------|------------|----------|
+| `local-transcription` | 1.0.2 | Speech-to-Text — Qwen ASR Local Transcription Across Your Apple Silicon Fleet | STT | macOS only |
+| `mflux-image-router` | 1.0.2 | mflux Image Generation — Stable Diffusion and Flux on Apple Silicon AI | Image | macOS only |
+| `fleet-embeddings` | 1.1.1 | Fleet Embeddings — nomic-embed-text, mxbai-embed Distributed for RAG | Embeddings | All platforms |
 
 ### Model-family skills — one per open-source LLM provider
 
 | Slug | Version | ClawHub Display Name | Target Keywords |
 |------|---------|---------------------|----------------|
-| `ollama-ollama-herd` | 1.1.0 | Ollama — Multimodal Model Router for Mac Studio, Mac Mini, MacBook Pro | "ollama" |
-| `deepseek-deepseek-coder` | 1.0.2 | DeepSeek — DeepSeek-Coder, V3, R1 on Your Local Fleet | "deepseek", "deepseek coder" |
-| `qwen-qwen3` | 1.0.1 | Qwen — Qwen3, Qwen3-Coder, Qwen3-ASR on Your Local Fleet | "qwen", "qwen3" |
-| `qwen-qwen3-5` | 1.0.0 | Qwen 3.5 — Alibaba's Latest LLM Rivaling GPT-4o on Your Local Fleet | "qwen 3.5", "qwen3.5" |
-| `llama-llama3` | 1.0.0 | Llama 3 — Meta Llama 3.3, 3.2, 3.1 on Your Local Device Fleet | "llama", "llama 3", "meta llama" |
-| `mistral-codestral` | 1.0.0 | Mistral & Codestral — Code Generation and Reasoning on Your Local Fleet | "mistral", "codestral" |
-| `phi-phi4` | 1.0.0 | Phi 4 — Microsoft's Small LLMs for Mac Mini, MacBook Air, Low-RAM Devices | "phi", "phi 4", "microsoft phi" |
-| `gemma-gemma3` | 1.0.0 | Gemma 3 — Google's Open LLM with 128K Context on Your Local Fleet | "gemma", "gemma 3", "google gemma" |
-| `stable-diffusion-sd3` | 1.0.0 | Stable Diffusion 3 — SD3, SD3.5 Large on Apple Silicon via DiffusionKit | "stable diffusion", "sd3", "diffusionkit" |
+| `ollama-ollama-herd` | 1.2.1 | Ollama — Multimodal Model Router for macOS, Linux, Windows | "ollama" |
+| `deepseek-deepseek-coder` | 1.0.3 | DeepSeek — DeepSeek-Coder, V3, R1 on Your Local Fleet | "deepseek", "deepseek coder" |
+| `qwen-qwen3` | 1.0.2 | Qwen — Qwen3, Qwen3-Coder, Qwen3-ASR on Your Local Fleet | "qwen", "qwen3" |
+| `qwen-qwen3-5` | 1.0.1 | Qwen 3.5 — Alibaba's Latest LLM Rivaling GPT-4o on Your Local Fleet | "qwen 3.5", "qwen3.5" |
+| `llama-llama3` | 1.0.1 | Llama 3 — Meta Llama 3.3, 3.2, 3.1 on Your Local Device Fleet | "llama", "llama 3", "meta llama" |
+| `mistral-codestral` | 1.0.2 | Mistral & Codestral — Code Generation and Reasoning on Your Local Fleet | "mistral", "codestral" |
+| `phi-phi4` | 1.0.1 | Phi 4 — Microsoft's Small LLMs for Low-RAM Devices on Any Platform | "phi", "phi 4", "microsoft phi" |
+| `gemma-gemma3` | 1.0.1 | Gemma 3 — Google's Open LLM with 128K Context on Your Local Fleet | "gemma", "gemma 3", "google gemma" |
+| `stable-diffusion-sd3` | 1.0.2 | Stable Diffusion 3 — SD3, SD3.5 Large on Apple Silicon via DiffusionKit | "stable diffusion", "sd3", "diffusionkit" |
 
 ### Device & use-case skills — hardware or need as primary search term
 
 | Slug | Version | ClawHub Display Name | Target Keywords |
 |------|---------|---------------------|----------------|
-| `apple-silicon-ai` | 1.0.1 | Apple Silicon AI — Mac Studio, Mac Mini, MacBook Pro Local AI Fleet | "apple silicon", "local ai" |
-| `mac-studio-ai` | 1.0.1 | Mac Studio AI — Mac Studio Local LLM, Image Gen, STT on M4 Ultra | "mac studio", "mac studio ai" |
+| `apple-silicon-ai` | 1.0.3 | Apple Silicon AI — Mac Studio, Mac Mini, MacBook Pro Local AI Fleet | "apple silicon", "local ai" |
+| `mac-studio-ai` | 1.0.3 | Mac Studio AI — Mac Studio Local LLM, Image Gen, STT on M4 Ultra | "mac studio", "mac studio ai" |
 | `mac-mini-ai` | 1.0.1 | Mac Mini AI — Mac Mini Local LLM, Image Gen, STT on Apple Silicon | "mac mini", "mac mini ai" |
-| `mlx-apple-silicon-mlx` | 1.0.0 | MLX Local AI — LLM, Image Gen, STT, Embeddings Native on Apple Silicon | "mlx" |
-| `homelab-ai` | 1.0.0 | Home Lab AI — Turn Spare Macs Into a Local AI Cluster | "homelab ai" |
-| `private-ai` | 1.0.0 | Private AI — Offline LLM, Image Gen, STT with Zero Cloud Dependencies | "private ai" |
-| `local-coding` | 1.0.0 | Local Coding Assistant — DeepSeek-Coder, Codestral, StarCoder on Your Fleet | "starcoder", "coding assistant" |
-| `ollama-proxy` | 1.0.0 | Ollama Proxy — Ollama Multi-Node Proxy for Load Balancing and Failover | "ollama proxy", "ollama multi node" |
-| `self-hosted-ai` | 1.0.0 | Self-Hosted AI — Self-Hosted LLM, Image Gen, STT Replacing Cloud APIs | "self hosted ai", "self hosted llm" |
+| `mlx-apple-silicon-mlx` | 1.0.1 | MLX Local AI — LLM, Image Gen, STT, Embeddings Native on Apple Silicon | "mlx" |
+| `homelab-ai` | 1.0.2 | Home Lab AI — Turn Spare Machines Into a Local AI Cluster | "homelab ai" |
+| `private-ai` | 1.0.2 | Private AI — Offline LLM, Image Gen, STT with Zero Cloud Dependencies | "private ai" |
+| `local-coding` | 1.0.1 | Local Coding Assistant — DeepSeek-Coder, Codestral, StarCoder on Your Fleet | "starcoder", "coding assistant" |
+| `ollama-proxy` | 1.0.2 | Ollama Proxy — Ollama Multi-Node Proxy for Load Balancing and Failover | "ollama proxy", "ollama multi node" |
+| `self-hosted-ai` | 1.0.2 | Self-Hosted AI — Self-Hosted LLM, Image Gen, STT Replacing Cloud APIs | "self hosted ai", "self hosted llm" |
 
 All 28 skills share the same fleet router. Each is fully self-contained — installing any one skill gives the primary API reference plus links to the other 3 model types (LLM, image, STT, embeddings). The difference is framing, voice, and which capability leads.
+
+### Platform support by skill category
+
+| Category | Platform | Notes |
+|----------|----------|-------|
+| Core skills (7) | macOS, Linux, Windows | Full cross-platform |
+| Model-family skills (9) | macOS, Linux, Windows | LLM routing works everywhere |
+| Device/use-case skills (9) | Varies | Apple-specific skills (apple-silicon-ai, mac-studio-ai, mac-mini-ai, mlx-apple-silicon-mlx) are macOS-only; rest are cross-platform |
+| Modality: embeddings | macOS, Linux, Windows | Cross-platform via Ollama |
+| Modality: image gen (mflux) | macOS only | MLX/Apple Silicon required |
+| Modality: STT (transcription) | macOS only | MLX/Apple Silicon required |
 
 ## ClawHub Search Rankings (as of 2026-03-31)
 
@@ -277,7 +288,7 @@ Key lessons learned:
 Every skill assumes the user has Ollama Herd installed and running. Each SKILL.md includes a setup section, but the core requirement is:
 
 ```bash
-pip install ollama-herd    # install from PyPI (v0.3.0)
+pip install ollama-herd    # install from PyPI (v0.4.1)
 herd                       # start the router (port 11435)
 herd-node                  # start node agent on each device
 ```
@@ -304,7 +315,14 @@ clawhub whoami    # must show: ✔ twinsgeeks
 
 If not logged in as `@twinsgeeks`, authenticate first (API key stored in `skills/.env`).
 
-See the individual skill directories for publish commands. The general pattern:
+**Bulk publish** (recommended — auto-detects and publishes all changed skills):
+
+```bash
+clawhub --workdir skills --registry https://clawhub.ai sync --all \
+  --changelog "Description of changes"
+```
+
+**Single skill publish:**
 
 ```bash
 clawhub --workdir skills --registry https://clawhub.ai publish <skill-dir> \
