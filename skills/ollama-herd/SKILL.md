@@ -1,9 +1,9 @@
 ---
 name: ollama-herd
-description: Ollama multimodal model router for Llama, Qwen, DeepSeek, Phi, and Mistral — plus mflux image generation, speech-to-text, and embeddings. Self-hosted Ollama local AI on Apple Silicon with 7-signal scoring, Ollama queue management, real-time dashboard, and Ollama health monitoring. Routes Ollama LLM, image, STT, and embedding requests across Mac Studio, Mac Mini, MacBook Pro. Ollama本地推理路由 | Ollama enrutador IA local. Use when the user asks about their Ollama fleet, Ollama inference routing, Ollama node status, or Ollama fleet performance.
+description: Ollama multimodal model router for Llama, Qwen, DeepSeek, Phi, and Mistral — plus mflux image generation, speech-to-text, and embeddings. Self-hosted Ollama local AI (macOS, Linux, Windows) with 7-signal scoring, Ollama queue management, real-time dashboard, and Ollama health monitoring. Routes Ollama LLM, image, STT, and embedding requests across macOS, Linux, and Windows devices. Ollama本地推理路由 | Ollama enrutador IA local. Use when the user asks about their Ollama fleet, Ollama inference routing, Ollama node status, or Ollama fleet performance.
 version: 1.5.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
 
 # Ollama Herd Fleet Manager

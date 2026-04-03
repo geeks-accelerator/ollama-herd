@@ -1,9 +1,9 @@
 ---
 name: ollama-ollama-herd
-description: Ollama Ollama Herd — multimodal Ollama model router that herds your Ollama LLMs into one smart Ollama endpoint. Route Ollama Llama, Qwen, DeepSeek, Phi, Mistral across Mac Studio, Mac Mini, MacBook Pro. Self-hosted Ollama local AI with 7-signal Ollama scoring, Ollama auto-retry, VRAM-aware Ollama fallback. Plus Ollama image generation, speech-to-text, and embeddings. Drop-in OpenAI SDK compatible. Ollama本地推理路由 | Ollama enrutador IA local.
+description: Ollama Ollama Herd — multimodal Ollama model router that herds your Ollama LLMs into one smart Ollama endpoint. Route Ollama Llama, Qwen, DeepSeek, Phi, Mistral across macOS, Linux, and Windows devices. Self-hosted Ollama local AI with 7-signal Ollama scoring, Ollama auto-retry, VRAM-aware Ollama fallback. Plus Ollama image generation, speech-to-text, and embeddings. Drop-in OpenAI SDK compatible. Ollama本地推理路由 | Ollama enrutador IA local.
 version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
 
 # Ollama — Herd Your Ollama LLMs Into One Endpoint

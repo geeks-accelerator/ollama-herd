@@ -1,9 +1,9 @@
 ---
 name: self-hosted-ai
-description: Self-hosted AI — run your own LLM inference, image generation, speech-to-text, and embeddings. No cloud APIs, no SaaS subscriptions, no data leaving your network. Self-hosted alternative to OpenAI, DALL-E, Whisper API, and cloud embedding services. Route across Mac Studio, Mac Mini, MacBook Pro, and Linux machines. 自托管AI本地推理平台。IA autoalojada sin dependencias en la nube.
+description: Self-hosted AI — run your own LLM inference, image generation, speech-to-text, and embeddings. No cloud APIs, no SaaS subscriptions, no data leaving your network. Self-hosted alternative to OpenAI, DALL-E, Whisper API, and cloud embedding services. Route across macOS, Linux, and Windows machines. 自托管AI本地推理平台。IA autoalojada sin dependencias en la nube.
 version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"server","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"server","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
 
 # Self-Hosted AI — Own Your Entire AI Stack

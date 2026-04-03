@@ -1,9 +1,9 @@
 ---
 name: qwen-qwen3
-description: Qwen Qwen3 — run Qwen3.5, Qwen3, Qwen3-Coder, Qwen2.5-Coder, and Qwen3-ASR across your local fleet. LLM inference, code generation, and speech-to-text from Alibaba's Qwen family via Ollama Herd. Zero cloud costs on Apple Silicon.
+description: Qwen Qwen3 — run Qwen3.5, Qwen3, Qwen3-Coder, Qwen2.5-Coder, and Qwen3-ASR across your local fleet. LLM inference, code generation, and speech-to-text from Alibaba's Qwen family via Ollama Herd. Cross-platform (macOS, Linux, Windows). Zero cloud costs.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"sparkles","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"sparkles","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
 
 # Qwen — Run Qwen Models Across Your Local Fleet
@@ -123,6 +123,8 @@ curl http://localhost:11435/api/chat -d '{
 ```
 
 ## Hardware recommendations
+
+> **Cross-platform:** These are example configurations. Any device (Mac, Linux, Windows) with equivalent RAM works. The fleet router runs on all platforms.
 
 | Model | Min RAM | Recommended hardware |
 |-------|---------|---------------------|

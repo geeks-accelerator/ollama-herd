@@ -1,9 +1,9 @@
 ---
 name: llama-llama3
-description: Llama 3 by Meta — run Llama 3.3, Llama 3.2, and Llama 3.1 across your local device fleet. The most popular open-source LLM family routed to the best available machine. 8B for fast responses, 70B for quality, 405B for frontier performance. OpenAI-compatible API, zero cloud costs on Mac Studio, Mac Mini, MacBook Pro.
+description: Llama 3 by Meta — run Llama 3.3, Llama 3.2, and Llama 3.1 across your local device fleet. The most popular open-source LLM family routed to the best available machine. 8B for fast responses, 70B for quality, 405B for frontier performance. OpenAI-compatible API, Cross-platform (macOS, Linux, Windows). Zero cloud costs.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
 
 # Llama 3 — Run Meta's LLMs Across Your Local Fleet
@@ -67,9 +67,11 @@ curl http://localhost:11435/v1/chat/completions \
 
 ## Which Llama model for your hardware
 
+> **Cross-platform:** These are example configurations. Any device (Mac, Linux, Windows) with equivalent RAM works. The fleet router runs on all platforms.
+
 Pick the model that fits your available memory — smaller models work great for most tasks:
 
-| Model | Min RAM | Recommended Mac |
+| Model | Min RAM | Example hardware |
 |-------|---------|----------------|
 | `llama3.2:1b` | 2GB | Any Mac — even 8GB |
 | `llama3.2:3b` | 4GB | Mac Mini (16GB) |

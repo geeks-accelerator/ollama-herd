@@ -3,7 +3,7 @@ name: stable-diffusion-sd3
 description: Stable Diffusion 3 and SD3.5 Large on Apple Silicon — generate Stable Diffusion images locally with DiffusionKit's MLX-native backend. SD3 Medium for fast Stable Diffusion generation, SD3.5 Large for highest quality. Plus Flux models via mflux and Ollama native image gen. All routed across your device fleet. No cloud APIs, no DALL-E costs. 稳定扩散SD3本地图像生成。Difusion estable SD3 para generacion de imagenes local.
 version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"art","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"art","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin"]}}
 ---
 
 # Stable Diffusion 3 — Local Image Generation on Your Fleet

@@ -3,7 +3,7 @@ name: local-coding
 description: Local coding assistant — run DeepSeek-Coder, Codestral, StarCoder, and Qwen-Coder across your device fleet. Code generation, review, refactoring, and debugging routed to the best available machine. Works with Aider, Continue.dev, Cline, and any OpenAI-compatible coding tool. No cloud API costs, all code stays local.
 version: 1.0.0
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"keyboard","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"keyboard","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
 
 # Local Coding Assistant — Code Models Across Your Fleet
@@ -83,6 +83,8 @@ The fleet exposes an OpenAI-compatible API at `http://localhost:11435/v1`. Point
 | **LangChain** | `ChatOpenAI(base_url="http://localhost:11435/v1", model="codestral")` |
 
 ## Pick the right model for your RAM
+
+> **Cross-platform:** These are example configurations. Any device (Mac, Linux, Windows) with equivalent RAM works.
 
 | Device | RAM | Best coding model |
 |--------|-----|------------------|

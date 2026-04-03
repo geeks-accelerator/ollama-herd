@@ -1,23 +1,23 @@
 ---
 name: homelab-ai
-description: Home lab AI — turn your spare Macs into a local AI home lab cluster. LLM inference, image generation, speech-to-text, and embeddings across Mac Studio, Mac Mini, MacBook Pro, and Mac Pro. Zero-config mDNS discovery, real-time dashboard, 7-signal scoring. No cloud, no Docker, no Kubernetes. The home lab AI setup that just works. 家庭实验室AI本地推理集群。Laboratorio IA para inferencia local en casa.
+description: Home lab AI — turn your spare machines into a local AI home lab cluster. LLM inference, image generation, speech-to-text, and embeddings across macOS, Linux, and Windows devices. Zero-config mDNS discovery, real-time dashboard, 7-signal scoring. No cloud, no Docker, no Kubernetes. The home lab AI setup that just works. 家庭实验室AI本地推理集群。Laboratorio IA para inferencia local en casa.
 version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"house","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"house","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
 
-# Home Lab AI — Your Spare Macs Are a Cluster
+# Home Lab AI — Your Spare Machines Are a Cluster
 
-You have Macs sitting around your home lab. A Mac Mini in the closet. A MacBook Pro on the desk. Maybe a Mac Studio doing light work. Together, your home lab has more compute than most cloud instances — you just need software that treats them as one home lab system.
+You have machines sitting around your home lab. A mini PC in the closet. A workstation on the desk. Maybe a desktop doing light work. Together, your home lab has more compute than most cloud instances — you just need software that treats them as one home lab system. Works on macOS, Linux, and Windows.
 
 Ollama Herd turns your home lab into a local AI cluster. One home lab endpoint, zero config, four model types.
 
 ## What your home lab gets
 
 ```
-Mac Mini (32GB)    ─┐
-MacBook Pro (64GB)  ├──→  Home Lab Router (:11435)  ←──  Your apps / agents
-Mac Studio (256GB) ─┘
+Device 1 (32GB)    ─┐
+Device 2 (64GB)     ├──→  Home Lab Router (:11435)  ←──  Your apps / agents
+Device 3 (256GB)   ─┘
 ```
 
 - **Home lab LLM inference** — Llama, Qwen, DeepSeek, Phi, Mistral, Gemma
@@ -29,19 +29,19 @@ All routed to the best available home lab device automatically.
 
 ## Home Lab Setup (5 minutes)
 
-### On every home lab Mac:
+### On every home lab machine:
 
 ```bash
 pip install ollama-herd    # Home lab AI router
 ```
 
-### Pick one home lab Mac as the router:
+### Pick one home lab machine as the router:
 
 ```bash
 herd    # starts the home lab router
 ```
 
-### On every other home lab Mac:
+### On every other home lab machine:
 
 ```bash
 herd-node    # joins the home lab fleet automatically
@@ -122,6 +122,8 @@ Open `http://localhost:11435/dashboard` in your browser — your home lab comman
 
 ## Recommended Home Lab Models by Device
 
+> **Cross-platform:** These are example configurations. Any device (Mac, Linux, Windows) with equivalent RAM works. The fleet router runs on all platforms.
+
 | Home Lab Device | RAM | Start with |
 |--------|-----|-----------|
 | MacBook Air (8GB) | 8GB | `phi4-mini`, `gemma3:1b` |
@@ -159,7 +161,7 @@ Ollama Herd is open source (MIT) and built by home lab enthusiasts for home lab 
 - [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — help other home lab builders find us
 - [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — share your home lab setup, report bugs
 - **PRs welcome** — from humans and AI agents. `CLAUDE.md` gives full context.
-- Built by twin brothers in Alaska who run their own home lab Mac fleet.
+- Built by twin brothers in Alaska who run their own home lab fleet.
 
 ## Home Lab Guardrails
 

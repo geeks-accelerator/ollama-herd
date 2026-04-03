@@ -3,7 +3,7 @@ name: mistral-codestral
 description: Mistral and Codestral — run Mistral Large, Mistral-Nemo, Codestral, and Mistral-Small locally. Mistral AI's open-source LLMs for code generation and reasoning. Codestral by Mistral trained on 80+ languages. Mistral routed across your fleet. Mistral本地推理。Mistral IA local. Codestral código local.
 version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"sparkles","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"sparkles","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
 
 # Mistral & Codestral — Mistral AI Models on Your Local Fleet
@@ -81,7 +81,9 @@ curl http://localhost:11435/api/chat -d '{
 
 ## Mistral hardware recommendations
 
-| Mistral Model | Min RAM | Recommended for Mistral |
+> **Cross-platform:** These are example configurations. Any device (Mac, Linux, Windows) with equivalent RAM works. The fleet router runs on all platforms.
+
+| Mistral Model | Min RAM | Example hardware |
 |---------------|---------|------------------------|
 | `mistral:7b` | 8GB | Any Mac — lightweight Mistral |
 | `mistral-nemo` | 10GB | Mac Mini (16GB) — efficient Mistral |

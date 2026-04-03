@@ -3,7 +3,7 @@ name: ai-devops-toolkit
 description: DevOps observability toolkit for local AI fleet operations. DevOps traces, DevOps health checks, DevOps latency monitoring, DevOps capacity planning, and DevOps analytics — all backed by SQLite. No Prometheus, no Grafana. DevOps运维工具 | herramientas DevOps
 version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"wrench","requires":{"anyBins":["curl","sqlite3"],"optionalBins":["python3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"wrench","requires":{"anyBins":["curl","sqlite3"],"optionalBins":["python3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
 
 # AI DevOps Toolkit — Observability for Local AI Fleets

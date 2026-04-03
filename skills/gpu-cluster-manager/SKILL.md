@@ -1,9 +1,9 @@
 ---
 name: gpu-cluster-manager
-description: GPU cluster manager for Apple Silicon AI — run Llama, Qwen, DeepSeek, and Phi across Mac Studio, Mac Mini, MacBook Pro, and Mac Pro with one endpoint. Self-hosted local AI GPU cluster. Auto-discovers machines via mDNS, routes to the best device, manages queues. Zero config, zero Docker. GPU集群管理本地AI推理。Clúster GPU para inferencia IA local.
+description: GPU cluster manager for local AI — run Llama, Qwen, DeepSeek, and Phi across macOS, Linux, and Windows devices with one endpoint. Self-hosted local AI GPU cluster. Auto-discovers machines via mDNS, routes to the best device, manages queues. Zero config, zero Docker. GPU集群管理本地AI推理。Clúster GPU para inferencia IA local.
 version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"desktop","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"desktop","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
 
 # GPU Cluster Manager
@@ -12,7 +12,7 @@ You are managing a GPU cluster that combines multiple machines into one inferenc
 
 ## What this GPU cluster solves
 
-Your Mac Studio, MacBook, and maybe an old Linux box all have GPUs sitting idle most of the time. You want one GPU cluster URL that uses all of them — without Kubernetes, without Docker, without editing config files. Just point your AI apps at the GPU cluster endpoint and let the cluster figure out which machine should handle each request.
+Your desktop, laptop, and maybe an old Linux box all have GPUs sitting idle most of the time. You want one GPU cluster URL that uses all of them — without Kubernetes, without Docker, without editing config files. Just point your AI apps at the GPU cluster endpoint and let the cluster figure out which machine should handle each request.
 
 This GPU cluster manager does exactly that. Install it, run two commands, and your GPU cluster machines discover each other automatically. The GPU cluster learns when your devices are free, pauses during video calls, and picks the best GPU cluster node for every request based on real-time conditions.
 

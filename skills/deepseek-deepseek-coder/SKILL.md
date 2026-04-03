@@ -1,9 +1,9 @@
 ---
 name: deepseek-deepseek-coder
-description: DeepSeek DeepSeek-Coder — run DeepSeek-V3, DeepSeek-R1, DeepSeek-Coder across your local fleet. 7-signal scoring routes every request to the best device. Run DeepSeek locally on Apple Silicon with zero cloud costs via Ollama Herd.
+description: DeepSeek DeepSeek-Coder — run DeepSeek-V3, DeepSeek-R1, DeepSeek-Coder across your local fleet. 7-signal scoring routes every request to the best device. Cross-platform (macOS, Linux, Windows). Zero cloud costs via Ollama Herd.
 version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
-metadata: {"openclaw":{"emoji":"brain","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux"]}}
+metadata: {"openclaw":{"emoji":"brain","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
 
 # DeepSeek — Run DeepSeek Models Across Your Local Fleet
@@ -81,6 +81,8 @@ curl http://localhost:11435/api/chat -d '{
 ```
 
 ## Hardware recommendations (optional — choose models that fit your RAM)
+
+> **Cross-platform:** These are example configurations. Any device (Mac, Linux, Windows) with equivalent RAM works. The fleet router runs on all platforms.
 
 DeepSeek offers models at every size. Pick the one that fits your available memory — smaller models work great for most tasks:
 
