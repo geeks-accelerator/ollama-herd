@@ -1,14 +1,14 @@
 ---
 name: ubuntu-ai
-description: Ubuntu AI — run local AI on Ubuntu and Debian with Ollama fleet routing. Ubuntu AI for Llama, Qwen, DeepSeek, Phi, Mistral. Ubuntu Ollama setup with apt, systemd, and NVIDIA CUDA. Ubuntu AI cluster across x86 and ARM devices. Debian AI with the same setup. Ubuntu AI本地推理。Ubuntu IA local con Ollama.
-version: 1.0.0
+description: Ubuntu AI — build a local AI platform on Ubuntu and Debian. Ubuntu AI across x86 desktops, ARM edge devices, Raspberry Pi, Jetson Orin, and cloud VMs. Heterogeneous Ubuntu AI cluster with NVIDIA CUDA, AMD ROCm, and CPU inference. LLM, image generation, and embeddings on Ubuntu. Debian AI with the same stack. Ubuntu AI本地推理平台。Ubuntu IA plataforma local.
+version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"penguin","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip","nvidia-smi","systemctl","apt"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["linux"]}}
 ---
 
-# Ubuntu AI — Local AI on Ubuntu and Debian
+# Ubuntu AI — Build a Local AI Platform on Ubuntu
 
-Run AI entirely on Ubuntu. No cloud APIs, no subscriptions, no data leaving your network. Ubuntu AI via Ollama Herd routes LLM requests across your Ubuntu and Debian machines — desktops, servers, Raspberry Pis, Jetson boards. One Ubuntu AI endpoint serves them all.
+Build a complete local AI platform on Ubuntu. LLM inference, image generation, and embeddings across desktops, servers, Raspberry Pis, and Jetson boards. Ubuntu AI supports x86-64 and ARM in the same cluster — heterogeneous hardware, one endpoint. No cloud APIs, no subscriptions.
 
 ## Why Ubuntu AI
 
