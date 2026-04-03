@@ -44,12 +44,18 @@ You should see at least one node in the `nodes` array with `"status": "online"`.
 
    ```bash
    # On each machine, check the IP
+   # macOS / Linux
    ifconfig | grep "inet " | grep -v 127.0.0.1
+   # Windows (PowerShell)
+   # Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -ne '127.0.0.1' }
 
    # They should share the same subnet (e.g., both 10.0.0.x or 192.168.1.x)
    ```
 
-2. **Firewall blocking the port** — macOS may prompt to allow incoming connections when `herd` first starts. Check System Settings → Network → Firewall.
+2. **Firewall blocking the port** — your OS firewall may be blocking incoming connections:
+   - **macOS:** System Settings → Network → Firewall (macOS prompts to allow on first launch)
+   - **Linux:** `sudo ufw allow 11435/tcp` (if using ufw) or `sudo firewall-cmd --add-port=11435/tcp --permanent`
+   - **Windows:** `netsh advfirewall firewall add rule name="Ollama Herd" dir=in action=allow protocol=tcp localport=11435`
 
 3. **Ollama not bound to all interfaces** — Ollama defaults to `localhost:11434`. The node agent handles this automatically by starting a TCP reverse proxy on the LAN IP that forwards to localhost. If the proxy can't start (e.g., port conflict), you can manually bind Ollama to all interfaces:
 
@@ -66,11 +72,13 @@ You should see at least one node in the `nodes` array with `"status": "online"`.
 **Fix:** Verify the service is listening:
 
 ```bash
-# Check if herd is listening
-lsof -i :11435
+# macOS / Linux
+lsof -i :11435    # herd
+lsof -i :11434    # Ollama
 
-# Check if Ollama is listening
-lsof -i :11434
+# Windows (PowerShell)
+# netstat -ano | findstr :11435
+# netstat -ano | findstr :11434
 ```
 
 ### Timeout vs. Refused — What's the Difference?
@@ -135,7 +143,7 @@ Timeout usually means a network-level problem (wrong network, firewall, routing)
 4. Waits up to 30 seconds for Ollama to become healthy
 5. If it doesn't start, the agent exits with an error
 
-The restart uses `shutil.which("ollama")` to find the binary and `start_new_session=True` so Ollama survives if the agent is later terminated.
+The restart uses `shutil.which("ollama")` to find the binary and detaches the process (`start_new_session` on Unix, `CREATE_NEW_PROCESS_GROUP` on Windows) so Ollama survives if the agent is later terminated.
 
 ---
 
@@ -143,7 +151,9 @@ The restart uses `shutil.which("ollama")` to find the binary and `start_new_sess
 
 **Symptom:** Node stops accepting work even though you're not in a meeting.
 
-**Cause:** The macOS meeting detector checks for active camera/microphone. Any app using the camera or mic (video calls, streaming apps, screen recording, some browsers) triggers the "in meeting" state, which causes a hard pause.
+**Cause:** The meeting detector checks for active camera/microphone. Any app using the camera or mic (video calls, streaming apps, screen recording, some browsers) triggers the "in meeting" state, which causes a hard pause.
+
+> **Platform note:** Meeting detection is **macOS only**. On Linux and Windows, the detector is automatically disabled and nodes always report as available. This is a graceful degradation — no configuration needed.
 
 **Fix:** If this is a development machine where the camera is often active:
 
@@ -201,7 +211,16 @@ Meeting detection is disabled by default — it only activates when `FLEET_NODE_
    launchctl setenv OLLAMA_KEEP_ALIVE "-1"
    # Then restart Ollama (⌘Q and reopen)
 
-   # Linux / terminal
+   # Linux (systemd)
+   sudo systemctl edit ollama
+   # Add: Environment="OLLAMA_KEEP_ALIVE=-1"
+   sudo systemctl restart ollama
+
+   # Windows (PowerShell)
+   [System.Environment]::SetEnvironmentVariable("OLLAMA_KEEP_ALIVE", "-1", "User")
+   # Restart Ollama from the system tray
+
+   # Any platform (terminal session)
    export OLLAMA_KEEP_ALIVE=-1
    ```
 

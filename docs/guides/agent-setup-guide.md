@@ -24,13 +24,15 @@ This is the only URL your agent needs. All four model types route through it. Th
 
 ## Prerequisites
 
-Ollama Herd must be running on the network. If it's not, install and start it:
+Ollama Herd runs on **macOS, Linux, and Windows** — anywhere Ollama runs. Install and start it:
 
 ```bash
 pip install ollama-herd
 herd              # start the router (port 11435)
 herd-node         # start on each device with GPUs
 ```
+
+> **Windows users:** Use PowerShell or Command Prompt. The same `herd` and `herd-node` commands work. If mDNS discovery doesn't work (common on corporate networks), use `herd-node --router-url http://router-ip:11435`.
 
 Verify it's running:
 
@@ -145,16 +147,18 @@ Generate images using three backends: mflux (Flux models), DiffusionKit (Stable 
 
 ### Install image backends
 
+> **Platform note:** mflux and DiffusionKit require **macOS with Apple Silicon** (MLX framework). Ollama native image generation works on **all platforms** (macOS, Linux, Windows).
+
 ```bash
-# mflux — Flux models (fastest, recommended)
+# Ollama native — works on all platforms (caution: can evict LLMs from VRAM)
+ollama pull x/z-image-turbo
+
+# mflux — Flux models, fastest (macOS Apple Silicon only)
 uv tool install mflux
 
-# DiffusionKit — Stable Diffusion 3/3.5 (requires macOS 26 patch)
+# DiffusionKit — Stable Diffusion 3/3.5 (macOS Apple Silicon only, requires macOS 26 patch)
 uv tool install diffusionkit
 ./scripts/patch-diffusionkit-macos26.sh
-
-# Ollama native — experimental (caution: can evict LLMs from VRAM)
-ollama pull x/z-image-turbo
 ```
 
 **Note:** When both mflux and Ollama native can serve the same model, the router automatically prefers mflux to avoid evicting LLMs from VRAM.
@@ -271,6 +275,8 @@ async function generateImage(prompt, width = 1024, height = 1024) {
 ## 3. Speech-to-Text (Transcription)
 
 Transcribe audio files using Qwen3-ASR on any node with mlx-qwen3-asr installed.
+
+> **Platform note:** Speech-to-text requires **macOS with Apple Silicon** (MLX framework). The `mlx-qwen3-asr` backend is not available on Linux or Windows.
 
 ### Check if enabled
 

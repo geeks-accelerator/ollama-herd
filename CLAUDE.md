@@ -69,16 +69,18 @@ sleep 3 && uv run herd-node &>/dev/null & disown
 ### Gotchas learned the hard way
 
 - **`uv run` uses `.venv` from the repo root** — if you're in a worktree, changes must be merged to main and `uv sync` run from the main repo before restarting
-- **`launchctl setenv` is overridden by `~/.zshrc`** — always update both the shell profile AND run `launchctl setenv` for immediate effect. Verify with `launchctl getenv VAR_NAME`
-- **`shutil.which()` can't find `uv tool` binaries** — `~/.local/bin` isn't in PATH when processes start via `uv run`. The `_which_extended()` helper in `collector.py` handles this
+- **`launchctl setenv` is overridden by `~/.zshrc` (macOS only)** — always update both the shell profile AND run `launchctl setenv` for immediate effect. Verify with `launchctl getenv VAR_NAME`. On Linux, use systemd overrides (`sudo systemctl edit ollama`). On Windows, use `[System.Environment]::SetEnvironmentVariable()`
+- **`shutil.which()` can't find `uv tool` binaries** — `~/.local/bin` isn't in PATH when processes start via `uv run`. The `_which_extended()` helper in `collector.py` handles this with platform-aware fallback paths (Homebrew on macOS, `%LOCALAPPDATA%` on Windows)
 - **Image gen and transcription default to enabled** — but if a node doesn't have the backend installed, the endpoint returns 404 (no models), not 503 (disabled). This is correct UX
 - **Thinking models eat `num_predict` budgets** — the router auto-inflates by 4× for known thinking models. If a new thinking model isn't detected, add it to `is_thinking_model()` in `model_knowledge.py`
 
 ## Architecture
 
-Single Python package (`fleet_manager`), two CLI entry points:
+Single Python package (`fleet_manager`), cross-platform (macOS, Linux, Windows), two CLI entry points:
 - `herd` — FastAPI server (router + API + scoring + queues + dashboard)
 - `herd-node` — agent that runs on each device (heartbeats + metrics + capacity learning)
+
+macOS-only features (gracefully disabled on other platforms): meeting detection, memory pressure via `memory_pressure` CLI, mflux/DiffusionKit image gen, MLX speech-to-text. Linux gets memory pressure via `/proc/meminfo`. Core LLM routing, embeddings, scoring, and queuing work identically everywhere.
 
 ### Key modules
 
@@ -104,7 +106,7 @@ Single Python package (`fleet_manager`), two CLI entry points:
 | `node/collector.py` | Assembles HeartbeatPayload from psutil + Ollama, rewrites localhost to LAN IP |
 | `node/ollama_proxy.py` | TCP reverse proxy: bridges LAN IP → localhost Ollama (auto-started) |
 | `node/capacity_learner.py` | 168-slot behavioral model, availability score, dynamic memory ceiling |
-| `node/meeting_detector.py` | macOS camera/microphone detection → hard pause |
+| `node/meeting_detector.py` | macOS-only camera/microphone detection → hard pause (returns False on Linux/Windows) |
 | `node/app_fingerprint.py` | Resource signature classification (idle/light/moderate/heavy/intensive) |
 | `node/image_server.py` | FastAPI wrapper for mflux CLI — `/api/generate-image` on port 11436 |
 | `server/routes/image_compat.py` | `/api/generate-image`, `/api/image-models` — routes mflux requests to best node via queue |

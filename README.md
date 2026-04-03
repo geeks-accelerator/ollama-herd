@@ -2,6 +2,24 @@
 
 Smart inference router that herds your Ollama instances into one endpoint. Auto-discovers nodes via mDNS, scores them on 7 signals (thermal state, memory fit, queue depth, latency history, role affinity, availability trend, context fit), and routes each request to the optimal device. OpenAI-compatible API with real-time dashboard.
 
+## Platform Support
+
+Ollama Herd runs on **macOS, Linux, and Windows** — anywhere Ollama runs.
+
+| Feature | macOS | Linux | Windows |
+|---------|:-----:|:-----:|:-------:|
+| LLM routing, scoring, queues | Yes | Yes | Yes |
+| Embeddings proxy | Yes | Yes | Yes |
+| mDNS auto-discovery | Yes | Yes | Yes |
+| Dashboard & traces | Yes | Yes | Yes |
+| Image gen (mflux, DiffusionKit) | Yes (Apple Silicon) | -- | -- |
+| Image gen (Ollama native) | Yes | Yes | Yes |
+| Speech-to-text (MLX) | Yes (Apple Silicon) | -- | -- |
+| Meeting detection (camera/mic) | Yes | -- | -- |
+| Memory pressure detection | Yes | Yes | -- |
+
+Core routing works identically on all platforms. macOS-only features degrade gracefully — they simply report as unavailable on other OSes.
+
 ## Why
 
 You have multiple machines with GPUs sitting around. You want one endpoint that makes them act like one system — picking the right device for each request automatically, without manual load balancing or config files.
@@ -302,7 +320,7 @@ See [Operations Guide](docs/operations-guide.md) for details.
 Laptops aren't servers — their owners use them for meetings, coding, and browsing. The adaptive capacity system learns when each device has spare compute:
 
 - **168-slot behavioral model** — learns your weekly usage patterns (7 days × 24 hours)
-- **Meeting detection** — camera/mic active → hard pause (macOS)
+- **Meeting detection** — camera/mic active → hard pause (macOS only; disabled on other platforms)
 - **App fingerprinting** — classifies workload intensity from resource signatures, privacy-first (no app name reading)
 - **Dynamic memory ceiling** — availability score maps to how much RAM the router can use for Ollama
 
@@ -452,16 +470,34 @@ Two CLI entry points, one Python package:
 
 Ollama's defaults are conservative. On machines with lots of memory, you're probably leaving performance on the table. These settings tell Ollama to actually use the hardware you paid for:
 
+**macOS** (GUI app — `launchctl` sets env for the Ollama desktop app):
 ```bash
-# Keep models loaded permanently (default: 5m — unloads after 5 minutes of idle!)
-# On a 512GB Mac Studio, there's zero reason to unload a model after 5 minutes
 launchctl setenv OLLAMA_KEEP_ALIVE "-1"
-
-# Allow multiple models in memory simultaneously (default: auto, but often conservative)
-# Set to -1 for unlimited — let Ollama load as many as fit in memory
 launchctl setenv OLLAMA_MAX_LOADED_MODELS "-1"
+# Restart Ollama app after changing (⌘Q and reopen)
+```
 
-# Restart Ollama app after changing these (⌘Q and reopen)
+**Linux** (systemd — edit the service override):
+```bash
+sudo systemctl edit ollama
+# Add under [Service]:
+#   Environment="OLLAMA_KEEP_ALIVE=-1"
+#   Environment="OLLAMA_MAX_LOADED_MODELS=-1"
+sudo systemctl restart ollama
+```
+
+**Windows** (system environment variables):
+```powershell
+[System.Environment]::SetEnvironmentVariable("OLLAMA_KEEP_ALIVE", "-1", "User")
+[System.Environment]::SetEnvironmentVariable("OLLAMA_MAX_LOADED_MODELS", "-1", "User")
+# Restart Ollama from the system tray
+```
+
+**Any platform** (shell session — works for `ollama serve` from a terminal):
+```bash
+export OLLAMA_KEEP_ALIVE=-1
+export OLLAMA_MAX_LOADED_MODELS=-1
+ollama serve
 ```
 
 **Herd handles this automatically for routed requests** — every request proxied through the router includes `keep_alive: -1`, so models loaded via Herd stay loaded regardless of Ollama's server-side default. But you should still set the env var to cover models loaded directly (e.g., `ollama run`) and to prevent Ollama from evicting idle models between requests.
@@ -474,9 +510,7 @@ launchctl setenv OLLAMA_MAX_LOADED_MODELS "-1"
 
 > **Warning: `OLLAMA_NUM_PARALLEL` and KV cache bloat.** On high-memory machines, Ollama auto-calculates a high parallel slot count (e.g., 16). Each slot pre-allocates KV cache for the full context window. With 16 slots × 262K context, a single model can consume **384 GB of KV cache** on top of its weights — leaving no room for other models and causing constant eviction thrashing. If you run multiple models, set `OLLAMA_NUM_PARALLEL` to `2`–`4`:
 >
-> ```bash
-> launchctl setenv OLLAMA_NUM_PARALLEL 2    # 2 parallel slots × 262K ctx ≈ 20 GB KV cache per model
-> ```
+> Set `OLLAMA_NUM_PARALLEL` using the same method as above (launchctl on macOS, systemd on Linux, environment variable on Windows).
 >
 > This lets multiple models coexist in memory instead of one model monopolizing all VRAM.
 
@@ -488,8 +522,6 @@ qwen3.5:122b      87 GB    Forever     ← good: both hot, no thrashing
 ```
 
 If you see a timestamp instead of "Forever", your keep-alive is too short.
-
-> **macOS note:** `launchctl setenv` sets the variable for the GUI session. For `ollama serve` from the terminal, use `export OLLAMA_KEEP_ALIVE=-1` instead. On Linux, add it to your systemd service file or shell profile.
 
 ## Configuration
 

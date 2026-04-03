@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from urllib.parse import urlparse
 
@@ -54,19 +55,30 @@ def _which_extended(binary: str) -> str | None:
     """Find a binary, checking common tool install paths beyond $PATH.
 
     uv tool, pipx, and Homebrew install binaries in locations that may not
-    be in PATH when the node agent starts (e.g., via launchd or cron).
+    be in PATH when the node agent starts (e.g., via launchd, cron, or
+    Windows services).
     """
     found = shutil.which(binary)
     if found:
         return found
-    # Check common tool binary locations
+    # Check common tool binary locations (platform-aware)
+    import sys
     from pathlib import Path
 
     extra_dirs = [
-        Path.home() / ".local" / "bin",           # uv tool, pipx
-        Path("/opt/homebrew/bin"),                  # Homebrew (Apple Silicon)
-        Path("/usr/local/bin"),                     # Homebrew (Intel), system
+        Path.home() / ".local" / "bin",           # uv tool, pipx (Unix/Linux/macOS)
     ]
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA", "")
+        appdata = os.environ.get("APPDATA", "")
+        if local:
+            extra_dirs.append(Path(local) / "Programs" / "Python" / "Scripts")
+        if appdata:
+            extra_dirs.append(Path(appdata) / "Python" / "Scripts")
+        extra_dirs.append(Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Links")
+    else:
+        extra_dirs.append(Path("/opt/homebrew/bin"))   # Homebrew (Apple Silicon)
+        extra_dirs.append(Path("/usr/local/bin"))      # Homebrew (Intel), system
     for d in extra_dirs:
         candidate = d / binary
         if candidate.exists() and candidate.is_file():

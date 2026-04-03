@@ -9,6 +9,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 
 import httpx
 import psutil
@@ -71,12 +72,18 @@ class NodeAgent:
         env = os.environ.copy()
         env.setdefault("OLLAMA_HOST", "0.0.0.0:11434")
         try:
+            # Detach child so it survives parent exit
+            popen_kwargs: dict = {}
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                popen_kwargs["start_new_session"] = True
             self._ollama_process = subprocess.Popen(
                 [ollama_bin, "serve"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,
                 env=env,
+                **popen_kwargs,
             )
             logger.info(
                 f"Started ollama serve (pid={self._ollama_process.pid}, "
@@ -319,12 +326,17 @@ class NodeAgent:
 
             env = os.environ.copy()
             env["MLX_ASR_API_KEY"] = "herd-internal"
+            popen_kwargs: dict = {}
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                popen_kwargs["start_new_session"] = True
             self._transcription_process = subprocess.Popen(
                 [binary, "serve", "--port", str(stt_port), "--host", "0.0.0.0"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,
                 env=env,
+                **popen_kwargs,
             )
             self._transcription_port = stt_port
 

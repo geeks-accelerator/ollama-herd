@@ -1,8 +1,9 @@
-"""System metrics collection for Apple Silicon devices."""
+"""System metrics collection (cross-platform: macOS, Linux, Windows)."""
 
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import subprocess
 
@@ -35,7 +36,8 @@ def get_memory_metrics() -> MemoryMetrics:
 
 
 def get_disk_metrics() -> DiskMetrics:
-    usage = psutil.disk_usage("/")
+    root = os.environ.get("SYSTEMDRIVE", "C:\\") if platform.system() == "Windows" else "/"
+    usage = psutil.disk_usage(root)
     return DiskMetrics(
         total_gb=round(usage.total / (1024**3), 2),
         used_gb=round(usage.used / (1024**3), 2),
@@ -44,8 +46,16 @@ def get_disk_metrics() -> DiskMetrics:
 
 
 def _get_memory_pressure() -> MemoryPressure:
-    if platform.system() != "Darwin":
-        return MemoryPressure.NORMAL
+    system = platform.system()
+    if system == "Darwin":
+        return _get_memory_pressure_darwin()
+    if system == "Linux":
+        return _get_memory_pressure_linux()
+    # Windows: psutil.virtual_memory().percent is used elsewhere for scoring
+    return MemoryPressure.NORMAL
+
+
+def _get_memory_pressure_darwin() -> MemoryPressure:
     try:
         result = subprocess.run(
             ["/usr/bin/memory_pressure", "-Q"],
@@ -61,6 +71,30 @@ def _get_memory_pressure() -> MemoryPressure:
         return MemoryPressure.NORMAL
     except Exception as e:
         logger.warning(f"Could not read memory pressure (defaulting to NORMAL): {e}")
+        return MemoryPressure.NORMAL
+
+
+def _get_memory_pressure_linux() -> MemoryPressure:
+    """Estimate memory pressure from /proc/meminfo on Linux."""
+    try:
+        meminfo: dict[str, int] = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    meminfo[parts[0].rstrip(":")] = int(parts[1])
+        mem_total = meminfo.get("MemTotal", 0)
+        mem_available = meminfo.get("MemAvailable", 0)
+        if mem_total == 0:
+            return MemoryPressure.NORMAL
+        used_pct = (mem_total - mem_available) / mem_total * 100
+        if used_pct >= 95:
+            return MemoryPressure.CRITICAL
+        if used_pct >= 85:
+            return MemoryPressure.WARN
+        return MemoryPressure.NORMAL
+    except Exception as e:
+        logger.warning(f"Could not read /proc/meminfo (defaulting to NORMAL): {e}")
         return MemoryPressure.NORMAL
 
 
