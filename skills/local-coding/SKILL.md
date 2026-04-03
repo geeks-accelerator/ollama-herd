@@ -1,7 +1,7 @@
 ---
 name: local-coding
 description: Local coding assistant — run DeepSeek-Coder, Codestral, StarCoder, and Qwen-Coder across your device fleet. Code generation, review, refactoring, and debugging routed to the best available machine. Works with Aider, Continue.dev, Cline, and any OpenAI-compatible coding tool. No cloud API costs, all code stays local.
-version: 1.0.0
+version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"keyboard","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---

@@ -1,7 +1,7 @@
 ---
 name: homelab-ai
 description: Home lab AI — turn your spare machines into a local AI home lab cluster. LLM inference, image generation, speech-to-text, and embeddings across macOS, Linux, and Windows devices. Zero-config mDNS discovery, real-time dashboard, 7-signal scoring. No cloud, no Docker, no Kubernetes. The home lab AI setup that just works. 家庭实验室AI本地推理集群。Laboratorio IA para inferencia local en casa.
-version: 1.0.1
+version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"house","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---

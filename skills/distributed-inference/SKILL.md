@@ -1,7 +1,7 @@
 ---
 name: distributed-inference
 description: Distributed inference for Llama, Qwen, DeepSeek across heterogeneous hardware. Self-hosted distributed inference — scatter requests across macOS, Linux, Windows, and any machine running Ollama. Thermal-aware distributed inference scheduling, 7-signal distributed inference scoring, adaptive capacity learning, context-aware model placement. No orchestration layer, no container runtime — just HTTP and mDNS. 分布式推理 across local devices | Inferencia distribuida en hardware local.
-version: 1.0.3
+version: 1.0.4
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"globe","requires":{"anyBins":["curl","sqlite3"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---

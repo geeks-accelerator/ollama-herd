@@ -1,7 +1,7 @@
 ---
 name: local-transcription
 description: Local speech-to-text transcription with Qwen ASR — transcription routed across your Apple Silicon fleet. Transcribe meetings, voice notes, podcasts with local speech-to-text. Works like Whisper but runs locally via MLX. Fleet-routed transcription with queue management and dashboard visibility. 语音转文字 | transcripción de voz
-version: 1.0.1
+version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"microphone","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin"]}}
 ---

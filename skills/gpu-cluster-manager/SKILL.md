@@ -1,7 +1,7 @@
 ---
 name: gpu-cluster-manager
 description: GPU cluster manager for local AI — run Llama, Qwen, DeepSeek, and Phi across macOS, Linux, and Windows devices with one endpoint. Self-hosted local AI GPU cluster. Auto-discovers machines via mDNS, routes to the best device, manages queues. Zero config, zero Docker. GPU集群管理本地AI推理。Clúster GPU para inferencia IA local.
-version: 1.0.1
+version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"desktop","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---

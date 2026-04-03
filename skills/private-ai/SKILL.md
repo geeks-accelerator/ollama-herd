@@ -1,7 +1,7 @@
 ---
 name: private-ai
 description: Private AI — run LLMs, image generation, speech-to-text, and embeddings on your own hardware. Private AI keeps all data on your network. No cloud APIs, no telemetry, no third-party access. Offline AI and air-gapped AI compatible. On-premise AI for privacy, compliance, data sovereignty. HIPAA-friendly private AI, GDPR-ready private AI. 私有AI离线推理。IA privada sin nube.
-version: 1.0.1
+version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"lock","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---

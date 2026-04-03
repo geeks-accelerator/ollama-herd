@@ -1,7 +1,7 @@
 ---
 name: phi-phi4
 description: Phi 4 by Microsoft — small but powerful LLMs that run on minimal hardware. Phi-4 (14B), Phi-4-mini (3.8B), and Phi-3.5 across your device fleet. Perfect for low-RAM devices on any platform. State-of-the-art reasoning in a tiny footprint. Zero cloud costs.
-version: 1.0.0
+version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"zap","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---

@@ -1,7 +1,7 @@
 ---
 name: mistral-codestral
 description: Mistral and Codestral — run Mistral Large, Mistral-Nemo, Codestral, and Mistral-Small locally. Mistral AI's open-source LLMs for code generation and reasoning. Codestral by Mistral trained on 80+ languages. Mistral routed across your fleet. Mistral本地推理。Mistral IA local. Codestral código local.
-version: 1.0.1
+version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"sparkles","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---

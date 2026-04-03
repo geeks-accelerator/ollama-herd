@@ -1,7 +1,7 @@
 ---
 name: llama-llama3
 description: Llama 3 by Meta — run Llama 3.3, Llama 3.2, and Llama 3.1 across your local device fleet. The most popular open-source LLM family routed to the best available machine. 8B for fast responses, 70B for quality, 405B for frontier performance. OpenAI-compatible API, Cross-platform (macOS, Linux, Windows). Zero cloud costs.
-version: 1.0.0
+version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---

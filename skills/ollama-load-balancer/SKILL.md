@@ -1,7 +1,7 @@
 ---
 name: ollama-load-balancer
 description: Ollama load balancer for Llama, Qwen, DeepSeek, and Mistral inference across multiple machines. Load balancing with auto-discovery via mDNS, health checks, queue management, automatic failover, retry on node failure, and zombie request cleanup. Zero configuration. 负载均衡Ollama推理分发。Balanceador de carga Ollama para inferencia distribuida.
-version: 1.0.3
+version: 1.0.4
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"scales","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---

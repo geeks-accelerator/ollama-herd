@@ -1,7 +1,7 @@
 ---
 name: deepseek-deepseek-coder
 description: DeepSeek DeepSeek-Coder — run DeepSeek-V3, DeepSeek-R1, DeepSeek-Coder across your local fleet. 7-signal scoring routes every request to the best device. Cross-platform (macOS, Linux, Windows). Zero cloud costs via Ollama Herd.
-version: 1.0.2
+version: 1.0.3
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"brain","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---

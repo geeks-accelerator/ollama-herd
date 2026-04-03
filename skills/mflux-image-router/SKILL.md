@@ -1,7 +1,7 @@
 ---
 name: mflux-image-router
 description: Local mflux image generation on Apple Silicon — mflux routes Z-Image-Turbo, Flux Dev, Flux Schnell across your Mac fleet. mflux is MLX-native for Mac Studio, Mac Mini, MacBook Pro. mflux generates images in ~7s at 512px, ~18s at 1024px. Fleet-routed mflux with queue management. mflux图像生成 | generación de imágenes mflux
-version: 1.0.1
+version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"art","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin"]}}
 ---

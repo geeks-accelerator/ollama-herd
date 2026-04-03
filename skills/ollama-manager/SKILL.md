@@ -1,7 +1,7 @@
 ---
 name: ollama-manager
 description: Manage Ollama models — Ollama Llama, Qwen, DeepSeek, Phi, Mistral — across your machines. See what's loaded in Ollama, what's eating disk, what's never used. Pull, delete, and organize Ollama models from one place. AI-powered Ollama recommendations for the optimal model mix based on your hardware. Ollama本地模型管理 | Ollama gestor de modelos IA.
-version: 1.0.1
+version: 1.0.2
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"package","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"],"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---

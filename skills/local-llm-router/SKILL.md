@@ -1,7 +1,7 @@
 ---
 name: local-llm-router
 description: Local LLM model router for Llama, Qwen, DeepSeek, Phi, Mistral, and Gemma across multiple devices. Self-hosted local LLM inference routing on macOS, Linux, and Windows. Local LLM 7-signal scoring engine picks the optimal machine for every local LLM request. OpenAI-compatible local LLM API with context protection, VRAM-aware fallback, and auto-retry. 本地LLM路由 inference router | LLM local enrutador de inferencia. Use when the user wants to optimize local LLM routing, reduce local LLM latency, or load balance local LLM across machines.
-version: 1.0.3
+version: 1.0.4
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"router","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---

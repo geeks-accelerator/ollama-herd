@@ -1,7 +1,7 @@
 ---
 name: qwen-qwen3-5
 description: Qwen 3.5 by Alibaba — run Qwen 3.5 (the latest and most capable Qwen model) across your local device fleet. Qwen 3.5 rivals GPT-4o and Claude 3.5 on reasoning benchmarks. Plus Qwen3-Coder for code generation and Qwen3-ASR for speech-to-text. Fleet-routed to the best available machine via Ollama Herd. Zero cloud costs.
-version: 1.0.0
+version: 1.0.1
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"sparkles","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
