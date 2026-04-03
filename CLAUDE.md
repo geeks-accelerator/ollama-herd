@@ -149,6 +149,7 @@ All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix 
 | [`docs/guides/integrate-z-image-turbo.md`](docs/guides/integrate-z-image-turbo.md) | Z-Image-Turbo integration guide for other projects |
 | [`docs/guides/request-tagging-analytics.md`](docs/guides/request-tagging-analytics.md) | Request tagging for per-app analytics and insights |
 | [`docs/guides/agent-setup-guide.md`](docs/guides/agent-setup-guide.md) | Complete agent setup for all 4 model types (LLM, image, STT, embeddings) |
+| [`docs/guides/thinking-models.md`](docs/guides/thinking-models.md) | Working with chain-of-thought models, budget inflation, diagnostic headers |
 | [`docs/research/local-fleet-economics.md`](docs/research/local-fleet-economics.md) | Economics of local AI fleets vs cloud APIs |
 | [`docs/research/mflux-image-generation.md`](docs/research/mflux-image-generation.md) | mflux setup, architecture, why it bypasses/integrates with Herd |
 
@@ -188,6 +189,30 @@ Two living docs track the project's accumulated knowledge:
 - A workaround reveals a deeper pattern → **both** (issue for the fix, observation for the insight)
 
 **AI agents:** After completing a significant code change, check if the work produced a new observation (a pattern, a surprise, a lesson). If it did, append it to `docs/observations.md`. After debugging a problem, check if it revealed a new issue. If it did, append it to `docs/issues.md`. This is how the project accumulates intelligence across sessions.
+
+## Current State (as of 2026-04-03)
+
+### Deployment
+
+- **PyPI version:** 0.4.1 (published 2026-04-02)
+- **Local deployment:** running on Neons-Mac-Studio (512GB Mac Studio M3 Ultra)
+- **Fleet:** single node, `gpt-oss:120b` + `nomic-embed-text:latest` loaded
+- **Image gen:** mflux (z-image-turbo, flux-dev) + DiffusionKit (sd3-medium, sd3.5-large) + Ollama native (x/z-image-turbo)
+- **Ollama settings:** `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=-1` (set in `~/.zshrc`)
+- **Health:** 85/100, zero errors, zero failures in 12+ hours of continuous traffic
+
+### ClawHub Skills
+
+28 skills published across `skills/` directory. 36+ #1 keyword rankings. Strategy documented in [`docs/skill-publishing-strategy.md`](docs/skill-publishing-strategy.md) and [`docs/skill-marketplace-analysis.md`](docs/skill-marketplace-analysis.md).
+
+When updating code, check if skills reference stale numbers (test count, health check count, endpoint lists). Use `grep -rn "444 tests\|15 checks" skills/` to verify.
+
+### What's next
+
+- The fleet is running and stable — monitor via `curl http://localhost:11435/dashboard/api/health`
+- Consumer agents (bots) are using the fleet for LLM, image gen, and embeddings
+- One agent provided [detailed feedback](docs/guides/thinking-models.md) on thinking model issues — all addressed
+- Open issues tracked in [`docs/issues.md`](docs/issues.md), observations in [`docs/observations.md`](docs/observations.md)
 
 ## Conventions
 
