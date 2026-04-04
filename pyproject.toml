@@ -1,14 +1,14 @@
 [project]
 name = "ollama-herd"
 version = "0.4.1"
-description = "Smart multimodal router — LLM inference, image generation, speech-to-text, and embeddings across your device fleet"
+description = "Smart multimodal router — LLM inference, image generation, speech-to-text, and embeddings across your device fleet. Cross-platform: macOS, Linux, Windows."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
     { name = "Geeks Accelerator", email = "hello@geeks-accelerator.com" },
 ]
-keywords = ["ollama", "llm", "inference", "router", "load-balancer", "mDNS", "openai-compatible", "fleet", "multimodal", "speech-to-text", "image-generation", "embeddings"]
+keywords = ["ollama", "llm", "inference", "router", "load-balancer", "mDNS", "openai-compatible", "fleet", "multimodal", "speech-to-text", "image-generation", "embeddings", "cross-platform", "windows", "linux", "nvidia", "cuda"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -20,6 +20,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: System :: Distributed Computing",
     "Framework :: FastAPI",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
 ]
 dependencies = [
     "fastapi>=0.115.0",
