@@ -10,9 +10,12 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from fleet_manager.models.node import NodeStatus
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.model_knowledge import is_image_model
 from fleet_manager.server.routes.routing import (
+    _pick_pull_node,
+    _pulls_in_flight,
     check_context_overflow,
     extract_tags,
     get_all_fleet_models,
@@ -209,6 +212,139 @@ async def ollama_ps(request: Request):
                 }
             )
     return {"models": models}
+
+
+# Non-Ollama models that require separate installation
+_NON_OLLAMA_MODELS: dict[str, str] = {
+    "z-image-turbo": "uv tool install mflux (macOS Apple Silicon only)",
+    "flux-dev": "uv tool install mflux (macOS Apple Silicon only)",
+    "flux-schnell": "uv tool install mflux (macOS Apple Silicon only)",
+    "sd3-medium": "uv tool install diffusionkit (macOS Apple Silicon only)",
+    "sd3.5-large": "uv tool install diffusionkit (macOS Apple Silicon only)",
+    "qwen3-asr": "pip install 'mlx-qwen3-asr[serve]' (macOS Apple Silicon only)",
+}
+
+
+def _check_non_ollama_model(model: str) -> str | None:
+    """Return install instructions if model is not pullable via Ollama, else None."""
+    base = model.split(":")[0]
+    return _NON_OLLAMA_MODELS.get(base)
+
+
+@router.post("/api/pull")
+async def ollama_pull(request: Request):
+    """Pull a model onto the fleet via Ollama's /api/pull.
+
+    Accepts both 'name' (Ollama standard) and 'model' (common agent convention).
+    Auto-selects the best node if node_id is not provided.
+    For non-Ollama models (mflux, DiffusionKit, MLX), returns install instructions.
+    """
+    body = await request.json()
+    model = body.get("name", body.get("model", "")).strip()
+    if not model:
+        return JSONResponse(
+            {"error": "model name required (use 'name' or 'model' field)"},
+            status_code=400,
+        )
+
+    # Normalize: add :latest tag if no tag specified
+    if ":" not in model:
+        model = f"{model}:latest"
+
+    # Check non-Ollama models
+    install_hint = _check_non_ollama_model(model)
+    if install_hint:
+        return JSONResponse(
+            {
+                "error": (
+                    f"'{model.split(':')[0]}' is not an Ollama model and cannot be "
+                    f"pulled via /api/pull. Install it directly on the node: {install_hint}"
+                )
+            },
+            status_code=400,
+        )
+
+    # Duplicate pull check
+    if model in _pulls_in_flight:
+        return JSONResponse(
+            {"error": f"'{model}' is already being pulled. Try again when it completes."},
+            status_code=409,
+        )
+
+    registry = request.app.state.registry
+    proxy = request.app.state.streaming_proxy
+    scorer = request.app.state.scorer
+
+    # Select target node
+    node_id = body.get("node_id")
+    if node_id:
+        node = registry.get_node(node_id)
+        if not node or node.status == NodeStatus.OFFLINE:
+            return JSONResponse(
+                {"error": f"Node '{node_id}' not found or offline"},
+                status_code=404,
+            )
+    else:
+        node_id = _pick_pull_node(registry, model, scorer)
+        if not node_id:
+            return JSONResponse(
+                {"error": "No node has enough available memory to pull this model"},
+                status_code=503,
+            )
+
+    stream = body.get("stream", True)
+
+    if not stream:
+        # Non-streaming: block until pull completes
+        _pulls_in_flight.add(model)
+        try:
+            success = await proxy.pull_model(node_id, model)
+            if success:
+                node = registry.get_node(node_id)
+                if node and node.ollama and model not in node.ollama.models_available:
+                    node.ollama.models_available.append(model)
+                return JSONResponse(
+                    {"status": "success"},
+                    headers={"X-Fleet-Node": node_id},
+                )
+            return JSONResponse(
+                {"error": f"Pull failed on node '{node_id}'"},
+                status_code=500,
+                headers={"X-Fleet-Node": node_id},
+            )
+        finally:
+            _pulls_in_flight.discard(model)
+
+    # Streaming: yield NDJSON progress
+    async def _stream_pull():
+        _pulls_in_flight.add(model)
+        success = False
+        try:
+            async for chunk in proxy.pull_model_streaming(node_id, model):
+                yield chunk
+                # Check if this was the success line
+                try:
+                    data = json.loads(chunk)
+                    if data.get("status") == "success":
+                        success = True
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            if success:
+                node = registry.get_node(node_id)
+                if node and node.ollama and model not in node.ollama.models_available:
+                    node.ollama.models_available.append(model)
+        except httpx.HTTPStatusError as e:
+            yield json.dumps({"error": f"HTTP {e.response.status_code} from node"}).encode() + b"\n"
+        except Exception as e:
+            yield json.dumps({"error": repr(e)}).encode() + b"\n"
+        finally:
+            _pulls_in_flight.discard(model)
+
+    return StreamingResponse(
+        _stream_pull(),
+        media_type="application/x-ndjson",
+        headers={"X-Fleet-Node": node_id},
+    )
 
 
 @router.post("/api/embed")

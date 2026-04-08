@@ -574,6 +574,38 @@ class StreamingProxy:
             logger.error(f"Pull {model} on {node_id} error: {type(e).__name__}: {e}")
             return False
 
+    async def pull_model_streaming(
+        self, node_id: str, model: str
+    ) -> AsyncIterator[bytes]:
+        """Pull a model onto a node, yielding raw NDJSON bytes for the client.
+
+        Yields each line from Ollama's /api/pull response verbatim, preserving
+        the exact wire format (status, digest, total, completed).
+        """
+        client = self._get_client(node_id)
+        async with client.stream(
+            "POST", "/api/pull", json={"name": model}
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("error"):
+                    logger.error(
+                        f"Pull {model} on {node_id} failed: {data['error']}"
+                    )
+                status = data.get("status", "")
+                if "completed" in data and "total" in data and data["total"] > 0:
+                    pct = int(data["completed"] / data["total"] * 100)
+                    logger.info(f"Pulling {model} on {node_id}: {status} {pct}%")
+                elif status == "success":
+                    logger.info(f"Pull {model} on {node_id}: success")
+                yield line.encode() + b"\n"
+
     async def delete_model(self, node_id: str, model: str) -> bool:
         """Delete a model from a node via Ollama DELETE /api/delete."""
         try:
