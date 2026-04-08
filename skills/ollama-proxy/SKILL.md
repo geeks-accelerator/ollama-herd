@@ -1,7 +1,7 @@
 ---
 name: ollama-proxy
 description: Ollama proxy — one endpoint that routes to multiple Ollama instances. Drop-in Ollama proxy replacement for localhost:11434. Same Ollama API, same model names, but the Ollama proxy routes requests to the best device. Auto-discovers Ollama nodes, scores on 7 signals, retries on failure. Works with Open WebUI, LangChain, Aider. Ollama代理 | proxy Ollama
-version: 1.0.2
+version: 1.0.3
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"globe","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
@@ -55,6 +55,9 @@ curl http://ollama-proxy:11435/api/tags
 
 # List loaded models via Ollama proxy (across all Ollama nodes)
 curl http://ollama-proxy:11435/api/ps
+
+# Pull a model via Ollama proxy (auto-selects best node)
+curl -N http://ollama-proxy:11435/api/pull -d '{"name": "codestral"}'
 ```
 
 ### OpenAI-compatible Ollama proxy API

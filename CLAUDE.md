@@ -98,7 +98,7 @@ macOS-only features (gracefully disabled on other platforms): meeting detection,
 | `server/routes/routing.py` | Shared scoring logic with model fallback + holding queue + auto-pull + tag extraction |
 | `server/rebalancer.py` | Background queue rebalancer + pre-warm trigger |
 | `server/routes/openai_compat.py` | `/v1/chat/completions`, `/v1/models`, `/v1/images/generations` |
-| `server/routes/ollama_compat.py` | `/api/chat`, `/api/generate`, `/api/tags`, `/api/ps`, `/api/embed`, `/api/embeddings` |
+| `server/routes/ollama_compat.py` | `/api/chat`, `/api/generate`, `/api/pull`, `/api/tags`, `/api/ps`, `/api/embed`, `/api/embeddings` |
 | `server/routes/fleet.py` | `/fleet/status` — full fleet state; `/fleet/queue` — lightweight queue depths for client backoff |
 | `server/routes/heartbeat.py` | `/heartbeat` — node agent heartbeat receiver |
 | `server/routes/dashboard.py` | Real-time web dashboard at `/dashboard` with SSE updates, benchmarks, health, model recommendations, model management, and settings (runtime toggles + node versions) |

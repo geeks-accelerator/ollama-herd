@@ -1,7 +1,7 @@
 ---
 name: ollama-herd
 description: Ollama multimodal model router for Llama, Qwen, DeepSeek, Phi, and Mistral — plus mflux image generation, speech-to-text, and embeddings. Self-hosted Ollama local AI (macOS, Linux, Windows) with 7-signal scoring, Ollama queue management, real-time dashboard, and Ollama health monitoring. Routes Ollama LLM, image, STT, and embedding requests across macOS, Linux, and Windows devices. Ollama本地推理路由 | Ollama enrutador IA local. Use when the user asks about their Ollama fleet, Ollama inference routing, Ollama node status, or Ollama fleet performance.
-version: 1.5.2
+version: 1.5.3
 homepage: https://github.com/geeks-accelerator/ollama-herd
 metadata: {"openclaw":{"emoji":"llama","requires":{"anyBins":["curl","wget"],"optionalBins":["python3","sqlite3","pip"]},"configPaths":["~/.fleet-manager/latency.db","~/.fleet-manager/logs/herd.jsonl"],"os":["darwin","linux","windows"]}}
 ---
@@ -45,6 +45,18 @@ Returns:
 ```bash
 # ollama_model_list — all Ollama models on all nodes
 curl -s http://localhost:11435/api/tags | python3 -m json.tool
+```
+
+### Pull an Ollama model onto the fleet
+```bash
+# ollama_pull_model — pull a model (auto-selects best node, streams progress)
+curl -N http://localhost:11435/api/pull -d '{"name": "codestral"}'
+
+# pull to a specific node
+curl -N http://localhost:11435/api/pull -d '{"name": "llama3.3:70b", "node_id": "mac-studio"}'
+
+# non-streaming (blocks until complete)
+curl http://localhost:11435/api/pull -d '{"name": "phi4", "stream": false}'
 ```
 
 ### List Ollama models currently loaded in memory

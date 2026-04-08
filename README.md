@@ -362,6 +362,7 @@ See [Operations Guide](docs/operations-guide.md) for log queries, trace access, 
 | `POST /api/embed` | Ollama-compatible embeddings |
 | `POST /api/embeddings` | Ollama-compatible embeddings (alias) |
 | `GET /api/tags` | Ollama-compatible model list (LLM + image) |
+| `POST /api/pull` | Pull a model onto the fleet (auto-selects best node, streams NDJSON progress) |
 | `GET /api/ps` | Running models across all nodes |
 | `GET /api/image-models` | List image models across the fleet |
 | `GET /fleet/status` | Herd state: nodes, queues, metrics |

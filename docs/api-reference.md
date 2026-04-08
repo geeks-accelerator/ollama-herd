@@ -353,6 +353,67 @@ The raw body is proxied to Ollama's embedding endpoint on the selected node. Res
 
 ---
 
+### `POST /api/pull`
+
+Pull a model onto the fleet. Ollama-compatible — streams NDJSON progress matching Ollama's wire format. Auto-selects the node with the most available memory, or accepts an explicit `node_id`.
+
+**Request body:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | — | Model to pull (Ollama standard field) |
+| `model` | string | — | Model to pull (alias for `name` — many agents send this) |
+| `stream` | bool | `true` | Stream NDJSON progress or return on completion |
+| `node_id` | string | auto | Target node (auto-selects best node if omitted) |
+
+**Streaming response** (`stream: true`, default):
+
+```
+{"status":"pulling manifest"}
+{"status":"pulling abc123...","digest":"sha256:abc123","total":5000000,"completed":2500000}
+{"status":"verifying sha256:abc123"}
+{"status":"writing manifest"}
+{"status":"success"}
+```
+
+**Non-streaming response** (`stream: false`):
+
+```json
+{"status": "success"}
+```
+
+**Response headers:**
+
+| Header | Description |
+|--------|-------------|
+| `X-Fleet-Node` | Node that received the pull |
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing model name, or model is a non-Ollama model (mflux, DiffusionKit, MLX) — returns install instructions |
+| 404 | Specified `node_id` not found or offline |
+| 409 | Model is already being pulled |
+| 503 | No node has enough available memory |
+
+**Non-Ollama models:** Image generation models (z-image-turbo, flux-dev, sd3-medium, sd3.5-large) and speech-to-text models (qwen3-asr) are not Ollama models and cannot be pulled via this endpoint. The error response includes the correct install command for each.
+
+**Examples:**
+
+```bash
+# Pull a model (streams NDJSON progress)
+curl -N http://localhost:11435/api/pull -d '{"name": "codestral"}'
+
+# Pull to a specific node
+curl -N http://localhost:11435/api/pull -d '{"name": "llama3.3:70b", "node_id": "mac-studio"}'
+
+# Non-streaming (blocks until complete)
+curl http://localhost:11435/api/pull -d '{"name": "phi4", "stream": false}'
+```
+
+---
+
 ### `GET /api/image-models`
 
 List all image models across the fleet (mflux, DiffusionKit, and Ollama native).
