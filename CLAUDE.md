@@ -224,6 +224,7 @@ When updating code, check if skills reference stale numbers (test count, health 
 - Route files in `server/routes/`, one per API surface
 - Raw Ollama body passed through for Ollama-format requests; normalized for OpenAI
 - **Never store knowledge in `.claude/` memory files** — the `.claude/` directory is per-device, gitignored, and invisible to agents on other machines. All project knowledge, context, decisions, and learnings must go in committed files: `CLAUDE.md` for onboarding, `docs/issues.md` for bugs, `docs/observations.md` for insights, `CHANGELOG.md` for release history. If you learn something that a future agent needs, put it where they can find it.
+- **Never use git worktrees** — work directly on the main branch. Worktrees add unnecessary complexity for this project and cause issues with `uv run` and `.venv` resolution.
 
 ## Commit Messages
 
