@@ -100,6 +100,19 @@ class TraceStore:
             "CREATE INDEX IF NOT EXISTS idx_benchmark_runs_timestamp ON benchmark_runs(timestamp)"
         )
 
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS fleet_briefings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                briefing TEXT NOT NULL,
+                model TEXT,
+                fleet_data TEXT
+            )
+        """)
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fleet_briefings_ts ON fleet_briefings(timestamp)"
+        )
+
         await self._db.commit()
         logger.info(f"Trace store initialized at {self._db_path}")
 
@@ -782,6 +795,41 @@ class TraceStore:
                 "max_total": row[10] or 0,
                 "max_total_24h": row[11] or 0,
                 "count_24h": row[12] or 0,
+            }
+            for row in rows
+        ]
+
+    # -- Fleet briefing storage --
+
+    async def save_briefing(
+        self, briefing: str, model: str, fleet_data: str = ""
+    ) -> None:
+        """Persist a fleet intelligence briefing to SQLite."""
+        if not self._db:
+            return
+        await self._db.execute(
+            "INSERT INTO fleet_briefings (timestamp, briefing, model, fleet_data) "
+            "VALUES (?, ?, ?, ?)",
+            (time.time(), briefing, model, fleet_data),
+        )
+        await self._db.commit()
+
+    async def get_briefings(self, limit: int = 20) -> list[dict]:
+        """Return recent fleet briefings, newest first."""
+        if not self._db:
+            return []
+        cursor = await self._db.execute(
+            "SELECT timestamp, briefing, model, fleet_data "
+            "FROM fleet_briefings ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "generated_at": row[0],
+                "briefing": row[1],
+                "model": row[2],
+                "fleet_data": row[3],
             }
             for row in rows
         ]

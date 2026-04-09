@@ -637,7 +637,7 @@ async def dashboard_briefing(request: Request, refresh: int = 0):
             cache["briefing"] = result["briefing"]
             cache["model"] = result["model"]
             cache["generated_at"] = result["generated_at"]
-            # Save to history
+            # Save to in-memory history
             _briefing_history.insert(0, {
                 "briefing": result["briefing"],
                 "model": result["model"],
@@ -645,6 +645,13 @@ async def dashboard_briefing(request: Request, refresh: int = 0):
             })
             if len(_briefing_history) > _BRIEFING_HISTORY_MAX:
                 _briefing_history.pop()
+            # Persist to SQLite
+            ts = getattr(request.app.state, "trace_store", None)
+            if ts:
+                import asyncio
+                asyncio.create_task(
+                    ts.save_briefing(result["briefing"], result["model"])
+                )
         next_refresh = interval
         return {
             "enabled": True,
@@ -660,8 +667,14 @@ async def dashboard_briefing(request: Request, refresh: int = 0):
 
 
 @router.get("/dashboard/api/briefing/history")
-async def dashboard_briefing_history():
-    """Return last 10 fleet intelligence briefings."""
+async def dashboard_briefing_history(request: Request, limit: int = 20):
+    """Return recent fleet intelligence briefings from SQLite."""
+    trace_store = getattr(request.app.state, "trace_store", None)
+    if trace_store:
+        history = await trace_store.get_briefings(limit=limit)
+        if history:
+            return {"history": history}
+    # Fallback to in-memory
     return {"history": _briefing_history}
 
 
@@ -4117,6 +4130,11 @@ _SETTINGS_BODY = """
     <div style="text-align:center;padding:20px;color:var(--text-dim)">Loading...</div>
   </div>
 
+  <div class="section-label">Context Management</div>
+  <div id="context-mgmt">
+    <div style="text-align:center;padding:20px;color:var(--text-dim)">Loading...</div>
+  </div>
+
   <div class="section-label">Fleet Nodes</div>
   <div class="nodes-grid" id="nodes-grid">
     <div style="text-align:center;padding:20px;color:var(--text-dim)">Loading...</div>
@@ -4134,7 +4152,10 @@ var TOGGLE_META = {
   auto_pull: {label:'Auto-Pull Models', desc:'Automatically download models to nodes when requested but not available'},
   vram_fallback: {label:'VRAM-Aware Fallback', desc:'Route to a loaded model in the same category instead of cold-loading the requested model'},
   image_generation: {label:'Image Generation', desc:'Route mflux image generation requests to nodes with image models available'},
-  transcription: {label:'Transcription (STT)', desc:'Route speech-to-text requests to nodes with mlx-qwen3-asr available'}
+  transcription: {label:'Transcription (STT)', desc:'Route speech-to-text requests to nodes with mlx-qwen3-asr available'},
+  dynamic_num_ctx: {label:'Dynamic Context Size', desc:'Inject optimized num_ctx on cold loads to reduce KV cache waste'},
+  num_ctx_auto_calculate: {label:'Auto-Calculate Context', desc:'Automatically compute optimal num_ctx per model from trace data every 5 minutes'},
+  fleet_intelligence: {label:'Fleet Intelligence', desc:'LLM-powered dashboard briefing that analyzes fleet health and performance'}
 };
 
 var CONFIG_LABELS = {
@@ -4185,6 +4206,9 @@ function renderSettings(data) {
     '</div>';
   }
   tc.innerHTML = html;
+
+  // Context Management
+  loadContextUsage();
 
   // Nodes
   var ng = document.getElementById('nodes-grid');
@@ -4254,6 +4278,60 @@ async function toggleSetting(field, value) {
     console.error('Toggle error:', err);
     loadSettings();
   }
+}
+
+async function loadContextUsage() {
+  var container = document.getElementById('context-mgmt');
+  try {
+    var resp = await fetch('/dashboard/api/context-usage');
+    var data = await resp.json();
+    if (!data.models || data.models.length === 0) {
+      container.innerHTML = '<div style="padding:14px 18px;background:var(--card);border:1px solid var(--border);border-radius:10px;font-size:13px;color:var(--text-dim)">No models with usage data yet. Context recommendations appear after traffic is routed.</div>';
+      return;
+    }
+    var html = '<table class="config-table"><thead><tr><th>Model</th><th>Allocated</th><th>p99 Total</th><th>Utilization</th><th>Recommended</th><th>Override</th><th></th></tr></thead><tbody>';
+    data.models.forEach(function(m) {
+      var utilColor = m.utilization_pct > 50 ? 'var(--green)' : m.utilization_pct > 10 ? 'var(--yellow)' : 'var(--red)';
+      var override = m.override_ctx || '';
+      html += '<tr>' +
+        '<td style="font-weight:500">' + m.model + '</td>' +
+        '<td class="config-val">' + (m.allocated_ctx ? m.allocated_ctx.toLocaleString() : '-') + '</td>' +
+        '<td class="config-val">' + (m.total_tokens.p99 ? m.total_tokens.p99.toLocaleString() : '-') + '</td>' +
+        '<td style="color:' + utilColor + ';font-weight:600">' + m.utilization_pct + '%</td>' +
+        '<td class="config-val">' + m.recommended_ctx.toLocaleString() + ' <span style="color:var(--green);font-size:11px">(' + m.savings_pct + '% savings)</span></td>' +
+        '<td><input type="number" id="ctx-override-' + m.model.replace(/[^a-zA-Z0-9]/g, '-') + '" value="' + override + '" placeholder="' + m.recommended_ctx + '" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--text);font-size:12px;font-variant-numeric:tabular-nums"></td>' +
+        '<td><button onclick="applyCtxOverride(\\'' + m.model + '\\',\\'' + m.model.replace(/[^a-zA-Z0-9]/g, '-') + '\\')" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:11px;cursor:pointer">Apply</button> ' +
+        '<button onclick="applyRecommended(\\'' + m.model + '\\',' + m.recommended_ctx + ',\\'' + m.model.replace(/[^a-zA-Z0-9]/g, '-') + '\\')" style="background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer">Use Rec.</button></td>' +
+      '</tr>';
+    });
+    html += '</tbody></table>';
+    html += '<div class="config-note">Overrides take effect on next cold load or Ollama restart. Enable "Dynamic Context Size" toggle above to auto-inject these values.</div>';
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = '<div style="color:var(--text-dim);padding:20px">Error loading context data</div>';
+  }
+}
+
+async function applyCtxOverride(model, safeId) {
+  var input = document.getElementById('ctx-override-' + safeId);
+  var val = parseInt(input.value);
+  if (!val || val < 1024) { showToast('Minimum context: 1024'); return; }
+  try {
+    var resp = await fetch('/dashboard/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({num_ctx_overrides: {[model]: val}})
+    });
+    var result = await resp.json();
+    if (result.status === 'updated') {
+      showToast('Context override set: ' + model + ' = ' + val.toLocaleString());
+    }
+  } catch(e) { showToast('Error applying override'); }
+}
+
+function applyRecommended(model, recommended, safeId) {
+  document.getElementById('ctx-override-' + safeId).value = recommended;
+  applyCtxOverride(model, safeId);
 }
 
 async function loadSettings() {
