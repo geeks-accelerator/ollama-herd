@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-04-08
+
+### Added
+
+- **`/api/pull` endpoint** — Ollama-compatible model pulling through the router. Auto-selects best node by available memory, streams NDJSON progress, supports `node_id` targeting. Returns install instructions for non-Ollama models (mflux, DiffusionKit, MLX)
+- **Smart benchmark system** — run benchmarks from the dashboard with two modes:
+  - **Default**: benchmark currently loaded models
+  - **Smart**: fill available memory with recommended models (prefers on-disk, then downloads), then benchmark everything
+  - Dashboard UI: run button, mode selector, duration picker, model type checkboxes (LLM/Embeddings/Image gen), dual progress bars during pull phase, gradient color bar, elapsed in m:ss format
+  - Real-time progress polling with live tok/s counter
+  - Multimodal: benchmarks LLM chat, embeddings, and image generation simultaneously
+- **Dynamic num_ctx management** (Issue #21) — 3-phase system to eliminate KV cache waste:
+  - **Phase 1 (Observe)**: `GET /dashboard/api/context-usage` — per-model p50/p75/p95/p99 of total tokens (prompt+completion), 24h rolling max, utilization %, recommended ctx, savings estimate
+  - **Phase 2 (Control)**: `FLEET_DYNAMIC_NUM_CTX` toggle + per-model `num_ctx_overrides` — router injects optimal num_ctx on cold loads, configurable via dashboard settings API
+  - **Phase 3 (Auto-adjust)**: `ContextOptimizer` background task auto-calculates from 7-day traces, auto-initializes overrides on startup, queues Ollama restarts via heartbeat command channel
+- **4 new benchmark charts** — Model Throughput (horizontal bar), Model Latency (grouped bar: latency vs TTFT), Model Performance Over Time (multi-line across runs), Node Utilization (CPU/MEM grouped bar)
+- **Context waste health check** — WARNING when allocated context > 4× actual p99 total usage, with specific per-model recommended num_ctx values in the fix message
+- **Heartbeat command channel** — router can send commands (e.g., `restart_ollama` with env overrides) to nodes via heartbeat response
+- **Node agent Ollama restart** — `_restart_ollama()` processes commands from router, applies env overrides, gracefully restarts
+- `POST /dashboard/api/benchmarks/start` — start benchmarks from dashboard
+- `GET /dashboard/api/benchmarks/progress` — real-time benchmark progress
+- `POST /dashboard/api/benchmarks/cancel` — cancel running benchmarks
+- `GET /dashboard/api/context-usage` — per-model context utilization analysis
+- 16 health checks total (up from 15 in 0.4.1)
+
+### Fixed
+
+- **`_request_tokens` encapsulation** (#4) — added `pop_token_counts()` and `pop_request_meta()` public methods on `StreamingProxy`, replaced all direct private dict access in route handlers
+- **`asyncio.ensure_future` deprecated** (#5) — replaced with `asyncio.create_task()` in discovery.py
+- **KV cache bloat fix message** (#16) — added Windows instructions alongside macOS/Linux
+- **Benchmark chart x-axis** — shows date + time ("Apr 8 2:30 PM") instead of just date, so same-day runs are distinguishable
+- **Smart benchmark skips cloud models** — filters out `:cloud` suffix models (API proxies that don't load locally)
+- **Smart benchmark skips embedding/image models** for LLM category coverage — `nomic-embed-text` no longer blocks loading a general-purpose LLM
+- **Context recommendation uses total tokens** — was using prompt-only p99 (caused truncation at 8K), now uses p99 of prompt+completion with 50% headroom and 24h rolling max floor
+
+### Changed
+
+- `benchmark_engine.py` extracted from `scripts/benchmark.py` — shared core logic between CLI and server-side runner
+- `scripts/benchmark.py` is now a thin CLI wrapper importing from `benchmark_engine`
+- Dashboard settings API accepts `dynamic_num_ctx`, `num_ctx_auto_calculate`, and `num_ctx_overrides`
+- Settings GET response includes `context` section with all num_ctx state
+- `StreamingProxy.pull_model()` accepts optional `progress_cb` callback for download progress tracking
+- Benchmark `per_model_results` includes `model_type` field (llm/embed/image)
+
 ## [0.4.1] - 2026-04-02
 
 ### Added

@@ -1,6 +1,6 @@
 [project]
 name = "ollama-herd"
-version = "0.4.1"
+version = "0.5.0"
 description = "Smart multimodal router — LLM inference, image generation, speech-to-text, and embeddings across your device fleet. Cross-platform: macOS, Linux, Windows."
 readme = "README.md"
 license = "MIT"
