@@ -407,7 +407,7 @@ If Ollama drops the TCP connection after sending partial data but without raisin
 
 ---
 
-### 22. Custom Date Range Selector for Dashboard Pages `OPEN`
+### 22. Custom Date Range Selector for Dashboard Pages `FIXED`
 
 **Files:** `src/fleet_manager/server/routes/dashboard.py`, `src/fleet_manager/server/trace_store.py`
 **Severity:** Low (feature enhancement)
