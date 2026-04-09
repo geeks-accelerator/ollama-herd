@@ -247,7 +247,11 @@ class BenchmarkRunner:
         self._phase = "Analyzing fleet for smart model selection..."
 
         try:
-            from fleet_manager.server.model_knowledge import models_fitting_ram
+            from fleet_manager.server.model_knowledge import (
+                ModelCategory,
+                best_for_category,
+            )
+
             # Get current fleet state
             resp = await client.get("/fleet/status")
             resp.raise_for_status()
@@ -259,8 +263,14 @@ class BenchmarkRunner:
                 self._phase = "No nodes online, skipping smart pull"
                 return
 
-            # Get recommendations from the recommender
-            # Build a simple recommendation: find models that fit in free memory
+            # Smart strategy: pick one model per category for diversity,
+            # prefer medium-sized models (7-32B) that download quickly and
+            # demonstrate fleet routing across varied workloads.
+            # Cap individual models at 50GB to avoid hour-long downloads.
+            MAX_MODEL_SIZE_GB = 50
+            # Cap total pull to 50% of available memory to keep headroom
+            MAX_PULL_PCT = 0.5
+
             models_to_pull: list[tuple[str, str, float]] = []  # (model, node_id, ram_gb)
 
             for node in nodes:
@@ -271,27 +281,36 @@ class BenchmarkRunner:
                 available_gb = mem.get("available_gb", 0)
                 ollama = node.get("ollama") or {}
                 loaded_names = {m["name"] for m in ollama.get("models_loaded", [])}
+                already_planned = {m for m, _, _ in models_to_pull}
 
-                # Reserve 20GB headroom for system + KV cache during benchmark
-                pullable_gb = available_gb - 20
+                # Reserve headroom for system + KV cache during benchmark
+                pullable_gb = min(
+                    available_gb - 20,
+                    available_gb * MAX_PULL_PCT,
+                )
                 if pullable_gb < 4:
                     continue
 
-                # Find models that fit, sorted by quality
-                candidates = models_fitting_ram(pullable_gb)
-                for spec in candidates:
+                # Pick one model per category for diversity
+                categories = [
+                    ModelCategory.GENERAL,
+                    ModelCategory.CODING,
+                    ModelCategory.REASONING,
+                    ModelCategory.FAST_CHAT,
+                ]
+                for cat in categories:
+                    if pullable_gb < 4:
+                        break
+                    cap = min(pullable_gb, MAX_MODEL_SIZE_GB)
+                    spec = best_for_category(cat, cap)
+                    if spec is None:
+                        continue
                     name = spec.ollama_name
-                    if name in loaded_names:
+                    if name in loaded_names or name in already_planned:
                         continue
-                    # Skip if we're already planning to pull this model
-                    if any(m == name for m, _, _ in models_to_pull):
-                        continue
-                    if spec.ram_gb <= pullable_gb:
-                        models_to_pull.append((name, node_id, spec.ram_gb))
-                        pullable_gb -= spec.ram_gb
-                        loaded_names.add(name)
-                        if pullable_gb < 4:
-                            break
+                    models_to_pull.append((name, node_id, spec.ram_gb))
+                    pullable_gb -= spec.ram_gb
+                    already_planned.add(name)
 
             if not models_to_pull:
                 self._phase = "No additional models fit in available memory"
