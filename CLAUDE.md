@@ -87,15 +87,21 @@ All via env vars: `FLEET_` prefix (server), `FLEET_NODE_` prefix (node). See `do
 
 ## Documentation
 
-Key docs (Claude can read any on demand — don't load all every turn):
-- `docs/api-reference.md` — all endpoints with schemas
-- `docs/configuration-reference.md` — all env vars with tuning guidance
-- `docs/operations-guide.md` — logging, traces, fallbacks, retry, drain, streaming
-- `docs/fleet-manager-routing-engine.md` — 5-stage scoring pipeline
+Key docs (Claude reads on demand — NOT loaded every turn):
+- `docs/api-reference.md` — all endpoints with request/response schemas
+- `docs/configuration-reference.md` — all 47+ env vars with tuning guidance
+- `docs/operations-guide.md` — logging, traces, fallbacks, retry, drain, streaming, context protection
+- `docs/fleet-manager-routing-engine.md` — 5-stage scoring pipeline deep dive
 - `docs/adaptive-capacity.md` — capacity learner, meeting detection, app fingerprinting
+- `docs/troubleshooting.md` — common issues, LAN debugging, operational gotchas
+- `docs/openclaw-integration.md` — OpenClaw agent setup guide
 - `docs/issues.md` — known issues (mark `FIXED` when resolved, never delete)
 - `docs/observations.md` — operational insights (append new learnings, never delete)
+- `docs/competitive-landscape.md` — 20+ competing projects analyzed
 - `docs/plans/` — implementation plans for major features
+- `docs/guides/` — image gen, thinking models, request tagging, agent setup, optimizing CLAUDE.md
+- `docs/research/` — local fleet economics, mflux architecture
+- `skills/` — 37 ClawHub skills. Strategy: `docs/skill-publishing-strategy.md`
 
 ## Design Principles
 
