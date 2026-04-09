@@ -1068,7 +1068,7 @@ async def dashboard_models_page():
 async def dashboard_apps_page():
     """Apps analytics — per-tag/application performance and usage breakdown."""
     return _dashboard_page(
-        "Apps",
+        "Tags",
         "apps",
         _APPS_BODY,
         extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>',
@@ -1407,7 +1407,7 @@ def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str
         ("overview", "Dashboard", "/dashboard"),
         ("trends", "Trends", "/dashboard/trends"),
         ("models", "Model Insights", "/dashboard/models"),
-        ("apps", "Apps", "/dashboard/apps"),
+        ("apps", "Tags", "/dashboard/apps"),
         ("benchmarks", "Benchmarks", "/dashboard/benchmarks"),
         ("health", "Health", "/dashboard/health"),
         ("recommendations", "Recommendations", "/dashboard/recommendations"),
