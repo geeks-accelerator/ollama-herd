@@ -186,7 +186,7 @@ sudo ufw reload
 # Ubuntu Ollama fleet status
 curl -s http://localhost:11435/fleet/status | python3 -m json.tool
 
-# Ubuntu Ollama health — 15 automated checks
+# Ubuntu Ollama health — 16 automated checks
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 
 # Ubuntu Ollama models loaded

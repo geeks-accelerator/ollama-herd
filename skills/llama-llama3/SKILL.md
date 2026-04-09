@@ -104,7 +104,7 @@ curl -s http://localhost:11435/api/tags | python3 -m json.tool
 # Recent request traces — see latency, tokens, which node handled each request
 curl -s "http://localhost:11435/dashboard/api/traces?limit=10" | python3 -m json.tool
 
-# Fleet health — 15 automated checks
+# Fleet health — 16 automated checks
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 ```
 

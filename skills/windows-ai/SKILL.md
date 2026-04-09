@@ -99,7 +99,7 @@ curl http://localhost:11435/api/chat -d '{
 ## Windows AI features
 
 - **7-signal scoring** — picks the best Windows PC for every AI request
-- **15 health checks** — monitors all Windows AI nodes in real-time
+- **16 health checks** — monitors all Windows AI nodes in real-time
 - **Auto-retry** — transparent failover between Windows AI machines
 - **vRAM-aware routing** — knows which Windows GPU has room for the model
 - **Request tagging** — track per-project Windows AI usage

@@ -157,7 +157,7 @@ sudo firewall-cmd --add-port=11435/tcp --permanent && sudo firewall-cmd --reload
 # Linux AI server fleet status
 curl -s http://localhost:11435/fleet/status | python3 -m json.tool
 
-# Linux AI server health — 15 automated checks
+# Linux AI server health — 16 automated checks
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 
 # Linux AI server traces — recent requests

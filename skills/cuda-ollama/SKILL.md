@@ -111,7 +111,7 @@ curl http://localhost:11435/v1/chat/completions \
 # NVIDIA CUDA fleet status
 curl -s http://localhost:11435/fleet/status | python3 -m json.tool
 
-# CUDA GPU health — 15 automated checks
+# CUDA GPU health — 16 automated checks
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 
 # Which CUDA models are loaded

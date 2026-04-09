@@ -98,6 +98,20 @@ Pre-warm proactively loads models on runner-up nodes before they're needed.
 | `FLEET_MAX_RETRIES` | `2` | Max retry attempts on node failure (before first chunk) |
 | `FLEET_STALE_TIMEOUT` | `600.0` | Seconds before in-flight requests are considered zombied and reaped (10 min) |
 
+### Dynamic Context Management
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_DYNAMIC_NUM_CTX` | `false` | Enable dynamic num_ctx injection on requests. When enabled, the router injects per-model num_ctx overrides to reduce KV cache waste |
+| `FLEET_NUM_CTX_AUTO_CALCULATE` | `false` | Auto-calculate optimal num_ctx from trace data. The context optimizer analyzes p99 total token usage (prompt + completion) and updates overrides every 5 minutes |
+
+Per-model overrides are set at runtime via `POST /dashboard/api/settings` with `{"num_ctx_overrides": {"model-name": 16384}}`. When `dynamic_num_ctx` is enabled and `num_ctx_auto_calculate` is true, the optimizer auto-initializes overrides from 7-day trace history on startup.
+
+**Tuning guidance:**
+- Enable `FLEET_DYNAMIC_NUM_CTX` when a model's allocated context far exceeds actual usage (check `/dashboard/api/context-usage`)
+- The recommended context is p99 of total tokens (prompt + completion) with 50% headroom, rounded to next power of 2
+- Overrides only affect cold loads — already-loaded models keep their current context until Ollama restarts
+
 ### Image Generation
 
 | Variable | Default | Description |

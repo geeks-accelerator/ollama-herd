@@ -986,6 +986,98 @@ Save benchmark results from the benchmark script.
 
 ---
 
+#### `POST /dashboard/api/benchmarks/start`
+
+Start a benchmark run from the dashboard. Supports default (loaded models only) and smart mode (fill memory with recommended models first).
+
+**Request body:**
+
+```json
+{
+  "mode": "smart",
+  "duration": 300,
+  "model_types": ["llm", "embed", "image"]
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `mode` | string | `"default"` | `"default"` (loaded models) or `"smart"` (fill memory first) |
+| `duration` | float | `300` | Benchmark duration in seconds |
+| `model_types` | array | `["llm"]` | Types to benchmark: `"llm"`, `"embed"`, `"image"` |
+
+**Response:** `{"status": "started", "run_id": "bench-...", "mode": "smart", "duration": 300, "model_types": ["llm", "embed", "image"]}`
+
+**Error:** `409` if a benchmark is already running.
+
+---
+
+#### `GET /dashboard/api/benchmarks/progress`
+
+Get current benchmark status and progress. Poll every 2 seconds during a run.
+
+**Response:**
+
+```json
+{
+  "status": "running",
+  "phase": "Running 300s benchmark (embed, image, llm)...",
+  "elapsed": 45.2,
+  "duration": 300,
+  "requests_completed": 1250,
+  "requests_failed": 0,
+  "tok_per_sec": 85.3,
+  "models": ["gpt-oss:120b", "nomic-embed-text:latest", "z-image-turbo"],
+  "models_pulled": ["codestral:22b", "llama3.2:1b"],
+  "pull_progress": {},
+  "error": null,
+  "run_id": "bench-..."
+}
+```
+
+Status values: `idle`, `pulling`, `warming_up`, `running`, `complete`, `error`, `cancelled`.
+
+During pull phase, `pull_progress` includes: `model`, `node_id`, `current`, `total`, `ram_gb`, `on_disk`, `pct`, `completed_gb`, `total_gb`.
+
+---
+
+#### `POST /dashboard/api/benchmarks/cancel`
+
+Cancel a running benchmark.
+
+**Response:** `{"status": "cancelled"}` or `{"status": "not_running"}`.
+
+---
+
+#### `GET /dashboard/api/context-usage`
+
+Per-model context usage analysis — actual vs allocated context sizes.
+
+**Query params:** `days` (default: 7) — lookback window for trace analysis.
+
+**Response:**
+
+```json
+{
+  "days": 7,
+  "models": [
+    {
+      "model": "gpt-oss:120b",
+      "allocated_ctx": 131072,
+      "override_ctx": 16384,
+      "request_count": 67234,
+      "prompt_tokens": {"avg": 1288, "p50": 833, "p75": 1322, "p95": 3706, "p99": 4797, "max": 10938},
+      "total_tokens": {"p95": 4120, "p99": 5409, "max": 34721, "max_24h": 8675},
+      "utilization_pct": 4.1,
+      "recommended_ctx": 16384,
+      "savings_pct": 87.5
+    }
+  ]
+}
+```
+
+---
+
 ### `GET /dashboard/api/recommendations`
 
 Model mix recommendations for the fleet based on hardware, usage patterns, and curated benchmark data. Results are cached for 5 minutes.

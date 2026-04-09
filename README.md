@@ -335,7 +335,7 @@ The built-in dashboard at `/dashboard` provides eight views:
 - **Model Insights** — per-model comparison of latency, tokens/sec, and usage; token distribution doughnut chart; clickable rows for daily breakdown
 - **Apps** — per-tag analytics with request volume, latency, tokens, error rates, and daily trends; tag your requests to see per-application breakdowns
 - **Benchmarks** — capacity growth over time with per-run throughput, latency percentiles, per-model and per-node breakdowns
-- **Health** — fleet health analysis with 15 automated checks (offline nodes, memory pressure, thrashing, timeouts, error rates, client disconnects, incomplete streams, version mismatch, context protection, zombie reaper)
+- **Health** — fleet health analysis with 16 automated checks (offline nodes, memory pressure, context waste, thrashing, timeouts, error rates, client disconnects, incomplete streams, version mismatch, context protection, zombie reaper)
 - **Recommendations** — AI-powered model mix recommendations per node based on hardware, usage patterns, and curated benchmark data; select which models to pull and download them directly from the dashboard
 - **Settings** — runtime toggle switches for auto-pull and VRAM fallback, read-only config tables grouped by category, and node list with version tracking and Router badge
 
@@ -378,6 +378,10 @@ See [Operations Guide](docs/operations-guide.md) for log queries, trace access, 
 | `GET /dashboard/api/traces` | Recent request traces (JSON) |
 | `GET /dashboard/api/benchmarks` | Benchmark run history (JSON) |
 | `POST /dashboard/api/benchmarks` | Save benchmark results (JSON) |
+| `POST /dashboard/api/benchmarks/start` | Start benchmark — default or smart mode (JSON) |
+| `GET /dashboard/api/benchmarks/progress` | Benchmark progress with live tok/s (JSON) |
+| `POST /dashboard/api/benchmarks/cancel` | Cancel running benchmark (JSON) |
+| `GET /dashboard/api/context-usage` | Per-model context usage vs allocated (JSON) |
 | `GET /dashboard/api/health` | Fleet health analysis (JSON) |
 | `GET /dashboard/api/recommendations` | Model mix recommendations per node (JSON, cached 5m) |
 | `POST /dashboard/api/pull` | Pull a model onto a specific node |

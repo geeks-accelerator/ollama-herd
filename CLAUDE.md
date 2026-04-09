@@ -92,9 +92,12 @@ macOS-only features (gracefully disabled on other platforms): meeting detection,
 | `server/streaming.py` | httpx proxy to Ollama + format conversion (NDJSON ↔ SSE) + auto-retry + context-size protection + thinking model auto-inflate + X-Thinking-* headers |
 | `server/latency_store.py` | aiosqlite persistence at `~/.fleet-manager/latency.db` |
 | `server/trace_store.py` | Per-request trace log + usage stats + benchmark results + timeout detection in SQLite |
-| `server/health_engine.py` | Fleet health analysis: 15 checks (offline, degraded, memory pressure, underutilized, VRAM fallbacks, KV cache bloat, thrashing, timeouts, error rates, retries, client disconnects, incomplete streams, version mismatch, context protection, zombie reaper) |
+| `server/health_engine.py` | Fleet health analysis: 16 checks (offline, degraded, memory pressure, underutilized, VRAM fallbacks, KV cache bloat, context waste, thrashing, timeouts, error rates, retries, client disconnects, incomplete streams, version mismatch, context protection, zombie reaper) |
 | `server/model_knowledge.py` | Curated catalog of 30+ Ollama models with benchmarks, RAM requirements, category classifications, and thinking model detection (`is_thinking_model()`) |
 | `server/model_recommender.py` | Analyzes fleet hardware + usage patterns to recommend optimal model mix per node |
+| `server/benchmark_engine.py` | Core benchmark logic: fleet discovery, concurrent request generation, report building (shared by CLI + server) |
+| `server/benchmark_runner.py` | Server-side benchmark runner with smart mode (fill memory with recommended models), progress tracking, model type selection |
+| `server/context_optimizer.py` | Dynamic num_ctx management: analyzes actual token usage, auto-calculates optimal context sizes, queues Ollama restarts via heartbeat commands |
 | `server/routes/routing.py` | Shared scoring logic with model fallback + holding queue + auto-pull + tag extraction |
 | `server/rebalancer.py` | Background queue rebalancer + pre-warm trigger |
 | `server/routes/openai_compat.py` | `/v1/chat/completions`, `/v1/models`, `/v1/images/generations` |
@@ -127,7 +130,7 @@ macOS-only features (gracefully disabled on other platforms): meeting detection,
 
 ### Configuration
 
-All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix (node). See [`docs/configuration-reference.md`](docs/configuration-reference.md) for the complete 44+ variable reference.
+All settings via env vars with `FLEET_` prefix (server) or `FLEET_NODE_` prefix (node). See [`docs/configuration-reference.md`](docs/configuration-reference.md) for the complete 47+ variable reference.
 
 ## Documentation
 

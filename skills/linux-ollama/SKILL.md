@@ -164,7 +164,7 @@ sudo iptables -A INPUT -p tcp --dport 11435 -j ACCEPT
 # Linux Ollama fleet status
 curl -s http://localhost:11435/fleet/status | python3 -m json.tool
 
-# Linux Ollama health — 15 automated checks
+# Linux Ollama health — 16 automated checks
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 
 # Models on Linux Ollama nodes

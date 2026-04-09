@@ -269,7 +269,7 @@ launchctl setenv OLLAMA_NUM_PARALLEL 2
 
 ---
 
-### 21. Dynamic `num_ctx` Management Based on Actual Usage `OPEN`
+### 21. Dynamic `num_ctx` Management Based on Actual Usage `PARTIAL`
 
 **Severity:** Medium
 **Files:** New module + `server/streaming.py`, `server/routes/dashboard.py` (settings)
