@@ -120,11 +120,13 @@ class LatencyStore:
 
     # -- Dashboard query methods --
 
-    async def get_hourly_trends(self, hours: int = 72) -> list[dict]:
+    async def get_hourly_trends(
+        self, hours: int = 72, start_ts: float = 0, end_ts: float = 0,
+    ) -> list[dict]:
         """Aggregate request count, avg latency, and token sums per hour."""
         if not self._db:
             return []
-        cutoff = time.time() - (hours * 3600)
+        cutoff = start_ts if start_ts and end_ts else time.time() - hours * 3600
         cursor = await self._db.execute(
             """
             SELECT
@@ -134,11 +136,11 @@ class LatencyStore:
                 SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
                 SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens
             FROM latency_observations
-            WHERE timestamp >= ?
+            WHERE timestamp >= ? AND timestamp <= ?
             GROUP BY hour_bucket
             ORDER BY hour_bucket
             """,
-            (cutoff,),
+            (cutoff, end_ts if end_ts else time.time()),
         )
         rows = await cursor.fetchall()
         return [
@@ -152,11 +154,13 @@ class LatencyStore:
             for row in rows
         ]
 
-    async def get_model_daily_stats(self, days: int = 7) -> list[dict]:
+    async def get_model_daily_stats(
+        self, days: int = 7, start_ts: float = 0, end_ts: float = 0,
+    ) -> list[dict]:
         """Per-model, per-day aggregated stats."""
         if not self._db:
             return []
-        cutoff = time.time() - (days * 86400)
+        cutoff = start_ts if start_ts and end_ts else time.time() - days * 86400
         cursor = await self._db.execute(
             """
             SELECT
@@ -167,11 +171,11 @@ class LatencyStore:
                 SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
                 SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens
             FROM latency_observations
-            WHERE timestamp >= ?
+            WHERE timestamp >= ? AND timestamp <= ?
             GROUP BY model_name, day_bucket
             ORDER BY model_name, day_bucket
             """,
-            (cutoff,),
+            (cutoff, end_ts if end_ts else time.time()),
         )
         rows = await cursor.fetchall()
         return [

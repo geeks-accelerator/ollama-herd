@@ -168,22 +168,30 @@ async def dashboard_events(request: Request):
 
 
 @router.get("/dashboard/api/trends")
-async def dashboard_trends_data(request: Request, hours: int = 72):
+async def dashboard_trends_data(
+    request: Request, hours: int = 72, start_ts: float = 0, end_ts: float = 0,
+):
     """Hourly aggregated request counts and latencies for the trends chart."""
     latency_store = getattr(request.app.state, "latency_store", None)
     if not latency_store:
         return {"hours": hours, "data": []}
-    data = await latency_store.get_hourly_trends(hours=hours)
+    data = await latency_store.get_hourly_trends(
+        hours=hours, start_ts=start_ts, end_ts=end_ts,
+    )
     return {"hours": hours, "data": data}
 
 
 @router.get("/dashboard/api/models")
-async def dashboard_models_data(request: Request, days: int = 7):
+async def dashboard_models_data(
+    request: Request, days: int = 7, start_ts: float = 0, end_ts: float = 0,
+):
     """Per-model daily aggregated stats for the model insights page."""
     latency_store = getattr(request.app.state, "latency_store", None)
     if not latency_store:
         return {"days": days, "daily": [], "summary": []}
-    daily = await latency_store.get_model_daily_stats(days=days)
+    daily = await latency_store.get_model_daily_stats(
+        days=days, start_ts=start_ts, end_ts=end_ts,
+    )
     summary = await latency_store.get_model_summary()
     return {"days": days, "daily": daily, "summary": summary}
 
@@ -234,23 +242,31 @@ async def dashboard_traces(request: Request, limit: int = 50):
 
 
 @router.get("/dashboard/api/apps")
-async def dashboard_apps_data(request: Request, days: int = 7):
+async def dashboard_apps_data(
+    request: Request, days: int = 7, start_ts: float = 0, end_ts: float = 0,
+):
     """Per-tag aggregated stats for the Apps analytics page."""
     trace_store = getattr(request.app.state, "trace_store", None)
     if not trace_store:
         return {"days": days, "data": [], "summary": []}
-    data = await trace_store.get_usage_by_tag(days=days)
+    data = await trace_store.get_usage_by_tag(
+        days=days, start_ts=start_ts, end_ts=end_ts,
+    )
     summary = await trace_store.get_tag_summary()
     return {"days": days, "data": data, "summary": summary}
 
 
 @router.get("/dashboard/api/apps/daily")
-async def dashboard_apps_daily_data(request: Request, days: int = 7):
+async def dashboard_apps_daily_data(
+    request: Request, days: int = 7, start_ts: float = 0, end_ts: float = 0,
+):
     """Per-tag, per-day breakdown for the Apps analytics charts."""
     trace_store = getattr(request.app.state, "trace_store", None)
     if not trace_store:
         return {"days": days, "data": []}
-    data = await trace_store.get_tag_daily_stats(days=days)
+    data = await trace_store.get_tag_daily_stats(
+        days=days, start_ts=start_ts, end_ts=end_ts,
+    )
     return {"days": days, "data": data}
 
 
@@ -1373,6 +1389,15 @@ body {
   .header-stats { display: none; }
   .summary-cards { grid-template-columns: 1fr 1fr; }
 }
+.time-range { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:16px; }
+.tr-btn { padding:5px 14px; border-radius:6px; font-size:12px; font-weight:500; background:var(--card); border:1px solid var(--border); color:var(--text-dim); cursor:pointer; transition:all 0.15s; }
+.tr-btn:hover { color:var(--text); border-color:var(--accent); }
+.tr-btn.active { color:var(--accent); background:rgba(108,99,255,0.15); border-color:var(--accent); }
+.tr-custom { display:flex; align-items:center; gap:8px; margin-left:8px; }
+.tr-custom input { background:var(--card); border:1px solid var(--border); border-radius:6px; padding:4px 8px; color:var(--text); font-size:12px; }
+.tr-custom span { color:var(--text-dim); font-size:12px; }
+.tr-apply { padding:4px 12px; border-radius:6px; font-size:12px; background:var(--accent); color:#fff; border:none; cursor:pointer; }
+.tr-apply:hover { opacity:0.85; }
 """
 
 
@@ -1406,6 +1431,55 @@ function barColor(pct) {{
   var s = 71 + (pct / 100) * 13;
   var l = 45 + (pct / 100) * 15;
   return 'hsl(' + h + ',' + s + '%,' + l + '%)';
+}}
+function initTimeRange(containerId, callback, defaultRange) {{
+  var c = document.getElementById(containerId);
+  if (!c) return;
+  var presets = {{
+    '24h': 24*3600, '48h': 48*3600, '72h': 72*3600,
+    '7d': 7*86400, '30d': 30*86400
+  }};
+  var def = defaultRange || '7d';
+  var html = '<div class="time-range">';
+  ['24h','48h','72h','7d','30d'].forEach(function(r) {{
+    html += '<button class="tr-btn' + (r===def?' active':'') + '" data-range="' + r + '">' + r + '</button>';
+  }});
+  html += '<button class="tr-btn" data-range="custom">Custom</button>';
+  html += '<div class="tr-custom" id="' + containerId + '-custom" style="display:none">';
+  html += '<input type="datetime-local" id="' + containerId + '-start">';
+  html += '<span>to</span>';
+  html += '<input type="datetime-local" id="' + containerId + '-end">';
+  html += '<button class="tr-apply" id="' + containerId + '-apply">Apply</button>';
+  html += '</div></div>';
+  c.innerHTML = html;
+  function firePreset(range) {{
+    var now = Date.now() / 1000;
+    callback(now - presets[range], now);
+  }}
+  c.querySelectorAll('.tr-btn').forEach(function(btn) {{
+    btn.addEventListener('click', function() {{
+      c.querySelectorAll('.tr-btn').forEach(function(b) {{ b.classList.remove('active'); }});
+      btn.classList.add('active');
+      var range = btn.dataset.range;
+      var customEl = document.getElementById(containerId + '-custom');
+      if (range === 'custom') {{
+        customEl.style.display = 'flex';
+        var now = new Date();
+        var start = new Date(now.getTime() - 7*86400000);
+        document.getElementById(containerId + '-end').value = now.toISOString().slice(0,16);
+        document.getElementById(containerId + '-start').value = start.toISOString().slice(0,16);
+      }} else {{
+        customEl.style.display = 'none';
+        firePreset(range);
+      }}
+    }});
+  }});
+  document.getElementById(containerId + '-apply')?.addEventListener('click', function() {{
+    var s = new Date(document.getElementById(containerId + '-start').value).getTime() / 1000;
+    var e = new Date(document.getElementById(containerId + '-end').value).getTime() / 1000;
+    if (s && e && e > s) callback(s, e);
+  }});
+  firePreset(def);
 }}
 </script>
 {extra_head}
@@ -1790,12 +1864,7 @@ _TRENDS_BODY = """
   <div class="summary-cards" id="summary-cards"></div>
 
   <div>
-    <div class="time-range" id="time-range">
-      <button class="time-btn" data-hours="24">24h</button>
-      <button class="time-btn" data-hours="48">48h</button>
-      <button class="time-btn active" data-hours="72">72h</button>
-      <button class="time-btn" data-hours="168">7d</button>
-    </div>
+    <div id="trends-time-range"></div>
 
     <div class="charts-row">
       <div class="chart-card">
@@ -1850,9 +1919,9 @@ function fmtTime(ts) {
   return d.toLocaleDateString([], {month:'short',day:'numeric'}) + ' ' + d.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
 }
 
-async function loadTrends(hours) {
+async function loadTrends(startTs, endTs) {
   const [trendsResp, overviewResp] = await Promise.all([
-    fetch('/dashboard/api/trends?hours=' + hours),
+    fetch('/dashboard/api/trends?start_ts=' + startTs + '&end_ts=' + endTs),
     fetch('/dashboard/api/overview'),
   ]);
   const trends = await trendsResp.json();
@@ -1908,24 +1977,15 @@ async function loadTrends(hours) {
   });
 }
 
-// Time range buttons
-document.getElementById('time-range').addEventListener('click', (e) => {
-  if (!e.target.classList.contains('time-btn')) return;
-  document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
-  e.target.classList.add('active');
-  loadTrends(parseInt(e.target.dataset.hours));
-});
+// Init time range and load
+initTimeRange('trends-time-range', loadTrends, '72h');
 
-// Connection status (no SSE on this page, just static)
-// Footer may not be parsed yet; defer until DOM ready.
 window.addEventListener('DOMContentLoaded', () => {
   const dot = document.getElementById('sse-dot');
   const st = document.getElementById('sse-status');
   if (dot) dot.className = 'status-dot online';
   if (st) st.textContent = 'API';
 });
-
-loadTrends(72);
 </script>
 """
 
@@ -1935,6 +1995,7 @@ loadTrends(72);
 
 _MODELS_BODY = """
 <div class="main">
+  <div id="models-time-range"></div>
   <div class="summary-cards" id="model-summary-cards"></div>
 
   <div class="charts-row">
@@ -2021,8 +2082,13 @@ function fmtDay(ts) {
   return new Date(ts * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-async function loadModels() {
-  const resp = await fetch('/dashboard/api/models?days=7');
+var _modelsStartTs = 0, _modelsEndTs = 0;
+async function loadModels(startTs, endTs) {
+  if (startTs) _modelsStartTs = startTs;
+  if (endTs) _modelsEndTs = endTs;
+  var url = '/dashboard/api/models?days=7';
+  if (_modelsStartTs && _modelsEndTs) url = '/dashboard/api/models?start_ts=' + _modelsStartTs + '&end_ts=' + _modelsEndTs;
+  const resp = await fetch(url);
   const data = await resp.json();
   const summary = data.summary;
   allDaily = data.daily;
@@ -2144,7 +2210,7 @@ window.addEventListener('DOMContentLoaded', () => {
   if (st) st.textContent = 'API';
 });
 
-loadModels();
+initTimeRange('models-time-range', loadModels, '7d');
 </script>
 """
 
@@ -2155,6 +2221,7 @@ loadModels();
 
 _APPS_BODY = """
 <div class="main">
+  <div id="apps-time-range"></div>
   <div class="summary-cards" id="apps-summary-cards">
     <div class="card summary-card">
       <div class="card-label">Tagged Requests</div>
@@ -2260,10 +2327,14 @@ let barChart, dailyChart, dailyReqChart, dailyLatChart;
 
 function fmtMs(ms) { return ms > 1000 ? (ms/1000).toFixed(1) + 's' : Math.round(ms) + 'ms'; }
 
-async function loadApps() {
+var _appsStartTs = 0, _appsEndTs = 0;
+async function loadApps(startTs, endTs) {
+  if (startTs) _appsStartTs = startTs;
+  if (endTs) _appsEndTs = endTs;
+  var qs = _appsStartTs && _appsEndTs ? 'start_ts=' + _appsStartTs + '&end_ts=' + _appsEndTs : 'days=7';
   const [appsRes, dailyRes] = await Promise.all([
-    fetch('/dashboard/api/apps?days=7'),
-    fetch('/dashboard/api/apps/daily?days=7'),
+    fetch('/dashboard/api/apps?' + qs),
+    fetch('/dashboard/api/apps/daily?' + qs),
   ]);
   const apps = await appsRes.json();
   const daily = await dailyRes.json();
@@ -2366,7 +2437,7 @@ window.addEventListener('DOMContentLoaded', () => {
   if (st) st.textContent = 'API';
 });
 
-loadApps();
+initTimeRange('apps-time-range', loadApps, '7d');
 </script>
 """
 

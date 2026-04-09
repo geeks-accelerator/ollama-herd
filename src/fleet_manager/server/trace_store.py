@@ -366,11 +366,13 @@ class TraceStore:
 
     # -- Tag analytics queries --
 
-    async def get_usage_by_tag(self, days: int = 7) -> list[dict]:
+    async def get_usage_by_tag(
+        self, days: int = 7, start_ts: float = 0, end_ts: float = 0,
+    ) -> list[dict]:
         """Per-tag aggregated stats using SQLite json_each() to explode tags."""
         if not self._db:
             return []
-        cutoff = time.time() - (days * 86400)
+        cutoff = start_ts if start_ts and end_ts else time.time() - days * 86400
         cursor = await self._db.execute(
             """
             SELECT
@@ -383,11 +385,11 @@ class TraceStore:
                 SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
                 SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens
             FROM request_traces, json_each(request_traces.tags) AS j
-            WHERE timestamp >= ? AND tags IS NOT NULL
+            WHERE timestamp >= ? AND timestamp <= ? AND tags IS NOT NULL
             GROUP BY j.value
             ORDER BY request_count DESC
             """,
-            (cutoff,),
+            (cutoff, end_ts if end_ts else time.time()),
         )
         rows = await cursor.fetchall()
         return [
@@ -404,11 +406,13 @@ class TraceStore:
             for row in rows
         ]
 
-    async def get_tag_daily_stats(self, days: int = 7) -> list[dict]:
+    async def get_tag_daily_stats(
+        self, days: int = 7, start_ts: float = 0, end_ts: float = 0,
+    ) -> list[dict]:
         """Per-tag, per-day breakdown for charting."""
         if not self._db:
             return []
-        cutoff = time.time() - (days * 86400)
+        cutoff = start_ts if start_ts and end_ts else time.time() - days * 86400
         cursor = await self._db.execute(
             """
             SELECT
@@ -418,11 +422,11 @@ class TraceStore:
                 AVG(latency_ms) AS avg_latency_ms,
                 SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)) AS total_tokens
             FROM request_traces, json_each(request_traces.tags) AS j
-            WHERE timestamp >= ? AND tags IS NOT NULL
+            WHERE timestamp >= ? AND timestamp <= ? AND tags IS NOT NULL
             GROUP BY j.value, day_bucket
             ORDER BY day_bucket ASC, tag
             """,
-            (cutoff,),
+            (cutoff, end_ts if end_ts else time.time()),
         )
         rows = await cursor.fetchall()
         return [
