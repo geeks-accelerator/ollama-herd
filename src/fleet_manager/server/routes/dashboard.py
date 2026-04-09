@@ -275,16 +275,6 @@ async def get_benchmarks(request: Request, limit: int = 50):
     return {"data": data}
 
 
-@router.get("/dashboard/api/benchmarks/{run_id}")
-async def get_benchmark_detail(request: Request, run_id: str):
-    """Get a single benchmark run detail."""
-    trace_store = getattr(request.app.state, "trace_store", None)
-    if not trace_store:
-        return {"data": None}
-    data = await trace_store.get_benchmark_run(run_id)
-    return {"data": data}
-
-
 @router.post("/dashboard/api/benchmarks/start")
 async def start_benchmark(request: Request):
     """Start a benchmark run. Mode: 'default' or 'smart'."""
@@ -335,6 +325,16 @@ async def cancel_benchmark(request: Request):
         return {"status": "not_running"}
     runner.cancel()
     return {"status": "cancelled"}
+
+
+@router.get("/dashboard/api/benchmarks/{run_id}")
+async def get_benchmark_detail(request: Request, run_id: str):
+    """Get a single benchmark run detail."""
+    trace_store = getattr(request.app.state, "trace_store", None)
+    if not trace_store:
+        return {"data": None}
+    data = await trace_store.get_benchmark_run(run_id)
+    return {"data": data}
 
 
 @router.get("/dashboard/api/health")
