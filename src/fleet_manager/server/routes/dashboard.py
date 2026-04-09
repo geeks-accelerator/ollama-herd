@@ -936,6 +936,19 @@ body {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 20px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.card-animate {
+  animation: fadeSlideIn 0.35s ease forwards;
+  opacity: 0;
 }
 .status-dot {
   display: inline-block;
@@ -1174,9 +1187,13 @@ _OVERVIEW_BODY = """
 .metric .label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
 .metric .value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .bar-container { height: 6px; background: var(--border); border-radius: 3px; margin-top: 6px; overflow: hidden; }
-.bar-fill { height: 100%; border-radius: 3px; transition: width 0.8s ease; }
-.bar-fill.cpu { background: var(--blue); }
-.bar-fill.mem { background: var(--accent); }
+.bar-fill { height: 100%; border-radius: 3px; transition: width 0.8s ease, background 0.5s ease; }
+.bar-fill.cpu { background: var(--green); }
+.bar-fill.cpu.moderate { background: var(--yellow); }
+.bar-fill.cpu.high { background: var(--orange); }
+.bar-fill.cpu.critical { background: var(--red); }
+.bar-fill.mem { background: var(--green); }
+.bar-fill.mem.moderate { background: var(--accent); }
 .bar-fill.mem.warn { background: var(--yellow); }
 .bar-fill.mem.critical { background: var(--red); }
 .models-list { margin-top: 12px; }
@@ -1185,7 +1202,14 @@ _OVERVIEW_BODY = """
   background: rgba(108,99,255,0.1); border: 1px solid rgba(108,99,255,0.2);
   border-radius: 6px; padding: 3px 10px; font-size: 12px;
   margin: 2px 4px 2px 0; font-variant-numeric: tabular-nums;
+  transition: box-shadow 0.3s ease;
 }
+.model-chip.embed { background: rgba(59,130,246,0.1); border-color: rgba(59,130,246,0.25); color: var(--blue); }
+.model-chip.image { background: rgba(249,115,22,0.1); border-color: rgba(249,115,22,0.25); color: var(--orange); }
+.model-chip.stt { background: rgba(34,197,94,0.1); border-color: rgba(34,197,94,0.25); color: var(--green); }
+.model-chip.hot { box-shadow: 0 0 6px rgba(108,99,255,0.3); }
+.model-chip.embed.hot { box-shadow: 0 0 6px rgba(59,130,246,0.3); }
+.model-chip.image.hot { box-shadow: 0 0 6px rgba(249,115,22,0.3); }
 .model-chip .size { color: var(--text-dim); font-size: 11px; }
 .queues-grid {
   display: grid;
@@ -1238,7 +1262,7 @@ function renderNodes(nodes) {
     return;
   }
   let totalModels = 0, onlineCount = 0;
-  container.innerHTML = nodes.map(node => {
+  container.innerHTML = nodes.map((node, idx) => {
     const status = node.status;
     if (status === 'online') onlineCount++;
     const cpu = node.cpu ? node.cpu.utilization_pct : 0;
@@ -1253,7 +1277,11 @@ function renderNodes(nodes) {
       ? models.map(m => {
           const meta = m.parameter_size ? m.parameter_size + (m.quantization ? ' ' + m.quantization : '') : formatGB(m.size_gb);
           const ctx = m.context_length ? ' · ' + (m.context_length >= 1024 ? Math.round(m.context_length/1024) + 'K ctx' : m.context_length + ' ctx') : '';
-          return `<span class="model-chip">${m.name} <span class="size">${meta}${ctx}</span></span>`;
+          const nm = m.name.toLowerCase();
+          const typeClass = (nm.includes('embed') || nm.includes('nomic') || nm.includes('bge')) ? 'embed'
+            : (nm.includes('image') || nm.includes('flux') || nm.includes('diffusion') || nm.startsWith('x/') || nm.startsWith('sd')) ? 'image'
+            : (nm.includes('asr') || nm.includes('whisper')) ? 'stt' : '';
+          return `<span class="model-chip ${typeClass} hot">${m.name} <span class="size">${meta}${ctx}</span></span>`;
         }).join('')
       : '<span style="color:var(--text-dim);font-size:12px">No models loaded</span>';
     // Capacity learner panel (only for nodes with adaptive capacity)
@@ -1295,7 +1323,7 @@ function renderNodes(nodes) {
         </div>`;
     }
     return `
-      <div class="card">
+      <div class="card card-animate" style="animation-delay:${idx * 60}ms">
         <div class="card-header">
           <h3><span class="status-dot ${status}"></span>${node.node_id}</h3>
           <span class="badge ${status}">${status}</span>
@@ -1304,12 +1332,12 @@ function renderNodes(nodes) {
           <div class="metric">
             <div class="label">CPU</div>
             <div class="value">${cpu.toFixed(1)}%</div>
-            <div class="bar-container"><div class="bar-fill cpu" style="width:${cpu}%"></div></div>
+            <div class="bar-container"><div class="bar-fill cpu ${cpu > 85 ? 'critical' : cpu > 60 ? 'high' : cpu > 35 ? 'moderate' : ''}" style="width:${cpu}%"></div></div>
           </div>
           <div class="metric">
             <div class="label">Memory (${pressure})</div>
             <div class="value">${formatGB(memUsed)} / ${formatGB(memTotal)}</div>
-            <div class="bar-container"><div class="bar-fill mem ${pressure}" style="width:${memPct}%"></div></div>
+            <div class="bar-container"><div class="bar-fill mem ${pressure === 'critical' ? 'critical' : pressure === 'warn' ? 'warn' : memPct > 70 ? 'moderate' : ''}" style="width:${memPct}%"></div></div>
           </div>
           <div class="metric">
             <div class="label">Cores</div>
@@ -2717,9 +2745,19 @@ checkRunningBenchmark();
 _HEALTH_BODY = """
 <style>
 .health-header { display:flex; align-items:center; gap:20px; margin-bottom:24px; }
-.health-score { width:80px; height:80px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:28px; font-weight:700; border:3px solid var(--green); color:var(--green); }
-.health-score.warning { border-color:var(--yellow); color:var(--yellow); }
-.health-score.critical { border-color:var(--red); color:var(--red); }
+.health-score {
+  width:88px; height:88px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+  font-size:28px; font-weight:700; color:var(--green); position:relative;
+  background: conic-gradient(var(--green) var(--score-pct, 0%), var(--border) var(--score-pct, 0%));
+  transition: --score-pct 1s ease;
+}
+.health-score::before {
+  content:''; position:absolute; inset:4px; border-radius:50%; background:var(--card);
+}
+.health-score span { position:relative; z-index:1; }
+.health-score.warning { color:var(--yellow); background: conic-gradient(var(--yellow) var(--score-pct, 0%), var(--border) var(--score-pct, 0%)); }
+.health-score.critical { color:var(--red); background: conic-gradient(var(--red) var(--score-pct, 0%), var(--border) var(--score-pct, 0%)); }
+@property --score-pct { syntax: '<percentage>'; inherits: false; initial-value: 0%; }
 .health-title { font-size:20px; font-weight:600; }
 .health-subtitle { font-size:13px; color:var(--text-dim); margin-top:4px; }
 .vitals-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:12px; margin-bottom:24px; }
@@ -2750,7 +2788,7 @@ _HEALTH_BODY = """
 
 <div class="main">
   <div class="health-header" id="health-header">
-    <div class="health-score" id="health-score">--</div>
+    <div class="health-score" id="health-score"><span>--</span></div>
     <div>
       <div class="health-title" id="health-title">Analyzing fleet health...</div>
       <div class="health-subtitle" id="health-subtitle">Checking nodes, traces, and configuration</div>
@@ -2780,8 +2818,12 @@ function renderHealth(report) {
   const recs = report.recommendations || [];
 
   const scoreEl = document.getElementById('health-score');
-  scoreEl.textContent = v.health_score;
+  scoreEl.innerHTML = '<span>' + v.health_score + '</span>';
   scoreEl.className = 'health-score ' + scoreClass(v.health_score);
+  // Animate the conic-gradient ring — delay so browser sees 0% first
+  requestAnimationFrame(() => {
+    scoreEl.style.setProperty('--score-pct', v.health_score + '%');
+  });
 
   const titleEl = document.getElementById('health-title');
   const subtitleEl = document.getElementById('health-subtitle');
