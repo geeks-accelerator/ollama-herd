@@ -536,12 +536,12 @@ async def _generate_briefing(request) -> dict:
 - {traffic_summary}
 - {context_summary}
 
-Provide a brief fleet intelligence briefing (3-4 bullet points). Rules:
-1. Only include actionable items — things the operator can DO right now
-2. Each bullet must include a specific action ("run X", "set Y=Z", "add a node")
-3. Skip vague suggestions like "consider consolidating" or "re-allocate memory"
-4. Include specific numbers from the data above
-5. If everything looks healthy, say so in one line — don't invent problems"""
+Provide a high-level fleet summary (2-3 short bullet points). Rules:
+1. Summarize the overall state — don't repeat specific numbers from the data
+2. Point to the right dashboard page for details: "See Health page", "See Recommendations", "See Settings > Context Management"
+3. If there are issues, mention the category (health, context, capacity) and which page has details
+4. If everything is healthy, say so in one sentence — don't invent problems
+5. Keep it brief — this is a summary with signposts, not a detailed report"""
 
     # Internal LLM call via httpx
     import httpx
