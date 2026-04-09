@@ -19,7 +19,11 @@ from fleet_manager.server.benchmark_engine import (
     NodeInfo,
     RequestResult,
     build_report,
+    discover_embed_models,
     discover_fleet,
+    discover_image_models,
+    embed_worker,
+    image_worker,
     poll_fleet_status,
     warmup,
     worker,
@@ -80,12 +84,17 @@ class BenchmarkRunner:
         self,
         mode: str = "default",
         duration: float = 300,
+        model_types: list[str] | None = None,
         registry=None,
         trace_store=None,
         streaming_proxy=None,
         scorer=None,
     ):
-        """Launch benchmark in a background task. Returns run_id."""
+        """Launch benchmark in a background task. Returns run_id.
+
+        model_types: list of types to benchmark. Default: ["llm"].
+        Options: "llm", "embed", "image".
+        """
         if self.is_running:
             raise RuntimeError("Benchmark already running")
 
@@ -102,11 +111,13 @@ class BenchmarkRunner:
         self._stop_event = asyncio.Event()
         self._duration = duration
         self._start_time = time.time()
+        self._model_types = model_types or ["llm"]
 
         self._task = asyncio.create_task(
             self._run(
                 mode=mode,
                 duration=duration,
+                model_types=self._model_types,
                 registry=registry,
                 trace_store=trace_store,
                 streaming_proxy=streaming_proxy,
@@ -126,6 +137,7 @@ class BenchmarkRunner:
         self,
         mode: str,
         duration: float,
+        model_types: list[str],
         registry,
         trace_store,
         streaming_proxy,
@@ -150,49 +162,99 @@ class BenchmarkRunner:
                 # Discover fleet (includes any newly loaded models)
                 self._status = "warming_up"
                 self._phase = "Discovering fleet..."
-                targets, nodes_info = await discover_fleet(client)
 
-                if not targets:
+                all_targets: list[ModelTarget] = []
+                nodes_info: list[NodeInfo] = []
+
+                # Discover LLM models
+                if "llm" in model_types:
+                    targets, nodes_info = await discover_fleet(client)
+                    all_targets.extend(targets)
+
+                # Discover embedding models
+                if "embed" in model_types:
+                    embed_targets = await discover_embed_models(client)
+                    all_targets.extend(embed_targets)
+
+                # Discover image models
+                if "image" in model_types:
+                    image_targets = await discover_image_models(client)
+                    all_targets.extend(image_targets)
+
+                if not all_targets:
                     self._status = "error"
-                    self._error = "No loaded models found on any online node"
+                    self._error = "No models found for selected types"
                     return
 
-                self._targets = targets
+                # Get nodes_info if we didn't discover LLM (need it for report)
+                if not nodes_info:
+                    try:
+                        resp = await client.get("/fleet/status")
+                        if resp.status_code == 200:
+                            for node in resp.json().get("nodes", []):
+                                if node.get("status") == "online":
+                                    nodes_info.append(NodeInfo(
+                                        node_id=node["node_id"],
+                                        cores=node.get("cpu", {}).get("cores_physical", 0),
+                                        memory_total_gb=node.get("memory", {}).get("total_gb", 0),
+                                        memory_used_gb=node.get("memory", {}).get("used_gb", 0),
+                                        memory_available_gb=node.get("memory", {}).get(
+                                            "available_gb", 0
+                                        ),
+                                    ))
+                    except Exception:
+                        pass
+
+                self._targets = all_targets
                 self._nodes_info = nodes_info
 
-                # Warmup
-                self._phase = "Warming up models..."
-                targets = await warmup(
-                    client, targets,
-                    log_fn=lambda msg: logger.info(f"Benchmark warmup: {msg}"),
-                )
-                if not targets:
+                # Warmup LLM models only (embed/image don't need warmup)
+                llm_targets = [t for t in all_targets if t.model_type == "llm"]
+                other_targets = [t for t in all_targets if t.model_type != "llm"]
+
+                if llm_targets:
+                    self._phase = "Warming up LLM models..."
+                    llm_targets = await warmup(
+                        client, llm_targets,
+                        log_fn=lambda msg: logger.info(f"Benchmark warmup: {msg}"),
+                    )
+
+                all_targets = llm_targets + other_targets
+                if not all_targets:
                     self._status = "error"
                     self._error = "All models failed warmup"
                     return
 
-                self._targets = targets
+                self._targets = all_targets
 
                 if self._stop_event.is_set():
                     return
 
                 # Run benchmark
+                type_summary = ", ".join(sorted(set(t.model_type for t in all_targets)))
                 self._status = "running"
-                self._phase = f"Running {duration:.0f}s benchmark..."
+                self._phase = f"Running {duration:.0f}s benchmark ({type_summary})..."
                 self._start_time = time.time()  # Reset for accurate elapsed
                 self._results = []
 
                 fleet_snapshots: list[dict] = []
 
-                # Create worker tasks
+                # Create worker tasks — use appropriate worker per model type
                 tasks = []
-                for target in targets:
+                for target in all_targets:
                     for _ in range(target.concurrency):
-                        tasks.append(
-                            asyncio.create_task(
+                        if target.model_type == "embed":
+                            tasks.append(asyncio.create_task(
+                                embed_worker(client, target.name, self._results, self._stop_event)
+                            ))
+                        elif target.model_type == "image":
+                            tasks.append(asyncio.create_task(
+                                image_worker(client, target.name, self._results, self._stop_event)
+                            ))
+                        else:
+                            tasks.append(asyncio.create_task(
                                 worker(client, target.name, self._results, self._stop_event)
-                            )
-                        )
+                            ))
 
                 # Fleet status poller
                 poller_task = asyncio.create_task(

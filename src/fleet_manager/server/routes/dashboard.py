@@ -283,6 +283,7 @@ async def start_benchmark(request: Request):
     body = await request.json()
     mode = body.get("mode", "default")
     duration = body.get("duration", 300)
+    model_types = body.get("model_types", ["llm"])
 
     # Get or create runner on app state
     runner = getattr(request.app.state, "benchmark_runner", None)
@@ -300,12 +301,13 @@ async def start_benchmark(request: Request):
     run_id = await runner.start(
         mode=mode,
         duration=duration,
+        model_types=model_types,
         registry=request.app.state.registry,
         trace_store=getattr(request.app.state, "trace_store", None),
         streaming_proxy=request.app.state.streaming_proxy,
         scorer=request.app.state.scorer,
     )
-    return {"status": "started", "run_id": run_id, "mode": mode, "duration": duration}
+    return {"status": "started", "run_id": run_id, "mode": mode, "duration": duration, "model_types": model_types}
 
 
 @router.get("/dashboard/api/benchmarks/progress")
@@ -1945,6 +1947,13 @@ _BENCHMARKS_BODY = """
 .bench-cancel-btn { background:var(--border); color:var(--text); border:none; border-radius:6px; padding:8px 16px; cursor:pointer; font-size:13px; }
 .bench-start-btn { background:var(--accent); color:#fff; border:none; border-radius:6px; padding:8px 16px; cursor:pointer; font-size:13px; font-weight:500; }
 .bench-start-btn:hover { opacity:0.85; }
+.type-checks { margin:14px 0; }
+.type-checks label { font-size:12px; color:var(--text-dim); margin-bottom:6px; display:block; }
+.type-checks-row { display:flex; gap:12px; flex-wrap:wrap; }
+.type-check { display:flex; align-items:center; gap:6px; background:rgba(108,99,255,0.05); border:1px solid var(--border); border-radius:6px; padding:6px 12px; cursor:pointer; font-size:12px; }
+.type-check input { accent-color:var(--accent); cursor:pointer; }
+.type-check.disabled { opacity:0.4; cursor:not-allowed; }
+.type-check.disabled input { cursor:not-allowed; }
 .progress-bar-container { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:20px; }
 .progress-bar-container h4 { margin:0 0 8px; font-size:14px; }
 .progress-bar-container .phase { font-size:12px; color:var(--text-dim); margin-bottom:6px; }
@@ -2331,9 +2340,31 @@ let benchMode = 'default';
 let benchDuration = 300;
 let progressPoll = null;
 
-function showBenchDialog() {
+async function showBenchDialog() {
   benchMode = 'default';
   benchDuration = 300;
+
+  // Detect available model types from fleet
+  let hasLlm = false, hasEmbed = false, hasImage = false;
+  try {
+    const statusResp = await fetch('/fleet/status');
+    const status = await statusResp.json();
+    const embedPatterns = ['embed', 'nomic', 'bge', 'e5-'];
+    for (const node of (status.nodes || [])) {
+      const ollama = node.ollama || {};
+      for (const m of (ollama.models_loaded || [])) {
+        const lower = m.name.toLowerCase();
+        if (embedPatterns.some(p => lower.includes(p))) hasEmbed = true;
+        else hasLlm = true;
+      }
+    }
+    const imgResp = await fetch('/api/image-models');
+    if (imgResp.ok) {
+      const imgData = await imgResp.json();
+      if ((imgData.models || []).length > 0) hasImage = true;
+    }
+  } catch(e) { hasLlm = true; }
+
   const overlay = document.createElement('div');
   overlay.className = 'bench-overlay';
   overlay.id = 'bench-overlay';
@@ -2348,6 +2379,14 @@ function showBenchDialog() {
       <div class="mode-option" id="mode-smart" onclick="selectMode('smart')">
         <h4>Smart Benchmark</h4>
         <p>Fill available memory with recommended models, then benchmark everything. Best for comprehensive fleet testing.</p>
+      </div>
+      <div class="type-checks">
+        <label>Model types to benchmark:</label>
+        <div class="type-checks-row">
+          <label class="type-check"><input type="checkbox" id="type-llm" checked ${hasLlm ? '' : 'disabled'}> LLM (chat)</label>
+          <label class="type-check ${hasEmbed ? '' : 'disabled'}"><input type="checkbox" id="type-embed" ${hasEmbed ? 'checked' : 'disabled'}> Embeddings</label>
+          <label class="type-check ${hasImage ? '' : 'disabled'}"><input type="checkbox" id="type-image" ${hasImage ? 'checked' : 'disabled'}> Image gen</label>
+        </div>
       </div>
       <div class="duration-row">
         <label>Duration:</label>
@@ -2381,6 +2420,13 @@ function selectDur(dur, btn) {
 }
 
 async function startBenchmark() {
+  // Collect selected model types
+  const modelTypes = [];
+  if (document.getElementById('type-llm')?.checked) modelTypes.push('llm');
+  if (document.getElementById('type-embed')?.checked) modelTypes.push('embed');
+  if (document.getElementById('type-image')?.checked) modelTypes.push('image');
+  if (modelTypes.length === 0) modelTypes.push('llm');
+
   closeBenchDialog();
   const btn = document.getElementById('run-bench-btn');
   btn.disabled = true;
@@ -2390,7 +2436,7 @@ async function startBenchmark() {
     const resp = await fetch('/dashboard/api/benchmarks/start', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({mode: benchMode, duration: benchDuration}),
+      body: JSON.stringify({mode: benchMode, duration: benchDuration, model_types: modelTypes}),
     });
     if (resp.status === 409) {
       btn.innerHTML = '&#9632; Running...';
