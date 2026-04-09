@@ -142,7 +142,12 @@ class BenchmarkRunner:
                     if self._stop_event.is_set():
                         return
 
-                # Discover fleet (includes any newly pulled models)
+                # Wait for models to register in heartbeats after smart pull
+                if mode == "smart" and self._models_pulled:
+                    self._phase = "Waiting for models to register..."
+                    await asyncio.sleep(8)  # Give 1-2 heartbeat cycles
+
+                # Discover fleet (includes any newly loaded models)
                 self._status = "warming_up"
                 self._phase = "Discovering fleet..."
                 targets, nodes_info = await discover_fleet(client)
@@ -257,6 +262,7 @@ class BenchmarkRunner:
                 ModelCategory,
                 best_for_category,
                 classify_model,
+                is_image_model,
                 lookup_model,
             )
 
@@ -302,18 +308,30 @@ class BenchmarkRunner:
                     ModelCategory.FAST_CHAT,
                 ]
 
-                # Track which categories are already covered by loaded models
+                # Track which categories are already covered by loaded LLM models
+                # (skip embedding models and image models — they can't serve chat)
+                EMBEDDING_PATTERNS = ("embed", "nomic", "bge", "e5-")
                 covered = set()
                 for name in loaded_names:
+                    lower = name.lower()
+                    if any(p in lower for p in EMBEDDING_PATTERNS):
+                        continue
+                    if is_image_model(name):
+                        continue
                     cat = classify_model(name)
                     if cat:
                         covered.add(cat)
 
-                # Phase 1: Prefer models already on disk but not loaded
+                # Phase 1: Prefer LLM models already on disk but not loaded
                 for name in sorted(on_disk_names - loaded_names):
                     if pullable_gb < 2:
                         break
                     if name in already_planned:
+                        continue
+                    lower = name.lower()
+                    if any(p in lower for p in EMBEDDING_PATTERNS):
+                        continue
+                    if is_image_model(name):
                         continue
                     spec = lookup_model(name)
                     cat = classify_model(name)
