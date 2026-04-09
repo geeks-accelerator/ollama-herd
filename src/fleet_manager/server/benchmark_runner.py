@@ -154,10 +154,30 @@ class BenchmarkRunner:
                     if self._stop_event.is_set():
                         return
 
-                # Wait for models to register in heartbeats after smart pull
+                # Wait for pulled models to appear in /api/ps (hot in memory)
                 if mode == "smart" and self._models_pulled:
-                    self._phase = "Waiting for models to register..."
-                    await asyncio.sleep(8)  # Give 1-2 heartbeat cycles
+                    self._phase = "Verifying models are loaded..."
+                    loaded_set: set[str] = set()
+                    expected = set(self._models_pulled)
+                    for _attempt in range(12):  # Up to 60s (12 x 5s)
+                        try:
+                            ps_resp = await client.get("/api/ps", timeout=5)
+                            if ps_resp.status_code == 200:
+                                ps_models = ps_resp.json().get("models", [])
+                                loaded_set = {m["name"] for m in ps_models}
+                                missing = expected - loaded_set
+                                if not missing:
+                                    logger.info(
+                                        "Smart benchmark: all pulled models confirmed loaded"
+                                    )
+                                    break
+                                self._phase = (
+                                    f"Waiting for {len(missing)} model(s) to load: "
+                                    f"{', '.join(sorted(missing))}"
+                                )
+                        except Exception:
+                            pass
+                        await asyncio.sleep(5)
 
                 # Discover fleet (includes any newly loaded models)
                 self._status = "warming_up"
@@ -471,14 +491,23 @@ class BenchmarkRunner:
 
                 try:
                     if is_on_disk:
-                        # Model is on disk — just send a warmup request to load it
-                        # into GPU memory. Use a short prompt with keep_alive.
+                        # Model is on disk — send a non-streaming request to force
+                        # Ollama to load it into GPU memory. Block until complete.
                         warmup_resp = await client.post(
-                            "/api/generate",
-                            json={"model": model, "prompt": "hi", "options": {"num_predict": 1}},
-                            timeout=120,
+                            "/api/chat",
+                            json={
+                                "model": model,
+                                "messages": [{"role": "user", "content": "hi"}],
+                                "stream": False,
+                                "options": {"num_predict": 1},
+                            },
+                            timeout=180,
                         )
                         success = warmup_resp.status_code == 200
+                        if success:
+                            logger.info(
+                                f"Smart benchmark: {model} loaded into GPU memory"
+                            )
                     elif streaming_proxy:
                         success = await streaming_proxy.pull_model(
                             node_id, model, progress_cb=_on_pull_progress,
