@@ -232,4 +232,22 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+---
+
+## 2026-04-08: Context window utilization is shockingly low
+
+**Evidence:** `GET /dashboard/api/context-usage` on a fleet with 67K+ requests over 7 days showed gpt-oss:120b allocated at 131,072 context but actual total token usage (prompt + completion) was: p50=1,100, p95=4,120, p99=5,409, max=34,721. That's 4.1% utilization at p99. The model was using ~120GB VRAM (67GB weights + ~50GB KV cache) when it could have used ~70GB at 16K context — wasting 50GB that prevented other models from loading.
+
+**Insight:** Default context windows are set for the model's maximum capability, not actual usage. In practice, 99% of requests use <5% of the allocated context. This KV cache waste is invisible without measuring actual token distributions. The fix is dynamic num_ctx management: measure p99 of total tokens (prompt + completion, not just prompt), add 50% headroom, round to next power of 2. Critical: use p99 of TOTAL tokens not just prompt — setting 8K based on prompt p99 caused output truncation because completion tokens need context space too. The 24h rolling max prevents quiet periods from under-sizing.
+
+---
+
+## 2026-04-08: Ollama evicts by VRAM pressure, not by model priority
+
+**Evidence:** Smart benchmark tried to load codestral:22b alongside gpt-oss:120b (at 131K context). Despite 390GB "available" RAM, Ollama evicted gpt-oss to make room for codestral. The router didn't cause this — Ollama's internal memory manager decided what to evict. The smallest model (llama3.2:1b at 2GB) survived because it loaded last. After reducing gpt-oss to 16K context (freeing ~50GB KV cache), all three models coexisted.
+
+**Insight:** Ollama's eviction is space-based, not priority-based. It doesn't know which model is "more important" — it just evicts whatever frees enough memory. `OLLAMA_KEEP_ALIVE=-1` prevents time-based eviction but not space-based eviction. The only way to prevent eviction is to ensure total VRAM fits: model weights + KV cache (context × parallel slots × overhead) for ALL loaded models must be < available unified memory. On Apple Silicon, "available" RAM reported by the OS includes memory that Ollama considers used for KV cache. The dynamic num_ctx feature directly addresses this by shrinking KV cache to actual needs.
+
+---
+
 *Add new observations above this line. Date them. Link evidence. Extract the transferable insight.*
