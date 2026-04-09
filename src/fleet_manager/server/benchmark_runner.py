@@ -242,7 +242,13 @@ class BenchmarkRunner:
             logger.error(f"Benchmark failed: {e}", exc_info=True)
 
     async def _smart_pull(self, client, registry, streaming_proxy, scorer):
-        """Use model recommender to fill available memory with optimal models."""
+        """Use model recommender to fill available memory with optimal models.
+
+        Strategy (in priority order):
+        1. Models already on disk but not loaded — just need warmup, instant
+        2. Models from catalog matching uncovered categories — need download
+        Cap individual models at 50GB, total at 50% of available memory.
+        """
         self._status = "pulling"
         self._phase = "Analyzing fleet for smart model selection..."
 
@@ -250,6 +256,8 @@ class BenchmarkRunner:
             from fleet_manager.server.model_knowledge import (
                 ModelCategory,
                 best_for_category,
+                classify_model,
+                lookup_model,
             )
 
             # Get current fleet state
@@ -257,21 +265,16 @@ class BenchmarkRunner:
             resp.raise_for_status()
             fleet_data = resp.json()
 
-            # Find available memory across nodes
             nodes = fleet_data.get("nodes", [])
             if not nodes:
                 self._phase = "No nodes online, skipping smart pull"
                 return
 
-            # Smart strategy: pick one model per category for diversity,
-            # prefer medium-sized models (7-32B) that download quickly and
-            # demonstrate fleet routing across varied workloads.
-            # Cap individual models at 50GB to avoid hour-long downloads.
             MAX_MODEL_SIZE_GB = 50
-            # Cap total pull to 50% of available memory to keep headroom
             MAX_PULL_PCT = 0.5
 
-            models_to_pull: list[tuple[str, str, float]] = []  # (model, node_id, ram_gb)
+            # (model, node_id, ram_gb, on_disk) — on_disk=True means no download needed
+            models_to_load: list[tuple[str, str, float, bool]] = []
 
             for node in nodes:
                 if node.get("status") != "online":
@@ -281,9 +284,9 @@ class BenchmarkRunner:
                 available_gb = mem.get("available_gb", 0)
                 ollama = node.get("ollama") or {}
                 loaded_names = {m["name"] for m in ollama.get("models_loaded", [])}
-                already_planned = {m for m, _, _ in models_to_pull}
+                on_disk_names = set(ollama.get("models_available", []))
+                already_planned = {m for m, _, _, _ in models_to_load}
 
-                # Reserve headroom for system + KV cache during benchmark
                 pullable_gb = min(
                     available_gb - 20,
                     available_gb * MAX_PULL_PCT,
@@ -291,16 +294,44 @@ class BenchmarkRunner:
                 if pullable_gb < 4:
                     continue
 
-                # Pick one model per category for diversity
-                categories = [
+                # Categories we want to cover
+                target_categories = [
                     ModelCategory.GENERAL,
                     ModelCategory.CODING,
                     ModelCategory.REASONING,
                     ModelCategory.FAST_CHAT,
                 ]
-                for cat in categories:
-                    if pullable_gb < 4:
+
+                # Track which categories are already covered by loaded models
+                covered = set()
+                for name in loaded_names:
+                    cat = classify_model(name)
+                    if cat:
+                        covered.add(cat)
+
+                # Phase 1: Prefer models already on disk but not loaded
+                for name in sorted(on_disk_names - loaded_names):
+                    if pullable_gb < 2:
                         break
+                    if name in already_planned:
+                        continue
+                    spec = lookup_model(name)
+                    cat = classify_model(name)
+                    if cat in covered:
+                        continue
+                    ram = spec.ram_gb if spec else 8.0  # estimate if unknown
+                    if ram > pullable_gb or ram > MAX_MODEL_SIZE_GB:
+                        continue
+                    models_to_load.append((name, node_id, ram, True))
+                    pullable_gb -= ram
+                    already_planned.add(name)
+                    if cat:
+                        covered.add(cat)
+
+                # Phase 2: Fill remaining categories from catalog (requires download)
+                for cat in target_categories:
+                    if cat in covered or pullable_gb < 4:
+                        continue
                     cap = min(pullable_gb, MAX_MODEL_SIZE_GB)
                     spec = best_for_category(cat, cap)
                     if spec is None:
@@ -308,35 +339,47 @@ class BenchmarkRunner:
                     name = spec.ollama_name
                     if name in loaded_names or name in already_planned:
                         continue
-                    models_to_pull.append((name, node_id, spec.ram_gb))
+                    models_to_load.append((name, node_id, spec.ram_gb, False))
                     pullable_gb -= spec.ram_gb
                     already_planned.add(name)
+                    covered.add(cat)
 
-            if not models_to_pull:
+            if not models_to_load:
                 self._phase = "No additional models fit in available memory"
                 logger.info("Smart benchmark: no additional models to pull")
                 return
 
-            # Pull models
-            total = len(models_to_pull)
-            self._phase = f"Pulling {total} recommended model(s)..."
+            # Load/pull models
+            on_disk = [m for m in models_to_load if m[3]]
+            to_download = [m for m in models_to_load if not m[3]]
+            total = len(models_to_load)
+
+            disk_names = ", ".join(m[0] for m in on_disk)
+            dl_names = ", ".join(m[0] for m in to_download)
             logger.info(
-                f"Smart benchmark: pulling {total} models: "
-                f"{', '.join(m for m, _, _ in models_to_pull)}"
+                f"Smart benchmark: {len(on_disk)} on-disk ({disk_names}), "
+                f"{len(to_download)} to download ({dl_names})"
             )
 
-            for i, (model, node_id, ram_gb) in enumerate(models_to_pull, 1):
+            for i, (model, node_id, ram_gb, is_on_disk) in enumerate(models_to_load, 1):
                 if self._stop_event.is_set():
                     return
-                self._phase = f"Pulling {model} ({i}/{total})..."
+
+                action = "Loading" if is_on_disk else "Pulling"
+                self._phase = f"{action} {model} ({i}/{total})..."
                 self._pull_progress = {
                     "model": model,
                     "node_id": node_id,
                     "current": i,
                     "total": total,
                     "ram_gb": ram_gb,
+                    "on_disk": is_on_disk,
                 }
-                logger.info(f"Smart benchmark: pulling {model} to {node_id} ({ram_gb}GB)")
+                logger.info(
+                    f"Smart benchmark: {action.lower()} {model} "
+                    f"{'from disk' if is_on_disk else 'from registry'} "
+                    f"to {node_id} ({ram_gb}GB)"
+                )
 
                 def _on_pull_progress(pct, completed, total_bytes, status):
                     """Update pull progress for the UI."""
@@ -347,12 +390,20 @@ class BenchmarkRunner:
                         self._pull_progress["total_gb"] = round(total_bytes / 1e9, 1)
 
                 try:
-                    if streaming_proxy:
+                    if is_on_disk:
+                        # Model is on disk — just send a warmup request to load it
+                        # into GPU memory. Use a short prompt with keep_alive.
+                        warmup_resp = await client.post(
+                            "/api/generate",
+                            json={"model": model, "prompt": "hi", "options": {"num_predict": 1}},
+                            timeout=120,
+                        )
+                        success = warmup_resp.status_code == 200
+                    elif streaming_proxy:
                         success = await streaming_proxy.pull_model(
                             node_id, model, progress_cb=_on_pull_progress,
                         )
                     else:
-                        # Fallback: use HTTP API
                         pull_resp = await client.post(
                             "/api/pull",
                             json={"name": model, "node_id": node_id, "stream": False},
@@ -362,14 +413,15 @@ class BenchmarkRunner:
 
                     if success:
                         self._models_pulled.append(model)
-                        logger.info(f"Smart benchmark: pulled {model} successfully")
+                        logger.info(f"Smart benchmark: {action.lower()} {model} succeeded")
                     else:
-                        logger.warning(f"Smart benchmark: failed to pull {model}")
+                        logger.warning(f"Smart benchmark: {action.lower()} {model} failed")
                 except Exception as e:
-                    logger.warning(f"Smart benchmark: error pulling {model}: {e}")
+                    logger.warning(f"Smart benchmark: error with {model}: {e}")
 
             self._pull_progress = {}
-            self._phase = f"Pulled {len(self._models_pulled)}/{total} models"
+            loaded_count = len(self._models_pulled)
+            self._phase = f"Loaded {loaded_count}/{total} models"
 
         except Exception as e:
             logger.warning(f"Smart pull failed, continuing with loaded models: {e}")

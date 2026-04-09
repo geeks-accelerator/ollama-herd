@@ -1947,9 +1947,10 @@ _BENCHMARKS_BODY = """
 .bench-start-btn:hover { opacity:0.85; }
 .progress-bar-container { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:20px; }
 .progress-bar-container h4 { margin:0 0 8px; font-size:14px; }
-.progress-bar-container .phase { font-size:12px; color:var(--text-dim); margin-bottom:8px; }
+.progress-bar-container .phase { font-size:12px; color:var(--text-dim); margin-bottom:6px; }
 .progress-bar { background:var(--border); border-radius:4px; height:8px; overflow:hidden; margin-bottom:8px; }
-.progress-bar .fill { height:100%; background:var(--accent); border-radius:4px; transition:width 0.5s ease; }
+.progress-bar .fill { height:100%; border-radius:4px; transition:width 0.5s ease, background 0.5s ease; }
+.progress-bar-label { font-size:11px; color:var(--text-dim); margin-bottom:4px; display:flex; justify-content:space-between; }
 .progress-stats { display:flex; gap:20px; font-size:12px; color:var(--text-dim); }
 .progress-stats .val { color:var(--text); font-weight:600; }
 .cancel-running { background:var(--red); color:#fff; border:none; border-radius:6px; padding:6px 14px; cursor:pointer; font-size:12px; margin-top:8px; }
@@ -2256,13 +2257,36 @@ async function startBenchmark() {
   progressPoll = setInterval(pollProgress, 2000);
 }
 
+function fmtElapsed(s) {
+  if (s < 60) return Math.round(s) + 's';
+  const m = Math.floor(s / 60);
+  const sec = Math.round(s % 60);
+  return m + 'm ' + (sec < 10 ? '0' : '') + sec + 's';
+}
+
+function barGradient(pct) {
+  // Purple (accent) at 0% → green at 100%
+  const r = Math.round(108 + (34 - 108) * pct / 100);
+  const g = Math.round(99 + (197 - 99) * pct / 100);
+  const b = Math.round(255 + (94 - 255) * pct / 100);
+  return 'rgb(' + r + ',' + g + ',' + b + ')';
+}
+
 function showProgress() {
   const div = document.getElementById('bench-progress');
   div.style.display = 'block';
   div.innerHTML = `<div class="progress-bar-container">
     <h4 id="prog-title">Starting benchmark...</h4>
     <div class="phase" id="prog-phase"></div>
-    <div class="progress-bar"><div class="fill" id="prog-fill" style="width:0%"></div></div>
+    <div id="prog-pull-section" style="display:none">
+      <div class="progress-bar-label"><span id="prog-pull-label">Downloading...</span><span id="prog-pull-pct"></span></div>
+      <div class="progress-bar"><div class="fill" id="prog-pull-fill" style="width:0%"></div></div>
+      <div class="progress-bar-label" id="prog-pull-overall-label" style="margin-top:6px"><span>Overall</span><span id="prog-pull-overall-pct"></span></div>
+      <div class="progress-bar" id="prog-pull-overall-bar"><div class="fill" id="prog-pull-overall-fill" style="width:0%"></div></div>
+    </div>
+    <div id="prog-bench-section" style="display:none">
+      <div class="progress-bar"><div class="fill" id="prog-fill" style="width:0%"></div></div>
+    </div>
     <div class="progress-stats">
       <span>Elapsed: <span class="val" id="prog-elapsed">0s</span></span>
       <span>Requests: <span class="val" id="prog-reqs">0</span></span>
@@ -2278,38 +2302,79 @@ async function pollProgress() {
     const p = await resp.json();
 
     const phase = document.getElementById('prog-phase');
-    const fill = document.getElementById('prog-fill');
     const elapsed = document.getElementById('prog-elapsed');
     const reqs = document.getElementById('prog-reqs');
     const toks = document.getElementById('prog-toks');
     const title = document.getElementById('prog-title');
+    const pullSection = document.getElementById('prog-pull-section');
+    const benchSection = document.getElementById('prog-bench-section');
+    const benchFill = document.getElementById('prog-fill');
 
     if (!phase) return;
 
     phase.textContent = p.phase || '';
-    elapsed.textContent = p.elapsed ? p.elapsed.toFixed(0) + 's' : '0s';
+    elapsed.textContent = fmtElapsed(p.elapsed || 0);
     reqs.textContent = (p.requests_completed || 0) + (p.requests_failed ? ' (' + p.requests_failed + ' err)' : '');
     toks.textContent = fmtNum(p.tok_per_sec || 0);
 
     if (p.status === 'running' && p.duration > 0) {
+      pullSection.style.display = 'none';
+      benchSection.style.display = 'block';
       const pct = Math.min(100, (p.elapsed / p.duration) * 100);
-      fill.style.width = pct + '%';
+      benchFill.style.width = pct + '%';
+      benchFill.style.background = barGradient(pct);
       title.textContent = benchMode === 'smart' ? 'Smart Benchmark Running' : 'Benchmark Running';
     } else if (p.status === 'pulling') {
-      fill.style.width = '0%';
+      pullSection.style.display = 'block';
+      benchSection.style.display = 'none';
       title.textContent = 'Smart Benchmark: Pulling Models';
-      if (p.pull_progress && p.pull_progress.model) {
-        let pullText = `Pulling ${p.pull_progress.model} (${p.pull_progress.current}/${p.pull_progress.total})`;
-        if (p.pull_progress.pct >= 0 && p.pull_progress.total_gb) {
-          pullText += ` — ${p.pull_progress.pct}% (${p.pull_progress.completed_gb || 0}/${p.pull_progress.total_gb} GB)`;
-          fill.style.width = p.pull_progress.pct + '%';
-        } else if (p.pull_progress.status) {
-          pullText += ` — ${p.pull_progress.status}`;
+
+      const pp = p.pull_progress || {};
+      const pullFill = document.getElementById('prog-pull-fill');
+      const pullLabel = document.getElementById('prog-pull-label');
+      const pullPct = document.getElementById('prog-pull-pct');
+      const overallFill = document.getElementById('prog-pull-overall-fill');
+      const overallPct = document.getElementById('prog-pull-overall-pct');
+      const overallLabel = document.getElementById('prog-pull-overall-label');
+      const overallBar = document.getElementById('prog-pull-overall-bar');
+
+      if (pp.model) {
+        const isOnDisk = pp.on_disk;
+        const action = isOnDisk ? 'Loading' : 'Downloading';
+
+        // Individual model progress
+        pullLabel.textContent = `${action}: ${pp.model}`;
+        if (!isOnDisk && pp.pct >= 0 && pp.total_gb) {
+          pullPct.textContent = `${pp.pct}% (${pp.completed_gb || 0}/${pp.total_gb} GB)`;
+          pullFill.style.width = pp.pct + '%';
+          pullFill.style.background = barGradient(pp.pct);
+        } else if (isOnDisk) {
+          pullPct.textContent = 'from disk';
+          pullFill.style.width = '100%';
+          pullFill.style.background = barGradient(80);
+        } else if (pp.status) {
+          pullPct.textContent = pp.status;
+          pullFill.style.width = '0%';
         }
-        phase.textContent = pullText;
+
+        // Overall progress — show only if more than 1 model
+        if (pp.total > 1) {
+          overallLabel.style.display = 'flex';
+          overallBar.style.display = 'block';
+          const overallPctVal = Math.round(((pp.current - 1) / pp.total) * 100);
+          overallPct.textContent = `${pp.current - 1}/${pp.total} models`;
+          overallFill.style.width = overallPctVal + '%';
+          overallFill.style.background = barGradient(overallPctVal);
+        } else {
+          overallLabel.style.display = 'none';
+          overallBar.style.display = 'none';
+        }
+
+        phase.textContent = `${action} model ${pp.current} of ${pp.total}`;
       }
     } else if (p.status === 'warming_up') {
-      fill.style.width = '0%';
+      pullSection.style.display = 'none';
+      benchSection.style.display = 'none';
       title.textContent = 'Warming Up Models';
     } else if (p.status === 'complete' || p.status === 'error' || p.status === 'cancelled') {
       clearInterval(progressPoll);
@@ -2319,19 +2384,21 @@ async function pollProgress() {
       btn.innerHTML = '&#9654; Run Benchmark';
 
       if (p.status === 'complete') {
-        fill.style.width = '100%';
+        pullSection.style.display = 'none';
+        benchSection.style.display = 'block';
+        benchFill.style.width = '100%';
+        benchFill.style.background = barGradient(100);
         title.textContent = 'Benchmark Complete';
-        phase.textContent = p.run_id ? 'Run ID: ' + p.run_id : '';
+        phase.textContent = `${p.requests_completed} requests, ${fmtNum(p.tok_per_sec)} tok/s` + (p.models_pulled && p.models_pulled.length ? ` — ${p.models_pulled.length} models pulled` : '');
         document.querySelector('.cancel-running').style.display = 'none';
-        // Refresh results table
         loadBenchmarks();
-        // Auto-hide progress after 5 seconds
-        setTimeout(() => { document.getElementById('bench-progress').style.display = 'none'; }, 5000);
+        setTimeout(() => { document.getElementById('bench-progress').style.display = 'none'; }, 8000);
       } else if (p.status === 'error') {
         title.textContent = 'Benchmark Failed';
         phase.textContent = p.error || 'Unknown error';
-        fill.style.width = '100%';
-        fill.style.background = 'var(--red)';
+        benchSection.style.display = 'block';
+        benchFill.style.width = '100%';
+        benchFill.style.background = 'var(--red)';
       } else {
         title.textContent = 'Benchmark Cancelled';
         document.querySelector('.cancel-running').style.display = 'none';
