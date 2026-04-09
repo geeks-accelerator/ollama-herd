@@ -7,7 +7,7 @@ import json
 import time
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 router = APIRouter(tags=["dashboard"])
 
@@ -283,6 +283,58 @@ async def get_benchmark_detail(request: Request, run_id: str):
         return {"data": None}
     data = await trace_store.get_benchmark_run(run_id)
     return {"data": data}
+
+
+@router.post("/dashboard/api/benchmarks/start")
+async def start_benchmark(request: Request):
+    """Start a benchmark run. Mode: 'default' or 'smart'."""
+    from fleet_manager.server.benchmark_runner import BenchmarkRunner
+
+    body = await request.json()
+    mode = body.get("mode", "default")
+    duration = body.get("duration", 300)
+
+    # Get or create runner on app state
+    runner = getattr(request.app.state, "benchmark_runner", None)
+    if runner is None:
+        settings = request.app.state.settings
+        runner = BenchmarkRunner(f"http://localhost:{settings.port}")
+        request.app.state.benchmark_runner = runner
+
+    if runner.is_running:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "Benchmark already running", "progress": runner.get_progress()},
+        )
+
+    run_id = await runner.start(
+        mode=mode,
+        duration=duration,
+        registry=request.app.state.registry,
+        trace_store=getattr(request.app.state, "trace_store", None),
+        streaming_proxy=request.app.state.streaming_proxy,
+        scorer=request.app.state.scorer,
+    )
+    return {"status": "started", "run_id": run_id, "mode": mode, "duration": duration}
+
+
+@router.get("/dashboard/api/benchmarks/progress")
+async def benchmark_progress(request: Request):
+    """Get current benchmark status and progress."""
+    runner = getattr(request.app.state, "benchmark_runner", None)
+    if runner is None:
+        return {"status": "idle", "phase": "No benchmark has been run"}
+    return runner.get_progress()
+
+
+@router.post("/dashboard/api/benchmarks/cancel")
+async def cancel_benchmark(request: Request):
+    """Cancel a running benchmark."""
+    runner = getattr(request.app.state, "benchmark_runner", None)
+    if runner is None or not runner.is_running:
+        return {"status": "not_running"}
+    runner.cancel()
+    return {"status": "cancelled"}
 
 
 @router.get("/dashboard/api/health")
@@ -1865,6 +1917,42 @@ _BENCHMARKS_BODY = """
 .empty-state { text-align: center; padding: 60px 20px; color: var(--text-dim); }
 .empty-state h3 { color: var(--text); margin-bottom: 8px; }
 .empty-state code { background: rgba(108,99,255,0.15); padding: 2px 8px; border-radius: 4px; font-size: 13px; }
+.bench-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; }
+.bench-header h3 { margin:0; font-size:16px; font-weight:600; }
+.run-btn { background:var(--accent); color:#fff; border:none; border-radius:8px; padding:10px 20px; cursor:pointer; font-size:13px; font-weight:600; display:flex; align-items:center; gap:8px; }
+.run-btn:hover { opacity:0.9; }
+.run-btn:disabled { opacity:0.5; cursor:not-allowed; }
+.bench-overlay {
+  position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6);
+  display:flex; align-items:center; justify-content:center; z-index:1000;
+}
+.bench-dialog {
+  background:var(--card); border:1px solid var(--border); border-radius:12px;
+  padding:24px; max-width:500px; width:90%;
+}
+.bench-dialog h3 { margin:0 0 16px; font-size:16px; }
+.mode-option { background:rgba(108,99,255,0.05); border:2px solid var(--border); border-radius:10px; padding:14px; margin-bottom:10px; cursor:pointer; transition:border-color 0.2s; }
+.mode-option:hover { border-color:var(--accent); }
+.mode-option.selected { border-color:var(--accent); background:rgba(108,99,255,0.1); }
+.mode-option h4 { margin:0 0 4px; font-size:14px; }
+.mode-option p { margin:0; font-size:12px; color:var(--text-dim); line-height:1.4; }
+.duration-row { display:flex; gap:8px; margin:14px 0; align-items:center; }
+.duration-row label { font-size:12px; color:var(--text-dim); }
+.dur-btn { background:var(--border); color:var(--text); border:none; border-radius:6px; padding:6px 14px; cursor:pointer; font-size:12px; }
+.dur-btn.selected { background:var(--accent); color:#fff; }
+.dur-btn:hover { opacity:0.85; }
+.bench-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+.bench-cancel-btn { background:var(--border); color:var(--text); border:none; border-radius:6px; padding:8px 16px; cursor:pointer; font-size:13px; }
+.bench-start-btn { background:var(--accent); color:#fff; border:none; border-radius:6px; padding:8px 16px; cursor:pointer; font-size:13px; font-weight:500; }
+.bench-start-btn:hover { opacity:0.85; }
+.progress-bar-container { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:20px; }
+.progress-bar-container h4 { margin:0 0 8px; font-size:14px; }
+.progress-bar-container .phase { font-size:12px; color:var(--text-dim); margin-bottom:8px; }
+.progress-bar { background:var(--border); border-radius:4px; height:8px; overflow:hidden; margin-bottom:8px; }
+.progress-bar .fill { height:100%; background:var(--accent); border-radius:4px; transition:width 0.5s ease; }
+.progress-stats { display:flex; gap:20px; font-size:12px; color:var(--text-dim); }
+.progress-stats .val { color:var(--text); font-weight:600; }
+.cancel-running { background:var(--red); color:#fff; border:none; border-radius:6px; padding:6px 14px; cursor:pointer; font-size:12px; margin-top:8px; }
 @media (max-width: 768px) {
   .detail-grid { grid-template-columns: 1fr; }
   .bench-summary { grid-template-columns: 1fr 1fr; }
@@ -1872,6 +1960,13 @@ _BENCHMARKS_BODY = """
 </style>
 
 <div class="main">
+  <div class="bench-header">
+    <div></div>
+    <button class="run-btn" id="run-bench-btn" onclick="showBenchDialog()">&#9654; Run Benchmark</button>
+  </div>
+
+  <div id="bench-progress" style="display:none"></div>
+
   <div class="bench-summary" id="bench-summary"></div>
 
   <div style="display:flex;gap:16px;margin-bottom:20px">
@@ -2080,6 +2175,187 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 loadBenchmarks();
+
+// --- Benchmark Runner UI ---
+let benchMode = 'default';
+let benchDuration = 300;
+let progressPoll = null;
+
+function showBenchDialog() {
+  benchMode = 'default';
+  benchDuration = 300;
+  const overlay = document.createElement('div');
+  overlay.className = 'bench-overlay';
+  overlay.id = 'bench-overlay';
+  overlay.onclick = function(e) { if (e.target.id === 'bench-overlay') closeBenchDialog(); };
+  overlay.innerHTML = `
+    <div class="bench-dialog">
+      <h3>Run Fleet Benchmark</h3>
+      <div class="mode-option selected" id="mode-default" onclick="selectMode('default')">
+        <h4>Default Benchmark</h4>
+        <p>Benchmark currently loaded models only. Quick and non-disruptive.</p>
+      </div>
+      <div class="mode-option" id="mode-smart" onclick="selectMode('smart')">
+        <h4>Smart Benchmark</h4>
+        <p>Fill available memory with recommended models, then benchmark everything. Best for comprehensive fleet testing.</p>
+      </div>
+      <div class="duration-row">
+        <label>Duration:</label>
+        <button class="dur-btn" onclick="selectDur(60,this)">1 min</button>
+        <button class="dur-btn selected" onclick="selectDur(300,this)">5 min</button>
+        <button class="dur-btn" onclick="selectDur(600,this)">10 min</button>
+      </div>
+      <div class="bench-actions">
+        <button class="bench-cancel-btn" onclick="closeBenchDialog()">Cancel</button>
+        <button class="bench-start-btn" onclick="startBenchmark()">Start Benchmark</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+function closeBenchDialog() {
+  const overlay = document.getElementById('bench-overlay');
+  if (overlay) overlay.remove();
+}
+
+function selectMode(mode) {
+  benchMode = mode;
+  document.getElementById('mode-default').className = 'mode-option' + (mode === 'default' ? ' selected' : '');
+  document.getElementById('mode-smart').className = 'mode-option' + (mode === 'smart' ? ' selected' : '');
+}
+
+function selectDur(dur, btn) {
+  benchDuration = dur;
+  btn.parentElement.querySelectorAll('.dur-btn').forEach(b => b.className = 'dur-btn');
+  btn.className = 'dur-btn selected';
+}
+
+async function startBenchmark() {
+  closeBenchDialog();
+  const btn = document.getElementById('run-bench-btn');
+  btn.disabled = true;
+  btn.innerHTML = '&#9632; Running...';
+
+  try {
+    const resp = await fetch('/dashboard/api/benchmarks/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode: benchMode, duration: benchDuration}),
+    });
+    if (resp.status === 409) {
+      btn.innerHTML = '&#9632; Running...';
+    }
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = '&#9654; Run Benchmark';
+    return;
+  }
+
+  // Start polling progress
+  showProgress();
+  progressPoll = setInterval(pollProgress, 2000);
+}
+
+function showProgress() {
+  const div = document.getElementById('bench-progress');
+  div.style.display = 'block';
+  div.innerHTML = `<div class="progress-bar-container">
+    <h4 id="prog-title">Starting benchmark...</h4>
+    <div class="phase" id="prog-phase"></div>
+    <div class="progress-bar"><div class="fill" id="prog-fill" style="width:0%"></div></div>
+    <div class="progress-stats">
+      <span>Elapsed: <span class="val" id="prog-elapsed">0s</span></span>
+      <span>Requests: <span class="val" id="prog-reqs">0</span></span>
+      <span>Throughput: <span class="val" id="prog-toks">0</span> tok/s</span>
+    </div>
+    <button class="cancel-running" onclick="cancelBenchmark()">Cancel</button>
+  </div>`;
+}
+
+async function pollProgress() {
+  try {
+    const resp = await fetch('/dashboard/api/benchmarks/progress');
+    const p = await resp.json();
+
+    const phase = document.getElementById('prog-phase');
+    const fill = document.getElementById('prog-fill');
+    const elapsed = document.getElementById('prog-elapsed');
+    const reqs = document.getElementById('prog-reqs');
+    const toks = document.getElementById('prog-toks');
+    const title = document.getElementById('prog-title');
+
+    if (!phase) return;
+
+    phase.textContent = p.phase || '';
+    elapsed.textContent = p.elapsed ? p.elapsed.toFixed(0) + 's' : '0s';
+    reqs.textContent = (p.requests_completed || 0) + (p.requests_failed ? ' (' + p.requests_failed + ' err)' : '');
+    toks.textContent = fmtNum(p.tok_per_sec || 0);
+
+    if (p.status === 'running' && p.duration > 0) {
+      const pct = Math.min(100, (p.elapsed / p.duration) * 100);
+      fill.style.width = pct + '%';
+      title.textContent = benchMode === 'smart' ? 'Smart Benchmark Running' : 'Benchmark Running';
+    } else if (p.status === 'pulling') {
+      fill.style.width = '0%';
+      title.textContent = 'Smart Benchmark: Pulling Models';
+      if (p.pull_progress && p.pull_progress.model) {
+        phase.textContent = `Pulling ${p.pull_progress.model} (${p.pull_progress.current}/${p.pull_progress.total})`;
+      }
+    } else if (p.status === 'warming_up') {
+      fill.style.width = '0%';
+      title.textContent = 'Warming Up Models';
+    } else if (p.status === 'complete' || p.status === 'error' || p.status === 'cancelled') {
+      clearInterval(progressPoll);
+      progressPoll = null;
+      const btn = document.getElementById('run-bench-btn');
+      btn.disabled = false;
+      btn.innerHTML = '&#9654; Run Benchmark';
+
+      if (p.status === 'complete') {
+        fill.style.width = '100%';
+        title.textContent = 'Benchmark Complete';
+        phase.textContent = p.run_id ? 'Run ID: ' + p.run_id : '';
+        document.querySelector('.cancel-running').style.display = 'none';
+        // Refresh results table
+        loadBenchmarks();
+        // Auto-hide progress after 5 seconds
+        setTimeout(() => { document.getElementById('bench-progress').style.display = 'none'; }, 5000);
+      } else if (p.status === 'error') {
+        title.textContent = 'Benchmark Failed';
+        phase.textContent = p.error || 'Unknown error';
+        fill.style.width = '100%';
+        fill.style.background = 'var(--red)';
+      } else {
+        title.textContent = 'Benchmark Cancelled';
+        document.querySelector('.cancel-running').style.display = 'none';
+        setTimeout(() => { document.getElementById('bench-progress').style.display = 'none'; }, 3000);
+      }
+    }
+  } catch (e) { /* ignore poll errors */ }
+}
+
+async function cancelBenchmark() {
+  try {
+    await fetch('/dashboard/api/benchmarks/cancel', { method: 'POST' });
+  } catch (e) { /* ignore */ }
+}
+
+// Check if a benchmark is already running on page load
+async function checkRunningBenchmark() {
+  try {
+    const resp = await fetch('/dashboard/api/benchmarks/progress');
+    const p = await resp.json();
+    if (p.status && ['pulling','warming_up','running'].includes(p.status)) {
+      const btn = document.getElementById('run-bench-btn');
+      btn.disabled = true;
+      btn.innerHTML = '&#9632; Running...';
+      showProgress();
+      progressPoll = setInterval(pollProgress, 2000);
+      pollProgress();
+    }
+  } catch (e) { /* ignore */ }
+}
+checkRunningBenchmark();
 </script>
 """
 
