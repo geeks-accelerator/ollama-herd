@@ -241,8 +241,9 @@ async def dashboard_traces(request: Request, limit: int = 50):
     return {"traces": traces}
 
 
-@router.get("/dashboard/api/apps")
-async def dashboard_apps_data(
+@router.get("/dashboard/api/tags")
+@router.get("/dashboard/api/apps")  # backwards compat
+async def dashboard_tags_data(
     request: Request, days: int = 7, start_ts: float = 0, end_ts: float = 0,
 ):
     """Per-tag aggregated stats for the Apps analytics page."""
@@ -256,8 +257,9 @@ async def dashboard_apps_data(
     return {"days": days, "data": data, "summary": summary}
 
 
-@router.get("/dashboard/api/apps/daily")
-async def dashboard_apps_daily_data(
+@router.get("/dashboard/api/tags/daily")
+@router.get("/dashboard/api/apps/daily")  # backwards compat
+async def dashboard_tags_daily_data(
     request: Request, days: int = 7, start_ts: float = 0, end_ts: float = 0,
 ):
     """Per-tag, per-day breakdown for the Apps analytics charts."""
@@ -1064,13 +1066,14 @@ async def dashboard_models_page():
     )
 
 
-@router.get("/dashboard/apps", response_class=HTMLResponse)
-async def dashboard_apps_page():
-    """Apps analytics — per-tag/application performance and usage breakdown."""
+@router.get("/dashboard/tags", response_class=HTMLResponse)
+@router.get("/dashboard/apps", response_class=HTMLResponse)  # backwards compat
+async def dashboard_tags_page():
+    """Tags analytics — per-tag performance and usage breakdown."""
     return _dashboard_page(
         "Tags",
-        "apps",
-        _APPS_BODY,
+        "tags",
+        _TAGS_BODY,
         extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>',
     )
 
@@ -1407,7 +1410,7 @@ def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str
         ("overview", "Dashboard", "/dashboard"),
         ("trends", "Trends", "/dashboard/trends"),
         ("models", "Model Insights", "/dashboard/models"),
-        ("apps", "Tags", "/dashboard/apps"),
+        ("tags", "Tags", "/dashboard/tags"),
         ("benchmarks", "Benchmarks", "/dashboard/benchmarks"),
         ("health", "Health", "/dashboard/health"),
         ("recommendations", "Recommendations", "/dashboard/recommendations"),
@@ -2219,10 +2222,10 @@ initTimeRange('models-time-range', loadModels, '7d');
 # Apps analytics page body
 # ---------------------------------------------------------------------------
 
-_APPS_BODY = """
+_TAGS_BODY = """
 <div class="main">
-  <div id="apps-time-range"></div>
-  <div class="summary-cards" id="apps-summary-cards">
+  <div id="tags-time-range"></div>
+  <div class="summary-cards" id="tags-summary-cards">
     <div class="card summary-card">
       <div class="card-label">Tagged Requests</div>
       <div class="card-value" id="tagged-count">-</div>
@@ -2327,14 +2330,14 @@ let barChart, dailyChart, dailyReqChart, dailyLatChart;
 
 function fmtMs(ms) { return ms > 1000 ? (ms/1000).toFixed(1) + 's' : Math.round(ms) + 'ms'; }
 
-var _appsStartTs = 0, _appsEndTs = 0;
-async function loadApps(startTs, endTs) {
-  if (startTs) _appsStartTs = startTs;
-  if (endTs) _appsEndTs = endTs;
-  var qs = _appsStartTs && _appsEndTs ? 'start_ts=' + _appsStartTs + '&end_ts=' + _appsEndTs : 'days=7';
+var _tagsStartTs = 0, _tagsEndTs = 0;
+async function loadTags(startTs, endTs) {
+  if (startTs) _tagsStartTs = startTs;
+  if (endTs) _tagsEndTs = endTs;
+  var qs = _tagsStartTs && _tagsEndTs ? 'start_ts=' + _tagsStartTs + '&end_ts=' + _tagsEndTs : 'days=7';
   const [appsRes, dailyRes] = await Promise.all([
-    fetch('/dashboard/api/apps?' + qs),
-    fetch('/dashboard/api/apps/daily?' + qs),
+    fetch('/dashboard/api/tags?' + qs),
+    fetch('/dashboard/api/tags/daily?' + qs),
   ]);
   const apps = await appsRes.json();
   const daily = await dailyRes.json();
@@ -2437,7 +2440,7 @@ window.addEventListener('DOMContentLoaded', () => {
   if (st) st.textContent = 'API';
 });
 
-initTimeRange('apps-time-range', loadApps, '7d');
+initTimeRange('tags-time-range', loadTags, '7d');
 </script>
 """
 

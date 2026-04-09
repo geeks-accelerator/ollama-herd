@@ -341,13 +341,18 @@ class TestDashboard:
         assert "chart.js" in resp.text
         assert "Model Insights" in resp.text
 
-    def test_apps_page_html(self, client):
-        resp = client.get("/dashboard/apps")
+    def test_tags_page_html(self, client):
+        resp = client.get("/dashboard/tags")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
         assert "chart.js" in resp.text
-        assert "Apps" in resp.text
+        assert "Tags" in resp.text
         assert "X-Herd-Tags" in resp.text  # Usage instructions
+
+    def test_apps_page_redirect(self, client):
+        """Old /dashboard/apps URL still works (backwards compat)."""
+        resp = client.get("/dashboard/apps")
+        assert resp.status_code == 200
 
     def test_benchmarks_page_html(self, client):
         resp = client.get("/dashboard/benchmarks")
@@ -375,13 +380,13 @@ class TestDashboard:
 
     def test_all_pages_have_nav(self, client):
         """All dashboard pages include navigation links to all tabs."""
-        for path in ("/dashboard", "/dashboard/trends", "/dashboard/models", "/dashboard/apps", "/dashboard/benchmarks", "/dashboard/health", "/dashboard/settings"):
+        for path in ("/dashboard", "/dashboard/trends", "/dashboard/models", "/dashboard/tags", "/dashboard/benchmarks", "/dashboard/health", "/dashboard/settings"):
             resp = client.get(path)
             assert resp.status_code == 200
             assert "/dashboard" in resp.text
             assert "/dashboard/trends" in resp.text
             assert "/dashboard/models" in resp.text
-            assert "/dashboard/apps" in resp.text
+            assert "/dashboard/tags" in resp.text
             assert "/dashboard/benchmarks" in resp.text
             assert "/dashboard/health" in resp.text
             assert "/dashboard/settings" in resp.text
@@ -389,7 +394,7 @@ class TestDashboard:
             assert "Dashboard" in resp.text
             assert "Trends" in resp.text
             assert "Model Insights" in resp.text
-            assert "Apps" in resp.text
+            assert "Tags" in resp.text
             assert "Benchmarks" in resp.text
             assert "Health" in resp.text
             assert "Settings" in resp.text
