@@ -393,8 +393,10 @@ class HealthEngine:
                     ),
                     fix=(
                         f"Set OLLAMA_NUM_PARALLEL=2 on {node.node_id}: "
-                        f"`launchctl setenv OLLAMA_NUM_PARALLEL 2` (macOS) or "
-                        f"add to systemd service (Linux), then restart Ollama. "
+                        f"`launchctl setenv OLLAMA_NUM_PARALLEL 2` (macOS), "
+                        f"`sudo systemctl edit ollama` and add Environment= (Linux), "
+                        f"or set system environment variable (Windows), "
+                        f"then restart Ollama. "
                         f"This reduces KV cache from ~{kv_cache_gb:.0f} GB to "
                         f"~{kv_cache_gb / 8:.0f} GB, freeing memory for more models."
                     ),

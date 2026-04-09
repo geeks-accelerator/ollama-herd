@@ -168,7 +168,7 @@ async def chat_completions(request: Request):
                 yield chunk
             # Streaming callers don't use token counts in the response,
             # so clean up the side-channel dict here.
-            proxy._request_tokens.pop(inference_req.request_id, None)
+            proxy.pop_token_counts(inference_req.request_id)
 
         return StreamingResponse(
             _stream_and_cleanup(),
@@ -188,7 +188,7 @@ async def chat_completions(request: Request):
                     logger.debug(f"Skipping malformed SSE chunk: {e}")
 
         # Retrieve real token counts extracted from Ollama response
-        tokens = proxy._request_tokens.pop(inference_req.request_id, (None, None))
+        tokens = proxy.pop_token_counts(inference_req.request_id)
         prompt_tok = tokens[0] or 0
         completion_tok = tokens[1] or 0
 

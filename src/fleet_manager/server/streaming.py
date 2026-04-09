@@ -76,6 +76,16 @@ class StreamingProxy:
         # Extended request metadata: thinking tokens, done_reason, num_predict budget
         self._request_meta: dict[str, dict] = {}
 
+    def pop_token_counts(
+        self, request_id: str
+    ) -> tuple[int | None, int | None]:
+        """Remove and return (prompt_tokens, completion_tokens) for a request."""
+        return self._request_tokens.pop(request_id, (None, None))
+
+    def pop_request_meta(self, request_id: str) -> dict | None:
+        """Remove and return extended request metadata for a request."""
+        return self._request_meta.pop(request_id, None)
+
     def _get_client(self, node_id: str) -> httpx.AsyncClient:
         node = self._registry.get_node(node_id)
         if not node:

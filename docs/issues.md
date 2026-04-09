@@ -96,25 +96,25 @@ The `in_flight` field on each queue was a `list`. Both `in` checks and `.remove(
 
 ## Code Quality
 
-### 4. `_request_tokens` Dict — Leaking Internal State `OPEN`
+### 4. `_request_tokens` Dict — Leaking Internal State `FIXED`
 
 **File:** `src/fleet_manager/server/streaming.py`
 **Severity:** Low
 
-Route handlers in `openai_compat.py` and `ollama_compat.py` access the private `proxy._request_tokens` dict directly via `.pop()`. This breaks encapsulation and couples route logic to an internal implementation detail.
+Route handlers in `openai_compat.py` and `ollama_compat.py` accessed the private `proxy._request_tokens` and `proxy._request_meta` dicts directly via `.pop()`. This broke encapsulation and coupled route logic to internal implementation details.
 
-**Fix:** Expose a public method like `pop_token_counts(request_id)` on `StreamingProxy`.
+**Fix:** Added public methods `pop_token_counts(request_id)` and `pop_request_meta(request_id)` on `StreamingProxy`. All route handler access updated to use the public API.
 
 ---
 
-### 5. `asyncio.ensure_future` — Deprecated API `OPEN`
+### 5. `asyncio.ensure_future` — Deprecated API `FIXED`
 
 **File:** `src/fleet_manager/common/discovery.py` (line ~65)
 **Severity:** Low
 
 `asyncio.ensure_future()` has been deprecated since Python 3.10 in favor of `asyncio.create_task()`. The project requires Python 3.11+, so this should be updated.
 
-**Fix:** Replace `asyncio.ensure_future(...)` with `asyncio.create_task(...)`.
+**Fix:** Replaced `asyncio.ensure_future(...)` with `asyncio.create_task(...)`.
 
 ---
 
@@ -236,7 +236,7 @@ The tagging system records tags on every trace and provides a dedicated Apps das
 
 ---
 
-### 16. OLLAMA_NUM_PARALLEL Auto-Calculation Causes KV Cache Bloat and Model Thrashing `OPEN`
+### 16. OLLAMA_NUM_PARALLEL Auto-Calculation Causes KV Cache Bloat and Model Thrashing `PARTIAL`
 
 **Severity:** High
 
@@ -263,7 +263,9 @@ launchctl setenv OLLAMA_NUM_PARALLEL 2
 # Restart Ollama
 ```
 
-**Potential fix (Herd-side):** The router could detect this condition by comparing a node's reported VRAM against loaded model count and warn in the dashboard. Or Herd could inject `num_ctx` overrides in proxied requests to cap context windows and prevent KV cache explosion.
+**Herd-side detection (implemented):** The health engine's `_check_kv_cache_bloat()` detects this by comparing VRAM used vs expected weight sizes. When overhead exceeds 50%, it reports CRITICAL severity with cross-platform fix instructions (macOS launchctl, Linux systemd, Windows env var). The model thrashing check (`_check_model_thrashing()`) catches the downstream symptom — frequent cold loads from eviction cascades. Both checks surface in the dashboard Health tab and `/dashboard/api/health` API.
+
+**Remaining:** Could inject `num_ctx` overrides in proxied requests to cap context windows, but this risks changing model behavior. Current approach (detect + recommend) is safer.
 
 ---
 

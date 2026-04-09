@@ -69,7 +69,7 @@ class FleetServiceDiscoverer:
             state_change: ServiceStateChange,
         ):
             if state_change == ServiceStateChange.Added:
-                asyncio.ensure_future(
+                asyncio.create_task(
                     self._resolve_service(zeroconf, service_type, name, result, found)
                 )
 

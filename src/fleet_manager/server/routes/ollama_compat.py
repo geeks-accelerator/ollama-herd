@@ -33,7 +33,7 @@ def _build_thinking_headers(proxy, request_id: str) -> dict[str, str]:
     Only includes headers when there's meaningful data (thinking tokens > 0 or
     done_reason is present).
     """
-    meta = proxy._request_meta.pop(request_id, None)
+    meta = proxy.pop_request_meta(request_id)
     if not meta:
         return {}
     headers = {}
@@ -526,8 +526,8 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
             async for chunk in stream:
                 yield chunk
             # Add thinking headers for streaming (trailer-style — available after stream)
-            proxy._request_tokens.pop(inference_req.request_id, None)
-            proxy._request_meta.pop(inference_req.request_id, None)
+            proxy.pop_token_counts(inference_req.request_id)
+            proxy.pop_request_meta(inference_req.request_id)
 
         return StreamingResponse(
             _stream_and_cleanup(),
@@ -554,7 +554,7 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         headers.update(_build_thinking_headers(proxy, inference_req.request_id))
 
         # Clean up token tracking
-        proxy._request_tokens.pop(inference_req.request_id, None)
+        proxy.pop_token_counts(inference_req.request_id)
 
         # Handle Ollama native image generation response
         if final_data and final_data.get("image"):
