@@ -416,6 +416,228 @@ async def context_usage(request: Request, days: int = 7):
 
 _recommendations_cache: dict = {"data": None, "generated_at": 0.0}
 
+# Fleet Intelligence briefing cache
+_briefing_cache: dict = {
+    "briefing": None, "model": None, "generated_at": 0.0, "generating": False,
+}
+
+EMBED_SKIP = ("embed", "nomic", "bge", "e5-")
+
+
+def _compute_briefing_interval(registry, trace_store) -> float:
+    """Adaptive refresh: faster when busy or issues detected, slower when idle."""
+    nodes = registry.get_online_nodes()
+    if not nodes:
+        return 3600  # 1h if no nodes
+
+    # Check queue activity
+    total_in_flight = 0
+    for node in nodes:
+        if node.ollama:
+            total_in_flight += node.ollama.requests_active or 0
+
+    if total_in_flight > 5:
+        return 1800  # 30 min when very busy
+    if total_in_flight > 0:
+        return 3600  # 1 hour when active
+    return 21600  # 6 hours when idle
+
+
+async def _generate_briefing(request) -> dict:
+    """Generate a fleet intelligence briefing using an internal LLM call."""
+    settings = request.app.state.settings
+    registry = request.app.state.registry
+    trace_store = getattr(request.app.state, "trace_store", None)
+    health_engine = getattr(request.app.state, "health_engine", None)
+
+    # Auto-select model: first loaded LLM (skip embed/image)
+    model = settings.fleet_intelligence_model
+    if not model:
+        for node in registry.get_online_nodes():
+            if not node.ollama:
+                continue
+            for m in node.ollama.models_loaded:
+                nm = m.name.lower()
+                if not any(p in nm for p in EMBED_SKIP) and "image" not in nm and not nm.startswith("x/"):
+                    model = m.name
+                    break
+            if model:
+                break
+    if not model:
+        return {"error": "No LLM models loaded", "briefing": None}
+
+    # Gather fleet data
+    nodes = registry.get_online_nodes()
+    nodes_online = len(nodes)
+    models_loaded = sum(
+        len(n.ollama.models_loaded) if n.ollama else 0 for n in nodes
+    )
+    total_available_gb = sum(
+        n.memory.available_gb if n.memory else 0 for n in nodes
+    )
+
+    # Health data
+    health_summary = ""
+    if health_engine and trace_store:
+        try:
+            report = await health_engine.analyze(registry, trace_store)
+            health_summary = f"Health: {report.score}/100."
+            critical = [r for r in report.recommendations if r.severity.value == "critical"]
+            warnings = [r for r in report.recommendations if r.severity.value == "warning"]
+            if critical:
+                health_summary += f" {len(critical)} critical: {critical[0].title}."
+            if warnings:
+                health_summary += f" {len(warnings)} warning(s)."
+        except Exception:
+            health_summary = "Health: unable to analyze."
+
+    # Traffic data
+    traffic_summary = ""
+    if trace_store:
+        try:
+            overall = await trace_store.get_overall_stats_24h()
+            traffic_summary = (
+                f"Traffic (24h): {overall['total_requests']:,} requests, "
+                f"{overall['error_rate_pct']:.1f}% errors, "
+                f"avg latency {overall['avg_latency_ms']:.0f}ms."
+            )
+        except Exception:
+            pass
+
+    # Context usage
+    context_summary = ""
+    if trace_store:
+        try:
+            stats = await trace_store.get_prompt_token_stats(days=7)
+            wasteful = []
+            for s in stats:
+                alloc = 0
+                for node in nodes:
+                    if node.ollama:
+                        for m in node.ollama.models_loaded:
+                            if m.name == s["model"]:
+                                alloc = max(alloc, m.context_length or 0)
+                total_p99 = s.get("total_p99", 0)
+                if alloc > 0 and total_p99 > 0 and alloc / total_p99 > 4:
+                    wasteful.append(
+                        f"{s['model']} ({(total_p99/alloc*100):.0f}% utilization)"
+                    )
+            if wasteful:
+                context_summary = f"Context waste: {', '.join(wasteful[:3])}."
+        except Exception:
+            pass
+
+    # Build prompt
+    prompt = f"""Current fleet state:
+- {nodes_online} node(s) online, {models_loaded} model(s) loaded, {total_available_gb:.0f}GB available memory
+- {health_summary}
+- {traffic_summary}
+- {context_summary}
+
+Provide a brief fleet intelligence briefing (3-5 bullet points). Focus on:
+1. Any issues needing immediate attention
+2. Performance observations
+3. Optimization opportunities
+Be specific with numbers. Keep each point to one sentence."""
+
+    # Internal LLM call via httpx
+    import httpx
+
+    base_url = f"http://localhost:{settings.port}"
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=60) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a fleet operations analyst for Ollama Herd, "
+                                "an AI inference router. Be concise and actionable."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": False,
+                    "options": {"num_predict": 300, "temperature": 0.3},
+                    "metadata": {"tags": ["fleet-intelligence"]},
+                },
+            )
+        if resp.status_code != 200:
+            return {"error": f"LLM call failed: HTTP {resp.status_code}", "briefing": None}
+        data = resp.json()
+        return {
+            "briefing": data.get("message", {}).get("content", ""),
+            "model": model,
+            "generated_at": time.time(),
+        }
+    except Exception as e:
+        return {"error": str(e)[:200], "briefing": None}
+
+
+@router.get("/dashboard/api/briefing")
+async def dashboard_briefing(request: Request, refresh: int = 0):
+    """Fleet intelligence briefing — LLM-powered analysis of fleet state.
+
+    Cached with adaptive refresh interval based on fleet activity.
+    Pass ?refresh=1 to force regeneration.
+    """
+    settings = request.app.state.settings
+    if not settings.fleet_intelligence:
+        return {"enabled": False, "briefing": None}
+
+    cache = _briefing_cache
+    now = time.time()
+    registry = request.app.state.registry
+    trace_store = getattr(request.app.state, "trace_store", None)
+
+    interval = _compute_briefing_interval(registry, trace_store)
+    is_stale = (now - cache["generated_at"]) > interval
+
+    # Return cached if fresh (or already generating)
+    if not is_stale and not refresh and cache["briefing"]:
+        next_refresh = max(0, interval - (now - cache["generated_at"]))
+        return {
+            "enabled": True,
+            "briefing": cache["briefing"],
+            "model": cache["model"],
+            "generated_at": cache["generated_at"],
+            "next_refresh_s": int(next_refresh),
+            "cached": True,
+        }
+
+    if cache["generating"]:
+        return {
+            "enabled": True,
+            "briefing": cache.get("briefing"),
+            "model": cache.get("model"),
+            "generated_at": cache.get("generated_at", 0),
+            "generating": True,
+        }
+
+    # Generate new briefing
+    cache["generating"] = True
+    try:
+        result = await _generate_briefing(request)
+        if result.get("briefing"):
+            cache["briefing"] = result["briefing"]
+            cache["model"] = result["model"]
+            cache["generated_at"] = result["generated_at"]
+        next_refresh = interval
+        return {
+            "enabled": True,
+            "briefing": cache["briefing"],
+            "model": cache.get("model"),
+            "generated_at": cache.get("generated_at", 0),
+            "next_refresh_s": int(next_refresh),
+            "cached": False,
+            "error": result.get("error"),
+        }
+    finally:
+        cache["generating"] = False
+
 
 @router.get("/dashboard/api/recommendations")
 async def dashboard_recommendations_data(request: Request, refresh: int = 0):
@@ -469,6 +691,7 @@ async def dashboard_settings_data(request: Request):
             "transcription": settings.transcription,
             "dynamic_num_ctx": settings.dynamic_num_ctx,
             "num_ctx_auto_calculate": settings.num_ctx_auto_calculate,
+            "fleet_intelligence": settings.fleet_intelligence,
         },
         "context": {
             "context_protection": settings.context_protection,
@@ -568,7 +791,7 @@ async def dashboard_settings_update(request: Request):
 
     mutable_fields = {
         "auto_pull", "vram_fallback", "image_generation", "transcription",
-        "dynamic_num_ctx", "num_ctx_auto_calculate",
+        "dynamic_num_ctx", "num_ctx_auto_calculate", "fleet_intelligence",
     }
     updated = {}
 
@@ -1138,6 +1361,14 @@ def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str
 <title>{title} - Ollama Herd</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>{_SHARED_CSS}</style>
+<script>
+function barColor(pct) {{
+  var h = 142 - (pct / 100) * 142;
+  var s = 71 + (pct / 100) * 13;
+  var l = 45 + (pct / 100) * 15;
+  return 'hsl(' + h + ',' + s + '%,' + l + '%)';
+}}
+</script>
 {extra_head}
 </head>
 <body>
@@ -1188,14 +1419,6 @@ _OVERVIEW_BODY = """
 .metric .value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .bar-container { height: 6px; background: var(--border); border-radius: 3px; margin-top: 6px; overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 3px; transition: width 0.8s ease, background 0.5s ease; }
-.bar-fill.cpu { background: var(--green); }
-.bar-fill.cpu.moderate { background: var(--yellow); }
-.bar-fill.cpu.high { background: var(--orange); }
-.bar-fill.cpu.critical { background: var(--red); }
-.bar-fill.mem { background: var(--green); }
-.bar-fill.mem.moderate { background: var(--accent); }
-.bar-fill.mem.warn { background: var(--yellow); }
-.bar-fill.mem.critical { background: var(--red); }
 .models-list { margin-top: 12px; }
 .model-chip {
   display: inline-flex; align-items: center; gap: 4px;
@@ -1234,6 +1457,18 @@ _OVERVIEW_BODY = """
 </style>
 
 <div class="main">
+  <div id="briefing-section" style="display:none">
+    <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
+      Fleet Intelligence
+      <button id="briefing-refresh" onclick="fetchBriefing(true)" style="background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer">Refresh</button>
+    </div>
+    <div class="card" id="briefing-card">
+      <div id="briefing-content" style="font-size:13px;line-height:1.7;color:var(--text)">
+        <span style="color:var(--text-dim)">Generating fleet briefing...</span>
+      </div>
+      <div id="briefing-meta" style="margin-top:10px;font-size:11px;color:var(--text-dim);display:flex;justify-content:space-between"></div>
+    </div>
+  </div>
   <div>
     <div class="section-title">Herd Nodes</div>
     <div class="nodes-grid" id="nodes-container">
@@ -1288,7 +1523,7 @@ function renderNodes(nodes) {
     const cap = node.capacity;
     let capacityHtml = '';
     if (cap) {
-      const scoreColor = cap.availability_score > 0.6 ? 'var(--green)' : cap.availability_score > 0.3 ? 'var(--yellow)' : 'var(--red)';
+      const scoreColor = barColor(100 - cap.availability_score * 100);  // Invert: high availability = green
       const modeLabels = {
         full: 'Full Capacity', learned_high: 'High Avail', learned_medium: 'Medium Avail',
         learned_low: 'Low Avail', paused: 'Paused', bootstrap: 'Learning...'
@@ -1332,12 +1567,12 @@ function renderNodes(nodes) {
           <div class="metric">
             <div class="label">CPU</div>
             <div class="value">${cpu.toFixed(1)}%</div>
-            <div class="bar-container"><div class="bar-fill cpu ${cpu > 85 ? 'critical' : cpu > 60 ? 'high' : cpu > 35 ? 'moderate' : ''}" style="width:${cpu}%"></div></div>
+            <div class="bar-container"><div class="bar-fill" style="width:${cpu}%;background:${barColor(cpu)}"></div></div>
           </div>
           <div class="metric">
             <div class="label">Memory (${pressure})</div>
             <div class="value">${formatGB(memUsed)} / ${formatGB(memTotal)}</div>
-            <div class="bar-container"><div class="bar-fill mem ${pressure === 'critical' ? 'critical' : pressure === 'warn' ? 'warn' : memPct > 70 ? 'moderate' : ''}" style="width:${memPct}%"></div></div>
+            <div class="bar-container"><div class="bar-fill" style="width:${memPct}%;background:${barColor(memPct)}"></div></div>
           </div>
           <div class="metric">
             <div class="label">Cores</div>
@@ -1409,6 +1644,44 @@ function connect() {
   es.onerror = () => { dot.className = 'status-dot offline'; statusEl.textContent = 'Reconnecting...'; es.close(); setTimeout(connect, 3000); };
 }
 connect();
+
+// Fleet Intelligence Briefing
+async function fetchBriefing(force) {
+  try {
+    const url = '/dashboard/api/briefing' + (force ? '?refresh=1' : '');
+    const btn = document.getElementById('briefing-refresh');
+    if (force && btn) btn.textContent = 'Generating...';
+    const resp = await fetch(url);
+    const data = await resp.json();
+    const section = document.getElementById('briefing-section');
+    if (!data.enabled) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    const content = document.getElementById('briefing-content');
+    const meta = document.getElementById('briefing-meta');
+    if (btn) btn.textContent = 'Refresh';
+    if (data.generating) {
+      content.innerHTML = '<span style="color:var(--text-dim)">Generating fleet briefing...</span>';
+      return;
+    }
+    if (data.briefing) {
+      // Simple markdown: **bold**, bullet points, newlines
+      let html = data.briefing
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/^[-•]\s*/gm, '&bull; ')
+        .replace(/\n/g, '<br>');
+      content.innerHTML = html;
+      const ago = data.generated_at ? Math.round((Date.now()/1000 - data.generated_at) / 60) : 0;
+      const agoText = ago < 1 ? 'just now' : ago + 'm ago';
+      const nextText = data.next_refresh_s ? Math.round(data.next_refresh_s / 60) + 'm' : '?';
+      meta.innerHTML = `<span>Generated ${agoText} using <code style="font-size:11px;background:var(--border);padding:1px 5px;border-radius:3px">${data.model || '?'}</code></span><span>Next update in ~${nextText}</span>`;
+    } else if (data.error) {
+      content.innerHTML = '<span style="color:var(--text-dim)">' + data.error + '</span>';
+      meta.innerHTML = '';
+    }
+  } catch(e) { /* silently retry next poll */ }
+}
+fetchBriefing();
+setInterval(fetchBriefing, 30000);
 </script>
 """
 
@@ -3177,22 +3450,20 @@ function renderRecommendations(data) {
   nodesLabel.style.display = 'block';
   plansEl.innerHTML = nodes.map(function(node) {
     var ramPct = node.usable_ram_gb > 0 ? Math.min(100, Math.round(node.total_recommended_ram_gb / node.usable_ram_gb * 100)) : 0;
-    var barColor = ramPct > 90 ? 'var(--yellow)' : 'var(--accent)';
 
     var diskPct = node.disk_total_gb > 0 ? Math.min(100, Math.round((node.disk_total_gb - node.disk_available_gb) / node.disk_total_gb * 100)) : 0;
-    var diskColor = diskPct > 90 ? 'var(--red)' : diskPct > 75 ? 'var(--yellow)' : 'var(--blue)';
 
     var html = '<div class="node-plan">';
     html += '<div class="node-plan-header">';
     html += '<div class="node-plan-title">' + node.node_id + '</div>';
     html += '<div class="node-bars">';
     html += '<div class="node-ram-bar">';
-    html += '<div class="ram-bar"><div class="ram-bar-fill" style="width:' + ramPct + '%;background:' + barColor + '"></div></div>';
+    html += '<div class="ram-bar"><div class="ram-bar-fill" style="width:' + ramPct + '%;background:' + barColor(ramPct) + '"></div></div>';
     html += '<div class="ram-bar-label">' + node.total_recommended_ram_gb + ' / ' + node.usable_ram_gb + ' GB RAM</div>';
     html += '</div>';
     if (node.disk_total_gb > 0) {
       html += '<div class="node-ram-bar">';
-      html += '<div class="ram-bar"><div class="ram-bar-fill" style="width:' + diskPct + '%;background:' + diskColor + '"></div></div>';
+      html += '<div class="ram-bar"><div class="ram-bar-fill" style="width:' + diskPct + '%;background:' + barColor(diskPct) + '"></div></div>';
       html += '<div class="ram-bar-label">' + node.disk_available_gb.toFixed(0) + ' / ' + node.disk_total_gb.toFixed(0) + ' GB Disk free</div>';
       html += '</div>';
     }

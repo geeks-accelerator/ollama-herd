@@ -72,6 +72,10 @@ class ServerSettings(BaseSettings):
     num_ctx_overrides: dict[str, int] = {}  # Per-model: {"gpt-oss:120b": 32768}
     num_ctx_auto_calculate: bool = False  # Auto-calculate from trace data
 
+    # Fleet Intelligence — LLM-powered dashboard briefing
+    fleet_intelligence: bool = True  # Enable briefing card on dashboard
+    fleet_intelligence_model: str = ""  # Empty = auto-select best loaded LLM
+
     # Retry
     max_retries: int = 2
 
