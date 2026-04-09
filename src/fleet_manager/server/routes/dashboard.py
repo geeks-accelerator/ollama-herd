@@ -558,7 +558,16 @@ Provide a brief fleet intelligence briefing (3-4 bullet points). Rules:
                             "role": "system",
                             "content": (
                                 "You are a fleet operations analyst for Ollama Herd, "
-                                "an AI inference router. Be concise and actionable."
+                                "an AI inference router. Be concise and actionable. "
+                                "Available actions operators can take: "
+                                "add a new node (run 'herd-node' on another machine), "
+                                "pull a model (curl /api/pull -d '{\"name\":\"model\"}'), "
+                                "enable dynamic num_ctx in Settings, "
+                                "set OLLAMA_NUM_PARALLEL=2 in ~/.zshrc, "
+                                "check the Health or Recommendations dashboard pages. "
+                                "Do NOT suggest commands that don't exist. "
+                                "Do NOT suggest unload_context, load_model, or other "
+                                "fictional commands."
                             ),
                         },
                         {"role": "user", "content": prompt},
