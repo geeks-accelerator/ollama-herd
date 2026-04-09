@@ -405,6 +405,7 @@ class BenchmarkRunner:
                         covered.add(cat)
 
                 # Phase 1: Prefer LLM models already on disk but not loaded
+                SKIP_PATTERNS = (":cloud",)
                 for name in sorted(on_disk_names - loaded_names):
                     if pullable_gb < 2:
                         break
@@ -412,6 +413,8 @@ class BenchmarkRunner:
                         continue
                     lower = name.lower()
                     if any(p in lower for p in EMBEDDING_PATTERNS):
+                        continue
+                    if any(p in lower for p in SKIP_PATTERNS):
                         continue
                     if is_image_model(name):
                         continue
@@ -493,6 +496,7 @@ class BenchmarkRunner:
                     if is_on_disk:
                         # Model is on disk — send a non-streaming request to force
                         # Ollama to load it into GPU memory. Block until complete.
+                        # Then send a keep_alive request to pin it in memory.
                         warmup_resp = await client.post(
                             "/api/chat",
                             json={
@@ -505,8 +509,17 @@ class BenchmarkRunner:
                         )
                         success = warmup_resp.status_code == 200
                         if success:
+                            # Pin model in memory with keep_alive
+                            await client.post(
+                                "/api/generate",
+                                json={
+                                    "model": model, "prompt": "",
+                                    "keep_alive": "60m",
+                                },
+                                timeout=30,
+                            )
                             logger.info(
-                                f"Smart benchmark: {model} loaded into GPU memory"
+                                f"Smart benchmark: {model} loaded and pinned"
                             )
                     elif streaming_proxy:
                         success = await streaming_proxy.pull_model(
