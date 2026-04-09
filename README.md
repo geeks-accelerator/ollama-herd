@@ -30,10 +30,18 @@ You have multiple machines with GPUs sitting around. You want one endpoint that 
 pip install ollama-herd
 ```
 
+**Or with Homebrew (macOS/Linux):**
+
+```bash
+brew tap geeks-accelerator/ollama-herd
+brew install ollama-herd
+```
+
 **Upgrading?**
 
 ```bash
 pip install --upgrade ollama-herd
+# or: brew upgrade ollama-herd
 ```
 
 See [CHANGELOG.md](CHANGELOG.md) for what's new in each release.
