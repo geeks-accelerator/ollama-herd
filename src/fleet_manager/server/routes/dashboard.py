@@ -1664,11 +1664,23 @@ async function fetchBriefing(force) {
       return;
     }
     if (data.briefing) {
-      // Simple markdown: **bold**, bullet points, newlines
-      let html = data.briefing
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/^[-•]\s*/gm, '&bull; ')
-        .replace(/\n/g, '<br>');
+      // Convert newlines to <br> and basic markdown
+      var lines = data.briefing.split(String.fromCharCode(10));
+      var html = lines.map(function(line) {
+        // Bold: **text** -> <strong>text</strong>
+        while (line.indexOf('**') !== -1) {
+          var i = line.indexOf('**');
+          var j = line.indexOf('**', i + 2);
+          if (j === -1) break;
+          line = line.substring(0, i) + '<strong>' + line.substring(i+2, j) + '</strong>' + line.substring(j+2);
+        }
+        // Bullet: lines starting with - or *
+        var trimmed = line.trimStart();
+        if (trimmed.charAt(0) === '-' || trimmed.charAt(0) === '*') {
+          line = '&bull; ' + trimmed.substring(1).trimStart();
+        }
+        return line;
+      }).join('<br>');
       content.innerHTML = html;
       const ago = data.generated_at ? Math.round((Date.now()/1000 - data.generated_at) / 60) : 0;
       const agoText = ago < 1 ? 'just now' : ago + 'm ago';
