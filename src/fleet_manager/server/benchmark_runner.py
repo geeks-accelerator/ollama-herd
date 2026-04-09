@@ -494,30 +494,45 @@ class BenchmarkRunner:
 
                 try:
                     if is_on_disk:
-                        # Model is on disk — send a non-streaming request to force
-                        # Ollama to load it into GPU memory. Block until complete.
-                        # Then send a keep_alive request to pin it in memory.
-                        warmup_resp = await client.post(
-                            "/api/chat",
-                            json={
-                                "model": model,
-                                "messages": [{"role": "user", "content": "hi"}],
-                                "stream": False,
-                                "options": {"num_predict": 1},
-                            },
-                            timeout=180,
-                        )
-                        success = warmup_resp.status_code == 200
-                        if success:
-                            # Pin model in memory with keep_alive
-                            await client.post(
-                                "/api/generate",
+                        # Model is on disk — talk directly to Ollama on the node
+                        # (bypassing the router) to load and pin the model.
+                        ollama_url = None
+                        if registry:
+                            node_state = registry.get_node(node_id)
+                            if node_state:
+                                ollama_url = node_state.ollama_base_url
+
+                        if ollama_url:
+                            # Direct to Ollama: load model + pin with keep_alive
+                            async with httpx.AsyncClient(
+                                base_url=ollama_url, timeout=180
+                            ) as ollama_client:
+                                warmup_resp = await ollama_client.post(
+                                    "/api/chat",
+                                    json={
+                                        "model": model,
+                                        "messages": [{"role": "user", "content": "hi"}],
+                                        "stream": False,
+                                        "options": {"num_predict": 1},
+                                        "keep_alive": "60m",
+                                    },
+                                )
+                                success = warmup_resp.status_code == 200
+                        else:
+                            # Fallback: through router
+                            warmup_resp = await client.post(
+                                "/api/chat",
                                 json={
-                                    "model": model, "prompt": "",
-                                    "keep_alive": "60m",
+                                    "model": model,
+                                    "messages": [{"role": "user", "content": "hi"}],
+                                    "stream": False,
+                                    "options": {"num_predict": 1},
                                 },
-                                timeout=30,
+                                timeout=180,
                             )
+                            success = warmup_resp.status_code == 200
+
+                        if success:
                             logger.info(
                                 f"Smart benchmark: {model} loaded and pinned"
                             )
