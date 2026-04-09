@@ -269,6 +269,46 @@ launchctl setenv OLLAMA_NUM_PARALLEL 2
 
 ---
 
+### 21. Dynamic `num_ctx` Management Based on Actual Usage `OPEN`
+
+**Severity:** Medium
+**Files:** New module + `server/streaming.py`, `server/routes/dashboard.py` (settings)
+
+Ollama allocates KV cache for the full `default_num_ctx` per model, even if most requests only use a fraction of it. A model with 131K default context uses ~67GB, but if 95% of requests only need 8K-16K context, the fleet is wasting 50+GB of memory per model on unused KV cache. This prevents loading additional models.
+
+**Proposed approach — 3 phases:**
+
+**Phase 1: Observe** — Track actual `num_ctx` usage per model from request traces.
+- Log `prompt_eval_count` (prompt tokens) from every completed request
+- Compute p50, p95, p99 of actual prompt sizes per model
+- Surface in dashboard settings: "gpt-oss:120b: avg context 2K, p95 8K, p99 16K, allocated 131K"
+- No behavior change — just visibility
+
+**Phase 2: Recommend** — Use observed data to suggest optimal `num_ctx` per model.
+- Dashboard shows: "Recommended: set num_ctx=32768 for gpt-oss:120b (covers p99 of your usage, saves ~50GB)"
+- Health engine warns when allocated context >> actual usage by 4x+
+- Settings page has a slider or input per model to set recommended `num_ctx`
+
+**Phase 3: Auto-adjust** — Dynamically manage `num_ctx` via Ollama settings.
+- Herd injects `num_ctx` in proxied requests based on learned optimal value
+- If a request arrives that exceeds the current setting, Herd either:
+  - a) Queues it and triggers an Ollama restart with higher `num_ctx` (slow but correct)
+  - b) Passes it through with an explicit higher `num_ctx` (triggers model reload in Ollama)
+  - c) Returns a warning header and serves at the current context limit
+- Auto-restart Ollama if error rate spikes due to context truncation
+- Settings toggle: `FLEET_DYNAMIC_NUM_CTX=true` (off by default)
+- Settings page shows current vs recommended vs actual usage with toggle
+
+**Key data already available:**
+- `request_traces.prompt_tokens` in SQLite — has actual prompt sizes for every request
+- Health engine already detects KV cache bloat (`_check_kv_cache_bloat()`)
+- Context protection (`streaming.py`) already intercepts `num_ctx` in requests
+- Dashboard settings page already has runtime toggles
+
+**Why this matters:** On the 512GB Mac Studio, gpt-oss:120b with 131K context uses ~67GB. If actual usage is 16K context, it could use ~12GB — freeing 55GB for 2-3 additional models. This directly fixes the smart benchmark's inability to load multiple models.
+
+---
+
 ### 17. Zombie In-Flight Queue Entries Block Concurrency Slots `FIXED`
 
 **File:** `src/fleet_manager/server/queue_manager.py`
