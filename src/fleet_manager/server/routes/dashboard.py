@@ -1519,12 +1519,46 @@ function formatGB(gb) {
   return gb.toFixed(2) + ' GB';
 }
 
+var _lastNodeIds = '';
 function renderNodes(nodes) {
   const container = document.getElementById('nodes-container');
   if (!nodes.length) {
     container.innerHTML = '<div class="empty-state">No nodes connected</div>';
+    _lastNodeIds = '';
     return;
   }
+
+  // Only rebuild full cards when nodes are added/removed/status changes
+  var nodeIds = nodes.map(function(n) { return n.node_id + ':' + n.status; }).join(',');
+  var needsRebuild = (nodeIds !== _lastNodeIds);
+
+  if (!needsRebuild) {
+    // Fast path: update values in-place without rebuilding DOM
+    var totalModels2 = 0, onlineCount2 = 0;
+    nodes.forEach(function(node) {
+      if (node.status === 'online') onlineCount2++;
+      var models = node.ollama ? node.ollama.models_loaded : [];
+      totalModels2 += models.length;
+      var safeId = 'node-' + node.node_id.replace(/[^a-zA-Z0-9]/g, '-');
+      var card = document.getElementById(safeId);
+      if (!card) { needsRebuild = true; return; }
+      var cpu = node.cpu ? node.cpu.utilization_pct : 0;
+      var memUsed = node.memory ? node.memory.used_gb : 0;
+      var memTotal = node.memory ? node.memory.total_gb : node.hardware.memory_total_gb;
+      var memPct = memTotal > 0 ? (memUsed / memTotal) * 100 : 0;
+      var el;
+      el = card.querySelector('.cpu-val'); if (el) el.textContent = cpu.toFixed(1) + '%';
+      el = card.querySelector('.cpu-bar'); if (el) { el.style.width = cpu + '%'; el.style.background = barColor(cpu); }
+      el = card.querySelector('.mem-val'); if (el) el.textContent = formatGB(memUsed) + ' / ' + formatGB(memTotal);
+      el = card.querySelector('.mem-bar'); if (el) { el.style.width = memPct + '%'; el.style.background = barColor(memPct); }
+    });
+    if (!needsRebuild) {
+      document.getElementById('header-stats').innerHTML = '<div class="header-stat"><div class="value">' + onlineCount2 + '</div><div class="label">Nodes</div></div><div class="header-stat"><div class="value">' + totalModels2 + '</div><div class="label">Models Loaded</div></div>';
+      return;
+    }
+  }
+
+  _lastNodeIds = nodeIds;
   let totalModels = 0, onlineCount = 0;
   container.innerHTML = nodes.map((node, idx) => {
     const status = node.status;
@@ -1586,8 +1620,9 @@ function renderNodes(nodes) {
           </div>
         </div>`;
     }
+    const safeId = 'node-' + node.node_id.replace(/[^a-zA-Z0-9]/g, '-');
     return `
-      <div class="card card-animate" style="animation-delay:${idx * 60}ms">
+      <div class="card card-animate" id="${safeId}" style="animation-delay:${idx * 60}ms">
         <div class="card-header">
           <h3><span class="status-dot ${status}"></span>${node.node_id}</h3>
           <span class="badge ${status}">${status}</span>
@@ -1595,13 +1630,13 @@ function renderNodes(nodes) {
         <div class="metrics-row">
           <div class="metric">
             <div class="label">CPU</div>
-            <div class="value">${cpu.toFixed(1)}%</div>
-            <div class="bar-container"><div class="bar-fill" style="width:${cpu}%;background:${barColor(cpu)}"></div></div>
+            <div class="value cpu-val">${cpu.toFixed(1)}%</div>
+            <div class="bar-container"><div class="bar-fill cpu-bar" style="width:${cpu}%;background:${barColor(cpu)}"></div></div>
           </div>
           <div class="metric">
             <div class="label">Memory (${pressure})</div>
-            <div class="value">${formatGB(memUsed)} / ${formatGB(memTotal)}</div>
-            <div class="bar-container"><div class="bar-fill" style="width:${memPct}%;background:${barColor(memPct)}"></div></div>
+            <div class="value mem-val">${formatGB(memUsed)} / ${formatGB(memTotal)}</div>
+            <div class="bar-container"><div class="bar-fill mem-bar" style="width:${memPct}%;background:${barColor(memPct)}"></div></div>
           </div>
           <div class="metric">
             <div class="label">Cores</div>
