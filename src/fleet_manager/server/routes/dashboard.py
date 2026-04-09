@@ -2299,7 +2299,14 @@ async function pollProgress() {
       fill.style.width = '0%';
       title.textContent = 'Smart Benchmark: Pulling Models';
       if (p.pull_progress && p.pull_progress.model) {
-        phase.textContent = `Pulling ${p.pull_progress.model} (${p.pull_progress.current}/${p.pull_progress.total})`;
+        let pullText = `Pulling ${p.pull_progress.model} (${p.pull_progress.current}/${p.pull_progress.total})`;
+        if (p.pull_progress.pct >= 0 && p.pull_progress.total_gb) {
+          pullText += ` — ${p.pull_progress.pct}% (${p.pull_progress.completed_gb || 0}/${p.pull_progress.total_gb} GB)`;
+          fill.style.width = p.pull_progress.pct + '%';
+        } else if (p.pull_progress.status) {
+          pullText += ` — ${p.pull_progress.status}`;
+        }
+        phase.textContent = pullText;
       }
     } else if (p.status === 'warming_up') {
       fill.style.width = '0%';

@@ -7,7 +7,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import httpx
 
@@ -551,8 +551,17 @@ class StreamingProxy:
         except Exception as e:
             logger.warning(f"Pre-warm {model} on {node_id} error: {e}")
 
-    async def pull_model(self, node_id: str, model: str) -> bool:
-        """Pull a model onto a node via Ollama /api/pull. Returns True on success."""
+    async def pull_model(
+        self,
+        node_id: str,
+        model: str,
+        progress_cb: Callable[[int, int, int, str], None] | None = None,
+    ) -> bool:
+        """Pull a model onto a node via Ollama /api/pull. Returns True on success.
+
+        progress_cb(pct, completed_bytes, total_bytes, status) is called on each
+        progress update if provided.
+        """
         try:
             client = self._get_client(node_id)
             async with client.stream(
@@ -577,8 +586,14 @@ class StreamingProxy:
                         logger.info(
                             f"Pulling {model} on {node_id}: {status} {pct}%"
                         )
+                        if progress_cb:
+                            progress_cb(pct, data["completed"], data["total"], status)
                     elif status == "success":
                         logger.info(f"Pull {model} on {node_id}: success")
+                        if progress_cb:
+                            progress_cb(100, 0, 0, "success")
+                    elif progress_cb:
+                        progress_cb(-1, 0, 0, status)
             return True
         except Exception as e:
             logger.error(f"Pull {model} on {node_id} error: {type(e).__name__}: {e}")

@@ -338,9 +338,19 @@ class BenchmarkRunner:
                 }
                 logger.info(f"Smart benchmark: pulling {model} to {node_id} ({ram_gb}GB)")
 
+                def _on_pull_progress(pct, completed, total_bytes, status):
+                    """Update pull progress for the UI."""
+                    self._pull_progress["pct"] = pct
+                    self._pull_progress["status"] = status
+                    if total_bytes > 0:
+                        self._pull_progress["completed_gb"] = round(completed / 1e9, 1)
+                        self._pull_progress["total_gb"] = round(total_bytes / 1e9, 1)
+
                 try:
                     if streaming_proxy:
-                        success = await streaming_proxy.pull_model(node_id, model)
+                        success = await streaming_proxy.pull_model(
+                            node_id, model, progress_cb=_on_pull_progress,
+                        )
                     else:
                         # Fallback: use HTTP API
                         pull_resp = await client.post(
