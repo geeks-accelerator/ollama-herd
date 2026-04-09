@@ -404,3 +404,30 @@ If Ollama drops the TCP connection after sending partial data but without raisin
 **Severity:** Low
 **Problem:** httpx timeout exceptions have empty `str(e)`, so `f"{type(e).__name__}: {e}"` produces `ReadTimeout: ` with no details.
 **Fix:** Use `repr(e)` as fallback when `str(e)` is empty: `f"{type(e).__name__}: {repr(e)}"`. Now captures the exception args (timeout value, URL, etc.) even when the string representation is empty.
+
+---
+
+### 22. Custom Date Range Selector for Dashboard Pages `OPEN`
+
+**Files:** `src/fleet_manager/server/routes/dashboard.py`, `src/fleet_manager/server/trace_store.py`
+**Severity:** Low (feature enhancement)
+
+The Trends page has preset time buttons (24h, 48h, 72h, 7d) but no custom date/time range selector. The Model Insights and Apps pages have a `days` parameter but no time range UI at all.
+
+**Proposed fix:**
+
+1. **Shared date range component** — reusable across Trends, Model Insights, and Apps pages:
+   - Preset buttons: 24h, 48h, 72h, 7d, 30d
+   - Custom range: two datetime-local inputs (start, end)
+   - All times in user's local timezone (JS `Date` handles this natively)
+   - Component stores selection in URL params for shareability
+
+2. **Backend changes:**
+   - Add `start_ts` and `end_ts` query params to `/dashboard/api/trends`, `/dashboard/api/models`, `/dashboard/api/apps`
+   - TraceStore queries already filter by timestamp — just expose the params
+   - Timezone conversion: frontend sends UTC timestamps, backend uses them directly (traces are stored as Unix timestamps)
+
+3. **Pages to update:**
+   - Trends: replace current time buttons with shared component
+   - Model Insights: add time range component (currently hardcoded to `days` param)
+   - Apps: add time range component (currently hardcoded to `days` param)
