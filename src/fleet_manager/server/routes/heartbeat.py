@@ -36,4 +36,17 @@ async def receive_heartbeat(request: Request):
     client_ip = request.client.host if request.client else ""
     node = await registry.update_from_heartbeat(payload, request_ip=client_ip)
     logger.debug(f"Heartbeat from {payload.node_id}: status={node.status.value}")
-    return {"status": "ok", "node_status": node.status.value}
+
+    # Check for pending commands from the context optimizer
+    response = {"status": "ok", "node_status": node.status.value}
+    optimizer = getattr(request.app.state, "context_optimizer", None)
+    if optimizer:
+        commands = optimizer.get_pending_commands(payload.node_id)
+        if commands:
+            response["commands"] = commands
+            logger.info(
+                f"Sending {len(commands)} command(s) to {payload.node_id}: "
+                f"{[c['type'] for c in commands]}"
+            )
+
+    return response

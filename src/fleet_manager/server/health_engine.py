@@ -147,6 +147,12 @@ class HealthEngine:
             )
             recommendations.extend(self._check_retry_rates(retry_stats))
 
+            # Context waste analysis
+            prompt_stats = await trace_store.get_prompt_token_stats(days=7)
+            recommendations.extend(
+                self._check_context_waste(prompt_stats, nodes)
+            )
+
         # Suppress misleading "underutilized memory" when there's active
         # model thrashing or timeouts on the same node — telling users to
         # "load more models" while models are timing out is contradictory.
@@ -603,6 +609,80 @@ class HealthEngine:
                 )
             )
 
+        return recs
+
+    def _check_context_waste(
+        self, prompt_stats: list[dict], nodes
+    ) -> list[Recommendation]:
+        """Detect models with allocated context far exceeding actual usage."""
+        recs = []
+        if not prompt_stats:
+            return recs
+
+        # Build allocated context map from nodes
+        allocated_ctx: dict[str, int] = {}
+        for node in nodes:
+            if not node.ollama:
+                continue
+            for m in node.ollama.models_loaded:
+                allocated_ctx[m.name] = max(
+                    allocated_ctx.get(m.name, 0), m.context_length or 0
+                )
+
+        wasteful = []
+        total_waste_ratio = 0
+        for stats in prompt_stats:
+            model = stats["model"]
+            alloc = allocated_ctx.get(model, 0)
+            p99 = stats["p99"]
+            if alloc == 0 or p99 == 0 or stats["request_count"] < 10:
+                continue
+            ratio = alloc / p99
+            if ratio > 4:  # Allocated > 4x actual p99
+                import math
+                recommended = max(2048, 2 ** math.ceil(math.log2(p99 * 1.25)))
+                savings_pct = round((alloc - recommended) / alloc * 100)
+                wasteful.append({
+                    "model": model,
+                    "allocated": alloc,
+                    "p99": p99,
+                    "ratio": round(ratio, 1),
+                    "recommended": recommended,
+                    "savings_pct": savings_pct,
+                    "requests": stats["request_count"],
+                })
+                total_waste_ratio += ratio
+
+        if not wasteful:
+            return recs
+
+        model_lines = "; ".join(
+            f"{w['model']} (alloc {w['allocated']:,} vs p99 {w['p99']:,}, "
+            f"{w['ratio']}x over)"
+            for w in wasteful[:3]
+        )
+
+        severity = Severity.INFO
+        if any(w["ratio"] > 8 for w in wasteful):
+            severity = Severity.WARNING
+
+        recs.append(
+            Recommendation(
+                check_id="context_waste",
+                severity=severity,
+                title=f"Context oversized on {len(wasteful)} model(s)",
+                description=(
+                    f"Allocated context far exceeds actual usage: {model_lines}. "
+                    f"Reducing context frees KV cache memory for additional models."
+                ),
+                fix=(
+                    "Enable dynamic num_ctx in Settings > Context Management, "
+                    "or set FLEET_DYNAMIC_NUM_CTX=true. The router will recommend "
+                    "optimal context sizes based on your actual usage patterns."
+                ),
+                data={"wasteful_models": wasteful},
+            )
+        )
         return recs
 
     def _check_zombie_reaper(self) -> list[Recommendation]:

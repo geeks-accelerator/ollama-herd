@@ -352,6 +352,65 @@ async def dashboard_health_data(request: Request):
     return report.model_dump()
 
 
+@router.get("/dashboard/api/context-usage")
+async def context_usage(request: Request, days: int = 7):
+    """Per-model context usage stats — actual vs allocated."""
+    trace_store = getattr(request.app.state, "trace_store", None)
+    registry = request.app.state.registry
+    settings = request.app.state.settings
+
+    token_stats = await trace_store.get_prompt_token_stats(days=days) if trace_store else []
+
+    # Build model → allocated context map from fleet state
+    allocated_ctx: dict[str, int] = {}
+    for node in registry.get_online_nodes():
+        if not node.ollama:
+            continue
+        for m in node.ollama.models_loaded:
+            allocated_ctx[m.name] = max(allocated_ctx.get(m.name, 0), m.context_length or 0)
+
+    # Get current overrides
+    overrides = getattr(settings, "num_ctx_overrides", {})
+
+    models = []
+    for stats in token_stats:
+        model = stats["model"]
+        alloc = allocated_ctx.get(model, 0)
+        p99 = stats["p99"]
+        # Recommend: next power-of-2 above p99 * 1.25, min 2048, max alloc
+        if p99 > 0:
+            import math
+            recommended = max(2048, 2 ** math.ceil(math.log2(p99 * 1.25)))
+            recommended = min(recommended, alloc) if alloc > 0 else recommended
+        else:
+            recommended = alloc
+
+        util_pct = round((p99 / alloc) * 100, 1) if alloc > 0 else 0
+        # Estimate savings: (alloc - recommended) / alloc * model_vram * kv_cache_fraction
+        # Rough estimate: KV cache is proportional to context length
+        savings_pct = round(max(0, (alloc - recommended) / alloc * 100), 1) if alloc > 0 else 0
+
+        models.append({
+            "model": model,
+            "allocated_ctx": alloc,
+            "override_ctx": overrides.get(model),
+            "request_count": stats["request_count"],
+            "prompt_tokens": {
+                "avg": stats["avg_tokens"],
+                "p50": stats["p50"],
+                "p75": stats["p75"],
+                "p95": stats["p95"],
+                "p99": stats["p99"],
+                "max": stats["max_tokens"],
+            },
+            "utilization_pct": util_pct,
+            "recommended_ctx": recommended,
+            "savings_pct": savings_pct,
+        })
+
+    return {"days": days, "models": models}
+
+
 _recommendations_cache: dict = {"data": None, "generated_at": 0.0}
 
 
@@ -405,6 +464,14 @@ async def dashboard_settings_data(request: Request):
             "vram_fallback": settings.vram_fallback,
             "image_generation": settings.image_generation,
             "transcription": settings.transcription,
+            "dynamic_num_ctx": settings.dynamic_num_ctx,
+            "num_ctx_auto_calculate": settings.num_ctx_auto_calculate,
+        },
+        "context": {
+            "context_protection": settings.context_protection,
+            "dynamic_num_ctx": settings.dynamic_num_ctx,
+            "num_ctx_overrides": settings.num_ctx_overrides,
+            "num_ctx_auto_calculate": settings.num_ctx_auto_calculate,
         },
         "server": {
             "host": hostname if settings.host == "0.0.0.0" else settings.host,
@@ -496,7 +563,10 @@ async def dashboard_settings_update(request: Request):
     body = await request.json()
     settings = request.app.state.settings
 
-    mutable_fields = {"auto_pull", "vram_fallback", "image_generation", "transcription"}
+    mutable_fields = {
+        "auto_pull", "vram_fallback", "image_generation", "transcription",
+        "dynamic_num_ctx", "num_ctx_auto_calculate",
+    }
     updated = {}
 
     for field in mutable_fields:
@@ -504,6 +574,15 @@ async def dashboard_settings_update(request: Request):
             value = bool(body[field])
             setattr(settings, field, value)
             updated[field] = value
+
+    # Handle num_ctx_overrides separately (dict, not bool)
+    if "num_ctx_overrides" in body:
+        overrides = body["num_ctx_overrides"]
+        if isinstance(overrides, dict):
+            # Validate: all values must be positive integers
+            clean = {k: int(v) for k, v in overrides.items() if int(v) > 0}
+            settings.num_ctx_overrides = clean
+            updated["num_ctx_overrides"] = clean
 
     if not updated:
         return {"status": "no_change", "message": "No mutable fields provided"}

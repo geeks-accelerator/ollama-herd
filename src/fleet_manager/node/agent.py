@@ -358,6 +358,57 @@ class NodeAgent:
             logger.warning(f"Heartbeat response: HTTP {resp.status_code} body={resp.text[:200]}")
             resp.raise_for_status()
 
+        # Process commands from the router
+        try:
+            data = resp.json()
+            for cmd in data.get("commands", []):
+                await self._handle_command(cmd)
+        except Exception:
+            pass  # Don't fail heartbeat on command processing errors
+
+    async def _handle_command(self, cmd: dict):
+        """Process a command from the router (e.g., restart Ollama)."""
+        cmd_type = cmd.get("type", "")
+        if cmd_type == "restart_ollama":
+            env = cmd.get("env", {})
+            reason = cmd.get("reason", "router command")
+            logger.info(f"Command: restart Ollama (reason: {reason}, env: {env})")
+            await self._restart_ollama(env)
+        else:
+            logger.warning(f"Unknown command type: {cmd_type}")
+
+    async def _restart_ollama(self, env_overrides: dict[str, str] | None = None):
+        """Restart the local Ollama process with optional env var changes."""
+        import os
+        import signal
+
+        logger.info("Restarting Ollama...")
+
+        # Kill current Ollama process
+        if hasattr(self, "_ollama_process") and self._ollama_process:
+            try:
+                self._ollama_process.send_signal(signal.SIGTERM)
+                self._ollama_process.wait(timeout=15)
+            except Exception as e:
+                logger.warning(f"Error stopping Ollama: {e}")
+                import contextlib
+                with contextlib.suppress(Exception):
+                    self._ollama_process.kill()
+            self._ollama_process = None
+
+        # Apply env overrides
+        if env_overrides:
+            for key, value in env_overrides.items():
+                os.environ[key] = value
+                logger.info(f"Set env: {key}={value}")
+
+        # Wait a moment for port to free
+        await asyncio.sleep(2)
+
+        # Restart via the existing startup mechanism
+        await self._ensure_ollama()
+        logger.info("Ollama restarted successfully")
+
     async def _drain(self):
         """Graceful shutdown: signal the router, then stop."""
         logger.info("Drain signal received, shutting down...")

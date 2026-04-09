@@ -67,6 +67,11 @@ class ServerSettings(BaseSettings):
     thinking_overhead: float = 4.0  # Multiply num_predict by this for thinking models
     thinking_min_predict: int = 1024  # Minimum num_predict for thinking models
 
+    # Dynamic context management
+    dynamic_num_ctx: bool = False  # Inject num_ctx overrides on cold loads
+    num_ctx_overrides: dict[str, int] = {}  # Per-model: {"gpt-oss:120b": 32768}
+    num_ctx_auto_calculate: bool = False  # Auto-calculate from trace data
+
     # Retry
     max_retries: int = 2
 

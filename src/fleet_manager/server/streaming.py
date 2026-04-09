@@ -902,6 +902,24 @@ class StreamingProxy:
         if mode == "passthrough":
             return
 
+        # Dynamic num_ctx: inject override when client didn't specify num_ctx
+        # This ensures cold-loaded models use the optimized context size
+        if getattr(self._settings, "dynamic_num_ctx", False):
+            overrides = getattr(self._settings, "num_ctx_overrides", {})
+            override = overrides.get(model, 0)
+            if override > 0:
+                options = body.get("options")
+                if not options or "num_ctx" not in options:
+                    if "options" not in body:
+                        body["options"] = {}
+                    body["options"]["num_ctx"] = override
+                    logger.info(
+                        f"Dynamic num_ctx: injected num_ctx={override} for {model}"
+                    )
+                    _record_context_protection(
+                        "dynamic_override", model, node_id, override, 0
+                    )
+
         options = body.get("options")
         if not options or "num_ctx" not in options:
             return

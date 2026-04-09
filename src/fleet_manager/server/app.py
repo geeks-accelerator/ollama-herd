@@ -49,7 +49,11 @@ async def lifespan(app: FastAPI):
     app.state.streaming_proxy = streaming_proxy
     app.state.latency_store = latency_store
     app.state.trace_store = trace_store
+    from fleet_manager.server.context_optimizer import ContextOptimizer
+
+    context_optimizer = ContextOptimizer(settings, registry, trace_store)
     app.state.rebalancer = rebalancer
+    app.state.context_optimizer = context_optimizer
 
     # Start mDNS advertisement
     advertiser = FleetServiceAdvertiser(settings.port, settings.mdns_service_name)
@@ -58,6 +62,7 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     monitor_task = asyncio.create_task(registry.monitor_heartbeats())
     rebalancer_task = asyncio.create_task(rebalancer.run())
+    optimizer_task = asyncio.create_task(context_optimizer.run())
     queue_mgr.start_reaper()
 
     logger.info(f"Ollama Herd ready on port {settings.port}")
@@ -67,10 +72,13 @@ async def lifespan(app: FastAPI):
     # Shutdown
     monitor_task.cancel()
     rebalancer_task.cancel()
+    optimizer_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await monitor_task
     with contextlib.suppress(asyncio.CancelledError):
         await rebalancer_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await optimizer_task
     await queue_mgr.shutdown()
     await streaming_proxy.close()
     await advertiser.stop()

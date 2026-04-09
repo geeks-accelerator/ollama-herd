@@ -697,6 +697,59 @@ class TraceStore:
         )
         await self._db.commit()
 
+    # -- Context usage analysis --
+
+    async def get_prompt_token_stats(self, days: int = 7) -> list[dict]:
+        """Per-model prompt token stats: count, avg, p50, p75, p95, p99, max.
+
+        Used by the context optimizer to determine optimal num_ctx per model.
+        """
+        if not self._db:
+            return []
+        cutoff = time.time() - days * 86400
+        cursor = await self._db.execute(
+            """
+            WITH ranked AS (
+                SELECT model, prompt_tokens,
+                       PERCENT_RANK() OVER (
+                           PARTITION BY model ORDER BY prompt_tokens
+                       ) as prank
+                FROM request_traces
+                WHERE timestamp >= ?
+                  AND prompt_tokens > 0
+                  AND status = 'completed'
+            )
+            SELECT model,
+                COUNT(*) as request_count,
+                CAST(AVG(prompt_tokens) AS INTEGER) as avg_tokens,
+                MAX(CASE WHEN prank <= 0.50 THEN prompt_tokens END) as p50,
+                MAX(CASE WHEN prank <= 0.75 THEN prompt_tokens END) as p75,
+                MAX(CASE WHEN prank <= 0.95 THEN prompt_tokens END) as p95,
+                MAX(CASE WHEN prank <= 0.99 THEN prompt_tokens END) as p99,
+                MAX(prompt_tokens) as max_tokens
+            FROM ranked
+            GROUP BY model
+            ORDER BY request_count DESC
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "model": row[0],
+                "request_count": row[1],
+                "avg_tokens": row[2],
+                "p50": row[3] or 0,
+                "p75": row[4] or 0,
+                "p95": row[5] or 0,
+                "p99": row[6] or 0,
+                "max_tokens": row[7] or 0,
+            }
+            for row in rows
+        ]
+
+    # -- Benchmark storage --
+
     async def get_benchmark_runs(self, limit: int = 50) -> list[dict]:
         """Return benchmark runs, newest first."""
         if not self._db:
