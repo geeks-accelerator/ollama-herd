@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - 2026-04-08
+## [0.5.0] - 2026-04-09
 
 ### Added
 
@@ -28,6 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GET /dashboard/api/benchmarks/progress` — real-time benchmark progress
 - `POST /dashboard/api/benchmarks/cancel` — cancel running benchmarks
 - `GET /dashboard/api/context-usage` — per-model context utilization analysis
+- **Fleet Intelligence briefing** — LLM-powered dashboard card that analyzes fleet health, context usage, and traffic using the fleet's own models. Adaptive refresh (30min when busy, 6h when idle), dismiss/refresh buttons, history persisted to SQLite
+- **Dashboard visual enhancements:**
+  - Gradient progress bars — smooth HSL color transition (green→yellow→red) on all CPU, memory, availability, and benchmark bars
+  - Animated health score ring — conic-gradient fills from 0% to score on page load
+  - Staggered card entry — node cards fade in sequentially with 60ms delay
+  - Hover card lift — cards rise 2px with shadow on hover
+  - Model badge colors by type — purple (LLM), blue (embed), orange (image), green (STT) with glow on hot models
+  - In-place SSE updates — node card values update without rebuilding DOM (no more flashing)
+- **Shared date range selector** on Trends, Model Insights, and Tags pages — presets (24h, 48h, 72h, 7d, 30d) + custom datetime-local picker in user's local timezone
+- **Settings context management UI** — per-model table showing allocated ctx, p99 total tokens, utilization %, recommended ctx, savings %, with override input and Apply/Use Rec. buttons
+- **Briefing history** — `GET /dashboard/api/briefing/history` reads from SQLite, viewable on Health page with "Generate New" button
+- `GET /dashboard/api/briefing` — fleet intelligence briefing with adaptive caching
+- `GET /dashboard/api/tags` + `/dashboard/api/tags/daily` — renamed from `/api/apps`
 - 16 health checks total (up from 15 in 0.4.1)
 
 ### Fixed
@@ -39,6 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Smart benchmark skips cloud models** — filters out `:cloud` suffix models (API proxies that don't load locally)
 - **Smart benchmark skips embedding/image models** for LLM category coverage — `nomic-embed-text` no longer blocks loading a general-purpose LLM
 - **Context recommendation uses total tokens** — was using prompt-only p99 (caused truncation at 8K), now uses p99 of prompt+completion with 50% headroom and 24h rolling max floor
+- **Node card flashing** — SSE updates now modify individual values in-place instead of rebuilding entire DOM every 2 seconds
+- **Fleet Intelligence prompt** — lists real commands only (herd-node, curl /api/pull, Settings toggles), bans hallucinated commands
 
 ### Changed
 
@@ -48,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings GET response includes `context` section with all num_ctx state
 - `StreamingProxy.pull_model()` accepts optional `progress_cb` callback for download progress tracking
 - Benchmark `per_model_results` includes `model_type` field (llm/embed/image)
+- **Apps → Tags rename** — dashboard tab, routes (`/dashboard/tags`), and APIs (`/dashboard/api/tags`) renamed for clarity. Old `/dashboard/apps` URLs still work (backwards compat)
+- Trends, Models, Tags pages use `start_ts`/`end_ts` query params instead of just `hours`/`days`
+- CLAUDE.md optimized from 246 → 143 lines (42% token reduction per turn)
 
 ## [0.4.1] - 2026-04-02
 
