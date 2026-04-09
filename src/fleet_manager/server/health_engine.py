@@ -634,18 +634,19 @@ class HealthEngine:
         for stats in prompt_stats:
             model = stats["model"]
             alloc = allocated_ctx.get(model, 0)
-            p99 = stats["p99"]
-            if alloc == 0 or p99 == 0 or stats["request_count"] < 10:
+            total_p99 = stats.get("total_p99", stats.get("p99", 0))
+            if alloc == 0 or total_p99 == 0 or stats["request_count"] < 10:
                 continue
-            ratio = alloc / p99
-            if ratio > 4:  # Allocated > 4x actual p99
-                import math
-                recommended = max(2048, 2 ** math.ceil(math.log2(p99 * 1.25)))
+            ratio = alloc / total_p99
+            if ratio > 4:  # Allocated > 4x actual p99 total
+                from fleet_manager.server.context_optimizer import compute_recommended_ctx
+                max_24h = stats.get("max_total_24h", 0)
+                recommended = compute_recommended_ctx(total_p99, max_24h)
                 savings_pct = round((alloc - recommended) / alloc * 100)
                 wasteful.append({
                     "model": model,
                     "allocated": alloc,
-                    "p99": p99,
+                    "total_p99": total_p99,
                     "ratio": round(ratio, 1),
                     "recommended": recommended,
                     "savings_pct": savings_pct,
@@ -657,7 +658,7 @@ class HealthEngine:
             return recs
 
         model_lines = "; ".join(
-            f"{w['model']} (alloc {w['allocated']:,} vs p99 {w['p99']:,}, "
+            f"{w['model']} (alloc {w['allocated']:,} vs total p99 {w['total_p99']:,}, "
             f"{w['ratio']}x over)"
             for w in wasteful[:3]
         )

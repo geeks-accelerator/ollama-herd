@@ -27,14 +27,27 @@ def next_power_of_2(n: int) -> int:
     return 2 ** math.ceil(math.log2(n))
 
 
-def compute_recommended_ctx(p99: int, min_ctx: int = 2048) -> int:
-    """Compute recommended num_ctx from observed p99 prompt size.
+def compute_recommended_ctx(
+    total_p99: int,
+    max_total_24h: int = 0,
+    min_ctx: int = 4096,
+) -> int:
+    """Compute recommended num_ctx from observed token usage.
 
-    Adds 25% headroom and rounds up to next power of 2.
+    Uses p99 of total tokens (prompt + completion) — not raw MAX — so one
+    outlier request doesn't waste memory for everyone. Adds 50% headroom
+    and rounds to next power of 2.
+
+    Also considers the 24h rolling max as a floor to avoid cutting too
+    aggressively during a quiet period.
     """
-    if p99 <= 0:
+    if total_p99 <= 0 and max_total_24h <= 0:
         return min_ctx
-    return max(min_ctx, next_power_of_2(int(p99 * 1.25)))
+    # Use the higher of: p99 total (7d) or max total (24h)
+    # This prevents a quiet 24h from lowering context below recent needs
+    baseline = max(total_p99, max_total_24h)
+    # 50% headroom for safety
+    return max(min_ctx, next_power_of_2(int(baseline * 1.5)))
 
 
 class ContextOptimizer:
@@ -52,14 +65,74 @@ class ContextOptimizer:
         return self._pending_commands.pop(node_id, [])
 
     async def run(self, interval: float = 300):
-        """Background loop: check every 5 minutes."""
-        await asyncio.sleep(60)  # Wait 1 minute after startup for traces to accumulate
+        """Background loop: check every 5 minutes.
+
+        On first run, auto-initializes overrides from historical data
+        so the fleet starts with optimal context sizes immediately.
+        """
+        await asyncio.sleep(10)  # Brief wait for registry to populate
+
+        # Auto-initialize overrides from historical data on startup
+        if getattr(self._settings, "dynamic_num_ctx", False):
+            try:
+                await self._auto_initialize_overrides()
+            except Exception as e:
+                logger.warning(f"Context optimizer: auto-init failed: {e}")
+
         while True:
             try:
                 await self._check_and_optimize()
             except Exception as e:
                 logger.error(f"Context optimizer error: {e}", exc_info=True)
             await asyncio.sleep(interval)
+
+    async def _auto_initialize_overrides(self):
+        """Set initial num_ctx overrides from historical trace data.
+
+        Called once on startup when dynamic_num_ctx is enabled and no
+        overrides are configured. Uses p99 of total tokens (7-day window)
+        to set safe context sizes that cover 99% of requests.
+        """
+        overrides = self._settings.num_ctx_overrides
+        if overrides:
+            logger.info(
+                f"Context optimizer: using existing overrides: "
+                f"{', '.join(f'{m}={v}' for m, v in overrides.items())}"
+            )
+            return
+
+        if not self._trace_store:
+            return
+
+        stats = await self._trace_store.get_prompt_token_stats(days=7)
+        if not stats:
+            logger.info("Context optimizer: no trace data for auto-init")
+            return
+
+        new_overrides = {}
+        for model_stats in stats:
+            model = model_stats["model"]
+            total_p99 = model_stats.get("total_p99", 0)
+            max_24h = model_stats.get("max_total_24h", 0)
+            request_count = model_stats["request_count"]
+
+            if total_p99 == 0 or request_count < 50:
+                continue
+
+            recommended = compute_recommended_ctx(total_p99, max_24h)
+            new_overrides[model] = recommended
+            logger.info(
+                f"Context optimizer: auto-init {model} → {recommended} "
+                f"(total_p99={total_p99}, max_24h={max_24h}, "
+                f"{request_count} requests)"
+            )
+
+        if new_overrides:
+            self._settings.num_ctx_overrides = new_overrides
+            logger.info(
+                f"Context optimizer: auto-initialized {len(new_overrides)} override(s) "
+                f"from historical data"
+            )
 
     async def _check_and_optimize(self):
         """Compare current num_ctx vs actual usage, update overrides if auto_calculate."""
@@ -91,14 +164,15 @@ class ContextOptimizer:
 
         for model_stats in stats:
             model = model_stats["model"]
-            p99 = model_stats["p99"]
+            total_p99 = model_stats.get("total_p99", 0)
+            max_total_24h = model_stats.get("max_total_24h", 0)
             alloc = allocated_ctx.get(model, 0)
             request_count = model_stats["request_count"]
 
-            if alloc == 0 or p99 == 0 or request_count < 20:
+            if alloc == 0 or total_p99 == 0 or request_count < 20:
                 continue
 
-            recommended = compute_recommended_ctx(p99)
+            recommended = compute_recommended_ctx(total_p99, max_total_24h)
 
             # Only recommend reduction if allocated is >4x what's needed
             if alloc > recommended * 4:

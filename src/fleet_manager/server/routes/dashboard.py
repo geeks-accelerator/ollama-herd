@@ -376,18 +376,15 @@ async def context_usage(request: Request, days: int = 7):
     for stats in token_stats:
         model = stats["model"]
         alloc = allocated_ctx.get(model, 0)
-        p99 = stats["p99"]
-        # Recommend: next power-of-2 above p99 * 1.25, min 2048, max alloc
-        if p99 > 0:
-            import math
-            recommended = max(2048, 2 ** math.ceil(math.log2(p99 * 1.25)))
-            recommended = min(recommended, alloc) if alloc > 0 else recommended
-        else:
-            recommended = alloc
+        total_p99 = stats.get("total_p99", 0)
+        max_total_24h = stats.get("max_total_24h", 0)
 
-        util_pct = round((p99 / alloc) * 100, 1) if alloc > 0 else 0
-        # Estimate savings: (alloc - recommended) / alloc * model_vram * kv_cache_fraction
-        # Rough estimate: KV cache is proportional to context length
+        # Recommend based on p99 of total tokens (not raw max — avoids outlier skew)
+        from fleet_manager.server.context_optimizer import compute_recommended_ctx
+        recommended = compute_recommended_ctx(total_p99, max_total_24h)
+        recommended = min(recommended, alloc) if alloc > 0 else recommended
+
+        util_pct = round((total_p99 / alloc) * 100, 1) if alloc > 0 else 0
         savings_pct = round(max(0, (alloc - recommended) / alloc * 100), 1) if alloc > 0 else 0
 
         models.append({
@@ -396,12 +393,18 @@ async def context_usage(request: Request, days: int = 7):
             "override_ctx": overrides.get(model),
             "request_count": stats["request_count"],
             "prompt_tokens": {
-                "avg": stats["avg_tokens"],
-                "p50": stats["p50"],
-                "p75": stats["p75"],
-                "p95": stats["p95"],
-                "p99": stats["p99"],
-                "max": stats["max_tokens"],
+                "avg": stats["avg_prompt"],
+                "p50": stats["prompt_p50"],
+                "p75": stats["prompt_p75"],
+                "p95": stats["prompt_p95"],
+                "p99": stats["prompt_p99"],
+                "max": stats["max_prompt"],
+            },
+            "total_tokens": {
+                "p95": stats["total_p95"],
+                "p99": total_p99,
+                "max": stats["max_total"],
+                "max_24h": max_total_24h,
             },
             "utilization_pct": util_pct,
             "recommended_ctx": recommended,

@@ -700,50 +700,88 @@ class TraceStore:
     # -- Context usage analysis --
 
     async def get_prompt_token_stats(self, days: int = 7) -> list[dict]:
-        """Per-model prompt token stats: count, avg, p50, p75, p95, p99, max.
+        """Per-model token usage stats with percentiles for both prompt and total.
 
-        Used by the context optimizer to determine optimal num_ctx per model.
+        Uses p99 of total tokens (prompt + completion) instead of raw MAX
+        to avoid one outlier request skewing the recommendation.
         """
         if not self._db:
             return []
         cutoff = time.time() - days * 86400
+        cutoff_24h = time.time() - 86400
         cursor = await self._db.execute(
             """
-            WITH ranked AS (
-                SELECT model, prompt_tokens,
-                       PERCENT_RANK() OVER (
-                           PARTITION BY model ORDER BY prompt_tokens
-                       ) as prank
+            WITH base AS (
+                SELECT model, prompt_tokens, completion_tokens,
+                       prompt_tokens + COALESCE(completion_tokens, 0) as total_tokens,
+                       timestamp
                 FROM request_traces
                 WHERE timestamp >= ?
                   AND prompt_tokens > 0
                   AND status = 'completed'
+            ),
+            prompt_ranked AS (
+                SELECT model, prompt_tokens,
+                       PERCENT_RANK() OVER (
+                           PARTITION BY model ORDER BY prompt_tokens
+                       ) as prank
+                FROM base
+            ),
+            total_ranked AS (
+                SELECT model, total_tokens,
+                       PERCENT_RANK() OVER (
+                           PARTITION BY model ORDER BY total_tokens
+                       ) as trank
+                FROM base
+            ),
+            recent AS (
+                SELECT model,
+                       MAX(total_tokens) as max_total_24h,
+                       COUNT(*) as count_24h
+                FROM base
+                WHERE timestamp >= ?
+                GROUP BY model
             )
-            SELECT model,
+            SELECT
+                pr.model,
                 COUNT(*) as request_count,
-                CAST(AVG(prompt_tokens) AS INTEGER) as avg_tokens,
-                MAX(CASE WHEN prank <= 0.50 THEN prompt_tokens END) as p50,
-                MAX(CASE WHEN prank <= 0.75 THEN prompt_tokens END) as p75,
-                MAX(CASE WHEN prank <= 0.95 THEN prompt_tokens END) as p95,
-                MAX(CASE WHEN prank <= 0.99 THEN prompt_tokens END) as p99,
-                MAX(prompt_tokens) as max_tokens
-            FROM ranked
-            GROUP BY model
-            ORDER BY request_count DESC
+                CAST(AVG(pr.prompt_tokens) AS INTEGER) as avg_prompt,
+                MAX(CASE WHEN pr.prank <= 0.50 THEN pr.prompt_tokens END) as prompt_p50,
+                MAX(CASE WHEN pr.prank <= 0.75 THEN pr.prompt_tokens END) as prompt_p75,
+                MAX(CASE WHEN pr.prank <= 0.95 THEN pr.prompt_tokens END) as prompt_p95,
+                MAX(CASE WHEN pr.prank <= 0.99 THEN pr.prompt_tokens END) as prompt_p99,
+                MAX(pr.prompt_tokens) as max_prompt,
+                (SELECT MAX(CASE WHEN trank <= 0.95 THEN total_tokens END)
+                 FROM total_ranked WHERE total_ranked.model = pr.model) as total_p95,
+                (SELECT MAX(CASE WHEN trank <= 0.99 THEN total_tokens END)
+                 FROM total_ranked WHERE total_ranked.model = pr.model) as total_p99,
+                (SELECT MAX(total_tokens)
+                 FROM total_ranked WHERE total_ranked.model = pr.model) as max_total,
+                r.max_total_24h,
+                r.count_24h
+            FROM prompt_ranked pr
+            LEFT JOIN recent r ON r.model = pr.model
+            GROUP BY pr.model
+            ORDER BY COUNT(*) DESC
             """,
-            (cutoff,),
+            (cutoff, cutoff_24h),
         )
         rows = await cursor.fetchall()
         return [
             {
                 "model": row[0],
                 "request_count": row[1],
-                "avg_tokens": row[2],
-                "p50": row[3] or 0,
-                "p75": row[4] or 0,
-                "p95": row[5] or 0,
-                "p99": row[6] or 0,
-                "max_tokens": row[7] or 0,
+                "avg_prompt": row[2],
+                "prompt_p50": row[3] or 0,
+                "prompt_p75": row[4] or 0,
+                "prompt_p95": row[5] or 0,
+                "prompt_p99": row[6] or 0,
+                "max_prompt": row[7] or 0,
+                "total_p95": row[8] or 0,
+                "total_p99": row[9] or 0,
+                "max_total": row[10] or 0,
+                "max_total_24h": row[11] or 0,
+                "count_24h": row[12] or 0,
             }
             for row in rows
         ]
