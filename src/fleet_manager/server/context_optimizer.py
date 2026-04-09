@@ -89,17 +89,11 @@ class ContextOptimizer:
     async def _auto_initialize_overrides(self):
         """Set initial num_ctx overrides from historical trace data.
 
-        Called once on startup when dynamic_num_ctx is enabled and no
-        overrides are configured. Uses p99 of total tokens (7-day window)
-        to set safe context sizes that cover 99% of requests.
+        Called once on startup when dynamic_num_ctx is enabled. Fills in
+        overrides for any model with trace data that doesn't already have
+        one. Preserves existing manual overrides.
         """
-        overrides = self._settings.num_ctx_overrides
-        if overrides:
-            logger.info(
-                f"Context optimizer: using existing overrides: "
-                f"{', '.join(f'{m}={v}' for m, v in overrides.items())}"
-            )
-            return
+        overrides = dict(self._settings.num_ctx_overrides)  # copy
 
         if not self._trace_store:
             return
@@ -109,7 +103,7 @@ class ContextOptimizer:
             logger.info("Context optimizer: no trace data for auto-init")
             return
 
-        new_overrides = {}
+        added = 0
         for model_stats in stats:
             model = model_stats["model"]
             total_p99 = model_stats.get("total_p99", 0)
@@ -119,19 +113,28 @@ class ContextOptimizer:
             if total_p99 == 0 or request_count < 50:
                 continue
 
+            # Skip models that already have a manual override
+            if model in overrides:
+                logger.info(
+                    f"Context optimizer: keeping existing override "
+                    f"{model}={overrides[model]}"
+                )
+                continue
+
             recommended = compute_recommended_ctx(total_p99, max_24h)
-            new_overrides[model] = recommended
+            overrides[model] = recommended
+            added += 1
             logger.info(
                 f"Context optimizer: auto-init {model} → {recommended} "
                 f"(total_p99={total_p99}, max_24h={max_24h}, "
                 f"{request_count} requests)"
             )
 
-        if new_overrides:
-            self._settings.num_ctx_overrides = new_overrides
+        if added:
+            self._settings.num_ctx_overrides = overrides
             logger.info(
-                f"Context optimizer: auto-initialized {len(new_overrides)} override(s) "
-                f"from historical data"
+                f"Context optimizer: auto-initialized {added} new override(s), "
+                f"{len(overrides)} total"
             )
 
     async def _check_and_optimize(self):

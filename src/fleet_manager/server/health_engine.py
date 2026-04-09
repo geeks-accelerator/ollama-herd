@@ -667,6 +667,12 @@ class HealthEngine:
         if any(w["ratio"] > 8 for w in wasteful):
             severity = Severity.WARNING
 
+        # Build specific per-model recommendations
+        rec_lines = ", ".join(
+            f"{w['model']}: {w['recommended']:,}"
+            for w in wasteful
+        )
+
         recs.append(
             Recommendation(
                 check_id="context_waste",
@@ -677,9 +683,11 @@ class HealthEngine:
                     f"Reducing context frees KV cache memory for additional models."
                 ),
                 fix=(
-                    "Enable dynamic num_ctx in Settings > Context Management, "
-                    "or set FLEET_DYNAMIC_NUM_CTX=true. The router will recommend "
-                    "optimal context sizes based on your actual usage patterns."
+                    f"Recommended num_ctx per model: {rec_lines}. "
+                    f"Enable in Settings > Context Management (FLEET_DYNAMIC_NUM_CTX=true) "
+                    f"to auto-apply these values, or set per-model overrides via the API: "
+                    f"POST /dashboard/api/settings with num_ctx_overrides. "
+                    f"Requires Ollama restart to take effect on loaded models."
                 ),
                 data={"wasteful_models": wasteful},
             )
