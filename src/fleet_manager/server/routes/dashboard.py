@@ -2066,7 +2066,10 @@ function fmtDate(ts) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 function fmtShortDate(ts) {
-  return new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const d = new Date(ts * 1000);
+  const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  return date + ' ' + time;
 }
 function fmtDuration(s) {
   if (s < 60) return s.toFixed(0) + 's';
