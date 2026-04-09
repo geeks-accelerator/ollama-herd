@@ -420,6 +420,8 @@ _recommendations_cache: dict = {"data": None, "generated_at": 0.0}
 _briefing_cache: dict = {
     "briefing": None, "model": None, "generated_at": 0.0, "generating": False,
 }
+_briefing_history: list[dict] = []  # Last 10 briefings
+_BRIEFING_HISTORY_MAX = 10
 
 EMBED_SKIP = ("embed", "nomic", "bge", "e5-")
 
@@ -534,11 +536,12 @@ async def _generate_briefing(request) -> dict:
 - {traffic_summary}
 - {context_summary}
 
-Provide a brief fleet intelligence briefing (3-5 bullet points). Focus on:
-1. Any issues needing immediate attention
-2. Performance observations
-3. Optimization opportunities
-Be specific with numbers. Keep each point to one sentence."""
+Provide a brief fleet intelligence briefing (3-4 bullet points). Rules:
+1. Only include actionable items — things the operator can DO right now
+2. Each bullet must include a specific action ("run X", "set Y=Z", "add a node")
+3. Skip vague suggestions like "consider consolidating" or "re-allocate memory"
+4. Include specific numbers from the data above
+5. If everything looks healthy, say so in one line — don't invent problems"""
 
     # Internal LLM call via httpx
     import httpx
@@ -625,6 +628,14 @@ async def dashboard_briefing(request: Request, refresh: int = 0):
             cache["briefing"] = result["briefing"]
             cache["model"] = result["model"]
             cache["generated_at"] = result["generated_at"]
+            # Save to history
+            _briefing_history.insert(0, {
+                "briefing": result["briefing"],
+                "model": result["model"],
+                "generated_at": result["generated_at"],
+            })
+            if len(_briefing_history) > _BRIEFING_HISTORY_MAX:
+                _briefing_history.pop()
         next_refresh = interval
         return {
             "enabled": True,
@@ -637,6 +648,12 @@ async def dashboard_briefing(request: Request, refresh: int = 0):
         }
     finally:
         cache["generating"] = False
+
+
+@router.get("/dashboard/api/briefing/history")
+async def dashboard_briefing_history():
+    """Return last 10 fleet intelligence briefings."""
+    return {"history": _briefing_history}
 
 
 @router.get("/dashboard/api/recommendations")
@@ -1460,7 +1477,10 @@ _OVERVIEW_BODY = """
   <div id="briefing-section" style="display:none">
     <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
       Fleet Intelligence
-      <button id="briefing-refresh" onclick="fetchBriefing(true)" style="background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer">Refresh</button>
+      <div style="display:flex;gap:6px">
+        <button id="briefing-refresh" onclick="fetchBriefing(true)" style="background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer">Refresh</button>
+        <button onclick="dismissBriefing()" style="background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer">Dismiss</button>
+      </div>
     </div>
     <div class="card" id="briefing-card">
       <div id="briefing-content" style="font-size:13px;line-height:1.7;color:var(--text)">
@@ -1646,7 +1666,14 @@ function connect() {
 connect();
 
 // Fleet Intelligence Briefing
+var briefingDismissed = false;
+function dismissBriefing() {
+  briefingDismissed = true;
+  document.getElementById('briefing-section').style.display = 'none';
+}
 async function fetchBriefing(force) {
+  if (briefingDismissed && !force) return;
+  if (force) briefingDismissed = false;
   try {
     const url = '/dashboard/api/briefing' + (force ? '?refresh=1' : '');
     const btn = document.getElementById('briefing-refresh');
@@ -3087,6 +3114,14 @@ _HEALTH_BODY = """
   <div class="recs-list" id="recs-list">
     <div style="text-align:center;padding:40px;color:var(--text-dim)">Loading...</div>
   </div>
+
+  <div class="section-label" style="margin-top:24px;display:flex;align-items:center;justify-content:space-between">
+    Fleet Intelligence History
+    <button onclick="refreshBriefingFromHealth()" style="background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer">Generate New</button>
+  </div>
+  <div id="briefing-history-list">
+    <div style="text-align:center;padding:40px;color:var(--text-dim)">Loading...</div>
+  </div>
 </div>
 
 <script>
@@ -3183,6 +3218,48 @@ window.addEventListener('DOMContentLoaded', function() {
 });
 
 loadHealth();
+
+async function loadBriefingHistory() {
+  try {
+    const resp = await fetch('/dashboard/api/briefing/history');
+    const data = await resp.json();
+    const list = document.getElementById('briefing-history-list');
+    if (!data.history || data.history.length === 0) {
+      list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim)">No briefings generated yet. Click "Generate New" to create one.</div>';
+      return;
+    }
+    list.innerHTML = data.history.map(function(b) {
+      var d = new Date(b.generated_at * 1000);
+      var dateStr = d.toLocaleDateString('en-US', {month:'short',day:'numeric'}) + ' ' + d.toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit'});
+      var lines = b.briefing.split(String.fromCharCode(10));
+      var html = lines.map(function(line) {
+        while (line.indexOf('**') !== -1) {
+          var i = line.indexOf('**');
+          var j = line.indexOf('**', i + 2);
+          if (j === -1) break;
+          line = line.substring(0, i) + '<strong>' + line.substring(i+2, j) + '</strong>' + line.substring(j+2);
+        }
+        var trimmed = line.trimStart();
+        if (trimmed.charAt(0) === '-' || trimmed.charAt(0) === '*') {
+          line = '&bull; ' + trimmed.substring(1).trimStart();
+        }
+        return line;
+      }).join('<br>');
+      return '<div class="card" style="margin-bottom:12px"><div style="font-size:13px;line-height:1.7">' + html + '</div><div style="margin-top:8px;font-size:11px;color:var(--text-dim)">' + dateStr + ' via ' + (b.model || '?') + '</div></div>';
+    }).join('');
+  } catch(e) {}
+}
+loadBriefingHistory();
+
+async function refreshBriefingFromHealth() {
+  var btn = event.target;
+  btn.textContent = 'Generating...';
+  try {
+    await fetch('/dashboard/api/briefing?refresh=1');
+    await loadBriefingHistory();
+  } catch(e) {}
+  btn.textContent = 'Generate New';
+}
 refreshTimer = setInterval(loadHealth, 15000);
 </script>
 """
