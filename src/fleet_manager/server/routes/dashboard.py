@@ -1971,7 +1971,7 @@ _BENCHMARKS_BODY = """
   <div class="bench-summary" id="bench-summary"></div>
 
   <div style="display:flex;gap:16px;margin-bottom:20px">
-    <div class="chart-card" style="flex:2;position:relative;height:300px">
+    <div class="chart-card" style="flex:1;position:relative;height:300px">
       <h4 style="margin:0 0 12px 0;font-size:14px;color:var(--text-dim)">Capacity Growth</h4>
       <div style="position:relative;height:calc(100% - 30px)">
         <canvas id="capacity-chart"></canvas>
@@ -1981,6 +1981,36 @@ _BENCHMARKS_BODY = """
       <h4 style="margin:0 0 12px 0;font-size:14px;color:var(--text-dim)">Throughput Trend</h4>
       <div style="position:relative;height:calc(100% - 30px)">
         <canvas id="throughput-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:16px;margin-bottom:20px">
+    <div class="chart-card" style="flex:1;position:relative;height:300px">
+      <h4 style="margin:0 0 12px 0;font-size:14px;color:var(--text-dim)">Model Throughput <span style="font-weight:400;font-size:11px">(latest run)</span></h4>
+      <div style="position:relative;height:calc(100% - 30px)">
+        <canvas id="model-throughput-chart"></canvas>
+      </div>
+    </div>
+    <div class="chart-card" style="flex:1;position:relative;height:300px">
+      <h4 style="margin:0 0 12px 0;font-size:14px;color:var(--text-dim)">Model Latency <span style="font-weight:400;font-size:11px">(latest run)</span></h4>
+      <div style="position:relative;height:calc(100% - 30px)">
+        <canvas id="model-latency-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:16px;margin-bottom:20px">
+    <div class="chart-card" style="flex:1;position:relative;height:300px">
+      <h4 style="margin:0 0 12px 0;font-size:14px;color:var(--text-dim)">Model Performance Over Time</h4>
+      <div style="position:relative;height:calc(100% - 30px)">
+        <canvas id="model-history-chart"></canvas>
+      </div>
+    </div>
+    <div class="chart-card" style="flex:1;position:relative;height:300px">
+      <h4 style="margin:0 0 12px 0;font-size:14px;color:var(--text-dim)">Node Utilization <span style="font-weight:400;font-size:11px">(latest run)</span></h4>
+      <div style="position:relative;height:calc(100% - 30px)">
+        <canvas id="node-util-chart"></canvas>
       </div>
     </div>
   </div>
@@ -2029,7 +2059,7 @@ const chartDefaults = {
   plugins: { legend: { labels: { color: C.dim, font: { size: 11 } } } },
 };
 
-let capacityChart, throughputChart;
+let capacityChart, throughputChart, modelThroughputChart, modelLatencyChart, modelHistoryChart, nodeUtilChart;
 
 function fmtDate(ts) {
   const d = new Date(ts * 1000);
@@ -2161,6 +2191,122 @@ async function loadBenchmarks() {
     },
     options: { ...chartDefaults, plugins: { ...chartDefaults.plugins, legend: { display: false } } },
   });
+
+  // --- Per-Model Charts (from latest run) ---
+  const latest = data[0];
+  const modelColors = [C.accent, C.blue, C.green, '#f97316', '#ec4899', '#8b5cf6', '#06b6d4', '#eab308'];
+
+  // Chart 3: Model Throughput (horizontal bar)
+  if (modelThroughputChart) modelThroughputChart.destroy();
+  const pm = latest.per_model_results || [];
+  if (pm.length) {
+    const mLabels = pm.map(m => m.model.length > 25 ? m.model.substring(0, 22) + '...' : m.model);
+    const mTokS = pm.map(m => m.tok_s || 0);
+    const mColors = pm.map((_, i) => modelColors[i % modelColors.length]);
+    modelThroughputChart = new Chart(document.getElementById('model-throughput-chart'), {
+      type: 'bar',
+      data: {
+        labels: mLabels,
+        datasets: [{ label: 'tok/s', data: mTokS, backgroundColor: mColors.map(c => c + 'cc'), borderColor: mColors, borderWidth: 1 }],
+      },
+      options: {
+        ...chartDefaults,
+        indexAxis: 'y',
+        plugins: { ...chartDefaults.plugins, legend: { display: false } },
+        scales: {
+          x: { ...chartDefaults.scales.x, title: { display: true, text: 'Tokens/sec', color: C.dim } },
+          y: { ...chartDefaults.scales.y, ticks: { ...chartDefaults.scales.y.ticks, font: { size: 11 } } },
+        },
+      },
+    });
+  }
+
+  // Chart 4: Model Latency (grouped horizontal bar — avg latency + avg TTFT)
+  if (modelLatencyChart) modelLatencyChart.destroy();
+  if (pm.length) {
+    const mLabels2 = pm.map(m => m.model.length > 25 ? m.model.substring(0, 22) + '...' : m.model);
+    modelLatencyChart = new Chart(document.getElementById('model-latency-chart'), {
+      type: 'bar',
+      data: {
+        labels: mLabels2,
+        datasets: [
+          { label: 'Avg Latency', data: pm.map(m => m.avg_latency_ms || 0), backgroundColor: C.accent + 'aa', borderColor: C.accent, borderWidth: 1 },
+          { label: 'Avg TTFT', data: pm.map(m => m.avg_ttft_ms || 0), backgroundColor: C.green + 'aa', borderColor: C.green, borderWidth: 1 },
+        ],
+      },
+      options: {
+        ...chartDefaults,
+        indexAxis: 'y',
+        scales: {
+          x: { ...chartDefaults.scales.x, title: { display: true, text: 'Milliseconds', color: C.dim } },
+          y: { ...chartDefaults.scales.y, ticks: { ...chartDefaults.scales.y.ticks, font: { size: 11 } } },
+        },
+      },
+    });
+  }
+
+  // Chart 5: Model tok/s Over Time (multi-line)
+  if (modelHistoryChart) modelHistoryChart.destroy();
+  const allModels = new Set();
+  sorted.forEach(d => (d.per_model_results || []).forEach(m => allModels.add(m.model)));
+  if (allModels.size > 0) {
+    const histLabels = sorted.map(d => fmtShortDate(d.timestamp));
+    const histDatasets = [];
+    let ci = 0;
+    allModels.forEach(model => {
+      const color = modelColors[ci % modelColors.length];
+      const pts = sorted.map(d => {
+        const mr = (d.per_model_results || []).find(m => m.model === model);
+        return mr ? mr.tok_s : null;
+      });
+      histDatasets.push({
+        label: model.length > 20 ? model.substring(0, 17) + '...' : model,
+        data: pts,
+        borderColor: color,
+        backgroundColor: color + '22',
+        tension: 0.3,
+        pointRadius: 4,
+        spanGaps: true,
+      });
+      ci++;
+    });
+    modelHistoryChart = new Chart(document.getElementById('model-history-chart'), {
+      type: 'line',
+      data: { labels: histLabels, datasets: histDatasets },
+      options: {
+        ...chartDefaults,
+        scales: {
+          ...chartDefaults.scales,
+          y: { ...chartDefaults.scales.y, title: { display: true, text: 'Tokens/sec', color: C.dim } },
+        },
+      },
+    });
+  }
+
+  // Chart 6: Node Utilization (latest run — grouped bar: CPU avg/peak + MEM peak)
+  if (nodeUtilChart) nodeUtilChart.destroy();
+  const pu = latest.peak_utilization || [];
+  if (pu.length) {
+    const nLabels = pu.map(u => u.node_id.length > 20 ? u.node_id.substring(0, 17) + '...' : u.node_id);
+    nodeUtilChart = new Chart(document.getElementById('node-util-chart'), {
+      type: 'bar',
+      data: {
+        labels: nLabels,
+        datasets: [
+          { label: 'CPU Avg %', data: pu.map(u => u.cpu_avg || 0), backgroundColor: C.blue + '88', borderColor: C.blue, borderWidth: 1 },
+          { label: 'CPU Peak %', data: pu.map(u => u.cpu_peak || 0), backgroundColor: C.accent + '88', borderColor: C.accent, borderWidth: 1 },
+          { label: 'MEM Peak %', data: pu.map(u => u.mem_peak || 0), backgroundColor: C.green + '88', borderColor: C.green, borderWidth: 1 },
+        ],
+      },
+      options: {
+        ...chartDefaults,
+        scales: {
+          ...chartDefaults.scales,
+          y: { ...chartDefaults.scales.y, title: { display: true, text: 'Utilization %', color: C.dim }, max: 100 },
+        },
+      },
+    });
+  }
 }
 
 function toggleDetail(i) {
