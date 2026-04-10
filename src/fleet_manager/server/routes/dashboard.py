@@ -1643,7 +1643,10 @@ function renderNodes(nodes) {
       el = card.querySelector('.mem-bar'); if (el) { el.style.width = memPct + '%'; el.style.background = barColor(memPct); }
     });
     if (!needsRebuild) {
-      document.getElementById('header-stats').innerHTML = '<div class="header-stat"><div class="value">' + onlineCount2 + '</div><div class="label">Nodes</div></div><div class="header-stat"><div class="value">' + totalModels2 + '</div><div class="label">Models Loaded</div></div>';
+      var hn = document.getElementById('stat-nodes');
+      var hm = document.getElementById('stat-models');
+      if (hn) hn.textContent = onlineCount2;
+      if (hm) hm.textContent = totalModels2;
       return;
     }
   }
@@ -1743,10 +1746,19 @@ function renderNodes(nodes) {
         ${capacityHtml}
       </div>`;
   }).join('');
-  document.getElementById('header-stats').innerHTML = `
-    <div class="header-stat"><div class="value">${onlineCount}</div><div class="label">Nodes</div></div>
-    <div class="header-stat"><div class="value">${totalModels}</div><div class="label">Models Loaded</div></div>
-  `;
+  // Init header stats with IDs on first render, update values on subsequent
+  var hs = document.getElementById('header-stats');
+  if (!document.getElementById('stat-nodes')) {
+    hs.innerHTML = `
+      <div class="header-stat"><div class="value" id="stat-nodes">${onlineCount}</div><div class="label">Nodes</div></div>
+      <div class="header-stat"><div class="value" id="stat-models">${totalModels}</div><div class="label">Models Loaded</div></div>
+      <div class="header-stat"><div class="value" id="stat-queued">0</div><div class="label">Queued</div></div>
+      <div class="header-stat"><div class="value" id="stat-completed">0</div><div class="label">Completed</div></div>
+    `;
+  } else {
+    document.getElementById('stat-nodes').textContent = onlineCount;
+    document.getElementById('stat-models').textContent = totalModels;
+  }
 }
 
 function renderQueues(queues) {
@@ -1776,14 +1788,10 @@ function renderQueues(queues) {
         </div>
       </div>`;
   }).join('');
-  const stats = document.getElementById('header-stats');
-  const existing = stats.innerHTML;
-  if (!existing.includes('Queued')) {
-    stats.innerHTML += `
-      <div class="header-stat"><div class="value">${totalQueued}</div><div class="label">Queued</div></div>
-      <div class="header-stat"><div class="value">${totalCompleted}</div><div class="label">Completed</div></div>
-    `;
-  }
+  var sq = document.getElementById('stat-queued');
+  var sc = document.getElementById('stat-completed');
+  if (sq) sq.textContent = totalQueued;
+  if (sc) sc.textContent = totalCompleted;
 }
 
 function connect() {
