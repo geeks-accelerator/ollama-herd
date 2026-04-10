@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-04-09
+
+### Fixed
+
+- **Dashboard SSE stale data** — `connect()` ran before footer DOM elements existed, causing TypeError that prevented SSE event handlers from registering. Dashboard would show "Waiting for nodes..." and never update. Added null checks to onopen/onerror handlers.
+
 ## [0.5.0] - 2026-04-09
 
 ### Added
