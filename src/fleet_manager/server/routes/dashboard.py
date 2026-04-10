@@ -1787,15 +1787,24 @@ function renderQueues(queues) {
 }
 
 function connect() {
-  const dot = document.getElementById('sse-dot');
-  const statusEl = document.getElementById('sse-status');
   const es = new EventSource('/dashboard/events');
-  es.onopen = () => { dot.className = 'status-dot online pulse'; statusEl.textContent = 'Live'; };
+  es.onopen = () => {
+    var d = document.getElementById('sse-dot');
+    var s = document.getElementById('sse-status');
+    if (d) d.className = 'status-dot online pulse';
+    if (s) s.textContent = 'Live';
+  };
   es.onmessage = (e) => {
     try { const data = JSON.parse(e.data); renderNodes(data.nodes); renderQueues(data.queues); }
     catch (err) { console.error('Parse error:', err); }
   };
-  es.onerror = () => { dot.className = 'status-dot offline'; statusEl.textContent = 'Reconnecting...'; es.close(); setTimeout(connect, 3000); };
+  es.onerror = () => {
+    var d = document.getElementById('sse-dot');
+    var s = document.getElementById('sse-status');
+    if (d) d.className = 'status-dot offline';
+    if (s) s.textContent = 'Reconnecting...';
+    es.close(); setTimeout(connect, 3000);
+  };
 }
 connect();
 
