@@ -547,12 +547,29 @@ async def _generate_briefing(request) -> dict:
         except Exception:
             pass
 
+    # Connection failures
+    conn_summary = ""
+    for node in nodes:
+        total = node.connection_failures_total
+        recent = node.connection_failures
+        if total > 0:
+            if recent > 0:
+                conn_summary += (
+                    f"ACTIVE: {node.node_id} has {recent} connection failures "
+                    f"right now ({total} total). "
+                )
+            elif total > 50:
+                conn_summary += (
+                    f"{node.node_id} recovered from {total} connection failures. "
+                )
+
     # Build prompt
     prompt = f"""Current fleet state:
 - {nodes_online} node(s) online, {models_loaded} model(s) loaded, {total_available_gb:.0f}GB available memory
 - {health_summary}
 - {traffic_summary}
 - {context_summary}
+- {conn_summary if conn_summary else 'No connection issues.'}
 
 Provide a high-level fleet summary (2-3 short bullet points). Rules:
 1. Summarize the overall state — don't repeat specific numbers from the data

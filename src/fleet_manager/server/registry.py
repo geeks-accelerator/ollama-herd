@@ -67,6 +67,8 @@ class NodeRegistry:
             node.image_port = payload.image_port
             node.transcription = payload.transcription
             node.transcription_port = payload.transcription_port
+            node.connection_failures = payload.connection_failures
+            node.connection_failures_total = payload.connection_failures_total
             node.last_heartbeat = time.time()
             node.missed_heartbeats = 0
             node.status = NodeStatus.ONLINE

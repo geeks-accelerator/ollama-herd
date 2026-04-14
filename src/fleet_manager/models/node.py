@@ -112,6 +112,9 @@ class HeartbeatPayload(BaseModel):
     image_port: int = 0
     transcription: TranscriptionMetrics | None = None
     transcription_port: int = 0
+    # Connection health: failures since last successful heartbeat
+    connection_failures: int = 0
+    connection_failures_total: int = 0  # Total since agent start
 
 
 class HardwareProfile(BaseModel):
@@ -148,3 +151,6 @@ class NodeState(BaseModel):
     transcription: TranscriptionMetrics | None = None
     # Port for transcription server on this node
     transcription_port: int = 0
+    # Connection health from node agent
+    connection_failures: int = 0  # Failures since last successful heartbeat
+    connection_failures_total: int = 0  # Total since agent start

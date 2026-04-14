@@ -94,6 +94,7 @@ class HealthEngine:
         recommendations.extend(self._check_kv_cache_bloat(nodes))
         recommendations.extend(self._check_image_generation(nodes))
         recommendations.extend(self._check_transcription(nodes))
+        recommendations.extend(self._check_connection_failures(nodes))
 
         # Trace-based checks (async, queries SQLite)
         if trace_store:
@@ -882,6 +883,67 @@ class HealthEngine:
                 ),
             ))
 
+        return recs
+
+    def _check_connection_failures(self, nodes) -> list[Recommendation]:
+        """Detect nodes that have experienced connection failures to the router."""
+        recs = []
+        for node in nodes:
+            total = node.connection_failures_total
+            recent = node.connection_failures
+            if total == 0:
+                continue
+
+            if recent > 0:
+                # Active failures — node currently having trouble
+                severity = Severity.CRITICAL if recent > 10 else Severity.WARNING
+                recs.append(Recommendation(
+                    check_id="connection_failures",
+                    severity=severity,
+                    title=(
+                        f"Node {node.node_id}: {recent} active "
+                        f"connection failures"
+                    ),
+                    description=(
+                        f"{node.node_id} failed to reach the router "
+                        f"{recent} times since its last successful heartbeat "
+                        f"({total} total since agent start). This usually "
+                        f"indicates a network issue — WiFi dropout, DHCP "
+                        f"renewal, or macOS sleep/wake."
+                    ),
+                    fix=(
+                        f"Check network connectivity on {node.node_id}. "
+                        f"The node agent will auto-reconnect when the "
+                        f"network recovers. If persistent, restart the "
+                        f"node agent with `herd-node`."
+                    ),
+                    node_id=node.node_id,
+                    data={
+                        "recent_failures": recent,
+                        "total_failures": total,
+                    },
+                ))
+            elif total > 50:
+                # Past failures, now recovered — informational
+                recs.append(Recommendation(
+                    check_id="connection_failures",
+                    severity=Severity.INFO,
+                    title=(
+                        f"Node {node.node_id} recovered from "
+                        f"{total} connection failures"
+                    ),
+                    description=(
+                        f"{node.node_id} experienced {total} connection "
+                        f"failures since agent start but is now connected. "
+                        f"This may indicate intermittent network issues."
+                    ),
+                    fix="No action needed — node auto-reconnected.",
+                    node_id=node.node_id,
+                    data={
+                        "recent_failures": 0,
+                        "total_failures": total,
+                    },
+                ))
         return recs
 
     # ------------------------------------------------------------------

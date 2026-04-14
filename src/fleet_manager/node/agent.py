@@ -165,6 +165,8 @@ class NodeAgent:
         logger.info(f"Heartbeat interval: {self.settings.heartbeat_interval}s")
 
         self._ollama_failures = 0
+        self._connection_failures = 0  # Since last successful heartbeat
+        self._connection_failures_total = 0  # Since agent start
         heartbeat_count = 0
 
         while self._running:
@@ -179,7 +181,16 @@ class NodeAgent:
                     payload.image_port = self._image_port
                 if self._transcription_port:
                     payload.transcription_port = self._transcription_port
+                payload.connection_failures = self._connection_failures
+                payload.connection_failures_total = self._connection_failures_total
                 await self._send_heartbeat(payload)
+                # Reset recent failures on successful heartbeat
+                if self._connection_failures > 0:
+                    logger.info(
+                        f"Router reconnected after {self._connection_failures} "
+                        f"failed attempts ({self._connection_failures_total} total)"
+                    )
+                self._connection_failures = 0
                 self._ollama_failures = 0
                 heartbeat_count += 1
 
@@ -196,8 +207,12 @@ class NodeAgent:
                     )
 
             except httpx.ConnectError as e:
+                self._connection_failures += 1
+                self._connection_failures_total += 1
                 logger.warning(f"Cannot reach router at {self.router_url}: {e}")
             except httpx.ConnectTimeout:
+                self._connection_failures += 1
+                self._connection_failures_total += 1
                 logger.warning(
                     f"Connection to router timed out at {self.router_url} "
                     f"(is the firewall blocking port?)"
