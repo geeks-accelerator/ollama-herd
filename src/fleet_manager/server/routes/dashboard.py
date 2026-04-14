@@ -501,16 +501,16 @@ async def _generate_briefing(request) -> dict:
     if health_engine and trace_store:
         try:
             report = await health_engine.analyze(registry, trace_store)
-            health_summary = f"Health: {report.score}/100."
+            health_summary = f"Health: {report.vitals.health_score}/100."
             critical = [r for r in report.recommendations if r.severity.value == "critical"]
             warnings = [r for r in report.recommendations if r.severity.value == "warning"]
             if critical:
                 health_summary += f" {len(critical)} critical issue(s): "
-                health_summary += "; ".join(r.title for r in critical[:3])
+                health_summary += "; ".join(r.title for r in critical)
                 health_summary += "."
             if warnings:
                 health_summary += f" {len(warnings)} warning(s): "
-                health_summary += "; ".join(r.title for r in warnings[:3])
+                health_summary += "; ".join(r.title for r in warnings)
                 health_summary += "."
         except Exception:
             health_summary = "Health: unable to analyze."
@@ -520,12 +520,23 @@ async def _generate_briefing(request) -> dict:
     if trace_store:
         try:
             overall = await trace_store.get_overall_stats_24h()
+            ttft = overall['avg_ttft_ms']
+            ttft_str = f"{ttft:.0f}ms" if ttft is not None else "N/A"
             traffic_summary = (
                 f"Traffic (24h): {overall['total_requests']:,} requests, "
                 f"{overall['error_rate_pct']:.1f}% errors, "
                 f"{overall['total_retries']} retries, "
-                f"avg latency {overall['avg_latency_ms']:.0f}ms."
+                f"avg TTFT {ttft_str}."
             )
+            # Per-model breakdown
+            model_usage = await trace_store.get_usage_by_node_model_day(days=1)
+            if model_usage:
+                from collections import defaultdict
+                model_reqs: dict[str, int] = defaultdict(int)
+                for entry in model_usage:
+                    model_reqs[entry["model"]] += entry["request_count"]
+                parts = [f"{m}: {c}" for m, c in sorted(model_reqs.items(), key=lambda x: -x[1])]
+                traffic_summary += f" Per-model: {', '.join(parts)}."
         except Exception:
             pass
 
@@ -577,9 +588,10 @@ async def _generate_briefing(request) -> dict:
         pressure = node.memory.pressure.value if node.memory else "unknown"
         loaded = [m.name for m in node.ollama.models_loaded] if node.ollama else []
         active = node.ollama.requests_active if node.ollama else 0
+        disk_avail = f", disk {node.disk.available_gb:.0f}GB free" if node.disk else ""
         node_details += (
             f"  {node.node_id}: CPU {cpu:.0f}%, "
-            f"mem {mem_used:.0f}/{mem_total:.0f}GB ({pressure}), "
+            f"mem {mem_used:.0f}/{mem_total:.0f}GB ({pressure}){disk_avail}, "
             f"models={loaded}, active={active}\n"
         )
 
@@ -609,7 +621,7 @@ async def _generate_briefing(request) -> dict:
                 prev_briefings = "Your previous briefing(s) (for context — don't repeat, note what changed):\n"
                 for h in history:
                     ago = int((time.time() - h["generated_at"]) / 60)
-                    prev_briefings += f"  [{ago}m ago]: {h['briefing'][:200]}\n"
+                    prev_briefings += f"  [{ago}m ago]: {h['briefing'][:500]}\n"
         except Exception:
             pass
 
@@ -1864,19 +1876,30 @@ function renderQueues(queues) {
   if (sc) sc.textContent = totalCompleted;
 }
 
+var _sseWatchdog = null;
 function connect() {
   const es = new EventSource('/dashboard/events');
+  function resetWatchdog() {
+    clearTimeout(_sseWatchdog);
+    _sseWatchdog = setTimeout(function() {
+      console.warn('SSE watchdog: no event in 10s, reconnecting');
+      es.close(); setTimeout(connect, 1000);
+    }, 10000);
+  }
   es.onopen = () => {
     var d = document.getElementById('sse-dot');
     var s = document.getElementById('sse-status');
     if (d) d.className = 'status-dot online pulse';
     if (s) s.textContent = 'Live';
+    resetWatchdog();
   };
   es.onmessage = (e) => {
+    resetWatchdog();
     try { const data = JSON.parse(e.data); renderNodes(data.nodes); renderQueues(data.queues); }
     catch (err) { console.error('Parse error:', err); }
   };
   es.onerror = () => {
+    clearTimeout(_sseWatchdog);
     var d = document.getElementById('sse-dot');
     var s = document.getElementById('sse-status');
     if (d) d.className = 'status-dot offline';

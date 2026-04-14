@@ -48,6 +48,8 @@ def make_heartbeat(
     disk_total: float = 500.0,
     disk_used: float = 200.0,
     agent_version: str = "",
+    connection_failures: int = 0,
+    connection_failures_total: int = 0,
 ) -> HeartbeatPayload:
     loaded = []
     for entry in loaded_models or []:
@@ -78,6 +80,8 @@ def make_heartbeat(
         lan_ip=lan_ip,
         ollama_host=ollama_host,
         agent_version=agent_version,
+        connection_failures=connection_failures,
+        connection_failures_total=connection_failures_total,
     )
 
 
