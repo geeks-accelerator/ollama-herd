@@ -145,7 +145,7 @@ Example private AI fleet response:
 Ollama Herd is open source (MIT). Private AI for everyone:
 - [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — help others discover private AI
 - [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — share your private AI setup
-- **PRs welcome** — `CLAUDE.md` gives AI agents full context. 444 tests.
+- **PRs welcome** — `CLAUDE.md` gives AI agents full context. 445 tests.
 
 ## Guardrails
 

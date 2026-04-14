@@ -13,7 +13,7 @@ uv run herd-node --router-url http://localhost:11435  # explicit router URL
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 444 tests (~5s)
+uv run pytest                    # run all 445 tests (~5s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -67,7 +67,7 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `server/scorer.py` | 7-signal scoring: thermal, memory, queue, wait, affinity, availability, context fit |
 | `server/queue_manager.py` | Per `node:model` queues with dynamic concurrency + zombie reaper |
 | `server/streaming.py` | httpx proxy to Ollama + NDJSON↔SSE + auto-retry + context protection + thinking model inflate |
-| `server/health_engine.py` | 16 health checks (offline, degraded, memory, KV bloat, context waste, thrashing, timeouts, errors, retries, disconnects, streams, version, protection, zombies) |
+| `server/health_engine.py` | 17 health checks (offline, degraded, memory, KV bloat, context waste, thrashing, timeouts, errors, retries, disconnects, streams, version, protection, zombies, connection failures) |
 | `server/context_optimizer.py` | Dynamic num_ctx: analyzes token usage, auto-calculates optimal context, queues Ollama restarts via heartbeat commands |
 | `server/benchmark_engine.py` | Benchmark core: fleet discovery, multimodal request gen (LLM + embed + image), report building |
 | `server/benchmark_runner.py` | Server-side runner: smart mode (fill memory from disk/catalog), progress tracking, model type selection |
@@ -118,13 +118,13 @@ Key docs (Claude reads on demand — NOT loaded every turn):
 - `docs/observations.md` — patterns from operating the fleet. Add with date, evidence, insight. Never deleted.
 - After significant changes: check if work produced a new observation or revealed a new issue. Append to the right file.
 
-## Current State (as of 2026-04-08)
+## Current State (as of 2026-04-14)
 
-- **Version:** 0.5.0 (soaking locally, 0.4.1 published on PyPI)
+- **Version:** 0.5.2 (soaking locally, 0.4.1 published on PyPI)
 - **Fleet:** Neons-Mac-Studio (512GB M3 Ultra), single node, `gpt-oss:120b` + `nomic-embed-text` + multi-model via dynamic num_ctx
 - **Ollama settings:** `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=-1` (in `~/.zshrc`)
-- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "444 tests\|16 checks" skills/`
-- **Health:** 16 checks, zero errors. Monitor: `curl http://localhost:11435/dashboard/api/health`
+- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "445 tests\|17 checks" skills/`
+- **Health:** 17 checks, zero errors. Monitor: `curl http://localhost:11435/dashboard/api/health`
 
 ## Conventions
 

@@ -315,7 +315,7 @@ Key lessons learned:
 Every skill assumes the user has Ollama Herd installed and running. Each SKILL.md includes a setup section, but the core requirement is:
 
 ```bash
-pip install ollama-herd    # install from PyPI (v0.4.1)
+pip install ollama-herd    # install from PyPI (v0.5.2)
 herd                       # start the router (port 11435)
 herd-node                  # start node agent on each device
 ```
