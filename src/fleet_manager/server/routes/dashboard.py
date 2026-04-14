@@ -496,7 +496,7 @@ async def _generate_briefing(request) -> dict:
         n.memory.available_gb if n.memory else 0 for n in nodes
     )
 
-    # Health data
+    # Health data — include ALL warnings/criticals
     health_summary = ""
     if health_engine and trace_store:
         try:
@@ -505,13 +505,17 @@ async def _generate_briefing(request) -> dict:
             critical = [r for r in report.recommendations if r.severity.value == "critical"]
             warnings = [r for r in report.recommendations if r.severity.value == "warning"]
             if critical:
-                health_summary += f" {len(critical)} critical: {critical[0].title}."
+                health_summary += f" {len(critical)} critical issue(s): "
+                health_summary += "; ".join(r.title for r in critical[:3])
+                health_summary += "."
             if warnings:
-                health_summary += f" {len(warnings)} warning(s)."
+                health_summary += f" {len(warnings)} warning(s): "
+                health_summary += "; ".join(r.title for r in warnings[:3])
+                health_summary += "."
         except Exception:
             health_summary = "Health: unable to analyze."
 
-    # Traffic data
+    # Traffic data + per-model breakdown
     traffic_summary = ""
     if trace_store:
         try:
@@ -519,6 +523,7 @@ async def _generate_briefing(request) -> dict:
             traffic_summary = (
                 f"Traffic (24h): {overall['total_requests']:,} requests, "
                 f"{overall['error_rate_pct']:.1f}% errors, "
+                f"{overall['total_retries']} retries, "
                 f"avg latency {overall['avg_latency_ms']:.0f}ms."
             )
         except Exception:
@@ -563,6 +568,51 @@ async def _generate_briefing(request) -> dict:
                     f"{node.node_id} recovered from {total} connection failures. "
                 )
 
+    # Per-node details
+    node_details = ""
+    for node in nodes:
+        cpu = node.cpu.utilization_pct if node.cpu else 0
+        mem_used = node.memory.used_gb if node.memory else 0
+        mem_total = node.memory.total_gb if node.memory else 0
+        pressure = node.memory.pressure.value if node.memory else "unknown"
+        loaded = [m.name for m in node.ollama.models_loaded] if node.ollama else []
+        active = node.ollama.requests_active if node.ollama else 0
+        node_details += (
+            f"  {node.node_id}: CPU {cpu:.0f}%, "
+            f"mem {mem_used:.0f}/{mem_total:.0f}GB ({pressure}), "
+            f"models={loaded}, active={active}\n"
+        )
+
+    # Queue state
+    queue_summary = ""
+    queue_mgr = getattr(request.app.state, "queue_mgr", None)
+    if queue_mgr:
+        queues = queue_mgr.get_queue_info()
+        total_pending = sum(q.get("pending", 0) for q in queues.values())
+        total_inflight = sum(q.get("in_flight", 0) for q in queues.values())
+        total_failed = sum(q.get("failed", 0) for q in queues.values())
+        if total_pending > 0 or total_failed > 0:
+            queue_summary = (
+                f"Queues: {total_pending} pending, {total_inflight} in-flight, "
+                f"{total_failed} failed."
+            )
+        else:
+            queue_summary = f"Queues: clear ({total_inflight} in-flight)."
+
+    # Previous briefings for continuity
+    prev_briefings = ""
+    ts = getattr(request.app.state, "trace_store", None)
+    if ts:
+        try:
+            history = await ts.get_briefings(limit=2)
+            if history:
+                prev_briefings = "Your previous briefing(s) (for context — don't repeat, note what changed):\n"
+                for h in history:
+                    ago = int((time.time() - h["generated_at"]) / 60)
+                    prev_briefings += f"  [{ago}m ago]: {h['briefing'][:200]}\n"
+        except Exception:
+            pass
+
     # Build prompt
     prompt = f"""Current fleet state:
 - {nodes_online} node(s) online, {models_loaded} model(s) loaded, {total_available_gb:.0f}GB available memory
@@ -570,7 +620,10 @@ async def _generate_briefing(request) -> dict:
 - {traffic_summary}
 - {context_summary}
 - {conn_summary if conn_summary else 'No connection issues.'}
-
+- {queue_summary}
+Nodes:
+{node_details}
+{prev_briefings}
 Provide a high-level fleet summary (2-3 short bullet points). Rules:
 1. Summarize the overall state — don't repeat specific numbers from the data
 2. Point to the right dashboard page for details: "See Health page", "See Recommendations", "See Settings > Context Management"
