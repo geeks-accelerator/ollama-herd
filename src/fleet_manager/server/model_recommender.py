@@ -219,6 +219,7 @@ class ModelRecommender:
             ModelCategory.GENERAL,
             ModelCategory.CODING,
             ModelCategory.REASONING,
+            ModelCategory.VISION,
             ModelCategory.CREATIVE,
             ModelCategory.FAST_CHAT,
         ]

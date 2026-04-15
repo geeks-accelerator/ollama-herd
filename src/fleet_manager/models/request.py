@@ -36,6 +36,21 @@ def normalize_model_name(name: str) -> str:
     return name
 
 
+def _detect_images(messages: list[dict]) -> bool:
+    """Check if any message contains image content."""
+    for msg in messages:
+        # Ollama format: images field is a list of base64 strings
+        if msg.get("images"):
+            return True
+        # OpenAI format: content is a list with image_url parts
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    return True
+    return False
+
+
 class InferenceRequest(BaseModel):
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     model: str
@@ -53,6 +68,8 @@ class InferenceRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     # Model type: "text", "image", "stt", "embed"
     request_type: str = "text"
+    # True when messages contain image content (vision requests)
+    has_images: bool = False
 
     @model_validator(mode="after")
     def _normalize_model_names(self) -> InferenceRequest:
@@ -61,6 +78,9 @@ class InferenceRequest(BaseModel):
         if self.original_model:
             self.original_model = normalize_model_name(self.original_model)
         self.fallback_models = [normalize_model_name(m) for m in self.fallback_models]
+        # Auto-detect images in messages (OpenAI image_url parts or Ollama images field)
+        if not self.has_images:
+            self.has_images = _detect_images(self.messages)
         return self
 
 

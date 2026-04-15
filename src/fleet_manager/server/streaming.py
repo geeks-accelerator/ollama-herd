@@ -995,7 +995,7 @@ class StreamingProxy:
         }
 
         if request.messages:
-            body["messages"] = request.messages
+            body["messages"] = self._convert_messages_for_ollama(request.messages)
         elif request.raw_body.get("prompt") is not None:
             body["prompt"] = request.raw_body["prompt"]
 
@@ -1011,6 +1011,48 @@ class StreamingProxy:
         self._apply_thinking_overhead(body, request.model)
 
         return body
+
+    @staticmethod
+    def _convert_messages_for_ollama(messages: list[dict]) -> list[dict]:
+        """Convert OpenAI multimodal message format to Ollama format.
+
+        OpenAI uses content as a list of typed parts:
+            {"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "data:...;base64,XX"}}
+
+        Ollama uses content as a string with a separate images field:
+            {"content": "...", "images": ["base64data"]}
+        """
+        converted = []
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                converted.append(msg)
+                continue
+
+            text_parts = []
+            images = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+                elif part.get("type") == "image_url":
+                    url = part.get("image_url", {}).get("url", "")
+                    # Extract base64 data from data URI
+                    if url.startswith("data:"):
+                        # Format: data:image/png;base64,XXXX
+                        _, _, b64 = url.partition(",")
+                        if b64:
+                            images.append(b64)
+                    else:
+                        # URL reference — pass as-is, Ollama may support it
+                        images.append(url)
+
+            new_msg = {**msg, "content": "\n".join(text_parts)}
+            if images:
+                new_msg["images"] = images
+            converted.append(new_msg)
+        return converted
 
     def _apply_thinking_overhead(self, body: dict, model: str) -> None:
         """Auto-inflate num_predict for thinking models.

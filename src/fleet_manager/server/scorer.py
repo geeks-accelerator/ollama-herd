@@ -367,25 +367,41 @@ class ScoringEngine:
             # Massive headroom
             return max_score
 
+    # Approximate token cost per image for vision models.
+    # Conservative estimate for 1080p images — actual cost varies by model
+    # but this is good enough for routing decisions.
+    IMAGE_TOKENS_PER_IMAGE = 150
+
     @staticmethod
     def estimate_tokens(messages: list[dict]) -> int:
         """Rough token estimate from message content (~4 chars per token).
 
         Good enough for routing decisions — not meant for billing accuracy.
+        Accounts for image tokens in multimodal messages (both OpenAI and
+        Ollama formats).
         """
         total_chars = 0
+        image_count = 0
         for msg in messages:
             content = msg.get("content", "")
             if isinstance(content, str):
                 total_chars += len(content)
             elif isinstance(content, list):
-                # Multi-modal messages (OpenAI format with text parts)
+                # Multi-modal messages (OpenAI format with text + image_url parts)
                 for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        total_chars += len(part.get("text", ""))
+                    if isinstance(part, dict):
+                        if part.get("type") == "text":
+                            total_chars += len(part.get("text", ""))
+                        elif part.get("type") == "image_url":
+                            image_count += 1
+            # Ollama format: images field is a list of base64 strings
+            images = msg.get("images")
+            if isinstance(images, list):
+                image_count += len(images)
             # Count role + overhead (~4 tokens per message for formatting)
             total_chars += 16
-        return max(1, total_chars // 4)
+        text_tokens = total_chars // 4
+        return max(1, text_tokens + image_count * ScoringEngine.IMAGE_TOKENS_PER_IMAGE)
 
     def _estimate_model_size(self, model: str, node: NodeState) -> float:
         """Estimate model size in GB. Check loaded models first, then all nodes."""

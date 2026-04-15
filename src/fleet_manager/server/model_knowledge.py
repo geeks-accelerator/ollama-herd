@@ -22,6 +22,7 @@ class ModelCategory(StrEnum):
     CODING = "coding"
     CREATIVE = "creative"
     FAST_CHAT = "fast-chat"
+    VISION = "vision"
     IMAGE = "image"
 
 
@@ -97,11 +98,11 @@ MODEL_CATALOG: list[ModelSpec] = [
         params_b=4.0,
         ram_gb=4.0,
         size_class=ModelSize.SMALL,
-        category=ModelCategory.CODING,
-        secondary_categories=[ModelCategory.GENERAL],
+        category=ModelCategory.VISION,
+        secondary_categories=[ModelCategory.CODING, ModelCategory.GENERAL],
         context_length=131072,
         benchmarks=ModelBenchmarks(mmlu=70.0, humaneval=71.3),
-        notes="Strong coding for its size, 128K context",
+        notes="Multimodal vision + coding, 128K context",
     ),
     ModelSpec(
         ollama_name="llama3.2:3b",
@@ -207,11 +208,11 @@ MODEL_CATALOG: list[ModelSpec] = [
         params_b=12.0,
         ram_gb=9.0,
         size_class=ModelSize.MEDIUM,
-        category=ModelCategory.GENERAL,
-        secondary_categories=[ModelCategory.CREATIVE],
+        category=ModelCategory.VISION,
+        secondary_categories=[ModelCategory.GENERAL, ModelCategory.CREATIVE],
         context_length=131072,
         benchmarks=ModelBenchmarks(mmlu=76.0, humaneval=70.0),
-        notes="Google, multimodal capable",
+        notes="Multimodal vision, good creative writing",
     ),
     ModelSpec(
         ollama_name="deepseek-r1:8b",
@@ -358,11 +359,11 @@ MODEL_CATALOG: list[ModelSpec] = [
         params_b=27.0,
         ram_gb=19.0,
         size_class=ModelSize.LARGE,
-        category=ModelCategory.GENERAL,
-        secondary_categories=[ModelCategory.CREATIVE],
+        category=ModelCategory.VISION,
+        secondary_categories=[ModelCategory.GENERAL, ModelCategory.CREATIVE],
         context_length=131072,
         benchmarks=ModelBenchmarks(mmlu=80.0, humaneval=75.0),
-        notes="Google, multimodal, good creative writing",
+        notes="Best vision model for OCR + scene understanding, good creative writing",
     ),
     ModelSpec(
         ollama_name="qwen2.5-coder:32b",
@@ -502,6 +503,91 @@ MODEL_CATALOG: list[ModelSpec] = [
         benchmarks=ModelBenchmarks(mmlu=90.8, humaneval=90.2),
         notes="Frontier-class reasoning, needs server hardware",
     ),
+    # ── VISION — image understanding (image → text) ───────────
+    ModelSpec(
+        ollama_name="moondream:1.8b",
+        display_name="Moondream 1.8B",
+        family="moondream",
+        params_b=1.8,
+        ram_gb=2.0,
+        size_class=ModelSize.SMALL,
+        category=ModelCategory.VISION,
+        context_length=2048,
+        benchmarks=ModelBenchmarks(),
+        notes="Ultra-lightweight vision, basic OCR and scene description",
+    ),
+    ModelSpec(
+        ollama_name="llava:7b",
+        display_name="LLaVA 7B",
+        family="llava",
+        params_b=7.0,
+        ram_gb=5.0,
+        size_class=ModelSize.MEDIUM,
+        category=ModelCategory.VISION,
+        context_length=4096,
+        benchmarks=ModelBenchmarks(),
+        notes="Proven vision-language model, short context",
+    ),
+    ModelSpec(
+        ollama_name="minicpm-v:8b",
+        display_name="MiniCPM-V 8B",
+        family="minicpm-v",
+        params_b=8.0,
+        ram_gb=6.0,
+        size_class=ModelSize.MEDIUM,
+        category=ModelCategory.VISION,
+        context_length=4096,
+        benchmarks=ModelBenchmarks(),
+        notes="Compact, strong document and chart understanding",
+    ),
+    ModelSpec(
+        ollama_name="llama3.2-vision:11b",
+        display_name="Llama 3.2 Vision 11B",
+        family="llama3.2-vision",
+        params_b=11.0,
+        ram_gb=8.0,
+        size_class=ModelSize.MEDIUM,
+        category=ModelCategory.VISION,
+        context_length=131072,
+        benchmarks=ModelBenchmarks(),
+        notes="Meta's dedicated vision model, 128K context",
+    ),
+    ModelSpec(
+        ollama_name="llava:13b",
+        display_name="LLaVA 13B",
+        family="llava",
+        params_b=13.0,
+        ram_gb=10.0,
+        size_class=ModelSize.MEDIUM,
+        category=ModelCategory.VISION,
+        context_length=4096,
+        benchmarks=ModelBenchmarks(),
+        notes="Higher quality LLaVA variant",
+    ),
+    ModelSpec(
+        ollama_name="llava:34b",
+        display_name="LLaVA 34B",
+        family="llava",
+        params_b=34.0,
+        ram_gb=22.0,
+        size_class=ModelSize.LARGE,
+        category=ModelCategory.VISION,
+        context_length=4096,
+        benchmarks=ModelBenchmarks(),
+        notes="Best LLaVA variant, strong OCR",
+    ),
+    ModelSpec(
+        ollama_name="llama3.2-vision:90b",
+        display_name="Llama 3.2 Vision 90B",
+        family="llama3.2-vision",
+        params_b=90.0,
+        ram_gb=55.0,
+        size_class=ModelSize.LARGE,
+        category=ModelCategory.VISION,
+        context_length=131072,
+        benchmarks=ModelBenchmarks(),
+        notes="Highest quality vision model, needs large machine",
+    ),
     # ── IMAGE — image generation models ─────────────────────────
     # DiffusionKit models (Stable Diffusion 3.x via MLX)
     ModelSpec(
@@ -600,6 +686,8 @@ def classify_model(name: str) -> ModelCategory:
         return ModelCategory.REASONING
     if any(k in lower for k in ("creative", "mistral-nemo", "story")):
         return ModelCategory.CREATIVE
+    if any(k in lower for k in ("vision", "llava", "moondream", "minicpm-v")):
+        return ModelCategory.VISION
     # Ollama native image models use x/ prefix
     if lower.startswith("x/"):
         return ModelCategory.IMAGE
@@ -634,6 +722,24 @@ THINKING_OVERHEAD_MULTIPLIER = 4.0
 
 # Minimum num_predict for thinking models to avoid empty responses.
 THINKING_MIN_NUM_PREDICT = 1024
+
+
+def is_vision_model(name: str) -> bool:
+    """Check if a model supports image understanding (image → text).
+
+    Vision models accept images as input and produce text descriptions,
+    OCR results, or scene analysis. Distinct from image generation models
+    which produce images from text prompts.
+    """
+    spec = lookup_model(name)
+    if spec:
+        return (
+            spec.category == ModelCategory.VISION
+            or ModelCategory.VISION in spec.secondary_categories
+        )
+    # Heuristic fallback
+    lower = name.lower()
+    return any(p in lower for p in ("vision", "llava", "moondream", "minicpm-v"))
 
 
 def is_image_model(name: str) -> bool:
