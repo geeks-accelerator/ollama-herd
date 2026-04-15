@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Vision model support** — new `VISION` model category for image understanding (image → text). 7 vision models in catalog: gemma3 (4B/12B/27B), llama3.2-vision (11B/90B), llava (7B/13B/34B), moondream, minicpm-v
+- **OpenAI image format conversion** — OpenAI `image_url` content blocks auto-convert to Ollama's `images` field in the streaming proxy. Both API formats now work for vision requests
+- **Image token estimation** — `estimate_tokens()` accounts for image tokens (~150 per image) in both OpenAI and Ollama formats, improving context fit scoring for vision requests
+- **`is_vision_model()` helper** — programmatic detection of vision-capable models via catalog lookup or name heuristic
+- **`has_images` auto-detection** — `InferenceRequest` automatically detects image content in messages for analytics
+- **Vision in model recommender** — VISION included in default category priorities, fleet recommendations now suggest vision models
+
 ## [0.5.2] - 2026-04-13
 
 ### Fixed

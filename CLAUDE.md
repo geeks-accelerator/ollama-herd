@@ -71,7 +71,7 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `server/context_optimizer.py` | Dynamic num_ctx: analyzes token usage, auto-calculates optimal context, queues Ollama restarts via heartbeat commands |
 | `server/benchmark_engine.py` | Benchmark core: fleet discovery, multimodal request gen (LLM + embed + image), report building |
 | `server/benchmark_runner.py` | Server-side runner: smart mode (fill memory from disk/catalog), progress tracking, model type selection |
-| `server/model_knowledge.py` | 30+ model catalog with benchmarks, RAM, categories, thinking detection |
+| `server/model_knowledge.py` | 40+ model catalog with benchmarks, RAM, categories (including VISION), thinking detection |
 | `node/agent.py` | Main loop: mDNS discovery, heartbeat, Ollama auto-start/restart, LAN proxy, drain |
 | `node/capacity_learner.py` | 168-slot weekly behavioral model, availability score, dynamic memory ceiling |
 

@@ -1,6 +1,6 @@
 # Ollama Herd: Agent Setup Guide
 
-One fleet endpoint for all your AI workloads — LLM inference, image generation, speech-to-text, and embeddings. This guide tells you everything you need to configure your agent to use Ollama Herd instead of calling Ollama, mflux, or cloud APIs directly.
+One fleet endpoint for all your AI workloads — LLM inference, vision (image understanding), image generation, speech-to-text, and embeddings. This guide tells you everything you need to configure your agent to use Ollama Herd instead of calling Ollama, mflux, or cloud APIs directly.
 
 ## Fleet endpoint
 
@@ -8,13 +8,14 @@ One fleet endpoint for all your AI workloads — LLM inference, image generation
 http://localhost:11435
 ```
 
-This is the only URL your agent needs. All four model types route through it. The router handles node selection, load balancing, failover, and monitoring automatically.
+This is the only URL your agent needs. All five model types route through it. The router handles node selection, load balancing, failover, and monitoring automatically.
 
 ## What's available
 
 | Capability | Endpoint | What it does |
 |------------|----------|-------------|
 | **LLM inference** | `/v1/chat/completions` or `/api/chat` | Text generation, reasoning, code, chat |
+| **Vision** | `/v1/chat/completions` or `/api/chat` | Image understanding, OCR, scene description (gemma3, llava, llama3.2-vision) |
 | **Image generation** | `/api/generate-image` or `/v1/images/generations` | Generate images from text prompts (Ollama or OpenAI format) |
 | **Speech-to-text** | `/api/transcribe` | Transcribe audio files to text |
 | **Embeddings** | `/api/embed` or `/api/embeddings` | Convert text to vectors for search/RAG |

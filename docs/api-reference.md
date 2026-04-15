@@ -996,7 +996,7 @@ Start a benchmark run from the dashboard. Supports default (loaded models only) 
 {
   "mode": "smart",
   "duration": 300,
-  "model_types": ["llm", "embed", "image"]
+  "model_types": ["llm", "vision", "embed", "image"]
 }
 ```
 
@@ -1004,9 +1004,9 @@ Start a benchmark run from the dashboard. Supports default (loaded models only) 
 |-------|------|---------|-------------|
 | `mode` | string | `"default"` | `"default"` (loaded models) or `"smart"` (fill memory first) |
 | `duration` | float | `300` | Benchmark duration in seconds |
-| `model_types` | array | `["llm"]` | Types to benchmark: `"llm"`, `"embed"`, `"image"` |
+| `model_types` | array | `["llm"]` | Types to benchmark: `"llm"`, `"vision"`, `"embed"`, `"image"` |
 
-**Response:** `{"status": "started", "run_id": "bench-...", "mode": "smart", "duration": 300, "model_types": ["llm", "embed", "image"]}`
+**Response:** `{"status": "started", "run_id": "bench-...", "mode": "smart", "duration": 300, "model_types": ["llm", "vision", "embed", "image"]}`
 
 **Error:** `409` if a benchmark is already running.
 

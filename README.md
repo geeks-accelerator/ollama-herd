@@ -53,12 +53,12 @@ That's it. The node discovers the router via mDNS and starts sending heartbeats.
 |---------|------------|
 | **Smart Scoring** | Routes to the best device based on thermal state, memory fit, queue depth, latency, affinity, availability, and context fit |
 | **Zero-Config Discovery** | mDNS auto-discovery — no IPs, no config files, no manual setup |
-| **Multimodal Routing** | LLMs, embeddings, image gen (FLUX via mflux/DiffusionKit), speech-to-text (Qwen3-ASR) |
+| **Multimodal Routing** | LLMs, vision (gemma3, llava, llama3.2-vision), embeddings, image gen (FLUX via mflux/DiffusionKit), speech-to-text (Qwen3-ASR) |
 | **Live Dashboard** | Fleet overview, trends, model insights, per-app analytics, benchmarks, health, recommendations, settings |
 | **Capacity Learning** | 168-slot weekly behavioral model per device — learns when your machines are available |
 | **Auto-Retry & Fallbacks** | Transparent retry on failure + client-specified backup models |
 | **Thinking Model Support** | Auto-detects DeepSeek-R1, QwQ, phi-4-reasoning and inflates token budgets to prevent empty responses |
-| **Smart Benchmarks** | Auto-discovers fleet, benchmarks all 4 model types, tracks performance over time |
+| **Smart Benchmarks** | Auto-discovers fleet, benchmarks all 5 model types, tracks performance over time |
 | **Dynamic Context** | Measures actual token usage, auto-adjusts context windows to free KV cache memory |
 | **Fleet Intelligence** | AI-generated fleet briefings with health summaries, trend analysis, and actionable recommendations |
 | **Health Engine** | 17 automated checks: memory, thermal, context waste, thrashing, timeouts, errors, zombies, and more |
@@ -104,7 +104,27 @@ The router tries each model in order, falling back seamlessly if one is unavaila
 
 ## Beyond LLMs
 
-The same router handles four model types — install a backend on any node and it's automatically detected.
+The same router handles five model types — install a backend on any node and it's automatically detected.
+
+### Vision (Image Understanding)
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://router-ip:11435/v1", api_key="not-needed")
+
+response = client.chat.completions.create(
+    model="gemma3:27b",  # or llama3.2-vision, llava, moondream
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+        ]
+    }]
+)
+```
+
+Works with any Ollama vision model. Both OpenAI and Ollama formats supported — the router auto-converts.
 
 ### Image Generation
 
