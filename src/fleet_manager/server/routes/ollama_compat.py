@@ -147,6 +147,36 @@ async def ollama_generate(request: Request):
     return await _route_and_stream(request, inference_req)
 
 
+@router.get("/api/version")
+async def ollama_version(request: Request):
+    """Ollama-compatible: return version info.
+
+    Many clients (Open WebUI, LangChain, etc.) call this as a health check
+    to verify the Ollama API is reachable.  Returns the same ``version``
+    field as Ollama (for compatibility) plus ``herd_version`` so callers
+    can distinguish a Herd router from a plain Ollama instance.
+    """
+    from importlib.metadata import version as pkg_version
+
+    # Get Ollama version from the first online node
+    registry = request.app.state.registry
+    ollama_version = None
+    for node in registry.get_online_nodes():
+        if node.ollama_base_url:
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    resp = await client.get(f"{node.ollama_base_url}/api/version")
+                    if resp.status_code == 200:
+                        ollama_version = resp.json().get("version")
+                        break
+            except Exception:
+                pass
+
+    result = {"version": ollama_version or "unknown"}
+    result["herd_version"] = pkg_version("ollama-herd")
+    return result
+
+
 @router.get("/api/tags")
 async def ollama_tags(request: Request):
     """Ollama-compatible: list all models across the fleet."""
