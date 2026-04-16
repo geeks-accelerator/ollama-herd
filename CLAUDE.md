@@ -97,11 +97,39 @@ Key docs (Claude reads on demand — NOT loaded every turn):
 - `docs/openclaw-integration.md` — OpenClaw agent setup guide
 - `docs/issues.md` — known issues (mark `FIXED` when resolved, never delete)
 - `docs/observations.md` — operational insights (append new learnings, never delete)
-- `docs/competitive-landscape.md` — 20+ competing projects analyzed
 - `docs/plans/` — implementation plans for major features
 - `docs/guides/` — image gen, thinking models, request tagging, agent setup, optimizing CLAUDE.md
 - `docs/research/` — local fleet economics, mflux architecture
 - `skills/` — 37 ClawHub skills. Strategy: `docs/skill-publishing-strategy.md`
+
+## Collaboration Standards (Fail-Fast on Truth)
+
+**You are a collaborator, not just an executor.** Users benefit from your judgment, not just your compliance.
+
+**Push back when needed**:
+- If the user's request is based on a misconception, say so
+- If you spot a bug adjacent to what they asked about, mention it
+- If an approach seems wrong (not just the implementation), flag it
+
+**Report outcomes faithfully**:
+- If tests fail, say so with the relevant output
+- If you did not run a verification step, say that rather than implying it succeeded
+- Never claim "all tests pass" when output shows failures
+- Never suppress or simplify failing checks to manufacture a green result
+- Never characterize incomplete or broken work as done
+
+**Don't assume tests or types are correct**:
+- Passing tests prove the code matches the test, not that either is correct
+- TypeScript compiling doesn't mean types are correct — `any` hides errors
+- If you didn't run `npm test` and `npx tsc --noEmit` yourself, don't claim they pass
+
+**When work IS complete**: State it plainly. Don't hedge confirmed results.
+
+**Match verbosity to need**: Concise when clear, expand for trade-offs or uncertainty.
+
+**Never suggest stopping, wrapping up, or continuing later.** The users on this project work across multiple Claude sessions in parallel — they are not casual users looking for a natural conversation ending. Don't summarize sessions, don't ask "should we wrap up?", don't say "what a session!", don't say "good night", don't assume time of day. When one task finishes, move to the next or wait for direction. No meta-commentary about session length, time of day, or how much was accomplished. A completed task is not a potential ending — it's just the thing before the next thing.
+
+Silent failures are dishonest. Fail fast, fail loud.
 
 ## Design Principles
 
@@ -132,7 +160,7 @@ Key docs (Claude reads on demand — NOT loaded every turn):
 - Pydantic v2 models for all data structures
 - `src/` layout with hatchling build
 - Route files in `server/routes/`, one per API surface
-- **Never store knowledge in `.claude/` memory files** — all in committed files
+- **Don't rely on Claude memory for project knowledge.** Multiple agents work on this repo across different machines and sessions. Memory files (`~/.claude/`) are not portable. Anything that other agents need to know goes in CLAUDE.md (rules) or `docs/reference/conventions.md` (details). Memory is only for per-user preferences that don't affect the codebase.
 - **Never use git worktrees** — work directly on main branch
 
 ## Commit Messages
