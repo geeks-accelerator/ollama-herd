@@ -51,11 +51,19 @@ herd = "fleet_manager.cli.server_cli:main"
 herd-node = "fleet_manager.cli.node_cli:main"
 
 [project.optional-dependencies]
+embedding = [
+    "numpy>=1.24",
+    "Pillow>=10.0",
+    "onnxruntime>=1.17",
+    "huggingface-hub>=0.20",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24.0",
     "pytest-httpx>=0.34.0",
     "ruff>=0.8.0",
+    "numpy>=1.24",
+    "Pillow>=10.0",
 ]
 
 [build-system]

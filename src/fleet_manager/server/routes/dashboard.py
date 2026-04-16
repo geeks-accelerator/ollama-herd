@@ -1700,8 +1700,11 @@ function renderNodes(nodes) {
     return;
   }
 
-  // Only rebuild full cards when nodes are added/removed/status changes
-  var nodeIds = nodes.map(function(n) { return n.node_id + ':' + n.status; }).join(',');
+  // Rebuild full cards when nodes change, status changes, or models change
+  var nodeIds = nodes.map(function(n) {
+    var models = n.ollama ? n.ollama.models_loaded.map(function(m) { return m.name; }).join('+') : '';
+    return n.node_id + ':' + n.status + ':' + models;
+  }).join(',');
   var needsRebuild = (nodeIds !== _lastNodeIds);
 
   if (!needsRebuild) {

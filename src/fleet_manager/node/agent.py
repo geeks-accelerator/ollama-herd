@@ -43,6 +43,8 @@ class NodeAgent:
         self._image_port: int = 0
         self._transcription_process: subprocess.Popen | None = None
         self._transcription_port: int = 0
+        self._embedding_server_task: asyncio.Task | None = None
+        self._embedding_port: int = 0
 
     async def _ensure_ollama(self) -> bool:
         """Check if Ollama is running; if not, try to start it.
@@ -151,6 +153,9 @@ class NodeAgent:
         # Start transcription server if mlx-qwen3-asr is available
         await self._ensure_transcription_server()
 
+        # Start vision embedding server if models are downloaded
+        await self._ensure_embedding_server()
+
         # Install signal handlers for graceful drain
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -181,6 +186,8 @@ class NodeAgent:
                     payload.image_port = self._image_port
                 if self._transcription_port:
                     payload.transcription_port = self._transcription_port
+                if self._embedding_port:
+                    payload.vision_embedding_port = self._embedding_port
                 payload.connection_failures = self._connection_failures
                 payload.connection_failures_total = self._connection_failures_total
                 await self._send_heartbeat(payload)
@@ -363,6 +370,46 @@ class NodeAgent:
         except Exception as e:
             logger.warning(f"Failed to start transcription server: {repr(e)}")
             self._transcription_port = 0
+
+    async def _ensure_embedding_server(self):
+        """Start a vision embedding server if models are downloaded."""
+        from fleet_manager.node.collector import _detect_vision_embedding_models
+
+        embedding_metrics = _detect_vision_embedding_models()
+        if not embedding_metrics or not embedding_metrics.models_available:
+            logger.debug("No vision embedding models found, skipping embedding server")
+            return
+
+        from urllib.parse import urlparse
+
+        parsed = urlparse(self.settings.ollama_host)
+        ollama_port = parsed.port or 11434
+        embedding_port = ollama_port + 4  # 11434 → 11438
+
+        try:
+            import uvicorn
+            from fastapi import FastAPI
+
+            from fleet_manager.node.embedding_server import router as embed_router
+
+            app = FastAPI(title="Herd Vision Embedding Server")
+            app.include_router(embed_router)
+
+            config = uvicorn.Config(
+                app, host="0.0.0.0", port=embedding_port, log_level="warning"
+            )
+            server = uvicorn.Server(config)
+            self._embedding_server_task = asyncio.create_task(server.serve())
+            self._embedding_port = embedding_port
+
+            models = ", ".join(m.name for m in embedding_metrics.models_available)
+            logger.info(
+                f"Vision embedding server started on 0.0.0.0:{embedding_port} "
+                f"(models: {models})"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to start embedding server: {repr(e)}")
+            self._embedding_port = 0
 
     async def _send_heartbeat(self, payload):
         resp = await self._http.post(

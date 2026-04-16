@@ -23,6 +23,7 @@ class ModelCategory(StrEnum):
     CREATIVE = "creative"
     FAST_CHAT = "fast-chat"
     VISION = "vision"
+    VISION_EMBEDDING = "vision-embedding"
     IMAGE = "image"
 
 
@@ -650,6 +651,43 @@ MODEL_CATALOG: list[ModelSpec] = [
         context_length=0,
         benchmarks=ModelBenchmarks(),
         notes="Ollama native image gen — higher quality variant",
+    ),
+    # ── VISION EMBEDDING — image similarity / frame dedup ──────────
+    ModelSpec(
+        ollama_name="dinov2-vit-s14",
+        display_name="DINOv2 ViT-S/14",
+        family="dinov2",
+        params_b=0.022,
+        ram_gb=0.085,
+        size_class=ModelSize.SMALL,
+        category=ModelCategory.VISION_EMBEDDING,
+        context_length=0,
+        benchmarks=ModelBenchmarks(),
+        notes="Best visual similarity, 384-dim, MLX-native on Apple Silicon",
+    ),
+    ModelSpec(
+        ollama_name="siglip2-base",
+        display_name="SigLIP2 Base",
+        family="siglip",
+        params_b=0.087,
+        ram_gb=0.35,
+        size_class=ModelSize.SMALL,
+        category=ModelCategory.VISION_EMBEDDING,
+        context_length=0,
+        benchmarks=ModelBenchmarks(),
+        notes="General-purpose vision+text embeddings, 768-dim, MLX-native",
+    ),
+    ModelSpec(
+        ollama_name="clip-vit-b32",
+        display_name="CLIP ViT-B/32",
+        family="clip",
+        params_b=0.087,
+        ram_gb=0.352,
+        size_class=ModelSize.SMALL,
+        category=ModelCategory.VISION_EMBEDDING,
+        context_length=0,
+        benchmarks=ModelBenchmarks(),
+        notes="Cross-platform fallback via ONNX, 512-dim",
     ),
 ]
 

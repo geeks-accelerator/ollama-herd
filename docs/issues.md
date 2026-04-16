@@ -431,3 +431,23 @@ The Trends page has preset time buttons (24h, 48h, 72h, 7d) but no custom date/t
    - Trends: replace current time buttons with shared component
    - Model Insights: add time range component (currently hardcoded to `days` param)
    - Apps: add time range component (currently hardcoded to `days` param)
+
+---
+
+## Model Management
+
+### No priority/pinned model concept — restarts can evict primary models `OPEN`
+
+**Severity:** High
+**Discovered:** 2026-04-16 — during vision embedding testing, repeated fleet restarts (`pkill -9`) caused `gpt-oss:120b` (89GB, primary reasoning model) to be unloaded. VRAM fallback then routed requests to `gemma3:27b` (42GB), which loaded and consumed the memory `gpt-oss:120b` needed. Result: primary model evicted, replaced by a less capable one.
+
+**Root cause:** No concept of "this model must always be loaded." VRAM fallback picks whatever is loaded without considering model importance. Ollama's `OLLAMA_KEEP_ALIVE=-1` keeps models loaded but can't prevent eviction when memory is consumed by other models loading first after a restart.
+
+**Proposed fix:**
+1. Add `FLEET_PINNED_MODELS` config — comma-separated list of models that must always be loaded (e.g., `gpt-oss:120b,nomic-embed-text`)
+2. After node restart, load pinned models first before accepting other requests
+3. VRAM fallback should never route to a non-pinned model if a pinned model exists for that category
+4. Health check: WARNING if a pinned model is not loaded
+5. Dashboard Settings: UI to manage pinned models
+
+**Files:** `server/streaming.py` (VRAM fallback), `node/agent.py` (startup model loading), `models/config.py` (pinned models config), `server/health_engine.py` (health check)

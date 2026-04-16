@@ -43,6 +43,9 @@ async def fleet_status(request: Request):
         if node.transcription:
             node_data["transcription"] = node.transcription.model_dump()
             node_data["transcription_port"] = node.transcription_port
+        if node.vision_embedding:
+            node_data["vision_embedding"] = node.vision_embedding.model_dump()
+            node_data["vision_embedding_port"] = node.vision_embedding_port
         nodes.append(node_data)
 
     online_count = sum(1 for n in registry.get_all_nodes() if n.status.value == "online")

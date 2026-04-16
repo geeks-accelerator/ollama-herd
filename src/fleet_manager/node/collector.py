@@ -23,6 +23,8 @@ from fleet_manager.models.node import (
     OllamaMetrics,
     TranscriptionMetrics,
     TranscriptionModel,
+    VisionEmbeddingMetrics,
+    VisionEmbeddingModel,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,6 +147,30 @@ def _detect_transcription_models() -> TranscriptionMetrics | None:
     return TranscriptionMetrics(models_available=models, transcribing=transcribing)
 
 
+def _detect_vision_embedding_models() -> VisionEmbeddingMetrics | None:
+    """Detect available vision embedding models (DINOv2, SigLIP, CLIP)."""
+    from fleet_manager.node.embedding_models import (
+        VISION_EMBEDDING_MODELS,
+        is_model_downloaded,
+    )
+
+    models: list[VisionEmbeddingModel] = []
+    for name, spec in VISION_EMBEDDING_MODELS.items():
+        if not is_model_downloaded(name):
+            continue
+        models.append(
+            VisionEmbeddingModel(
+                name=name,
+                runtime=spec["runtime"],
+                dimensions=spec["dimensions"],
+            )
+        )
+
+    if not models:
+        return None
+    return VisionEmbeddingMetrics(models_available=models, processing=False)
+
+
 async def collect_heartbeat(
     node_id: str,
     ollama: OllamaClient,
@@ -191,6 +217,7 @@ async def collect_heartbeat(
     lan_ip = get_local_ip()
     image = _detect_image_models()
     transcription = _detect_transcription_models()
+    vision_embedding = _detect_vision_embedding_models()
 
     return HeartbeatPayload(
         node_id=node_id,
@@ -208,4 +235,5 @@ async def collect_heartbeat(
         agent_version=__version__,
         image=image,
         transcription=transcription,
+        vision_embedding=vision_embedding,
     )

@@ -63,6 +63,10 @@ class ServerSettings(BaseSettings):
     transcription: bool = True  # Route /api/transcribe to nodes with Qwen3-ASR
     transcription_timeout: float = 300.0  # Max seconds for transcription
 
+    # Vision embedding routing (CLIP, DINOv2, SigLIP)
+    vision_embedding: bool = True  # Route /api/embed-image to nodes with vision embeddings
+    vision_embedding_timeout: float = 30.0  # Max seconds for embedding
+
     # Thinking model support
     thinking_overhead: float = 4.0  # Multiply num_predict by this for thinking models
     thinking_min_predict: int = 1024  # Minimum num_predict for thinking models

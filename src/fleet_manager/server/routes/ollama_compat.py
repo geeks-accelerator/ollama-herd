@@ -384,11 +384,25 @@ async def ollama_embed(request: Request):
 
     Unlike chat/generate, embeddings are non-streaming — we proxy the request
     directly to Ollama's /api/embed endpoint and return the JSON response.
+
+    Vision embedding models (clip, dinov2, siglip) are routed to the vision
+    embedding service instead of Ollama.
     """
     body = await request.json()
     model = body.get("model", "")
     if not model:
         return JSONResponse(status_code=400, content={"error": "model is required"})
+
+    # Route vision embedding models to the embedding service
+    from fleet_manager.server.routes.embedding_compat import (
+        embed_image,
+        is_vision_embedding_model,
+    )
+
+    if is_vision_embedding_model(model):
+        # Stash parsed body so embed_image doesn't re-read the stream
+        request.state._parsed_body = body
+        return await embed_image(request)
 
     tags = extract_tags(body, request.headers)
     inference_req = InferenceRequest(

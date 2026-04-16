@@ -687,6 +687,64 @@ class StreamingProxy:
 
         return process
 
+    def make_embedding_process_fn(
+        self, queue_key: str, queue_manager, timeout: float = 30.0
+    ):
+        """Create a process function for vision embedding queue entries."""
+        proxy = self
+
+        async def _embed_and_yield(entry: QueueEntry):
+            start_time = time.time()
+            try:
+                result = await proxy.embed_image_on_node(
+                    entry.assigned_node, entry.request.raw_body, timeout
+                )
+                elapsed_ms = (time.time() - start_time) * 1000
+                logger.info(
+                    f"Embedding {entry.request.request_id[:8]} completed "
+                    f"on {entry.assigned_node} in {elapsed_ms:.0f}ms"
+                )
+                queue_manager.mark_completed(queue_key, entry)
+                yield json.dumps(result)
+            except Exception as e:
+                queue_manager.mark_failed(queue_key, entry)
+                logger.error(
+                    f"Embedding {entry.request.request_id[:8]} failed "
+                    f"on {entry.assigned_node}: {repr(e)}"
+                )
+                raise
+
+        def process(entry: QueueEntry):
+            return _embed_and_yield(entry)
+
+        return process
+
+    async def embed_image_on_node(
+        self, node_id: str, body: dict, timeout: float = 30.0
+    ) -> dict:
+        """Proxy a vision embedding request to a node's embedding server.
+
+        Returns the embedding result dict on success, raises on failure.
+        """
+        node = self._registry.get_node(node_id)
+        if not node:
+            raise ValueError(f"Node {node_id} not found")
+
+        from urllib.parse import urlparse
+
+        parsed = urlparse(node.ollama_base_url)
+        host = parsed.hostname or "localhost"
+        embed_port = node.vision_embedding_port or 11438
+        embed_url = f"http://{host}:{embed_port}"
+
+        async with httpx.AsyncClient(
+            base_url=embed_url,
+            timeout=httpx.Timeout(connect=10.0, read=timeout, write=10.0, pool=10.0),
+        ) as client:
+            resp = await client.post("/embed", json=body)
+            resp.raise_for_status()
+            return resp.json()
+
     async def transcribe_on_node(
         self, node_id: str, audio_bytes: bytes, filename: str, timeout: float = 300.0
     ) -> dict:
