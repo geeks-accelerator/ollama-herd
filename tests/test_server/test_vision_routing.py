@@ -384,3 +384,166 @@ class TestVisionRouting:
 
         assert vision_tokens > text_tokens
         assert vision_tokens >= ScoringEngine.IMAGE_TOKENS_PER_IMAGE
+
+    async def test_vision_model_fallback(self, scorer, registry):
+        """Vision request falls back when primary model unavailable."""
+        # Node has a different vision model loaded
+        hb = make_heartbeat(
+            node_id="alt-node",
+            memory_total=64.0,
+            memory_used=20.0,
+            loaded_models=[("llava:7b", 5.0)],
+        )
+        await registry.update_from_heartbeat(hb)
+
+        # Request a model that's not loaded — should return empty
+        results = scorer.score_request("gemma3:27b", {})
+        assert len(results) == 0
+
+        # But the available model should score
+        results = scorer.score_request("llava:7b", {})
+        assert len(results) == 1
+        assert results[0].node_id == "alt-node"
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: HTTP URLs, invalid base64, format conversion
+# ---------------------------------------------------------------------------
+
+
+class TestImageEdgeCases:
+    def test_http_url_fetched_and_converted(self):
+        """HTTP image URLs are fetched and converted to base64."""
+        from unittest.mock import MagicMock, patch
+
+        from fleet_manager.server.streaming import StreamingProxy
+
+        fake_response = MagicMock()
+        fake_response.content = b"\x89PNG\r\n\x1a\n"  # PNG header bytes
+        fake_response.raise_for_status = MagicMock()
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What's in this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/photo.png"},
+                    },
+                ],
+            }
+        ]
+
+        with patch("httpx.get", return_value=fake_response) as mock_get:
+            converted = StreamingProxy._convert_messages_for_ollama(messages)
+            mock_get.assert_called_once_with(
+                "https://example.com/photo.png", timeout=30, follow_redirects=True
+            )
+
+        assert converted[0]["content"] == "What's in this?"
+        assert len(converted[0]["images"]) == 1
+        # Verify the PNG bytes were base64 encoded
+        import base64
+
+        assert converted[0]["images"][0] == base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
+
+    def test_http_url_fetch_failure_skips_image(self):
+        """Failed HTTP URL fetch logs warning and skips the image."""
+        from unittest.mock import patch
+
+        from fleet_manager.server.streaming import StreamingProxy
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What's in this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/broken.png"},
+                    },
+                ],
+            }
+        ]
+
+        with patch("httpx.get", side_effect=Exception("Connection refused")):
+            converted = StreamingProxy._convert_messages_for_ollama(messages)
+
+        assert converted[0]["content"] == "What's in this?"
+        assert "images" not in converted[0]  # Image skipped, not added
+
+    def test_empty_base64_in_data_uri_skipped(self):
+        """data: URI with empty base64 is skipped."""
+        from fleet_manager.server.streaming import StreamingProxy
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,"},
+                    },
+                ],
+            }
+        ]
+        converted = StreamingProxy._convert_messages_for_ollama(messages)
+        assert converted[0]["content"] == "Describe"
+        assert "images" not in converted[0]  # Empty base64 skipped
+
+    def test_mixed_data_uri_and_http_url(self):
+        """Message with both data URI and HTTP URL images."""
+        from unittest.mock import MagicMock, patch
+
+        from fleet_manager.server.streaming import StreamingProxy
+
+        fake_response = MagicMock()
+        fake_response.content = b"fake-image-bytes"
+        fake_response.raise_for_status = MagicMock()
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Compare these"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,localimg"},
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/remote.png"},
+                    },
+                ],
+            }
+        ]
+
+        with patch("httpx.get", return_value=fake_response):
+            converted = StreamingProxy._convert_messages_for_ollama(messages)
+
+        assert len(converted[0]["images"]) == 2
+        assert converted[0]["images"][0] == "localimg"
+        import base64
+
+        assert converted[0]["images"][1] == base64.b64encode(b"fake-image-bytes").decode()
+
+    def test_image_tokens_with_http_url(self):
+        """Token estimation works for HTTP URLs (counted same as data URIs)."""
+        from fleet_manager.server.scorer import ScoringEngine
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/photo.png"},
+                    },
+                ],
+            }
+        ]
+        tokens = ScoringEngine.estimate_tokens(messages)
+        assert tokens >= ScoringEngine.IMAGE_TOKENS_PER_IMAGE

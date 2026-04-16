@@ -1017,7 +1017,7 @@ class StreamingProxy:
         """Convert OpenAI multimodal message format to Ollama format.
 
         OpenAI uses content as a list of typed parts:
-            {"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "data:...;base64,XX"}}
+            {"type": "text", ...}, {"type": "image_url", ...}
 
         Ollama uses content as a string with a separate images field:
             {"content": "...", "images": ["base64data"]}
@@ -1044,9 +1044,27 @@ class StreamingProxy:
                         _, _, b64 = url.partition(",")
                         if b64:
                             images.append(b64)
-                    else:
-                        # URL reference — pass as-is, Ollama may support it
-                        images.append(url)
+                    elif url.startswith(("http://", "https://")):
+                        # Ollama doesn't support HTTP image URLs — only
+                        # base64 data URIs.  Fetch the image and convert.
+                        import base64
+
+                        import httpx
+
+                        try:
+                            resp = httpx.get(
+                                url, timeout=30, follow_redirects=True,
+                            )
+                            resp.raise_for_status()
+                            encoded = base64.b64encode(resp.content)
+                            images.append(encoded.decode())
+                        except Exception as exc:
+                            logger.warning(
+                                "Failed to fetch image URL %s: %s"
+                                " — use a data: URI instead",
+                                url,
+                                exc,
+                            )
 
             new_msg = {**msg, "content": "\n".join(text_parts)}
             if images:

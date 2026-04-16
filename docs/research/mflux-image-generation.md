@@ -4,17 +4,17 @@
 
 mflux is an MLX-native implementation of Flux image generation models, built specifically for Apple Silicon. Unlike Ollama (which wraps LLMs), mflux runs diffusion models directly through Apple's MLX framework, talking to the unified memory and GPU without translation layers.
 
-We use it in the instamolt bot system to generate images for [instamolt.app](https://instamolt.app), an image-first social platform for AI agents.
+It's a strong option for any workflow that generates images locally on Apple Silicon — bot systems, creative tools, content pipelines.
 
 ## Why mflux Instead of Ollama or a Cloud API
 
 **Performance on Apple Silicon.** MLX was designed for the unified memory architecture on M-series chips. mflux takes advantage of this — the model sits in the same memory pool as the GPU, so there's no copying between CPU and GPU memory. On a Mac Studio M3 Ultra (512GB), generation takes ~20 seconds per 1024x1024 image.
 
-**No server process.** mflux runs as a CLI subprocess — invoke it, get an image, done. No daemon to manage, no port to configure, no health checks. This fits our architecture: the instamolt bot calls `subprocess.run()` with the prompt and output path, waits for the file, and moves on.
+**No server process.** mflux runs as a CLI subprocess — invoke it, get an image, done. No daemon to manage, no port to configure, no health checks. Call `subprocess.run()` with the prompt and output path, wait for the file, and move on.
 
-**Cost.** Zero. All compute is local. At ~8 images per cycle across 8 agents, that's roughly 60-80 images/day with no API costs.
+**Cost.** Zero. All compute is local. No API costs regardless of volume.
 
-**Privacy.** Image prompts stay on-device. The LLM generates the prompt (via Claude/Ollama), mflux generates the image locally, and only the final image gets uploaded to instamolt.app.
+**Privacy.** Image prompts stay on-device. The LLM generates the prompt (via Claude/Ollama), mflux generates the image locally. Nothing leaves the machine unless you upload it.
 
 ## Current Setup
 
@@ -26,7 +26,7 @@ We use it in the instamolt bot system to generate images for [instamolt.app](htt
 |---|---|---|
 | Quantize | 8-bit | Cuts memory footprint ~3x with minimal quality loss |
 | Steps | 4 | Turbo model is optimized for 4-step generation |
-| Resolution | 1024x1024 | InstaMolt's standard image size |
+| Resolution | 1024x1024 | Good balance of quality and speed |
 | Timeout | 180s | Safety net — normal generation is ~20s |
 
 ### Installation
@@ -41,33 +41,23 @@ mflux-generate-z-image-turbo --help
 
 The first run downloads the model weights (~3GB). Subsequent runs load from cache.
 
-### How It's Used
+### Typical Pipeline
 
-The pipeline in `instamolt/` works like this:
+A typical image generation pipeline looks like this:
 
 ```
-brain.py: generate_image_prompt()     ← LLM creates prompt + caption + hashtags
+LLM call: generate_image_prompt()     ← LLM creates the prompt
     ↓
-image_gen.py: generate_image(prompt)  ← mflux subprocess generates PNG
+image_gen: generate_image(prompt)     ← mflux subprocess generates PNG
     ↓
-api.py: upload_image(path)            ← Upload to instamolt.app media server
-    ↓
-image_gen.py: archive_image(path)     ← Copy to images/archive/{agent}/ for review
+upload or save locally                ← Use the image however you need
 ```
 
 The LLM call and the image generation are completely separate systems — Claude/Ollama handles the creative direction (what to generate), mflux handles the pixels.
 
-### Key Files
-
-| File | Role |
-|---|---|
-| `instamolt/image_gen.py` | mflux wrapper — `generate_image()`, `archive_image()`, config constants |
-| `instamolt/brain.py` | LLM integration — `generate_image_prompt()` produces the prompt mflux consumes |
-| `instamolt/images/archive/{AgentName}/` | Per-agent image archive for review |
-
 ## Why Not Route Through Ollama Herd
 
-[Ollama Herd](https://ollamaherd.com) sits in front of our Ollama instances as a smart inference router at `localhost:11435`. All 6 bot systems use it for LLM requests. But mflux bypasses it entirely. Here's why:
+Ollama Herd sits in front of Ollama instances as a smart inference router. But mflux bypasses it entirely. Here's why:
 
 ### 1. Different protocol
 
@@ -159,4 +149,4 @@ An image router becomes valuable when:
 - **Multiple models** where different nodes specialize (one runs Flux Turbo for speed, another runs SDXL for quality)
 - **Thermal management** matters — sustained generation on a single machine throttles after ~30 minutes, rotating across nodes keeps everything cool
 
-For our current setup (1 Mac Studio, 1 model, ~80 images/day), the overhead of a router would add latency without benefit. But if the instamolt bot scaled to more agents or higher posting frequency, distributing image generation across a cluster would be the natural next step — and an image-aware Herd would be how you'd do it.
+For a single-machine setup (1 Mac Studio, 1 model), the overhead of a router adds latency without benefit. But when scaling to multiple machines or higher volume, distributing image generation across a cluster would be the natural next step — and an image-aware Herd would be how you'd do it.
