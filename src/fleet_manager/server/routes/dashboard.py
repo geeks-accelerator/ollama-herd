@@ -1742,7 +1742,7 @@ function renderNodes(nodes) {
     nodes.forEach(function(node) {
       if (node.status === 'online') onlineCount2++;
       var models = node.ollama ? node.ollama.models_loaded : [];
-      totalModels2 += models.length;
+      totalModels2 += models.length + (node.vision_embed_models ? node.vision_embed_models.length : 0);
       var safeId = 'node-' + node.node_id.replace(/[^a-zA-Z0-9]/g, '-');
       var card = document.getElementById(safeId);
       if (!card) { needsRebuild = true; return; }
@@ -1776,8 +1776,9 @@ function renderNodes(nodes) {
     const memPct = memTotal > 0 ? (memUsed / memTotal) * 100 : 0;
     const pressure = node.memory ? node.memory.pressure : 'normal';
     const models = node.ollama ? node.ollama.models_loaded : [];
-    totalModels += models.length;
-    const availCount = node.ollama ? node.ollama.models_available_count : 0;
+    const visEmbedCount = node.vision_embed_models ? node.vision_embed_models.length : 0;
+    totalModels += models.length + visEmbedCount;
+    const availCount = (node.ollama ? node.ollama.models_available_count : 0) + visEmbedCount;
     const modelsHtml = models.length > 0
       ? models.map(m => {
           const meta = m.parameter_size ? m.parameter_size + (m.quantization ? ' ' + m.quantization : '') : formatGB(m.size_gb);
@@ -1852,7 +1853,7 @@ function renderNodes(nodes) {
         </div>
         <div class="models-list">
           <div class="label" style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
-            Models (${models.length} loaded, ${availCount} on disk)
+            Models (${models.length + (node.vision_embed_models ? node.vision_embed_models.length : 0)} loaded, ${availCount} on disk)
           </div>
           ${modelsHtml}
         </div>
