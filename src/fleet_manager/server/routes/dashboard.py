@@ -1853,7 +1853,7 @@ function renderNodes(nodes) {
         </div>
         <div class="models-list">
           <div class="label" style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
-            Models (${models.length} loaded, ${availCount} on disk${serviceCount ? ', ' + serviceCount + ' services' : ''})
+            Ollama Models: ${models.length} loaded, ${availCount} on disk${serviceCount ? ' | Services: ' + serviceCount + ' loaded' : ''}
           </div>
           ${modelsHtml}
         </div>
