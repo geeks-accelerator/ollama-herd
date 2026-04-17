@@ -134,6 +134,11 @@ async def dashboard_events(request: Request):
                     ]
                     if embed_models:
                         node_data["embed_models"] = embed_models
+                # Vision embedding models (DINOv2, SigLIP, CLIP)
+                if node.vision_embedding and node.vision_embedding.models_available:
+                    node_data["vision_embed_models"] = [
+                        m.name for m in node.vision_embedding.models_available
+                    ]
                 if node.capacity:
                     node_data["capacity"] = {
                         "mode": node.capacity.mode,
@@ -917,6 +922,11 @@ async def dashboard_settings_data(request: Request):
                 m for m in node.ollama.models_available
                 if "embed" in m.lower()
             ]
+        vision_embed_models = []
+        if node.vision_embedding:
+            vision_embed_models = [
+                m.name for m in node.vision_embedding.models_available
+            ]
         nodes_data.append({
             "node_id": node.node_id,
             "status": node.status.value,
@@ -929,6 +939,8 @@ async def dashboard_settings_data(request: Request):
             "stt_models": stt_models,
             "transcription_port": node.transcription_port,
             "embed_models": embed_models,
+            "vision_embed_models": vision_embed_models,
+            "vision_embedding_port": node.vision_embedding_port,
         })
 
     return {
@@ -1844,7 +1856,7 @@ function renderNodes(nodes) {
           </div>
           ${modelsHtml}
         </div>
-        ${(node.image_models && node.image_models.length) || (node.stt_models && node.stt_models.length) || (node.embed_models && node.embed_models.length) ? '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">' + ((node.image_models || []).map(m => '<span class="badge" style="background:rgba(249,115,22,0.15);color:var(--orange);font-size:10px">IMG ' + m + '</span>').join('')) + ((node.stt_models || []).map(m => '<span class="badge" style="background:rgba(59,130,246,0.15);color:var(--blue);font-size:10px">STT ' + m + '</span>').join('')) + ((node.embed_models || []).map(m => '<span class="badge" style="background:rgba(168,85,247,0.15);color:var(--purple,#a855f7);font-size:10px">EMBED ' + m + '</span>').join('')) + '</div>' : ''}
+        ${(node.image_models && node.image_models.length) || (node.stt_models && node.stt_models.length) || (node.embed_models && node.embed_models.length) || (node.vision_embed_models && node.vision_embed_models.length) ? '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">' + ((node.image_models || []).map(m => '<span class="badge" style="background:rgba(249,115,22,0.15);color:var(--orange);font-size:10px">IMG ' + m + '</span>').join('')) + ((node.stt_models || []).map(m => '<span class="badge" style="background:rgba(59,130,246,0.15);color:var(--blue);font-size:10px">STT ' + m + '</span>').join('')) + ((node.embed_models || []).map(m => '<span class="badge" style="background:rgba(168,85,247,0.15);color:var(--purple,#a855f7);font-size:10px">EMBED ' + m + '</span>').join('')) + ((node.vision_embed_models || []).map(m => '<span class="badge" style="background:rgba(6,182,212,0.15);color:var(--cyan,#06b6d4);font-size:10px">VIS ' + m + '</span>').join('')) + '</div>' : ''}
         ${capacityHtml}
       </div>`;
   }).join('');
@@ -4440,6 +4452,7 @@ function renderSettings(data) {
         (n.image_models && n.image_models.length ? '<div class="node-detail"><span class="nd-label">Image Models</span><span class="nd-value" style="color:var(--orange)">' + n.image_models.join(', ') + '</span></div>' : '') +
         (n.stt_models && n.stt_models.length ? '<div class="node-detail"><span class="nd-label">STT Models</span><span class="nd-value" style="color:var(--blue)">' + n.stt_models.join(', ') + '</span></div>' : '') +
         (n.embed_models && n.embed_models.length ? '<div class="node-detail"><span class="nd-label">Embed Models</span><span class="nd-value" style="color:var(--purple,#a855f7)">' + n.embed_models.join(', ') + '</span></div>' : '') +
+        (n.vision_embed_models && n.vision_embed_models.length ? '<div class="node-detail"><span class="nd-label">Vision Embed</span><span class="nd-value" style="color:var(--cyan,#06b6d4)">' + n.vision_embed_models.join(', ') + '</span></div>' : '') +
       '</div>';
     }).join('');
   }
