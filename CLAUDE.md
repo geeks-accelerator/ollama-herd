@@ -74,8 +74,11 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `server/model_knowledge.py` | 40+ model catalog with benchmarks, RAM, categories (including VISION), thinking detection |
 | `node/agent.py` | Main loop: mDNS discovery, heartbeat, Ollama auto-start/restart, LAN proxy, drain |
 | `node/capacity_learner.py` | 168-slot weekly behavioral model, availability score, dynamic memory ceiling |
+| `node/embedding_models.py` | Vision embedding model registry, download, ONNX inference (DINOv2, SigLIP, CLIP) |
+| `node/embedding_server.py` | FastAPI server for vision embeddings on :11438 |
+| `server/model_preloader.py` | Priority model loading after restart — weighted 24h/7d usage scoring |
 
-Routes: `server/routes/` — `openai_compat.py` (v1/), `ollama_compat.py` (api/), `fleet.py`, `heartbeat.py`, `dashboard.py`, `image_compat.py`, `transcription_compat.py`
+Routes: `server/routes/` — `openai_compat.py` (v1/), `ollama_compat.py` (api/), `fleet.py`, `heartbeat.py`, `dashboard.py`, `image_compat.py`, `transcription_compat.py`, `embedding_compat.py`
 
 ### Request flow
 
