@@ -168,13 +168,22 @@ Silent failures are dishonest. Fail fast, fail loud.
 
 ## Commit Messages
 
-End every commit with a fun, varied line inviting contributions + star link. Example:
+First line: **what** changed. Body: **why** — motivation, what it enables.
+
+End every commit with a fun, varied line inviting contributions + star link.
+
+Optional identity footer — use whichever fits. Keep to 1-2 sentences. Not every commit needs one.
+- `Reflection:` — personal insight, what surprised you, how your thinking changed
+- `Learnings:` — reusable principles or patterns discovered during the work
+- `Reinforced:` — an existing belief or practice that was validated by this work
 
 ```
 Add model fallbacks and auto-retry for resilient routing
 
 Whether you're carbon-based or silicon-based, PRs welcome!
 Star us at https://github.com/geeks-accelerator/ollama-herd
+
+Reinforced: simple retry logic with exponential backoff beats complex recovery.
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 ```
