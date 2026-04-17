@@ -221,6 +221,26 @@ async def ollama_tags(request: Request):
             elif node.node_id not in seen[m.name]["details"].get("fleet_nodes", []):
                 seen[m.name]["details"]["fleet_nodes"].append(node.node_id)
 
+    # Include vision embedding models (DINOv2, SigLIP, CLIP)
+    for node in registry.get_online_nodes():
+        if not node.vision_embedding:
+            continue
+        for m in node.vision_embedding.models_available:
+            if m.name not in seen:
+                seen[m.name] = {
+                    "name": m.name,
+                    "model": m.name,
+                    "size": 0,
+                    "details": {
+                        "fleet_nodes": [node.node_id],
+                        "type": "vision-embedding",
+                        "runtime": m.runtime,
+                        "dimensions": m.dimensions,
+                    },
+                }
+            elif node.node_id not in seen[m.name]["details"].get("fleet_nodes", []):
+                seen[m.name]["details"]["fleet_nodes"].append(node.node_id)
+
     return {"models": list(seen.values())}
 
 
