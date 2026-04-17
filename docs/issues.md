@@ -451,3 +451,27 @@ The Trends page has preset time buttons (24h, 48h, 72h, 7d) but no custom date/t
 5. Dashboard Settings: UI to manage pinned models
 
 **Files:** `server/streaming.py` (VRAM fallback), `node/agent.py` (startup model loading), `models/config.py` (pinned models config), `server/health_engine.py` (health check)
+
+### Queue concurrency ignores OLLAMA_NUM_PARALLEL — allows 8 in-flight but Ollama only runs 2 `OPEN`
+
+**Severity:** Medium
+**Discovered:** 2026-04-16 — dashboard always shows "1/8 in-flight" regardless of model or node. On a 512GB machine the concurrency formula always hits the `_MAX_CONCURRENCY=8` cap because headroom is massive (436GB / 2GB per slot = 218, clamped to 8).
+
+**Root cause:** `compute_concurrency()` in `queue_manager.py` calculates slots from memory headroom divided by estimated KV cache cost (2GB), then clamps to `[1, 8]`. It has no knowledge of `OLLAMA_NUM_PARALLEL`, which controls how many requests Ollama actually processes simultaneously. With `OLLAMA_NUM_PARALLEL=2`, the queue allows 8 in-flight but Ollama queues anything beyond 2 internally, adding unnecessary latency.
+
+**Impact:** On a 512GB machine with `OLLAMA_NUM_PARALLEL=2`:
+- Queue reports 8 concurrency slots
+- Ollama processes 2 at a time
+- 6 requests sit in Ollama's internal queue, invisible to Herd's scoring
+- Scoring engine thinks the node has capacity when it's actually backed up
+- Wait time estimates are wrong
+
+**Proposed fix:**
+1. Node agent reads `OLLAMA_NUM_PARALLEL` from environment or Ollama's config and reports it in the heartbeat
+2. `compute_concurrency()` uses `min(memory_slots, ollama_num_parallel)` instead of just memory slots
+3. If `OLLAMA_NUM_PARALLEL` is not reported, fall back to current memory-based calculation
+4. Dashboard shows actual concurrency (e.g., "1/2" not "1/8")
+
+**Files:** `server/queue_manager.py` (compute_concurrency), `node/collector.py` (read OLLAMA_NUM_PARALLEL), `models/node.py` (add to heartbeat)
+
+**Files:** `server/streaming.py` (VRAM fallback), `node/agent.py` (startup model loading), `models/config.py` (pinned models config), `server/health_engine.py` (health check)
