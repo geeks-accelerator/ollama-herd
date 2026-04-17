@@ -649,9 +649,14 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
             )
 
         if final_data:
+            final_data["response"] = full_response
             final_data["message"] = {"role": "assistant", "content": full_response}
             return JSONResponse(content=final_data, headers=headers)
         return JSONResponse(
-            content={"message": {"role": "assistant", "content": full_response}, "done": True},
+            content={
+                "response": full_response,
+                "message": {"role": "assistant", "content": full_response},
+                "done": True,
+            },
             headers=headers,
         )
