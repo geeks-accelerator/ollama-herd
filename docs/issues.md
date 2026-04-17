@@ -436,7 +436,7 @@ The Trends page has preset time buttons (24h, 48h, 72h, 7d) but no custom date/t
 
 ## Model Management
 
-### No priority/pinned model concept — restarts can evict primary models `OPEN`
+### No priority/pinned model concept — restarts can evict primary models `FIXED`
 
 **Severity:** High
 **Discovered:** 2026-04-16 — during vision embedding testing, repeated fleet restarts (`pkill -9`) caused `gpt-oss:120b` (89GB, primary reasoning model) to be unloaded. VRAM fallback then routed requests to `gemma3:27b` (42GB), which loaded and consumed the memory `gpt-oss:120b` needed. Result: primary model evicted, replaced by a less capable one.

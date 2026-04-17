@@ -15,7 +15,7 @@ uv sync --extra dev  # installs test + lint deps
 ### Run the tests
 
 ```bash
-uv run pytest           # all 445 tests (~5s)
+uv run pytest           # all 507 tests (~5s)
 uv run pytest -v        # verbose output
 uv run pytest tests/test_server/  # server tests only
 uv run pytest tests/test_models/  # model tests only

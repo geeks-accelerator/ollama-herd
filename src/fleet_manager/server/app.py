@@ -65,6 +65,13 @@ async def lifespan(app: FastAPI):
     optimizer_task = asyncio.create_task(context_optimizer.run())
     queue_mgr.start_reaper()
 
+    # Priority model preloader — loads most-used models after first node registers
+    from fleet_manager.server.model_preloader import preload_priority_models
+
+    preload_task = asyncio.create_task(
+        preload_priority_models(registry, trace_store, streaming_proxy, settings)
+    )
+
     logger.info(f"Ollama Herd ready on port {settings.port}")
 
     yield
@@ -73,6 +80,7 @@ async def lifespan(app: FastAPI):
     monitor_task.cancel()
     rebalancer_task.cancel()
     optimizer_task.cancel()
+    preload_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await monitor_task
     with contextlib.suppress(asyncio.CancelledError):

@@ -186,7 +186,17 @@ def _try_vram_fallback(
     estimated_tokens: int,
     exclude_models: list[str],
 ) -> tuple[list[RoutingResult], str] | None:
-    """Try routing to a loaded model in the same category, then any loaded model."""
+    """Try routing to a loaded model in the same category, then any loaded model.
+
+    Respects model priority: if the requested model has significantly
+    higher usage-based priority than the fallback candidate, skip the
+    fallback and let the request cold-load or queue instead.
+    """
+    from fleet_manager.server.model_preloader import (
+        _priority_cache,
+        get_model_priority,
+    )
+
     category = classify_model(inference_req.model)
 
     # Try same category first
@@ -196,6 +206,20 @@ def _try_vram_fallback(
     )
     if loaded_options:
         best_result, best_model = loaded_options[0]
+
+        # Priority check: don't route a high-priority model to a
+        # low-priority one.  The requested model should cold-load instead.
+        req_priority = get_model_priority(inference_req.model, _priority_cache)
+        fallback_priority = get_model_priority(best_model, _priority_cache)
+        if req_priority > 0 and req_priority > fallback_priority * 2:
+            logger.info(
+                f"VRAM fallback blocked: '{inference_req.model}' "
+                f"(priority={req_priority:.0f}) outranks "
+                f"'{best_model}' (priority={fallback_priority:.0f}) — "
+                f"will cold-load instead"
+            )
+            return None
+
         logger.info(
             f"VRAM fallback: '{inference_req.model}' ({category.value}) not loaded, "
             f"routing to loaded '{best_model}' instead"
@@ -203,13 +227,24 @@ def _try_vram_fallback(
         _record_vram_fallback(inference_req.model, best_model, category.value)
         return [best_result], best_model
 
-    # No loaded model in same category — try ANY loaded model
+    # No loaded model in same category — try ANY loaded model (with priority check)
     all_loaded = scorer.score_loaded_models(
         None, queue_depths, estimated_tokens,
         exclude_models=exclude_models,
     )
     if all_loaded:
         best_result, best_model = all_loaded[0]
+
+        req_priority = get_model_priority(inference_req.model, _priority_cache)
+        fallback_priority = get_model_priority(best_model, _priority_cache)
+        if req_priority > 0 and req_priority > fallback_priority * 2:
+            logger.info(
+                f"VRAM fallback (cross-category) blocked: '{inference_req.model}' "
+                f"(priority={req_priority:.0f}) outranks "
+                f"'{best_model}' (priority={fallback_priority:.0f})"
+            )
+            return None
+
         fallback_cat = classify_model(best_model).value
         logger.info(
             f"VRAM fallback (cross-category): '{inference_req.model}' not loaded, "

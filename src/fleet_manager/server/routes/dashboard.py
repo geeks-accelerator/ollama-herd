@@ -611,6 +611,22 @@ async def _generate_briefing(request) -> dict:
         else:
             queue_summary = f"Queues: clear ({total_inflight} in-flight)."
 
+    # Priority model status
+    priority_summary = ""
+    if trace_store:
+        try:
+            priorities = await trace_store.get_model_priority_scores()
+            if priorities:
+                top3 = priorities[:3]
+                parts = [
+                    f"{p['model']}: score={p['priority_score']:.0f} "
+                    f"({p['requests_24h']} reqs/24h)"
+                    for p in top3
+                ]
+                priority_summary = f"Model priority (by usage): {'; '.join(parts)}."
+        except Exception:
+            pass
+
     # Previous briefings for continuity
     prev_briefings = ""
     ts = getattr(request.app.state, "trace_store", None)
@@ -632,6 +648,7 @@ async def _generate_briefing(request) -> dict:
 - {traffic_summary}
 - {context_summary}
 - {conn_summary if conn_summary else 'No connection issues.'}
+- {priority_summary if priority_summary else 'No model usage history yet.'}
 - {queue_summary}
 Nodes:
 {node_details}

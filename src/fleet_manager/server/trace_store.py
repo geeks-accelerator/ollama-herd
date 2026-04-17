@@ -589,6 +589,51 @@ class TraceStore:
             "total_retries": row[3] or 0,
         }
 
+    async def get_model_priority_scores(self) -> list[dict]:
+        """Compute model priority scores for startup preloading.
+
+        Weights recent usage (24h) 3x higher than weekly average to
+        catch workload shifts quickly.  Returns models sorted by score
+        (highest priority first).
+
+        Score = (requests_24h * 3) + (requests_7d_daily_avg * 1)
+        """
+        if not self._db:
+            return []
+        now = time.time()
+        cutoff_24h = now - 86400
+        cutoff_7d = now - 7 * 86400
+
+        cursor = await self._db.execute(
+            """
+            SELECT
+                model,
+                SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END) AS requests_24h,
+                COUNT(*) AS requests_7d,
+                MAX(timestamp) AS last_used
+            FROM request_traces
+            WHERE timestamp >= ?
+            GROUP BY model
+            ORDER BY
+                (SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END) * 3
+                 + COUNT(*) / 7.0) DESC
+            """,
+            (cutoff_24h, cutoff_7d, cutoff_24h),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "model": row[0],
+                "requests_24h": row[1],
+                "requests_7d": row[2],
+                "daily_avg_7d": round(row[2] / 7.0, 1),
+                "priority_score": round(row[1] * 3 + row[2] / 7.0, 1),
+                "last_used": row[3],
+            }
+            for row in rows
+            if row[0]  # Skip empty model names
+        ]
+
     async def get_stream_reliability_24h(self, lookback_s: int = 86400) -> dict:
         """Count client disconnects and incomplete streams in the given window."""
         if not self._db:

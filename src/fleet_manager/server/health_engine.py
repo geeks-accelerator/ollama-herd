@@ -154,6 +154,12 @@ class HealthEngine:
                 self._check_context_waste(prompt_stats, nodes)
             )
 
+            # Priority model check
+            priorities = await trace_store.get_model_priority_scores()
+            recommendations.extend(
+                self._check_priority_models(priorities, nodes)
+            )
+
         # Suppress misleading "underutilized memory" when there's active
         # model thrashing or timeouts on the same node — telling users to
         # "load more models" while models are timing out is contradictory.
@@ -1331,6 +1337,62 @@ class HealthEngine:
 
     # ------------------------------------------------------------------
     # Helpers
+    # ------------------------------------------------------------------
+    # Priority model check
+    # ------------------------------------------------------------------
+
+    def _check_priority_models(
+        self, priorities: list[dict], nodes: list
+    ) -> list[Recommendation]:
+        """Warn when high-priority models are not loaded."""
+        recs: list[Recommendation] = []
+        if not priorities:
+            return recs
+
+        # Collect all loaded models across nodes
+        loaded: set[str] = set()
+        available: set[str] = set()
+        for node in nodes:
+            if node.ollama:
+                for m in node.ollama.models_loaded:
+                    loaded.add(m.name)
+                for m in node.ollama.models_available:
+                    available.add(m)
+
+        # Check top priority models
+        missing = []
+        for entry in priorities:
+            model = entry["model"]
+            score = entry["priority_score"]
+            if score < 10:
+                break  # Only warn for meaningfully used models
+            if model not in loaded and model in available:
+                missing.append((model, score))
+
+        if missing:
+            names = ", ".join(f"{m} (score={s:.0f})" for m, s in missing[:3])
+            recs.append(Recommendation(
+                check_id="priority_model_not_loaded",
+                severity=Severity.WARNING,
+                title=f"Priority model(s) not loaded: {missing[0][0]}",
+                description=(
+                    f"High-usage models available on disk but not loaded: "
+                    f"{names}. These models have high request volume but are "
+                    f"not in memory, causing cold loads or VRAM fallback to "
+                    f"less capable models."
+                ),
+                fix=(
+                    "Models will be auto-loaded by the priority preloader on "
+                    "next restart. To load now, send a request for the model "
+                    "or use the dashboard."
+                ),
+                data={"missing_models": [
+                    {"model": m, "priority_score": s} for m, s in missing
+                ]},
+            ))
+
+        return recs
+
     # ------------------------------------------------------------------
 
     @staticmethod
