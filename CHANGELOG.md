@@ -9,12 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Vision embedding service** — new `/api/embed-image` endpoint serves image embeddings via DINOv2 (384-dim, 85MB), SigLIP2 (768-dim, 90MB int8), CLIP (512-dim) via ONNX Runtime. Auto-downloads from HuggingFace, runs on port 11438 internally, proxied through router on 11435. `/api/embed` auto-routes vision model names (clip, dinov2, siglip) to the embedding service. Added to `/api/tags` for client discovery.
+- **Priority model preloading** — on restart, loads most-used models first based on weighted scoring: `(24h_requests * 3) + (7d_daily_avg)`. Prevents primary models like gpt-oss:120b from being evicted by whatever model happens to be requested first.
+- **Priority model refresh** — every 10 minutes, reloads priority models if evicted. Respects user intent: only refreshes models with requests in the last hour (so manual `ollama stop X` isn't overridden).
+- **VRAM fallback priority protection** — blocks fallback from a high-priority model to a low-priority one. Request for gpt-oss:120b no longer silently routes to gemma3:27b.
+- **`/api/version` endpoint** — returns Ollama version (compatibility) + `herd_version`. Health checks from Open WebUI, LangChain, etc. now work.
+- **Connection failure tracking** — node agent tracks connection failures, heartbeat reports them, health check (#17) surfaces active failures and recoveries.
+- **SSE watchdog** — dashboard auto-reconnects after 10s of silence, preventing stale state after network drops. The dashboard model list now updates live (model loads/unloads trigger card rebuild).
 - **Vision model support** — new `VISION` model category for image understanding (image → text). 7 vision models in catalog: gemma3 (4B/12B/27B), llama3.2-vision (11B/90B), llava (7B/13B/34B), moondream, minicpm-v
-- **OpenAI image format conversion** — OpenAI `image_url` content blocks auto-convert to Ollama's `images` field in the streaming proxy. Both API formats now work for vision requests
-- **Image token estimation** — `estimate_tokens()` accounts for image tokens (~150 per image) in both OpenAI and Ollama formats, improving context fit scoring for vision requests
-- **`is_vision_model()` helper** — programmatic detection of vision-capable models via catalog lookup or name heuristic
-- **`has_images` auto-detection** — `InferenceRequest` automatically detects image content in messages for analytics
-- **Vision in model recommender** — VISION included in default category priorities, fleet recommendations now suggest vision models
+- **OpenAI image format conversion** — OpenAI `image_url` content blocks auto-convert to Ollama's `images` field. HTTP image URLs auto-fetched and converted to base64.
+- **Image token estimation** — `estimate_tokens()` accounts for image tokens (~150 per image) in both OpenAI and Ollama formats
+- **`is_vision_model()` helper** — programmatic detection of vision-capable models
+- **Vision in model recommender** — VISION included in default category priorities
+- **Fleet Intelligence enrichment** — per-model traffic breakdown, per-node disk space, all health warnings (not just first 3), previous briefing continuity (500 chars), priority model status, 2 runtime bugs fixed (KeyError + AttributeError that were silently failing briefings)
+- **Health checks** — now 18 (was 16): connection failures (#17), priority models (#18)
+- **Model preloader in module table** — `node/embedding_models.py`, `node/embedding_server.py`, `server/model_preloader.py`
+- **Route: `server/routes/embedding_compat.py`** — vision embedding endpoint
+- **Config: `FLEET_VISION_EMBEDDING`**, `FLEET_VISION_EMBEDDING_TIMEOUT`, `FLEET_EMBEDDING_USE_COREML` (opt-in)
+
+### Fixed
+
+- **CoreML provider triggered macOS TCC dialogs that froze the node overnight** — `CoreMLExecutionProvider` requested Neural Engine access on first inference, producing a permission dialog that blocked the Python process until someone dismissed it. Happened twice in 5 days (April 14 + 19). Fixed by defaulting to CPU-only inference (opt-in to CoreML via `FLEET_EMBEDDING_USE_COREML=true`). CPU is fast enough on M-series (~60ms/image).
+- **`/api/generate` returned empty `response` field** — proxy converted generate to chat format internally, populated `message.content` but left `response` empty. Non-streaming clients got empty strings despite model generating tokens. Now both fields populated.
+- **Fleet Intelligence briefings were silently failing** — `report.score` (AttributeError) and `overall['avg_latency_ms']` (KeyError) bugs in the prompt assembly caught by bare except, so briefings appeared to work but had no health/traffic content. Fixed.
+- **Priority cache wasn't populated** — VRAM fallback couldn't read priority scores because preloader called `get_model_priority_scores()` directly instead of `get_cached_priorities()`. Also fixed Python import rebinding issue where `routing.py` imported `_priority_cache` by value and saw empty list after module rebind.
+- **Dashboard model list didn't auto-update** — SSE fast-path signature only checked `node_id:status`, not the loaded model list. Model loads/unloads didn't trigger card rebuild.
+- **Dashboard model counts** — now shows "Ollama Models: 3 loaded, 17 on disk | Services: 8 loaded" instead of misleading unified count.
+- **Vision embedding tests** — added 7 edge case tests (HTTP URL fetch, HTTP fetch failure, empty base64, mixed data URI + HTTP, token estimation, vision model fallback). 507 tests total (was 445).
+- **Stale references updated** — 445 → 507 tests, 17 → 18 health checks, 0.4.1 → 0.5.2 version across all skill files and docs
+
+## [0.5.2] - 2026-04-13
 
 ## [0.5.2] - 2026-04-13
 
