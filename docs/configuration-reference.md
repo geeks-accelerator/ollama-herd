@@ -126,6 +126,16 @@ Per-model overrides are set at runtime via `POST /dashboard/api/settings` with `
 | `FLEET_TRANSCRIPTION` | `false` | Enable `/api/transcribe` endpoint for Qwen3-ASR routing |
 | `FLEET_TRANSCRIPTION_TIMEOUT` | `300.0` | Max seconds to wait for transcription |
 
+### Vision Embeddings (DINOv2, SigLIP2, CLIP)
+
+Serves image embeddings via `/api/embed-image` on `:11438` internally (proxied through the router on `:11435`).  Used for frame deduplication, image similarity, and visual search.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_VISION_EMBEDDING` | `true` | Enable `/api/embed-image` endpoint |
+| `FLEET_VISION_EMBEDDING_TIMEOUT` | `30.0` | Max seconds to wait for embedding generation |
+| `FLEET_EMBEDDING_USE_COREML` | `false` | Opt-in to CoreMLExecutionProvider on macOS. **Not recommended** — can trigger macOS TCC permission dialogs that block the Python process indefinitely. CPU inference is fast enough (~60ms/image on M-series). |
+
 ### Thinking Models
 
 Thinking models (deepseek-r1, gpt-oss, qwq) split `num_predict` between internal reasoning and visible output. Small budgets result in empty responses. The router auto-detects thinking models and inflates the budget.
