@@ -192,10 +192,8 @@ def _try_vram_fallback(
     higher usage-based priority than the fallback candidate, skip the
     fallback and let the request cold-load or queue instead.
     """
-    from fleet_manager.server.model_preloader import (
-        _priority_cache,
-        get_model_priority,
-    )
+    from fleet_manager.server import model_preloader
+    from fleet_manager.server.model_preloader import get_model_priority
 
     category = classify_model(inference_req.model)
 
@@ -209,8 +207,10 @@ def _try_vram_fallback(
 
         # Priority check: don't route a high-priority model to a
         # low-priority one.  The requested model should cold-load instead.
-        req_priority = get_model_priority(inference_req.model, _priority_cache)
-        fallback_priority = get_model_priority(best_model, _priority_cache)
+        # Read current cache via module attribute (rebinds are module-local).
+        priority_cache = model_preloader._priority_cache
+        req_priority = get_model_priority(inference_req.model, priority_cache)
+        fallback_priority = get_model_priority(best_model, priority_cache)
         if req_priority > 0 and req_priority > fallback_priority * 2:
             logger.info(
                 f"VRAM fallback blocked: '{inference_req.model}' "
@@ -235,8 +235,9 @@ def _try_vram_fallback(
     if all_loaded:
         best_result, best_model = all_loaded[0]
 
-        req_priority = get_model_priority(inference_req.model, _priority_cache)
-        fallback_priority = get_model_priority(best_model, _priority_cache)
+        priority_cache = model_preloader._priority_cache
+        req_priority = get_model_priority(inference_req.model, priority_cache)
+        fallback_priority = get_model_priority(best_model, priority_cache)
         if req_priority > 0 and req_priority > fallback_priority * 2:
             logger.info(
                 f"VRAM fallback (cross-category) blocked: '{inference_req.model}' "

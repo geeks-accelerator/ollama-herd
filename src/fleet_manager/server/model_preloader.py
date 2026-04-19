@@ -96,7 +96,8 @@ async def preload_priority_models(
     # Brief delay to let the node's heartbeat fully populate
     await asyncio.sleep(3)
 
-    priorities = await trace_store.get_model_priority_scores()
+    # Use cached priorities so VRAM fallback can read the same data
+    priorities = await get_cached_priorities(trace_store)
     if not priorities:
         logger.info("Priority preload: no usage history, skipping")
         return
@@ -165,3 +166,70 @@ async def preload_priority_models(
             logger.warning(f"Priority preload: failed to load {model}: {e}")
 
     logger.info(f"Priority preload complete: loaded {loaded_count} model(s)")
+
+    # Keep priority models loaded — check every 10 minutes and reload
+    # if they've been evicted.  Ollama's KEEP_ALIVE=-1 should prevent
+    # this, but memory pressure or other models can force eviction.
+    while True:
+        await asyncio.sleep(600)  # 10 minutes
+        try:
+            await _refresh_priority_models(registry, trace_store, proxy)
+        except Exception as exc:
+            logger.warning(f"Priority refresh failed: {exc}")
+
+
+async def _refresh_priority_models(
+    registry: NodeRegistry,
+    trace_store: TraceStore,
+    proxy: StreamingProxy,
+) -> None:
+    """Reload priority models if they've been evicted from memory."""
+    priorities = await get_cached_priorities(trace_store)
+    if not priorities:
+        return
+
+    # Only reload the top 3 priority models to avoid memory thrashing
+    top_priorities = [p for p in priorities[:3] if p["priority_score"] >= 10]
+
+    for entry in top_priorities:
+        model = entry["model"]
+        score = entry["priority_score"]
+
+        nodes = registry.get_online_nodes()
+        if not nodes:
+            return
+
+        # Already loaded? Nothing to do.
+        already_loaded = any(
+            n.ollama and model in [m.name for m in n.ollama.models_loaded]
+            for n in nodes
+        )
+        if already_loaded:
+            continue
+
+        # Available on disk?
+        available_nodes = [
+            n for n in nodes
+            if n.ollama and model in n.ollama.models_available
+        ]
+        if not available_nodes:
+            continue
+
+        best = max(
+            available_nodes,
+            key=lambda n: n.memory.available_gb if n.memory else 0,
+        )
+        model_size = _estimate_model_size(model)
+        available = best.memory.available_gb if best.memory else 0
+        if available < model_size * 1.2:
+            continue  # Not enough memory — skip silently
+
+        logger.info(
+            f"Priority refresh: reloading evicted {model} "
+            f"(score={score}, ~{model_size:.0f}GB) on {best.node_id}"
+        )
+        try:
+            await proxy.pre_warm(best.node_id, model)
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.warning(f"Priority refresh: failed to reload {model}: {e}")
