@@ -589,6 +589,27 @@ class TraceStore:
             "total_retries": row[3] or 0,
         }
 
+    async def get_recently_used_models(self, seconds: int = 3600) -> set[str]:
+        """Return model names with at least 1 request in the last N seconds.
+
+        Used to respect user intent: if a model hasn't been requested
+        recently, don't auto-reload it just because it has historical
+        priority.  The user may have intentionally unloaded it.
+        """
+        if not self._db:
+            return set()
+        cutoff = time.time() - seconds
+        cursor = await self._db.execute(
+            """
+            SELECT DISTINCT model
+            FROM request_traces
+            WHERE timestamp >= ? AND model != ''
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        return {row[0] for row in rows}
+
     async def get_model_priority_scores(self) -> list[dict]:
         """Compute model priority scores for startup preloading.
 

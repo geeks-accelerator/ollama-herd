@@ -183,10 +183,22 @@ async def _refresh_priority_models(
     trace_store: TraceStore,
     proxy: StreamingProxy,
 ) -> None:
-    """Reload priority models if they've been evicted from memory."""
+    """Reload priority models if they've been evicted from memory.
+
+    Only refreshes models with recent activity (at least 1 request in the
+    last hour).  This respects user intent: if you stop using a model or
+    manually unload it, we don't reload it just because it has historical
+    priority.
+    """
+    # Refresh priority cache (also used by VRAM fallback protection)
     priorities = await get_cached_priorities(trace_store)
     if not priorities:
         return
+
+    # Only reload models actually used in the last hour — respects user
+    # intent.  If a user unloads a model and stops using it, we don't
+    # auto-reload it just because it has historical priority.
+    recent_models = await trace_store.get_recently_used_models(seconds=3600)
 
     # Only reload the top 3 priority models to avoid memory thrashing
     top_priorities = [p for p in priorities[:3] if p["priority_score"] >= 10]
@@ -194,6 +206,16 @@ async def _refresh_priority_models(
     for entry in top_priorities:
         model = entry["model"]
         score = entry["priority_score"]
+
+        # Respect user intent: skip models with no requests in the last
+        # hour.  If the user unloaded the model or stopped using it, we
+        # don't reload it just because it has historical priority.
+        if model not in recent_models:
+            logger.info(
+                f"Priority refresh: skipping {model} — no requests in last hour "
+                f"(user may have intentionally stopped using it)"
+            )
+            continue
 
         nodes = registry.get_online_nodes()
         if not nodes:
