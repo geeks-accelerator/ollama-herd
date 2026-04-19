@@ -459,7 +459,10 @@ def _compute_briefing_interval(registry, trace_store) -> float:
     """
     nodes = registry.get_online_nodes()
     if not nodes:
-        return 1800  # 30 min if no nodes — operators see the issue fast
+        # Static "fleet offline" briefing — no LLM to call, no point
+        # refreshing often.  Cache for 1h; the static text never changes
+        # until a node comes online (which resets the cache anyway).
+        return 3600  # 1h
 
     # Check queue activity
     total_in_flight = 0
@@ -480,6 +483,20 @@ async def _generate_briefing(request) -> dict:
     registry = request.app.state.registry
     trace_store = getattr(request.app.state, "trace_store", None)
     health_engine = getattr(request.app.state, "health_engine", None)
+
+    # Static briefing when no nodes are online — no LLM available to call
+    if not registry.get_online_nodes():
+        return {
+            "briefing": (
+                "- **Fleet offline** — no nodes are currently online. "
+                "Fleet Intelligence cannot generate briefings without "
+                "at least one node serving an LLM.\n"
+                "- Start a node with `herd-node` on any device running "
+                "Ollama. See Health page for connection status."
+            ),
+            "model": "static",
+            "generated_at": time.time(),
+        }
 
     # Auto-select model: first loaded LLM (skip embed/image)
     model = settings.fleet_intelligence_model
