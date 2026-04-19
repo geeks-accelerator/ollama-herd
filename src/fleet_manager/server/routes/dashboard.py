@@ -450,10 +450,14 @@ EMBED_SKIP = ("embed", "nomic", "bge", "e5-")
 
 
 def _compute_briefing_interval(registry, trace_store) -> float:
-    """Adaptive refresh: faster when busy or issues detected, slower when idle."""
+    """Adaptive refresh: faster when busy or issues detected, slower when idle.
+
+    Tuned for early-warning: catches overnight silent failures within 1h
+    of starting, rather than the 6h idle cadence the previous version used.
+    """
     nodes = registry.get_online_nodes()
     if not nodes:
-        return 3600  # 1h if no nodes
+        return 1800  # 30 min if no nodes (so operators see the issue fast)
 
     # Check queue activity
     total_in_flight = 0
@@ -462,10 +466,10 @@ def _compute_briefing_interval(registry, trace_store) -> float:
             total_in_flight += node.ollama.requests_active or 0
 
     if total_in_flight > 5:
-        return 1800  # 30 min when very busy
+        return 900   # 15 min when very busy
     if total_in_flight > 0:
-        return 3600  # 1 hour when active
-    return 21600  # 6 hours when idle
+        return 1800  # 30 min when active
+    return 3600      # 1 hour when idle
 
 
 async def _generate_briefing(request) -> dict:
