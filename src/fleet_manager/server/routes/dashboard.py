@@ -584,6 +584,33 @@ async def _generate_briefing(request) -> dict:
                     f"{node.node_id} recovered from {total} connection failures. "
                 )
 
+    # Silent fallback detection — requests served by wrong model
+    # (VRAM fallback routed away from the requested model)
+    outage_summary = ""
+    if trace_store:
+        try:
+            fallback_stats = await trace_store.get_silent_fallback_stats(
+                lookback_s=86400
+            )
+            if fallback_stats:
+                # Show top 3 silent fallback pairs
+                parts = []
+                total_fallbacks = sum(s["count"] for s in fallback_stats)
+                for s in fallback_stats[:3]:
+                    parts.append(
+                        f"{s['count']} reqs for {s['requested']} "
+                        f"served by {s['actual']}"
+                    )
+                outage_summary = (
+                    f"SILENT FALLBACK in last 24h: {total_fallbacks} "
+                    f"requests were served by a different model than "
+                    f"requested. Top pairs: {'; '.join(parts)}. "
+                    f"This indicates the requested model was evicted "
+                    f"from memory — check priority preloader logs."
+                )
+        except Exception:
+            pass
+
     # Per-node details
     node_details = ""
     for node in nodes:
@@ -653,6 +680,7 @@ async def _generate_briefing(request) -> dict:
 - {traffic_summary}
 - {context_summary}
 - {conn_summary if conn_summary else 'No connection issues.'}
+- {outage_summary if outage_summary else 'No silent fallback detected in last 24h.'}
 - {priority_summary if priority_summary else 'No model usage history yet.'}
 - {queue_summary}
 Nodes:

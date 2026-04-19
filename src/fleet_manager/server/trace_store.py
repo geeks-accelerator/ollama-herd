@@ -610,6 +610,48 @@ class TraceStore:
         rows = await cursor.fetchall()
         return {row[0] for row in rows}
 
+    async def get_silent_fallback_stats(
+        self, lookback_s: int = 86400
+    ) -> list[dict]:
+        """Detect silent model fallback — requested X but got Y.
+
+        When VRAM fallback routes a request away from the requested
+        model to a different one, the trace records both.  This catches
+        prolonged degradation where requests appear successful but are
+        being answered by the wrong (usually weaker) model.
+
+        Returns counts grouped by (requested → actual) pairs, sorted
+        by count desc.  Only includes pairs where requested != actual.
+        """
+        if not self._db:
+            return []
+        cutoff = time.time() - lookback_s
+        cursor = await self._db.execute(
+            """
+            SELECT original_model, model, COUNT(*) as count,
+                   MIN(timestamp) as first_ts, MAX(timestamp) as last_ts
+            FROM request_traces
+            WHERE timestamp >= ?
+              AND original_model IS NOT NULL
+              AND original_model != ''
+              AND original_model != model
+            GROUP BY original_model, model
+            ORDER BY count DESC
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "requested": row[0],
+                "actual": row[1],
+                "count": row[2],
+                "first_ts": row[3],
+                "last_ts": row[4],
+            }
+            for row in rows
+        ]
+
     async def get_model_priority_scores(self) -> list[dict]:
         """Compute model priority scores for startup preloading.
 
