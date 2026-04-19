@@ -213,12 +213,23 @@ class ONNXBackend:
             else:
                 raise FileNotFoundError(f"No ONNX file found in {model_dir}")
 
+        # Use CPU only. CoreMLExecutionProvider can trigger macOS TCC
+        # permission dialogs that block the Python process indefinitely
+        # (Neural Engine access / Desktop folder access). On M-series
+        # chips, CPU inference is fast enough (~60ms/image) and reliable.
+        # Users can opt-in via FLEET_EMBEDDING_USE_COREML=true.
         providers = ["CPUExecutionProvider"]
-        try:
-            if "CoreMLExecutionProvider" in ort.get_available_providers():
-                providers.insert(0, "CoreMLExecutionProvider")
-        except Exception:
-            pass
+        if os.environ.get("FLEET_EMBEDDING_USE_COREML", "").lower() == "true":
+            try:
+                available = ort.get_available_providers()
+                if "CoreMLExecutionProvider" in available:
+                    providers.insert(0, "CoreMLExecutionProvider")
+                    logger.warning(
+                        "CoreML provider enabled — may trigger macOS TCC "
+                        "permission dialogs that block the process"
+                    )
+            except Exception:
+                pass
         self.session = ort.InferenceSession(str(model_path), providers=providers)
         self.input_name = self.session.get_inputs()[0].name
         self.dimensions = spec.get("dimensions", 512)

@@ -452,6 +452,21 @@ The Trends page has preset time buttons (24h, 48h, 72h, 7d) but no custom date/t
 
 **Files:** `server/streaming.py` (VRAM fallback), `node/agent.py` (startup model loading), `models/config.py` (pinned models config), `server/health_engine.py` (health check)
 
+### CoreML provider triggers macOS TCC dialog that freezes the node agent `FIXED`
+
+**Severity:** Critical
+**Discovered:** 2026-04-19 — after adding the vision embedding service, the node agent began freezing overnight. User reported a macOS permission dialog appearing asking Python for access. The dialog blocks the Python process indefinitely, causing heartbeats to stop, router marks node offline, all inference fails until someone dismisses the dialog.
+
+**Pattern:** Consistent 120-130 errors/hour from midnight through 8 AM. Not random drops — a steady multi-hour outage until the user returns to the machine and dismisses the dialog. Happened twice in 5 days (April 14 and April 19).
+
+**Root cause:** `CoreMLExecutionProvider` in `ONNXBackend.__init__` was enabled automatically on macOS. On first inference, CoreML compiles the ONNX model for the Neural Engine, which can trigger macOS TCC permission dialogs (Neural Engine access, Desktop folder access if cache scans adjacent paths). Once the dialog appears, the subprocess and the entire Python process block waiting for user interaction.
+
+**Fix (commit d61d3cb+):** Default to CPU-only inference. CPU is fast enough on M-series chips (~60ms/image for DINOv2). Users can opt-in to CoreML via `FLEET_EMBEDDING_USE_COREML=true` with a warning in the logs.
+
+**Files:** `src/fleet_manager/node/embedding_models.py`
+
+---
+
 ### Queue concurrency ignores OLLAMA_NUM_PARALLEL — allows 8 in-flight but Ollama only runs 2 `OPEN`
 
 **Severity:** Medium
