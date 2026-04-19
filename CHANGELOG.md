@@ -26,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Model preloader in module table** — `node/embedding_models.py`, `node/embedding_server.py`, `server/model_preloader.py`
 - **Route: `server/routes/embedding_compat.py`** — vision embedding endpoint
 - **Config: `FLEET_VISION_EMBEDDING`**, `FLEET_VISION_EMBEDDING_TIMEOUT`, `FLEET_EMBEDDING_USE_COREML` (opt-in)
+- **Silent model fallback detection** — `trace_store.get_silent_fallback_stats()` detects requests where `original_model != model` (VRAM fallback routed away from requested model). Fleet Intelligence now surfaces these as "SILENT FALLBACK in last 24h" — catches silent degradation where requests succeed but are served by the wrong model.
+- **Static "Fleet offline" briefing** — when no nodes are online, Fleet Intelligence returns a static message explaining the state instead of trying to call an LLM that doesn't exist.
+
+### Changed
+
+- **Fleet Intelligence refresh intervals rebalanced** — backs off under load, refreshes faster when idle:
+  - Very busy (>5 in-flight): 2 hours (was 30 min) — don't compete with real requests
+  - Active (1-5 in-flight): 1 hour (was 1 hour) — unchanged
+  - Idle (0 in-flight): 30 min (was 6 hours) — catch overnight silent failures
+  - No nodes online: 1 hour static (was 1 hour LLM call)
 
 ### Fixed
 
@@ -37,8 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dashboard model counts** — now shows "Ollama Models: 3 loaded, 17 on disk | Services: 8 loaded" instead of misleading unified count.
 - **Vision embedding tests** — added 7 edge case tests (HTTP URL fetch, HTTP fetch failure, empty base64, mixed data URI + HTTP, token estimation, vision model fallback). 507 tests total (was 445).
 - **Stale references updated** — 445 → 507 tests, 17 → 18 health checks, 0.4.1 → 0.5.2 version across all skill files and docs
-
-## [0.5.2] - 2026-04-13
 
 ## [0.5.2] - 2026-04-13
 
