@@ -97,6 +97,9 @@ class TestPrivacyInvariants:
             "avg_latency_ms",
             "p95_latency_ms",
             "request_count_by_tag",
+            "success_count",
+            "error_count",
+            "error_breakdown",
         }) == ALLOWED_ENTRY_KEYS
 
     def test_allowed_payload_keys_is_exact(self):
@@ -284,3 +287,138 @@ class TestEdgeCases:
         # day string is a valid ISO date
         from datetime import date
         date.fromisoformat(day)
+
+
+# ---------------------------------------------------------------------------
+# Error categorization (new in extension #3)
+# ---------------------------------------------------------------------------
+
+
+class TestErrorCategorization:
+    def test_none_returns_unknown(self):
+        from fleet_manager.node.daily_rollup import _categorize_error
+        assert _categorize_error(None) == "unknown"
+        assert _categorize_error("") == "unknown"
+
+    def test_404_is_model_not_found(self):
+        from fleet_manager.node.daily_rollup import _categorize_error
+        msg = "Client error '404 Not Found' for url '...'"
+        assert _categorize_error(msg) == "model_not_found"
+
+    def test_400_bare_is_bad_request(self):
+        from fleet_manager.node.daily_rollup import _categorize_error
+        msg = "Client error '400 Bad Request' for url '...'"
+        assert _categorize_error(msg) == "bad_request"
+
+    def test_context_too_long_pattern(self):
+        from fleet_manager.node.daily_rollup import _categorize_error
+        assert _categorize_error("context too long for model") == "context_too_long"
+        assert _categorize_error("400 Bad Request: num_ctx exceeds limit") == "context_too_long"
+
+    def test_vram_patterns(self):
+        from fleet_manager.node.daily_rollup import _categorize_error
+        assert _categorize_error("CUDA out of memory") == "vram_exceeded"
+        assert _categorize_error("VRAM allocation failed") == "vram_exceeded"
+
+    def test_timeout(self):
+        from fleet_manager.node.daily_rollup import _categorize_error
+        assert _categorize_error("Request timed out after 30s") == "timeout"
+
+    def test_permission_error(self):
+        from fleet_manager.node.daily_rollup import _categorize_error
+        msg = "PermissionError: [Errno 1] Operation not permitted"
+        assert _categorize_error(msg) == "permission_error"
+
+    def test_client_disconnect(self):
+        from fleet_manager.node.daily_rollup import _categorize_error
+        assert _categorize_error("GeneratorExit: client disconnected") == "client_disconnected"
+
+    def test_uncategorized_falls_to_other(self):
+        from fleet_manager.node.daily_rollup import _categorize_error
+        assert _categorize_error("Strange new error never seen before") == "other"
+
+
+# ---------------------------------------------------------------------------
+# success_count / error_count / error_breakdown integration
+# ---------------------------------------------------------------------------
+
+
+class TestSuccessErrorAggregation:
+    @pytest.mark.asyncio
+    async def test_success_and_error_counts_populated(self, tmp_path):
+        """Seed both latency_observations AND request_traces (same DB file)."""
+        data_dir = tmp_path / ".fleet-manager"
+        data_dir.mkdir()
+        _, start_ts, _ = _yesterday_utc_bounds()
+
+        # TraceStore and LatencyStore share the same latency.db file
+        async with aiosqlite.connect(str(data_dir / "latency.db")) as db:
+            await db.execute(
+                """CREATE TABLE latency_observations (
+                    id INTEGER PRIMARY KEY, node_id TEXT, model_name TEXT,
+                    latency_ms REAL, tokens_generated INTEGER, timestamp REAL,
+                    prompt_tokens INTEGER, completion_tokens INTEGER)"""
+            )
+            await db.execute(
+                "INSERT INTO latency_observations VALUES "
+                "(1, 'n1', 'llama3:8b', 250.0, 100, ?, 50, 100)",
+                (start_ts + 3600,),
+            )
+            await db.execute(
+                """CREATE TABLE request_traces (
+                    id INTEGER PRIMARY KEY, request_id TEXT, model TEXT,
+                    original_model TEXT, node_id TEXT, score REAL,
+                    scores_breakdown TEXT, status TEXT, latency_ms REAL,
+                    time_to_first_token_ms REAL, prompt_tokens INTEGER,
+                    completion_tokens INTEGER, retry_count INTEGER,
+                    fallback_used INTEGER, excluded_nodes TEXT, client_ip TEXT,
+                    original_format TEXT, error_message TEXT, timestamp REAL,
+                    tags TEXT)"""
+            )
+            # 3 completed
+            for i in range(3):
+                await db.execute(
+                    "INSERT INTO request_traces (model, status, timestamp) "
+                    "VALUES ('llama3:8b', 'completed', ?)",
+                    (start_ts + 100 + i,),
+                )
+            # 1 failed with 404
+            await db.execute(
+                "INSERT INTO request_traces (model, status, error_message, timestamp) "
+                "VALUES ('llama3:8b', 'failed', ?, ?)",
+                ("Client error '404 Not Found' for url '...'", start_ts + 200),
+            )
+            # 1 failed with VRAM error
+            await db.execute(
+                "INSERT INTO request_traces (model, status, error_message, timestamp) "
+                "VALUES ('llama3:8b', 'failed', ?, ?)",
+                ("CUDA out of memory", start_ts + 300),
+            )
+            await db.commit()
+
+        payload = await build_daily_rollup(
+            node_uuid="test-uuid",
+            agent_version="0.0.0-test",
+            data_dir=str(data_dir),
+        )
+        assert len(payload["entries"]) == 1
+        entry = payload["entries"][0]
+        assert entry["success_count"] == 3
+        assert entry["error_count"] == 2
+        assert "error_breakdown" in entry
+        assert entry["error_breakdown"].get("model_not_found") == 1
+        assert entry["error_breakdown"].get("vram_exceeded") == 1
+
+    @pytest.mark.asyncio
+    async def test_no_errors_omits_error_breakdown(self, seeded_db):
+        """When there are no errors, error_breakdown is absent entirely."""
+        payload = await build_daily_rollup(
+            node_uuid="test-uuid",
+            agent_version="0.0.0-test",
+            data_dir=seeded_db,
+        )
+        for entry in payload["entries"]:
+            assert "error_breakdown" not in entry
+            # success_count + error_count still present
+            assert "success_count" in entry
+            assert "error_count" in entry

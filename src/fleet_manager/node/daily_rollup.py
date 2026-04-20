@@ -38,6 +38,9 @@ ALLOWED_ENTRY_KEYS = frozenset({
     "avg_latency_ms",
     "p95_latency_ms",
     "request_count_by_tag",  # only when include_tags=True
+    "success_count",
+    "error_count",
+    "error_breakdown",  # {"context_too_long": 1, "vram_exceeded": 2, ...}
 })
 
 # Top-level payload keys
@@ -62,6 +65,51 @@ def _yesterday_utc_bounds() -> tuple[str, float, float]:
         yesterday_start.timestamp(),
         today_start.timestamp(),
     )
+
+
+def _categorize_error(error_message: str | None) -> str:
+    """Map a raw error message to a short category name.
+
+    Categories are free-form strings — the platform treats them
+    opaquely.  New categories can be added without a platform migration.
+
+    Keep names short, snake_case, and descriptive enough that an
+    operator reading "error_breakdown: {context_too_long: 12}" on the
+    dashboard immediately knows what's wrong.
+    """
+    if not error_message:
+        return "unknown"
+    msg = error_message.lower()
+
+    # HTTP-layer errors (what we see most from Ollama)
+    if "404" in msg and "not found" in msg:
+        return "model_not_found"
+    if "400" in msg and ("context" in msg or "num_ctx" in msg):
+        return "context_too_long"
+    if "400" in msg:
+        return "bad_request"
+    if "500" in msg or "502" in msg or "503" in msg or "504" in msg:
+        return "server_error"
+
+    # Resource errors
+    if "out of memory" in msg or "vram" in msg or "cuda oom" in msg:
+        return "vram_exceeded"
+    if "context" in msg and ("too long" in msg or "exceeds" in msg):
+        return "context_too_long"
+    if "permission" in msg:
+        return "permission_error"
+
+    # Network / timeout
+    if "timeout" in msg or "timed out" in msg:
+        return "timeout"
+    if "connection" in msg and ("refused" in msg or "reset" in msg):
+        return "connection_error"
+
+    # Client disconnects (streaming)
+    if "disconnect" in msg or "generatorexit" in msg:
+        return "client_disconnected"
+
+    return "other"
 
 
 def _percentile(values: list[float], pct: int) -> float | None:
@@ -147,14 +195,43 @@ async def build_daily_rollup(
     finally:
         await store.close()
 
-    # 2. Per-tag counts (only if opted in) — from request_traces
-    tag_counts_by_model: dict[str, dict[str, int]] = {}
-    if include_tags:
-        from fleet_manager.server.trace_store import TraceStore
+    # 2. Status + error counts per model (always) and tag counts (opt-in)
+    #    — both from request_traces
+    from fleet_manager.server.trace_store import TraceStore
 
-        trace_store = TraceStore(data_dir=data_dir)
-        await trace_store.initialize()
-        try:
+    tag_counts_by_model: dict[str, dict[str, int]] = {}
+    success_by_model: dict[str, int] = {}
+    error_by_model: dict[str, int] = {}
+    error_breakdown_by_model: dict[str, dict[str, int]] = {}
+
+    trace_store = TraceStore(data_dir=data_dir)
+    await trace_store.initialize()
+    try:
+        # Success/error counts with error categorization
+        cursor = await trace_store._db.execute(
+            """
+            SELECT model, status, error_message
+            FROM request_traces
+            WHERE timestamp >= ? AND timestamp < ?
+            """,
+            (start_ts, end_ts),
+        )
+        for row in await cursor.fetchall():
+            model, status, err_msg = row
+            if not model:
+                continue
+            if status == "completed":
+                success_by_model[model] = success_by_model.get(model, 0) + 1
+            elif status == "failed":
+                error_by_model[model] = error_by_model.get(model, 0) + 1
+                category = _categorize_error(err_msg)
+                bucket = error_breakdown_by_model.setdefault(model, {})
+                bucket[category] = bucket.get(category, 0) + 1
+            # "retried" status is neither success nor error — it's an
+            # intermediate state before the retry completed or failed
+
+        # Tag counts (only if user opted in)
+        if include_tags:
             cursor = await trace_store._db.execute(
                 """
                 SELECT model, tags
@@ -177,8 +254,8 @@ async def build_daily_rollup(
                 for tag in tag_list:
                     if isinstance(tag, str) and tag:
                         model_tags[tag] = model_tags.get(tag, 0) + 1
-        finally:
-            await trace_store.close()
+    finally:
+        await trace_store.close()
 
     # 3. Build entries with structural whitelist enforcement
     entries: list[dict] = []
@@ -196,7 +273,11 @@ async def build_daily_rollup(
             "p2p_served_tokens": 0,
             "avg_latency_ms": round(avg_lat, 1) if avg_lat else 0.0,
             "p95_latency_ms": round(p95, 1) if p95 else 0.0,
+            "success_count": success_by_model.get(model, 0),
+            "error_count": error_by_model.get(model, 0),
         }
+        if model in error_breakdown_by_model and error_breakdown_by_model[model]:
+            entry["error_breakdown"] = dict(error_breakdown_by_model[model])
         if include_tags and model in tag_counts_by_model:
             entry["request_count_by_tag"] = dict(tag_counts_by_model[model])
 

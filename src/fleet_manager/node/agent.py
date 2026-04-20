@@ -46,6 +46,7 @@ class NodeAgent:
         self._embedding_server_task: asyncio.Task | None = None
         self._embedding_port: int = 0
         self._telemetry_task: asyncio.Task | None = None
+        self._platform_heartbeat_task: asyncio.Task | None = None
 
     async def _ensure_ollama(self) -> bool:
         """Check if Ollama is running; if not, try to start it.
@@ -164,6 +165,9 @@ class NodeAgent:
 
         # Start telemetry scheduler if opted in (requires platform connection)
         self._telemetry_task = await self._ensure_telemetry_scheduler()
+
+        # Start platform heartbeat sender if connected — sends every 60s
+        self._platform_heartbeat_task = await self._ensure_platform_heartbeat()
 
         # Install signal handlers for graceful drain
         loop = asyncio.get_running_loop()
@@ -523,6 +527,28 @@ class NodeAgent:
             name="telemetry-scheduler",
         )
 
+    async def _ensure_platform_heartbeat(self) -> asyncio.Task | None:
+        """Start the platform heartbeat sender if connected.
+
+        Unlike telemetry (opt-in), platform heartbeats are automatic
+        when the node is connected — they power the platform's
+        Nodes-detail dashboard with live utilization and loaded models.
+        """
+        from fleet_manager.node import platform_connection
+
+        if not platform_connection.is_connected():
+            logger.debug(
+                "platform heartbeat: not connected to platform, skipping"
+            )
+            return None
+
+        from fleet_manager.node.platform_heartbeat import run_scheduler
+
+        return asyncio.create_task(
+            run_scheduler(),
+            name="platform-heartbeat",
+        )
+
     async def _send_heartbeat(self, payload):
         resp = await self._http.post(
             f"{self.router_url}/heartbeat",
@@ -605,6 +631,10 @@ class NodeAgent:
             self._telemetry_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._telemetry_task
+        if self._platform_heartbeat_task:
+            self._platform_heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._platform_heartbeat_task
         if self._transcription_process:
             self._transcription_process.terminate()
             with contextlib.suppress(Exception):

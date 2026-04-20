@@ -208,6 +208,7 @@ async def register_node(
     node_name: str,
     benchmark: dict | None = None,
     region: str | None = None,
+    device_info: dict | None = None,
 ) -> str:
     """Register this node with the platform.  Returns platform-issued UUID.
 
@@ -224,6 +225,8 @@ async def register_node(
         body["benchmark"] = benchmark
     if region:
         body["region"] = region
+    if device_info:
+        body["device_info"] = device_info
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -364,7 +367,16 @@ async def connect_to_platform(
 
         benchmark = await build_benchmark_payload()
 
-    # 4. Register node
+    # 4. Probe hardware details (optional, best-effort)
+    try:
+        from fleet_manager.node.device_info import probe_device_info
+
+        device_info = probe_device_info()
+    except Exception as exc:
+        logger.debug(f"device_info probe failed (continuing): {exc}")
+        device_info = None
+
+    # 5. Register node
     name = node_name or default_node_name()
     node_id = await register_node(
         platform_url=platform_url,
@@ -373,6 +385,7 @@ async def connect_to_platform(
         node_name=name,
         benchmark=benchmark,
         region=region,
+        device_info=device_info,
     )
 
     # 4. Persist state
