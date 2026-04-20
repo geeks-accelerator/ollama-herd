@@ -41,6 +41,7 @@ async def post(
     path: str,
     json: dict,
     timeout: float = 30.0,
+    max_retries: int | None = None,
 ) -> dict:
     """POST to a platform endpoint using the saved operator token.
 
@@ -50,8 +51,14 @@ async def post(
       - TelemetryDuplicateError on 409 (caller may treat as success)
       - PlatformUnreachableError on persistent network/5xx after retries
 
+    Args:
+        max_retries: override the default retry count.  Set to 0 for
+            fire-and-forget callers (e.g. heartbeats at 60s cadence)
+            that shouldn't pile up retries across ticks.
+
     Returns the parsed JSON response body on success.
     """
+    retries = max_retries if max_retries is not None else _MAX_RETRIES
     state = load_state()
     if state is None:
         raise PlatformUnreachableError(
@@ -65,12 +72,14 @@ async def post(
         "Content-Type": "application/json",
     }
 
+    # Always at least 1 attempt; max_retries controls additional retries.
+    total_attempts = max(1, retries)
     last_exc: Exception | None = None
-    for attempt in range(_MAX_RETRIES):
+    for attempt in range(total_attempts):
         if attempt > 0:
             backoff = _BASE_BACKOFF_S * (2 ** (attempt - 1))
             logger.debug(
-                f"Retry {attempt}/{_MAX_RETRIES - 1} for POST {path} "
+                f"Retry {attempt}/{total_attempts - 1} for POST {path} "
                 f"after {backoff:.1f}s"
             )
             await asyncio.sleep(backoff)
@@ -117,13 +126,13 @@ async def post(
     # All retries exhausted
     if isinstance(last_exc, httpx.HTTPError):
         raise PlatformUnreachableError(
-            f"Cannot reach platform at {url} after {_MAX_RETRIES} attempts: "
+            f"Cannot reach platform at {url} after {total_attempts} attempts: "
             f"{last_exc}"
         ) from last_exc
     if last_exc is not None:
         raise last_exc
     raise PlatformUnreachableError(
-        f"POST {path} failed after {_MAX_RETRIES} attempts"
+        f"POST {path} failed after {total_attempts} attempts"
     )
 
 

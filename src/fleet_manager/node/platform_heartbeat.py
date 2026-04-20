@@ -224,7 +224,15 @@ async def _send_one_heartbeat() -> bool:
     body["signature"] = signature
 
     try:
-        await platform_client.post("/api/heartbeats", json=body)
+        # Fire-and-forget cadence: 1 attempt, short timeout.  If this
+        # heartbeat fails, the next one fires in 60s — no point stacking
+        # retries that could still be running when the next tick arrives.
+        await platform_client.post(
+            "/api/heartbeats",
+            json=body,
+            timeout=10.0,
+            max_retries=1,
+        )
     except platform_client.InvalidTokenError as exc:
         logger.warning(f"heartbeat: token rejected — {exc}")
         return False
