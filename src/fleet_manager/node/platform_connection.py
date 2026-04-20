@@ -358,7 +358,13 @@ async def connect_to_platform(
     # 2. Ensure keypair exists
     pub_b64 = public_key_b64()
 
-    # 3. Register node
+    # 3. Build benchmark payload (platform requires at minimum tokens_per_sec)
+    if benchmark is None:
+        from fleet_manager.node.benchmark_estimate import build_benchmark_payload
+
+        benchmark = await build_benchmark_payload()
+
+    # 4. Register node
     name = node_name or default_node_name()
     node_id = await register_node(
         platform_url=platform_url,
