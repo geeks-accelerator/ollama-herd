@@ -76,9 +76,16 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `node/capacity_learner.py` | 168-slot weekly behavioral model, availability score, dynamic memory ceiling |
 | `node/embedding_models.py` | Vision embedding model registry, download, ONNX inference (DINOv2, SigLIP, CLIP) |
 | `node/embedding_server.py` | FastAPI server for vision embeddings on :11438 |
+| `node/platform_connection.py` | Opt-in platform.ollamaherd.com integration: Ed25519 keypair, token, register, persist |
+| `node/platform_client.py` | Shared httpx wrapper with retry — used by heartbeat + telemetry |
+| `node/platform_heartbeat.py` | Signed heartbeat POST every 60s (CPU, memory, VRAM, queues, loaded models) |
+| `node/telemetry_scheduler.py` | Daily usage rollup POST at 00:05 UTC + jitter (opt-in via env) |
+| `node/daily_rollup.py` | Builds telemetry payload with structural privacy whitelist |
+| `node/device_info.py` | Per-platform hardware probe (macOS/Linux/Windows) for registration |
+| `node/benchmark_estimate.py` | Tokens/sec from trace data or hardware heuristic |
 | `server/model_preloader.py` | Priority model loading after restart — weighted 24h/7d usage scoring |
 
-Routes: `server/routes/` — `openai_compat.py` (v1/), `ollama_compat.py` (api/), `fleet.py`, `heartbeat.py`, `dashboard.py`, `image_compat.py`, `transcription_compat.py`, `embedding_compat.py`
+Routes: `server/routes/` — `openai_compat.py` (v1/), `ollama_compat.py` (api/), `fleet.py`, `heartbeat.py`, `dashboard.py`, `image_compat.py`, `transcription_compat.py`, `embedding_compat.py`, `platform.py` (Connect/Disconnect)
 
 ### Request flow
 

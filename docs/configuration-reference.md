@@ -175,6 +175,19 @@ Only applies when the client explicitly sets `num_predict` / `max_tokens`. If om
 | `FLEET_NODE_DATA_DIR` | `~/.fleet-manager` | Directory for capacity learning state and logs |
 | `FLEET_NODE_MDNS_SERVICE_TYPE` | `_fleet-manager._tcp.local.` | Zeroconf service type to search for |
 
+### Platform Connection (opt-in — see [API Reference](api-reference.md#platform-connection))
+
+Connect a node to `platform.ollamaherd.com` for future P2P compute sharing, usage dashboards, and credit tracking. Local fleet routing works without a platform connection. When a token is configured, the node auto-connects on startup (equivalent to pasting the token in the dashboard's Settings tab).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_NODE_PLATFORM_TOKEN` | *(none)* | Operator token from `platform.ollamaherd.com/web/`. Starts with `herd_`. |
+| `FLEET_NODE_PLATFORM_URL` | `https://platform.ollamaherd.com` | Platform URL (override for local testing) |
+| `FLEET_NODE_TELEMETRY_LOCAL_SUMMARY` | `false` | Opt in to daily usage rollups (per-model counts, tokens, latency, errors). Sent at ~00:05 UTC + jitter. 90 days rolling retention on the platform side. Never sends prompts or completion text. |
+| `FLEET_NODE_TELEMETRY_INCLUDE_TAGS` | `false` | **Second opt-in** on top of `TELEMETRY_LOCAL_SUMMARY`: include per-tag request counts. Off by default because tag values like `project:internal-audit` can be mildly identifying. |
+
+Once connected, the node also sends signed heartbeats to the platform every 60 seconds. Heartbeats power the platform's Nodes-detail dashboard (CPU, memory, VRAM, queue depth, loaded models, 24h uptime). No opt-in flag — heartbeats are automatic when the platform is connected. The heartbeat send is fire-and-forget (10s timeout, 1 attempt) so platform slowness can't back up into the node.
+
 ---
 
 ## Logging Settings
