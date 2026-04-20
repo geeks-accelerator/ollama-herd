@@ -1263,6 +1263,109 @@ HTML page for the Settings dashboard tab. Shows router info, toggle switches, re
 
 ---
 
+## Platform Connection
+
+Opt-in connection to the `platform.ollamaherd.com` coordination platform. Required for features like platform-wide usage telemetry (planned) and P2P capability advertisement (future). Local fleet routing works without a platform connection.
+
+**Default:** not connected. No data leaves the node until the user explicitly connects and enables a feature.
+
+### `GET /api/platform/status`
+
+Returns the current platform connection state.
+
+**Response (not connected):**
+```json
+{
+  "state": "not_connected",
+  "platform_url": "https://platform.ollamaherd.com",
+  "connected": null,
+  "features": {
+    "telemetry_local_summary": false,
+    "telemetry_include_tags": false,
+    "p2p_serve": false
+  },
+  "error": null
+}
+```
+
+**Response (connected):**
+```json
+{
+  "state": "connected",
+  "platform_url": "https://platform.ollamaherd.com",
+  "connected": {
+    "user_email": "user@example.com",
+    "user_display_name": "User",
+    "node_id": "3723887e-...",
+    "connected_at": "2026-04-20T17:55:00Z"
+  },
+  "features": { ... },
+  "error": null
+}
+```
+
+### `POST /api/platform/connect`
+
+Validate an operator token, register the node with the platform, and persist the connection state to `~/.fleet-manager/platform.json` (mode 0600).
+
+**Request:**
+```json
+{
+  "operator_token": "herd_...",
+  "platform_url": "https://platform.ollamaherd.com",
+  "node_name": "mac-studio-1",
+  "region": "us-west"
+}
+```
+
+Only `operator_token` is required. `platform_url` defaults to production. `node_name` defaults to hostname. `region` is optional.
+
+**Success (200):**
+```json
+{
+  "state": "connected",
+  "node_id": "uuid-...",
+  "user_email": "user@example.com",
+  "user_display_name": "User",
+  "platform_url": "https://platform.ollamaherd.com",
+  "connected_at": "2026-04-20T17:55:00Z"
+}
+```
+
+**Errors:**
+
+| Status | Code | Cause |
+|--------|------|-------|
+| 400 | `invalid_token` | Token doesn't start with `herd_` or was rejected by platform |
+| 400 | `registration_failed` | Platform rejected the registration for a non-auth reason |
+| 502 | `platform_unreachable` | Platform returned 5xx or network failure |
+| 500 | `internal_error` | Unexpected exception — see node logs |
+
+### `POST /api/platform/disconnect`
+
+Stop communicating with the platform and clear local connection state. Does NOT deregister the node from the platform — the node's earnings history and registration record survive so the user can reconnect from the same machine. To fully delete, use the platform dashboard.
+
+**Request:** empty body.
+
+**Response (always 200):**
+```json
+{"state": "not_connected"}
+```
+
+Idempotent — disconnecting when already disconnected is a no-op success.
+
+### Privacy
+
+Connecting alone does not transmit usage data. Features that send data to the platform (like `--telemetry-local-summary`) are separately opt-in. The connect flow itself sends only:
+- The operator token (validates identity)
+- The node's Ed25519 public key (signs future requests)
+- A benchmark result (hardware class for routing decisions)
+- The node name (default: hostname, editable)
+
+Never transmitted by Connect: request history, prompt content, completion content, IP addresses of other nodes.
+
+---
+
 ## Static Assets
 
 | Endpoint | Description |

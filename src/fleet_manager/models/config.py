@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
 
@@ -95,5 +98,19 @@ class NodeSettings(BaseSettings):
     mdns_service_type: str = "_fleet-manager._tcp.local."
     enable_capacity_learning: bool = False
     data_dir: str = "~/.fleet-manager"
+
+    # Platform connection (all None when disconnected).
+    # The operator token is stored as SecretStr so it never appears in
+    # repr() / str() / model_dump() without explicit get_secret_value().
+    # Persisted separately to ~/.fleet-manager/platform.json with 0600
+    # permissions — never written to the main config.yaml.
+    platform_url: str | None = None
+    platform_token: SecretStr | None = None
+    platform_node_id: str | None = None
+    platform_connected_at: datetime | None = None
+
+    # Telemetry opt-ins (require platform connection to take effect)
+    telemetry_local_summary: bool = False
+    telemetry_include_tags: bool = False
 
     model_config = {"env_prefix": "FLEET_NODE_"}

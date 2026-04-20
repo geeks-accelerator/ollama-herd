@@ -4384,6 +4384,18 @@ _SETTINGS_BODY = """
 .toast { position:fixed; bottom:24px; right:24px; background:var(--card); border:1px solid var(--accent); color:var(--text); padding:12px 20px; border-radius:10px; font-size:13px; font-weight:500; z-index:1000; opacity:0; transform:translateY(10px); transition:opacity .2s, transform .2s; pointer-events:none; }
 .toast.show { opacity:1; transform:translateY(0); }
 
+.platform-card { background:var(--card); border:1px solid var(--border); border-radius:10px; margin-bottom:16px; }
+.platform-card-inner { padding:18px 20px; }
+.platform-title { font-size:15px; font-weight:600; margin-bottom:8px; }
+.platform-desc { font-size:13px; color:var(--text-dim); line-height:1.5; margin-bottom:14px; }
+.platform-desc code { font-family:'SF Mono','Fira Code',monospace; font-size:12px; background:var(--bg); padding:1px 6px; border-radius:3px; color:var(--text); }
+.platform-form { display:flex; gap:8px; align-items:stretch; }
+.platform-btn { padding:8px 18px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; font-weight:500; white-space:nowrap; }
+.platform-btn:hover { opacity:0.9; }
+.platform-btn-secondary { background:var(--border); color:var(--text); }
+.platform-error { color:#ef4444; font-size:12px; margin-top:8px; min-height:16px; }
+.platform-note { font-size:11px; color:var(--text-dim); margin-top:12px; line-height:1.5; font-style:italic; }
+
 @media (max-width:768px) { .nodes-grid{grid-template-columns:1fr;} .config-table{font-size:12px;} }
 </style>
 
@@ -4391,6 +4403,11 @@ _SETTINGS_BODY = """
   <div class="settings-header">
     <h2>Settings</h2>
     <div class="version-info">Router <span id="router-version">...</span> on <span id="router-hostname">...</span></div>
+  </div>
+
+  <div class="section-label">Platform Connection</div>
+  <div id="platform-card" class="platform-card">
+    <div style="text-align:center;padding:20px;color:var(--text-dim)">Loading...</div>
   </div>
 
   <div class="section-label">Feature Toggles</div>
@@ -4610,6 +4627,138 @@ async function loadSettings() {
     renderSettings(data);
   } catch (err) {
     console.error('Settings load error:', err);
+  }
+  loadPlatformStatus();
+}
+
+// ─────────────────────────────────────────────────────────────
+// Platform connection card
+// ─────────────────────────────────────────────────────────────
+
+async function loadPlatformStatus() {
+  try {
+    var resp = await fetch('/api/platform/status');
+    var data = await resp.json();
+    renderPlatformCard(data);
+  } catch (err) {
+    console.error('Platform status error:', err);
+    document.getElementById('platform-card').innerHTML =
+      '<div style="padding:16px;color:var(--text-dim)">Platform status unavailable.</div>';
+  }
+}
+
+function renderPlatformCard(data) {
+  var el = document.getElementById('platform-card');
+  if (!el) return;
+
+  if (data.state === 'not_connected') {
+    el.innerHTML =
+      '<div class="platform-card-inner">' +
+        '<div class="platform-title">Not connected</div>' +
+        '<div class="platform-desc">' +
+          'Connect this node to <b>platform.ollamaherd.com</b> to earn credits ' +
+          'for serving peers, see historical usage on the dashboard, and ' +
+          'participate in the network.<br><br>' +
+          'You keep your fleet private by default — nothing leaves this machine ' +
+          'until you explicitly enable a feature.<br><br>' +
+          'Get an operator token at <a href="https://platform.ollamaherd.com/web/" target="_blank" ' +
+          'style="color:var(--accent)">platform.ollamaherd.com/web/</a>' +
+        '</div>' +
+        '<div class="platform-form">' +
+          '<input id="platform-token-input" type="password" placeholder="herd_..." ' +
+          '       style="flex:1;padding:8px 12px;background:var(--bg);border:1px solid var(--border);' +
+          '       border-radius:6px;color:var(--text);font-family:SF Mono,monospace;font-size:13px">' +
+          '<button onclick="platformConnect()" class="platform-btn">Connect</button>' +
+        '</div>' +
+        '<div id="platform-error" class="platform-error"></div>' +
+      '</div>';
+  } else if (data.state === 'connecting') {
+    el.innerHTML =
+      '<div class="platform-card-inner">' +
+        '<div class="platform-title">Connecting…</div>' +
+        '<div class="platform-desc">Validating token, running benchmark, registering node.</div>' +
+      '</div>';
+  } else if (data.state === 'connected' && data.connected) {
+    var c = data.connected;
+    var name = c.user_display_name || c.user_email || 'connected';
+    var when = c.connected_at ? new Date(c.connected_at).toLocaleDateString() : '';
+    el.innerHTML =
+      '<div class="platform-card-inner">' +
+        '<div class="platform-title">' +
+          '<span style="color:var(--green,#00c853)">✓</span> Connected as ' + name +
+          (when ? ' <span style="color:var(--text-dim);font-weight:400">· since ' + when + '</span>' : '') +
+        '</div>' +
+        '<div class="platform-desc">' +
+          '<div>Node: <code>' + (c.node_id || '?').substring(0, 8) + '…</code></div>' +
+          '<div>Platform: <code>' + (data.platform_url || '?') + '</code></div>' +
+        '</div>' +
+        '<button onclick="platformDisconnect()" class="platform-btn platform-btn-secondary">' +
+          'Disconnect' +
+        '</button>' +
+        '<div class="platform-note">' +
+          'Disconnecting stops this node from communicating with the platform. ' +
+          'Your earnings and node history remain on the platform. To fully remove ' +
+          'your node, visit <a href="https://platform.ollamaherd.com/web/" target="_blank" ' +
+          'style="color:var(--accent)">platform.ollamaherd.com/web/</a> and deregister it there.' +
+        '</div>' +
+      '</div>';
+  } else {
+    el.innerHTML =
+      '<div class="platform-card-inner"><div class="platform-title">' +
+      'Error: ' + (data.error || 'Unknown state') + '</div></div>';
+  }
+}
+
+async function platformConnect() {
+  var input = document.getElementById('platform-token-input');
+  var errEl = document.getElementById('platform-error');
+  if (!input) return;
+  var token = input.value.trim();
+  if (!token) {
+    errEl.textContent = 'Enter an operator token (starts with herd_).';
+    return;
+  }
+  errEl.textContent = '';
+
+  // Show "connecting" state immediately
+  renderPlatformCard({state: 'connecting'});
+
+  try {
+    var resp = await fetch('/api/platform/connect', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({operator_token: token}),
+    });
+    var data = await resp.json();
+    if (resp.ok) {
+      showToast('Connected to platform successfully');
+      loadPlatformStatus();
+    } else {
+      renderPlatformCard({state: 'not_connected'});
+      setTimeout(function() {
+        var e = document.getElementById('platform-error');
+        if (e) e.textContent = data.error || 'Connection failed';
+      }, 50);
+    }
+  } catch (err) {
+    renderPlatformCard({state: 'not_connected'});
+    setTimeout(function() {
+      var e = document.getElementById('platform-error');
+      if (e) e.textContent = 'Network error: ' + err.message;
+    }, 50);
+  }
+}
+
+async function platformDisconnect() {
+  if (!confirm('Disconnect from platform? Your earnings history on the platform is preserved.')) {
+    return;
+  }
+  try {
+    await fetch('/api/platform/disconnect', {method: 'POST'});
+    showToast('Disconnected from platform');
+    loadPlatformStatus();
+  } catch (err) {
+    console.error('Disconnect error:', err);
   }
 }
 
