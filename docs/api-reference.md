@@ -1364,6 +1364,40 @@ Connecting alone does not transmit usage data. Features that send data to the pl
 
 Never transmitted by Connect: request history, prompt content, completion content, IP addresses of other nodes.
 
+### Daily Usage Telemetry (opt-in)
+
+When `FLEET_NODE_TELEMETRY_LOCAL_SUMMARY=true` (or `--telemetry-local-summary`) is set AND the node is connected to a platform, the agent POSTs a daily usage rollup to `{platform_url}/api/telemetry/local-summary` at ~00:05 UTC + jitter.
+
+**Payload shape (structurally whitelisted — tests enforce no drift):**
+
+```json
+{
+  "day": "2026-04-19",
+  "node_id": "platform-issued-uuid",
+  "agent_version": "0.5.2",
+  "entries": [
+    {
+      "model": "gpt-oss:120b",
+      "local_requests": 2500,
+      "local_prompt_tokens": 150000,
+      "local_completion_tokens": 450000,
+      "p2p_served_requests": 0,
+      "p2p_served_tokens": 0,
+      "avg_latency_ms": 412.3,
+      "p95_latency_ms": 1204.0
+    }
+  ]
+}
+```
+
+**Never transmitted:** prompt text, completion text, request IDs, client IPs, error messages, score breakdowns, timestamps below day granularity. The rollup reads a whitelisted subset of columns only.
+
+**Tags (second opt-in):** `FLEET_NODE_TELEMETRY_INCLUDE_TAGS=true` adds `request_count_by_tag: {"project:prod": 12, ...}` to each entry. Default off — tag values can be mildly identifying.
+
+**Idempotency:** Platform returns 409 if the same (user, node, day) was already ingested. The node treats 409 as success. Local state file `~/.fleet-manager/telemetry_state.json` tracks the last successfully sent day.
+
+**Retention:** Platform keeps rollups 90 days rolling.
+
 ---
 
 ## Static Assets

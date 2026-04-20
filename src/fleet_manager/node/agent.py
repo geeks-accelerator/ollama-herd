@@ -45,6 +45,7 @@ class NodeAgent:
         self._transcription_port: int = 0
         self._embedding_server_task: asyncio.Task | None = None
         self._embedding_port: int = 0
+        self._telemetry_task: asyncio.Task | None = None
 
     async def _ensure_ollama(self) -> bool:
         """Check if Ollama is running; if not, try to start it.
@@ -160,6 +161,9 @@ class NodeAgent:
         # already connected — makes `--platform-token` / env var behave
         # the same as pasting the token in the dashboard's Settings tab.
         await self._ensure_platform_connection()
+
+        # Start telemetry scheduler if opted in (requires platform connection)
+        self._telemetry_task = await self._ensure_telemetry_scheduler()
 
         # Install signal handlers for graceful drain
         loop = asyncio.get_running_loop()
@@ -479,6 +483,46 @@ class NodeAgent:
         except Exception as exc:
             logger.warning(f"Platform: connection failed — {exc}")
 
+    async def _ensure_telemetry_scheduler(self) -> asyncio.Task | None:
+        """Start the daily telemetry scheduler if opted in.
+
+        Requires:
+          - telemetry_local_summary == True on NodeSettings
+          - Platform connection exists (check saved state)
+
+        Returns the task so it can be cancelled on shutdown.
+        """
+        telemetry_on = getattr(self.settings, "telemetry_local_summary", False)
+        if not telemetry_on:
+            logger.debug(
+                "telemetry: disabled "
+                "(set FLEET_NODE_TELEMETRY_LOCAL_SUMMARY=true to enable)"
+            )
+            return None
+
+        from fleet_manager.node import platform_connection
+
+        if not platform_connection.is_connected():
+            logger.warning(
+                "telemetry: enabled but not connected to platform — "
+                "scheduler will NOT start. Connect via the dashboard "
+                "Settings tab or restart with --platform-token set."
+            )
+            return None
+
+        include_tags = getattr(self.settings, "telemetry_include_tags", False)
+        logger.info(
+            f"telemetry: scheduler starting "
+            f"(include_tags={include_tags}, retention: 90 days rolling)"
+        )
+
+        from fleet_manager.node.telemetry_scheduler import run_scheduler
+
+        return asyncio.create_task(
+            run_scheduler(include_tags=include_tags),
+            name="telemetry-scheduler",
+        )
+
     async def _send_heartbeat(self, payload):
         resp = await self._http.post(
             f"{self.router_url}/heartbeat",
@@ -557,6 +601,10 @@ class NodeAgent:
             self._image_server_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._image_server_task
+        if self._telemetry_task:
+            self._telemetry_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._telemetry_task
         if self._transcription_process:
             self._transcription_process.terminate()
             with contextlib.suppress(Exception):
