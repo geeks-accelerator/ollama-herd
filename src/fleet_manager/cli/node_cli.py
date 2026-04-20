@@ -26,10 +26,12 @@ def start(
     platform_token: str = typer.Option(
         "",
         "--platform-token",
+        "--operator-token",
         envvar="FLEET_NODE_PLATFORM_TOKEN",
         help=(
             "Operator token for platform.ollamaherd.com (or use the "
-            "dashboard Settings tab). Starts with 'herd_'."
+            "dashboard Settings tab). Starts with 'herd_'. "
+            "Accepts both --platform-token and --operator-token."
         ),
     ),
     platform_url: str = typer.Option(
