@@ -156,6 +156,11 @@ class NodeAgent:
         # Start vision embedding server if models are downloaded
         await self._ensure_embedding_server()
 
+        # Auto-connect to platform if token is configured and we're not
+        # already connected — makes `--platform-token` / env var behave
+        # the same as pasting the token in the dashboard's Settings tab.
+        await self._ensure_platform_connection()
+
         # Install signal handlers for graceful drain
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -410,6 +415,69 @@ class NodeAgent:
         except Exception as e:
             logger.warning(f"Failed to start embedding server: {repr(e)}")
             self._embedding_port = 0
+
+    async def _ensure_platform_connection(self):
+        """Auto-connect to the platform if a token is configured.
+
+        Respects existing connection state: if already connected with a
+        matching token, no-op.  If token changed, reconnect.  If no
+        token configured, check for saved state from a prior Connect.
+        """
+        from fleet_manager.node import platform_connection
+
+        # Read token from settings (env var or CLI flag)
+        token_secret = getattr(self.settings, "platform_token", None)
+        token = token_secret.get_secret_value() if token_secret else ""
+        platform_url = (
+            getattr(self.settings, "platform_url", None)
+            or platform_connection.DEFAULT_PLATFORM_URL
+        )
+
+        existing = platform_connection.load_state()
+
+        # Case 1: no env/CLI token, no saved state → nothing to do
+        if not token and not existing:
+            logger.debug("Platform: no token configured, skipping auto-connect")
+            return
+
+        # Case 2: no env/CLI token, but saved state exists → stay connected
+        if not token and existing:
+            logger.info(
+                f"Platform: using saved connection to {existing.platform_url} "
+                f"(node_id={existing.node_id})"
+            )
+            return
+
+        # Case 3: env/CLI token matches saved state → no-op
+        if existing and existing.operator_token == token:
+            logger.info(
+                f"Platform: already connected to {existing.platform_url} "
+                f"(node_id={existing.node_id})"
+            )
+            return
+
+        # Case 4: token configured but not connected (or token changed) → connect
+        logger.info(
+            f"Platform: connecting to {platform_url} via configured token…"
+        )
+        try:
+            state = await platform_connection.connect_to_platform(
+                token=token,
+                platform_url=platform_url,
+                node_name=self.settings.node_id or None,
+            )
+            logger.info(
+                f"Platform: connected as "
+                f"{state.user_display_name or state.user_email} "
+                f"(node_id={state.node_id})"
+            )
+        except platform_connection.InvalidTokenError as exc:
+            logger.warning(f"Platform: invalid token — {exc}")
+        except platform_connection.PlatformUnreachableError as exc:
+            logger.warning(f"Platform: unreachable — {exc}. "
+                           f"Will retry on next restart.")
+        except Exception as exc:
+            logger.warning(f"Platform: connection failed — {exc}")
 
     async def _send_heartbeat(self, payload):
         resp = await self._http.post(
