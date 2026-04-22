@@ -10,7 +10,7 @@
 
 This plan adds an **opt-in** path for `herd-node` to send **daily aggregates**
 of local inference usage to the coordination platform at
-`platform.ollamaherd.com`. The platform's dashboard needs this data to
+`gotomy.ai`. The platform's dashboard needs this data to
 visualize "local usage alongside what you served for peers" on its
 Contribution tab.
 
@@ -47,7 +47,7 @@ ours is everything that produces the payload and sends it.
 ### HTTP contract
 
 ```
-POST https://platform.ollamaherd.com/api/telemetry/local-summary
+POST https://gotomy.ai/api/telemetry/local-summary
 Authorization: Bearer herd_<hex>         # same operator token as P2P auth
 Content-Type: application/json
 
@@ -141,7 +141,7 @@ If we haven't registered yet, telemetry is a no-op (same as above).
 
 | File | Purpose |
 |------|---------|
-| `src/fleet_manager/node/platform_client.py` | Thin httpx wrapper around `platform.ollamaherd.com/api/*`. Used here + future P2P heartbeat work. Single `AsyncClient` with 10s timeout, exponential retry on 5xx / network error up to 3 tries. |
+| `src/fleet_manager/node/platform_client.py` | Thin httpx wrapper around `gotomy.ai/api/*`. Used here + future P2P heartbeat work. Single `AsyncClient` with 10s timeout, exponential retry on 5xx / network error up to 3 tries. |
 | `src/fleet_manager/node/daily_rollup.py` | Aggregates yesterday's rows from `latency_observations` + `request_traces` into the telemetry payload shape. |
 | `src/fleet_manager/node/telemetry_scheduler.py` | Fires once per day at ~00:05 UTC; calls `daily_rollup.build()` then `platform_client.post_local_summary()`. Handles 409 (idempotent) and errors. |
 | `tests/test_node/test_daily_rollup.py` | Unit tests over a seeded SQLite db. |
@@ -289,7 +289,7 @@ the number directly:
 ```
 --telemetry-local-summary  Send anonymous daily rollups to the
                            platform. Platform retains rows for 90
-                           days. See https://platform.ollamaherd.com/docs/methodology
+                           days. See https://gotomy.ai/docs/methodology
 ```
 
 If the platform team needs different numbers, agree before we ship.
@@ -329,7 +329,7 @@ default `INFO` stays quiet.
 
 ### Integration — `test_platform_client.py`
 
-Use `pytest_httpx` to stub `platform.ollamaherd.com`:
+Use `pytest_httpx` to stub `gotomy.ai`:
 
 - **`200`** → one POST made; logged at INFO. Next scheduler fire
   today also POSTs and gets `409` (the idempotency test below).

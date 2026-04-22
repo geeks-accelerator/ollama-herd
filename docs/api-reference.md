@@ -1265,7 +1265,7 @@ HTML page for the Settings dashboard tab. Shows router info, toggle switches, re
 
 ## Platform Connection
 
-Opt-in connection to the `platform.ollamaherd.com` coordination platform. Required for features like platform-wide usage telemetry (planned) and P2P capability advertisement (future). Local fleet routing works without a platform connection.
+Opt-in connection to the `gotomy.ai` coordination platform. Required for features like platform-wide usage telemetry (planned) and P2P capability advertisement (future). Local fleet routing works without a platform connection.
 
 **Default:** not connected. No data leaves the node until the user explicitly connects and enables a feature.
 
@@ -1277,7 +1277,7 @@ Returns the current platform connection state.
 ```json
 {
   "state": "not_connected",
-  "platform_url": "https://platform.ollamaherd.com",
+  "platform_url": "https://gotomy.ai",
   "connected": null,
   "features": {
     "telemetry_local_summary": false,
@@ -1292,7 +1292,7 @@ Returns the current platform connection state.
 ```json
 {
   "state": "connected",
-  "platform_url": "https://platform.ollamaherd.com",
+  "platform_url": "https://gotomy.ai",
   "connected": {
     "user_email": "user@example.com",
     "user_display_name": "User",
@@ -1312,7 +1312,7 @@ Validate an operator token, register the node with the platform, and persist the
 ```json
 {
   "operator_token": "herd_...",
-  "platform_url": "https://platform.ollamaherd.com",
+  "platform_url": "https://gotomy.ai",
   "node_name": "mac-studio-1",
   "region": "us-west"
 }
@@ -1327,7 +1327,7 @@ Only `operator_token` is required. `platform_url` defaults to production. `node_
   "node_id": "uuid-...",
   "user_email": "user@example.com",
   "user_display_name": "User",
-  "platform_url": "https://platform.ollamaherd.com",
+  "platform_url": "https://gotomy.ai",
   "connected_at": "2026-04-20T17:55:00Z"
 }
 ```

@@ -20,7 +20,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # Default platform URL (production).  Override via platform_url.
-DEFAULT_PLATFORM_URL = "https://platform.ollamaherd.com"
+DEFAULT_PLATFORM_URL = "https://gotomy.ai"
 
 # File paths — all under ~/.fleet-manager/ for consistency.
 _STATE_DIR = Path.home() / ".fleet-manager"
@@ -180,7 +180,7 @@ async def validate_token(platform_url: str, token: str) -> PlatformIdentity:
     if resp.status_code == 401:
         raise InvalidTokenError(
             "Operator token rejected by platform. "
-            "Generate a new one at platform.ollamaherd.com/web/"
+            "Generate a new one at gotomy.ai/web/"
         )
     if resp.status_code >= 500:
         raise PlatformUnreachableError(

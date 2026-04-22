@@ -29,7 +29,7 @@ def start(
         "--operator-token",
         envvar="FLEET_NODE_PLATFORM_TOKEN",
         help=(
-            "Operator token for platform.ollamaherd.com (or use the "
+            "Operator token for gotomy.ai (or use the "
             "dashboard Settings tab). Starts with 'herd_'. "
             "Accepts both --platform-token and --operator-token."
         ),
@@ -38,7 +38,7 @@ def start(
         "",
         "--platform-url",
         envvar="FLEET_NODE_PLATFORM_URL",
-        help="Platform URL (default: https://platform.ollamaherd.com)",
+        help="Platform URL (default: https://gotomy.ai)",
     ),
     telemetry_local_summary: bool = typer.Option(
         False,
@@ -104,7 +104,7 @@ def start(
     if learn_capacity:
         typer.echo("  Capacity: adaptive learning enabled")
     if platform_token:
-        url = platform_url or "https://platform.ollamaherd.com"
+        url = platform_url or "https://gotomy.ai"
         typer.echo(f"  Platform: {url} (token supplied via flag)")
     typer.echo("")
 

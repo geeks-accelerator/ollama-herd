@@ -76,7 +76,7 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `node/capacity_learner.py` | 168-slot weekly behavioral model, availability score, dynamic memory ceiling |
 | `node/embedding_models.py` | Vision embedding model registry, download, ONNX inference (DINOv2, SigLIP, CLIP) |
 | `node/embedding_server.py` | FastAPI server for vision embeddings on :11438 |
-| `node/platform_connection.py` | Opt-in platform.ollamaherd.com integration: Ed25519 keypair, token, register, persist |
+| `node/platform_connection.py` | Opt-in gotomy.ai integration: Ed25519 keypair, token, register, persist |
 | `node/platform_client.py` | Shared httpx wrapper with retry — used by heartbeat + telemetry |
 | `node/platform_heartbeat.py` | Signed heartbeat POST every 60s (CPU, memory, VRAM, queues, loaded models) |
 | `node/telemetry_scheduler.py` | Daily usage rollup POST at 00:05 UTC + jitter (opt-in via env) |

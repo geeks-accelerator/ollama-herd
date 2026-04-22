@@ -10,7 +10,7 @@
 ## What this is
 
 A user-facing flow for opting a node into the coordination platform at
-`platform.ollamaherd.com`. Runs in the OSS dashboard's Settings tab
+`gotomy.ai`. Runs in the OSS dashboard's Settings tab
 (`http://localhost:8001/settings`) so users don't have to SSH into a
 headless mac-mini and edit YAML.
 
@@ -25,7 +25,7 @@ will ever turn it on — the friction kills adoption.
 Today, connecting a node to the platform would require:
 
 1. Install `herd-node`, runs locally, works fine
-2. Visit `ollamaherd.com`, sign up, navigate to `platform.ollamaherd.com/web/`
+2. Visit `ollamaherd.com`, sign up, navigate to `gotomy.ai/web/`
 3. Create an operator token, copy it
 4. **SSH into the node**, edit `~/.fleet-manager/config.yaml` or pass CLI flags
 5. Restart the agent, read logs to verify
@@ -39,7 +39,7 @@ the user already has open.
 
 1. User has `herd-node` running locally, with the OSS dashboard open at
    `localhost:8001`.
-2. User signs up at `platform.ollamaherd.com`, generates an operator
+2. User signs up at `gotomy.ai`, generates an operator
    token (shown once), copies it.
 3. User switches to the local OSS dashboard's **Settings** tab.
 4. New **Platform connection** card shows *"Not connected"* with an
@@ -48,10 +48,10 @@ the user already has open.
 6. Dashboard calls `POST /api/platform/connect` on the **local** OSS
    server. Behind the scenes:
    - Server validates the token by calling
-     `GET https://platform.ollamaherd.com/api/auth/me`
+     `GET https://gotomy.ai/api/auth/me`
    - Generates (or loads) an Ed25519 keypair for this node
    - Runs a quick benchmark if we don't have a fresh one
-   - Calls `POST https://platform.ollamaherd.com/api/nodes/register`
+   - Calls `POST https://gotomy.ai/api/nodes/register`
      with the benchmark + public key
    - Persists: operator token, platform-issued node UUID, platform URL
      to `~/.fleet-manager/`
@@ -75,20 +75,20 @@ by a single enum in a GET `/api/platform/status` response:
 │                                                          │
 │  Not connected.                                          │
 │                                                          │
-│  Connect this node to platform.ollamaherd.com to earn    │
+│  Connect this node to gotomy.ai to earn    │
 │  credits for serving peers, see historical usage on the  │
 │  dashboard, and participate in the network.              │
 │                                                          │
 │  You keep your fleet private by default — nothing leaves │
 │  this machine until you explicitly enable a feature.     │
 │                                                          │
-│  Get an operator token at platform.ollamaherd.com/web/   │
+│  Get an operator token at gotomy.ai/web/   │
 │                                                          │
 │  ┌──────────────────────────────────────────┐ [Connect] │
 │  │ herd_…                                   │            │
 │  └──────────────────────────────────────────┘            │
 │                                                          │
-│  Platform URL: https://platform.ollamaherd.com   [edit]  │
+│  Platform URL: https://gotomy.ai   [edit]  │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -115,7 +115,7 @@ Progress lines update as the backend reaches each step.
 │                                                          │
 │  ✓ Connected as devuser (2026-04-20)                    │
 │    Node: mac-studio-1  ·  class: premium  ·  92 tok/s   │
-│    Platform: platform.ollamaherd.com      [Disconnect]  │
+│    Platform: gotomy.ai      [Disconnect]  │
 │                                                          │
 │  ┌─ Features ───────────────────────────────────────┐   │
 │  │  ☐ Share local usage telemetry                   │   │
@@ -148,7 +148,7 @@ same as every other Settings toggle).
 ```json
 {
   "state": "connected",                              // "not_connected" | "connecting" | "connected" | "error"
-  "platform_url": "https://platform.ollamaherd.com",
+  "platform_url": "https://gotomy.ai",
   "connected": {
     "user_email": "devuser@example.com",             // from GET /api/auth/me
     "user_display_name": "devuser",
@@ -172,7 +172,7 @@ Request:
 ```json
 {
   "operator_token": "herd_2a9860...",
-  "platform_url": "https://platform.ollamaherd.com"  // optional; defaults to production
+  "platform_url": "https://gotomy.ai"  // optional; defaults to production
 }
 ```
 
@@ -185,7 +185,7 @@ async def connect(body):
         r = await h.get(f"{body.platform_url}/api/auth/me",
                         headers={"Authorization": f"Bearer {body.operator_token}"})
     if r.status_code != 200:
-        return err("Invalid operator token — see platform.ollamaherd.com/web/")
+        return err("Invalid operator token — see gotomy.ai/web/")
 
     # 2. Ensure we have an Ed25519 keypair (generate if missing)
     keypair = await ed25519_keypair.load_or_generate()
@@ -284,7 +284,7 @@ dashboard as a *second* path to the same settings, not a replacement:
 
 ```bash
 # These still work exactly as today
-herd-node --platform-token herd_xxx --platform-url https://platform.ollamaherd.com
+herd-node --platform-token herd_xxx --platform-url https://gotomy.ai
 ```
 
 Mapping:
@@ -329,7 +329,7 @@ Surface this distinction in the UI:
 
 > Disconnecting stops your node from communicating with the platform.
 > Your earnings and node history remain on the platform. To fully
-> remove your node, visit platform.ollamaherd.com/web/ and deregister it there.
+> remove your node, visit gotomy.ai/web/ and deregister it there.
 
 ### OSS dashboard is unauthenticated localhost — trust model unchanged
 
@@ -348,8 +348,8 @@ user sees a useful message:
 | Failure | UI message |
 |---|---|
 | Token format invalid | *"Tokens start with `herd_` — check what you pasted."* |
-| Token rejected by platform | *"That token isn't valid. Generate a new one at platform.ollamaherd.com/web/"* |
-| Platform unreachable | *"Can't reach platform.ollamaherd.com. Check your internet connection."* |
+| Token rejected by platform | *"That token isn't valid. Generate a new one at gotomy.ai/web/"* |
+| Platform unreachable | *"Can't reach gotomy.ai. Check your internet connection."* |
 | Ed25519 already registered to another user | *"This machine's key is already registered to a different account. Run `herd-node rotate-keys` to reset."* |
 | Benchmark failed | *"Benchmark didn't complete. Try running `herd-node benchmark` manually, then reconnect."* |
 
@@ -394,7 +394,7 @@ user sees a useful message:
 
 ### Integration — `test_platform_routes.py`
 
-Using `pytest_httpx` to stub `platform.ollamaherd.com`:
+Using `pytest_httpx` to stub `gotomy.ai`:
 
 - `POST /api/platform/connect` happy path → 200, status endpoint
   reflects `connected`, `~/.fleet-manager/platform.json` exists.
@@ -456,7 +456,7 @@ should understand that connecting isn't the same as sharing data.
 Every Connect / Disconnect action logs a single line at INFO level:
 
 ```
-platform-connect: connected to https://platform.ollamaherd.com as devuser (node_id=3723...)
+platform-connect: connected to https://gotomy.ai as devuser (node_id=3723...)
 platform-connect: disconnected
 ```
 
@@ -487,7 +487,7 @@ No private-repo changes required to ship v1 of this plan.
 - Supabase OAuth redirect flow *inside* the OSS dashboard. We
   deliberately don't try to embed "Sign in with GitHub" in the
   localhost dashboard — the user signs up on
-  `platform.ollamaherd.com/web/` using their real browser, then
+  `gotomy.ai/web/` using their real browser, then
   pastes a token into the local dashboard. Keeps the OAuth flow
   where it already works, no iframe security headaches.
 - Cookie-based auth on the OSS dashboard (v2 concern).

@@ -1,6 +1,6 @@
 """Platform connection routes — dashboard-facing, localhost only.
 
-Three endpoints for opting a node into the platform.ollamaherd.com
+Three endpoints for opting a node into the gotomy.ai
 coordination platform:
 
   GET  /api/platform/status       — current state + identity + features
@@ -106,7 +106,7 @@ async def platform_connect(request: Request):
             status_code=400,
             content={
                 "error": "operator_token is required",
-                "hint": "Get one at platform.ollamaherd.com/web/",
+                "hint": "Get one at gotomy.ai/web/",
             },
         )
 

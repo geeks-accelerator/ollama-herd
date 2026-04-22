@@ -105,7 +105,7 @@ async def post(
             # Token revoked — no point retrying
             raise InvalidTokenError(
                 "Operator token rejected. Reconnect via dashboard or "
-                "regenerate at platform.ollamaherd.com/web/"
+                "regenerate at gotomy.ai/web/"
             )
 
         if resp.status_code >= 500:

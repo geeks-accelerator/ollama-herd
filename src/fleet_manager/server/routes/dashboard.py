@@ -4656,13 +4656,13 @@ function renderPlatformCard(data) {
       '<div class="platform-card-inner">' +
         '<div class="platform-title">Not connected</div>' +
         '<div class="platform-desc">' +
-          'Connect this node to <b>platform.ollamaherd.com</b> to earn credits ' +
+          'Connect this node to <b>gotomy.ai</b> to earn credits ' +
           'for serving peers, see historical usage on the dashboard, and ' +
           'participate in the network.<br><br>' +
           'You keep your fleet private by default — nothing leaves this machine ' +
           'until you explicitly enable a feature.<br><br>' +
-          'Get an operator token at <a href="https://platform.ollamaherd.com/web/" target="_blank" ' +
-          'style="color:var(--accent)">platform.ollamaherd.com/web/</a>' +
+          'Get an operator token at <a href="https://gotomy.ai/web/" target="_blank" ' +
+          'style="color:var(--accent)">gotomy.ai/web/</a>' +
         '</div>' +
         '<div class="platform-form">' +
           '<input id="platform-token-input" type="password" placeholder="herd_..." ' +
@@ -4698,8 +4698,8 @@ function renderPlatformCard(data) {
         '<div class="platform-note">' +
           'Disconnecting stops this node from communicating with the platform. ' +
           'Your earnings and node history remain on the platform. To fully remove ' +
-          'your node, visit <a href="https://platform.ollamaherd.com/web/" target="_blank" ' +
-          'style="color:var(--accent)">platform.ollamaherd.com/web/</a> and deregister it there.' +
+          'your node, visit <a href="https://gotomy.ai/web/" target="_blank" ' +
+          'style="color:var(--accent)">gotomy.ai/web/</a> and deregister it there.' +
         '</div>' +
       '</div>';
   } else {

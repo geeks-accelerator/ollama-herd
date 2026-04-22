@@ -1,6 +1,6 @@
 """Platform heartbeat sender — signs + POSTs metrics every 60s.
 
-Sends signed heartbeats to platform.ollamaherd.com/api/heartbeats so
+Sends signed heartbeats to gotomy.ai/api/heartbeats so
 the platform's Nodes-detail dashboard can show:
   - Current CPU%, memory, VRAM
   - Per-model queue depths + loaded models (hot in VRAM)
