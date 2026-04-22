@@ -38,6 +38,13 @@ from fleet_manager.server.anthropic_translator import (
     map_anthropic_model,
     ollama_chunk_to_anthropic_events,
 )
+from fleet_manager.server.mlx_proxy import (
+    build_anthropic_non_streaming_response,
+    is_mlx_model,
+    openai_sse_to_anthropic_events,
+    record_trace_mlx,
+    strip_mlx_prefix,
+)
 from fleet_manager.server.routes.routing import (
     check_context_overflow,
     extract_tags,
@@ -51,6 +58,35 @@ router = APIRouter(tags=["anthropic"])
 # Cap how much of the translated Ollama body we'll dump at DEBUG level.
 # Large prompts + tool schemas can be huge; truncate to keep logs usable.
 _DEBUG_BODY_PREVIEW_CHARS = 4000
+
+
+def _request_has_images(body: AnthropicMessagesRequest) -> bool:
+    """Return True iff any message contains an image content block.
+
+    Anthropic content blocks come in as raw dicts (AnthropicMessage.content is
+    typed `str | list[dict[str, Any]]`), so we scan for `{"type": "image", ...}`
+    entries.  A string-form message never has images.  ToolResultBlock.content
+    can itself contain image sub-blocks (per the Anthropic spec) — we check
+    those too for completeness.
+    """
+    for msg in body.messages:
+        content = msg.content
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "image":
+                return True
+            # tool_result blocks can nest image sub-blocks
+            if btype == "tool_result":
+                inner = block.get("content")
+                if isinstance(inner, list):
+                    for sub in inner:
+                        if isinstance(sub, dict) and sub.get("type") == "image":
+                            return True
+    return False
 
 
 def _check_auth(settings, x_api_key: str | None, client_host: str = "") -> JSONResponse | None:
@@ -163,6 +199,139 @@ def _build_ollama_request_body(
     return out
 
 
+async def _serve_via_mlx(
+    *,
+    request: Request,
+    body: AnthropicMessagesRequest,
+    inference_req: InferenceRequest,
+    mlx_proxy,
+    rid: str,
+    t_start: float,
+    anthropic_version: str | None,
+):
+    """Forward an Anthropic request to `mlx_lm.server` and stream the response back.
+
+    Phase 1 MVP — bypasses the scoring + queue pipeline entirely since there's
+    only one MLX backend per node (no routing decision needed).  Still records
+    traces so the dashboard + health checks see MLX traffic.
+    """
+    from fleet_manager.server.mlx_proxy import _MlxToolState
+
+    trace_store = getattr(request.app.state, "trace_store", None)
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Fleet-Node": "mlx-local",
+        "X-Fleet-Backend": "mlx",
+    }
+    if anthropic_version:
+        headers["anthropic-version"] = anthropic_version
+
+    if not body.stream:
+        # Non-streaming path — one-shot request/response translation
+        try:
+            openai_resp = await mlx_proxy.completions_non_streaming(inference_req)
+        except Exception as exc:
+            logger.exception(f"Anthropic[{rid}] MLX non-streaming failed: {exc}")
+            record_trace_mlx(
+                trace_store, inference_req, t_start, None, "failed",
+                error_message=str(exc),
+            )
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": f"MLX backend error: {exc}",
+                    },
+                },
+            )
+        record_trace_mlx(
+            trace_store, inference_req, t_start, time.time(), "completed",
+        )
+        response_body = build_anthropic_non_streaming_response(
+            openai_resp, body.model,
+        )
+        return JSONResponse(content=response_body, headers=headers)
+
+    # Streaming path — OpenAI SSE → Anthropic SSE translation
+    async def _sse_generator():
+        state = AnthropicSSEState(model=body.model)
+        tools_state: dict[int, _MlxToolState] = {}
+        first_token_time: float | None = None
+        error: Exception | None = None
+        try:
+            async for raw in mlx_proxy.stream_openai(inference_req):
+                for event in openai_sse_to_anthropic_events(
+                    raw.decode("utf-8", errors="replace"),
+                    state,
+                    tools_state,
+                    inference_req.request_id,
+                ):
+                    if first_token_time is None and "content_block_delta" in event:
+                        first_token_time = time.time()
+                    yield event
+            # Synthesize stop if mlx dropped without finish_reason
+            if not state.finished:
+                if state.text_open:
+                    yield (
+                        "event: content_block_stop\ndata: "
+                        + json.dumps(
+                            {
+                                "type": "content_block_stop",
+                                "index": state.text_block_index,
+                            }
+                        )
+                        + "\n\n"
+                    )
+                yield (
+                    "event: message_delta\ndata: "
+                    + json.dumps(
+                        {
+                            "type": "message_delta",
+                            "delta": {
+                                "stop_reason": "end_turn",
+                                "stop_sequence": None,
+                            },
+                            "usage": {"output_tokens": state.output_tokens},
+                        }
+                    )
+                    + "\n\n"
+                )
+                yield (
+                    "event: message_stop\ndata: "
+                    + json.dumps({"type": "message_stop"})
+                    + "\n\n"
+                )
+        except Exception as exc:
+            error = exc
+            logger.exception(
+                f"Anthropic[{rid}] MLX stream aborted: {type(exc).__name__}: {exc}"
+            )
+            raise
+        finally:
+            mlx_proxy.pop_token_counts(inference_req.request_id)
+            status = "failed" if error else "completed"
+            err_msg = str(error) if error else None
+            record_trace_mlx(
+                trace_store, inference_req, t_start, first_token_time,
+                status, error_message=err_msg,
+            )
+            elapsed_ms = (time.time() - t_start) * 1000
+            if error is None:
+                logger.info(
+                    f"Anthropic[{rid}] MLX stream done: tools={len(state.emitted_tools)} "
+                    f"output_tok≈{state.output_tokens} elapsed_ms={elapsed_ms:.0f}"
+                )
+
+    return StreamingResponse(
+        _sse_generator(),
+        media_type="text/event-stream",
+        headers=headers,
+    )
+
+
 @router.post("/v1/messages")
 async def messages(
     request: Request,
@@ -225,6 +394,18 @@ async def messages(
             },
         )
 
+    # Vision override — if the request contains image content blocks, route to
+    # the configured vision model regardless of the Claude tier mapping.  Keeps
+    # opus/sonnet on their coding models while still handling image requests
+    # correctly.  No-op when FLEET_ANTHROPIC_VISION_MODEL is empty.
+    vision_model = getattr(settings, "anthropic_vision_model", "") or ""
+    if vision_model and _request_has_images(body):
+        logger.info(
+            f"Anthropic vision: {body.model} → {vision_model} "
+            f"(override from {local_model} due to image content)"
+        )
+        local_model = vision_model
+
     tags = extract_tags(raw, request.headers)
     if body.metadata and isinstance(body.metadata, dict):
         user_id = body.metadata.get("user_id")
@@ -246,6 +427,45 @@ async def messages(
         tags=tags,
     )
     rid = inference_req.request_id[:8]
+
+    # MLX backend fast-path — when the resolved model has an `mlx:` prefix, bypass
+    # the scoring + queue pipeline and forward directly to mlx_lm.server.  This is
+    # the Phase 1 MVP from `docs/plans/mlx-backend-for-large-models.md`; Phase 2
+    # will integrate via the normal node registry.
+    if is_mlx_model(local_model):
+        mlx_proxy = getattr(request.app.state, "mlx_proxy", None)
+        if mlx_proxy is None:
+            logger.warning(
+                f"Anthropic[{rid}] 503: model '{local_model}' requested but MLX "
+                f"backend is not enabled (set FLEET_MLX_ENABLED=true)"
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "overloaded_error",
+                        "message": (
+                            f"Model '{local_model}' needs the MLX backend but "
+                            "FLEET_MLX_ENABLED is false. Enable it and restart herd."
+                        ),
+                    },
+                },
+            )
+        logger.info(
+            f"Anthropic[{rid}] MLX route: {body.model} → {local_model} "
+            f"(stripped: {strip_mlx_prefix(local_model)}) stream={body.stream} "
+            f"tools={len(body.tools or [])}"
+        )
+        return await _serve_via_mlx(
+            request=request,
+            body=body,
+            inference_req=inference_req,
+            mlx_proxy=mlx_proxy,
+            rid=rid,
+            t_start=t_start,
+            anthropic_version=anthropic_version,
+        )
 
     logger.info(
         f"Anthropic[{rid}] request: model={body.model} → {local_model} stream={body.stream} "

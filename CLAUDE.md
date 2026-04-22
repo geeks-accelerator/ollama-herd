@@ -51,6 +51,9 @@ sleep 3 && uv run herd-node &>/dev/null & disown
 - **`shutil.which()` can't find `uv tool` binaries** — `_which_extended()` in `collector.py` handles platform-aware fallback paths
 - **Thinking models eat `num_predict` budgets** — router auto-inflates by 4× for known thinking models. Add new ones to `is_thinking_model()` in `model_knowledge.py`
 - **Default context windows waste KV cache** — gpt-oss:120b allocates 131K ctx but p99 usage is ~5K tokens. Enable `FLEET_DYNAMIC_NUM_CTX=true` to auto-optimize. See `docs/plans/dynamic-num-ctx.md`
+- **Ollama `OLLAMA_MAX_LOADED_MODELS=-1` is silently invalid** — parsed as unsigned int, `-1` fails, falls through to default `0` = 3-model cap. Use a positive integer (but see next point — may be ignored anyway on macOS 2026). `OLLAMA_KEEP_ALIVE=-1` IS valid (means "keep forever"). Ollama env var semantics differ per variable; don't assume `-1` means unlimited.
+- **Ollama 0.20.4 macOS has a hardcoded 3-model hot cap** — no env configuration we've found will raise it. When a mapped model gets evicted, silent VRAM fallback fires and Claude Code tool use breaks. Surfaced via `x-fleet-fallback` response header and fallback_rate in trace DB. See `docs/issues.md` and `docs/plans/hot-fleet-health-checks.md`.
+- **Use `mlx:` prefix in `FLEET_ANTHROPIC_MODEL_MAP` to bypass the 3-model cap** — any mapped value starting with `mlx:` routes through an independent `mlx_lm.server` subprocess instead of Ollama. Setup: `FLEET_MLX_ENABLED=true` on the router, `FLEET_NODE_MLX_ENABLED=true` + optional `FLEET_NODE_MLX_AUTO_START=true` on the node. See `docs/plans/mlx-backend-for-large-models.md`.
 
 ## Architecture
 
@@ -79,6 +82,9 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `node/platform_connection.py` | Opt-in gotomy.ai integration: Ed25519 keypair, token, register, persist |
 | `node/platform_client.py` | Shared httpx wrapper with retry — used by heartbeat + telemetry |
 | `node/platform_heartbeat.py` | Signed heartbeat POST every 60s (CPU, memory, VRAM, queues, loaded models) |
+| `node/mlx_client.py` | Node-side client for polling `mlx_lm.server` `/v1/models`; results merged into heartbeat with `mlx:` prefix |
+| `node/mlx_supervisor.py` | Subprocess lifecycle for `mlx_lm.server` — spawn, health-check, auto-restart on crash |
+| `server/mlx_proxy.py` | Server-side proxy forwarding `mlx:` prefixed models to `mlx_lm.server` (OpenAI → Anthropic SSE translation) |
 | `node/telemetry_scheduler.py` | Daily usage rollup POST at 00:05 UTC + jitter (opt-in via env) |
 | `node/daily_rollup.py` | Builds telemetry payload with structural privacy whitelist |
 | `node/device_info.py` | Per-platform hardware probe (macOS/Linux/Windows) for registration |

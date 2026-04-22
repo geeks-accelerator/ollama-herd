@@ -48,6 +48,21 @@ class NodeAgent:
         self._telemetry_task: asyncio.Task | None = None
         self._platform_heartbeat_task: asyncio.Task | None = None
 
+        # MLX backend (Phase 2 of docs/plans/mlx-backend-for-large-models.md).
+        # When FLEET_NODE_MLX_ENABLED is true the node agent advertises models
+        # from mlx_lm.server alongside Ollama's in each heartbeat.  Phase 3
+        # will add auto-start subprocess lifecycle; for now we assume the
+        # user has started mlx_lm.server manually at FLEET_NODE_MLX_URL.
+        self.mlx = None
+        if getattr(settings, "mlx_enabled", False):
+            from fleet_manager.node.mlx_client import MlxClient
+
+            self.mlx = MlxClient(settings.mlx_url)
+            logger.info(f"MLX backend enabled on node — polling {settings.mlx_url}")
+        self._mlx_process: subprocess.Popen | None = None
+        self._mlx_supervisor = None  # MlxSupervisor | None; set by _ensure_mlx_server
+        self._ollama_watchdog = None  # OllamaWatchdog | None; set by _ensure_ollama_watchdog
+
     async def _ensure_ollama(self) -> bool:
         """Check if Ollama is running; if not, try to start it.
 
@@ -158,6 +173,12 @@ class NodeAgent:
         # Start vision embedding server if models are downloaded
         await self._ensure_embedding_server()
 
+        # Phase 3: MLX subprocess auto-start (docs/plans/mlx-backend-for-large-models.md)
+        await self._ensure_mlx_server()
+
+        # Ollama watchdog — auto-heal stuck runner states (see ollama_watchdog.py)
+        self._ensure_ollama_watchdog()
+
         # Auto-connect to platform if token is configured and we're not
         # already connected — makes `--platform-token` / env var behave
         # the same as pasting the token in the dashboard's Settings tab.
@@ -194,6 +215,7 @@ class NodeAgent:
                     self.ollama,
                     self.settings.ollama_host,
                     capacity_learner=self._capacity_learner,
+                    mlx=self.mlx,
                 )
                 if self._image_port:
                     payload.image_port = self._image_port
@@ -424,6 +446,69 @@ class NodeAgent:
             logger.warning(f"Failed to start embedding server: {repr(e)}")
             self._embedding_port = 0
 
+    def _ensure_ollama_watchdog(self):
+        """Start the Ollama watchdog task if enabled (default on).
+
+        The watchdog probes the local Ollama every ``ollama_watchdog_interval``
+        seconds and kicks stuck runner processes when needed.  Zero action
+        when ``FLEET_NODE_OLLAMA_WATCHDOG_ENABLED=false``.
+        """
+        if not getattr(self.settings, "ollama_watchdog_enabled", True):
+            logger.info("Ollama watchdog disabled (FLEET_NODE_OLLAMA_WATCHDOG_ENABLED=false)")
+            return
+        from fleet_manager.node.ollama_watchdog import OllamaWatchdog
+
+        self._ollama_watchdog = OllamaWatchdog(
+            ollama_host=self.settings.ollama_host,
+            interval_s=self.settings.ollama_watchdog_interval,
+            probe_timeout_s=self.settings.ollama_watchdog_probe_timeout,
+            consecutive_failures_before_kick=(
+                self.settings.ollama_watchdog_consecutive_failures_before_kick
+            ),
+            cooldown_s=self.settings.ollama_watchdog_cooldown,
+        )
+        self._ollama_watchdog.start()
+
+    async def _ensure_mlx_server(self):
+        """Spawn ``mlx_lm.server`` if FLEET_NODE_MLX_AUTO_START is true.
+
+        No-op when auto-start is disabled or MLX isn't enabled.  If the
+        subprocess fails to come up, the node keeps running with Ollama only;
+        we don't treat MLX as critical.
+        """
+        if not getattr(self.settings, "mlx_auto_start", False):
+            return
+        if not getattr(self.settings, "mlx_enabled", False):
+            logger.warning(
+                "FLEET_NODE_MLX_AUTO_START=true but FLEET_NODE_MLX_ENABLED=false. "
+                "Enable both to actually use MLX."
+            )
+            return
+
+        from urllib.parse import urlparse
+
+        from fleet_manager.node.mlx_supervisor import MlxSupervisor
+
+        parsed = urlparse(self.settings.mlx_url)
+        port = parsed.port or 11440
+        host = parsed.hostname or "127.0.0.1"
+
+        self._mlx_supervisor = MlxSupervisor(
+            model=self.settings.mlx_auto_start_model,
+            port=port,
+            host=host,
+            kv_bits=self.settings.mlx_kv_bits,
+            prompt_cache_size=self.settings.mlx_prompt_cache_size,
+            prompt_cache_bytes=self.settings.mlx_prompt_cache_bytes,
+        )
+        ok = await self._mlx_supervisor.start()
+        if not ok:
+            logger.warning(
+                "MLX auto-start failed — continuing with Ollama only. "
+                "Check ~/.fleet-manager/logs/mlx-server.log for details."
+            )
+            self._mlx_supervisor = None
+
     async def _ensure_platform_connection(self):
         """Auto-connect to the platform if a token is configured.
 
@@ -642,5 +727,19 @@ class NodeAgent:
         if self._ollama_proxy:
             await self._ollama_proxy.stop()
         await self.ollama.close()
+        if self._ollama_watchdog is not None:
+            with contextlib.suppress(Exception):
+                await self._ollama_watchdog.stop()
+        if self.mlx is not None:
+            await self.mlx.close()
+        # MLX subprocess (Phase 3) — graceful shutdown if we spawned it
+        if self._mlx_supervisor is not None:
+            with contextlib.suppress(Exception):
+                await self._mlx_supervisor.stop()
+        # Legacy fallback path (no supervisor, raw Popen) — defensive
+        if self._mlx_process is not None:
+            with contextlib.suppress(Exception):
+                self._mlx_process.terminate()
+                self._mlx_process.wait(timeout=5)
         if self._http:
             await self._http.aclose()

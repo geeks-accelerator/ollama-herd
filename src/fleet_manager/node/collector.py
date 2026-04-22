@@ -176,8 +176,15 @@ async def collect_heartbeat(
     ollama: OllamaClient,
     ollama_host: str = "http://localhost:11434",
     capacity_learner=None,
+    mlx=None,  # type: ignore[no-untyped-def]
 ) -> HeartbeatPayload:
-    """Assemble a complete heartbeat payload from local system state."""
+    """Assemble a complete heartbeat payload from local system state.
+
+    ``mlx`` is an optional :class:`fleet_manager.node.mlx_client.MlxClient`.
+    When provided, models it advertises are merged into ``models_available``
+    with an ``mlx:`` prefix so the router can route requests through the MLX
+    backend.  See ``docs/plans/mlx-backend-for-large-models.md``.
+    """
     cpu = get_cpu_metrics()
     memory = get_memory_metrics()
     disk = get_disk_metrics()
@@ -196,6 +203,24 @@ async def collect_heartbeat(
         models_loaded = []
         models_available = []
         requests_active = 0
+
+    # MLX backend — if enabled, merge its advertised models into the heartbeat's
+    # `models_available` with an `mlx:` prefix.  The server-side Anthropic route
+    # detects that prefix and forwards to `MlxProxy` instead of Ollama.
+    if mlx is not None:
+        try:
+            mlx_models = await mlx.get_available_models()
+            if mlx_models:
+                from fleet_manager.node.mlx_client import prefix_mlx
+
+                prefixed = [prefix_mlx(m) for m in mlx_models]
+                models_available = list(models_available) + prefixed
+                logger.debug(
+                    f"MLX state: +{len(prefixed)} models merged "
+                    f"({', '.join(prefixed[:3])}{'...' if len(prefixed) > 3 else ''})"
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"MLX polling failed: {type(e).__name__}: {e}")
 
     # Run capacity learner observation if enabled
     capacity = None

@@ -13,6 +13,7 @@ from fleet_manager.common.discovery import FleetServiceAdvertiser
 from fleet_manager.common.logging_config import setup_logging
 from fleet_manager.models.config import ServerSettings
 from fleet_manager.server.latency_store import LatencyStore
+from fleet_manager.server.mlx_proxy import MlxProxy
 from fleet_manager.server.queue_manager import QueueManager
 from fleet_manager.server.rebalancer import Rebalancer
 from fleet_manager.server.registry import NodeRegistry
@@ -42,11 +43,19 @@ async def lifespan(app: FastAPI):
     streaming_proxy = StreamingProxy(registry, latency_store, trace_store, settings=settings)
     rebalancer = Rebalancer(settings, registry, scorer, queue_mgr, streaming_proxy)
 
+    # MLX backend — opt-in alternative serving path for models that can't fit
+    # alongside the Ollama 3-model cap.  See `docs/plans/mlx-backend-for-large-models.md`.
+    mlx_proxy: MlxProxy | None = None
+    if getattr(settings, "mlx_enabled", False):
+        mlx_proxy = MlxProxy(settings.mlx_url, trace_store=trace_store)
+        logger.info(f"MLX backend enabled at {settings.mlx_url}")
+
     # Store on app state
     app.state.registry = registry
     app.state.scorer = scorer
     app.state.queue_mgr = queue_mgr
     app.state.streaming_proxy = streaming_proxy
+    app.state.mlx_proxy = mlx_proxy
     app.state.latency_store = latency_store
     app.state.trace_store = trace_store
     from fleet_manager.server.context_optimizer import ContextOptimizer
@@ -89,6 +98,8 @@ async def lifespan(app: FastAPI):
         await optimizer_task
     await queue_mgr.shutdown()
     await streaming_proxy.close()
+    if mlx_proxy is not None:
+        await mlx_proxy.close()
     await advertiser.stop()
     await trace_store.close()
     await latency_store.close()

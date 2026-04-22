@@ -95,6 +95,8 @@ class HealthEngine:
         recommendations.extend(self._check_image_generation(nodes))
         recommendations.extend(self._check_transcription(nodes))
         recommendations.extend(self._check_connection_failures(nodes))
+        recommendations.extend(self._check_mlx_backend(nodes))
+        recommendations.extend(self._check_mapped_models_hot(nodes))
 
         # Trace-based checks (async, queries SQLite)
         if trace_store:
@@ -950,6 +952,160 @@ class HealthEngine:
                         "total_failures": total,
                     },
                 ))
+        return recs
+
+    # ------------------------------------------------------------------
+    # MLX backend checks (Phase 5 of docs/plans/mlx-backend-for-large-models.md)
+    # ------------------------------------------------------------------
+
+    def _check_mlx_backend(self, nodes) -> list[Recommendation]:
+        """Check that nodes advertising MLX models have the backend reachable.
+
+        An `mlx:`-prefixed model in a node's ``models_available`` means the
+        node ran an MLX poll at heartbeat time and got a response — so the
+        MLX backend is alive on that node.  Absence of any `mlx:` prefix
+        across all nodes, when the server-side ``mlx_proxy`` is configured,
+        means the wiring is broken somewhere.
+        """
+        recs: list[Recommendation] = []
+        for node in nodes:
+            if node.status.value != "online":
+                continue
+            ollama = getattr(node, "ollama", None)
+            if ollama is None:
+                continue
+            mlx_models = [
+                m for m in (ollama.models_available or [])
+                if isinstance(m, str) and m.startswith("mlx:")
+            ]
+            if mlx_models:
+                # MLX active and advertising — INFO only, for dashboard display
+                recs.append(Recommendation(
+                    check_id="mlx_backend_active",
+                    severity=Severity.INFO,
+                    title="MLX backend active",
+                    description=(
+                        f"Node {node.node_id} is advertising "
+                        f"{len(mlx_models)} model(s) via the MLX backend."
+                    ),
+                    fix=(
+                        "No action needed. To add more MLX models: "
+                        "`herd mlx pull <model-id>` then restart the node."
+                    ),
+                    node_id=node.node_id,
+                    data={
+                        "mlx_models": mlx_models,
+                        "count": len(mlx_models),
+                    },
+                ))
+        return recs
+
+    def _check_mapped_models_hot(self, nodes) -> list[Recommendation]:
+        """Detect Anthropic-map targets that aren't loaded on any node.
+
+        When ``FLEET_ANTHROPIC_MODEL_MAP`` points at a model that no node has
+        hot (or even available on disk), the next Claude Code request pays a
+        cold-load penalty — or worse, falls back to a different model and
+        silently degrades tool use.  Ties into the broader hot-fleet-health
+        plan in ``docs/plans/hot-fleet-health-checks.md``.
+
+        For MLX-routed models (``mlx:`` prefix) we check the node's
+        ``models_available`` — the node only advertises them when the MLX
+        backend is actually reachable.  For Ollama models we match against
+        both ``models_loaded`` (ideal — hot) and ``models_available``
+        (good enough — on disk).
+        """
+        import os
+
+        # Read the map from env (we don't have direct access to settings here,
+        # but all the mapped values that matter to this check are the values)
+        raw_map = os.environ.get("FLEET_ANTHROPIC_MODEL_MAP", "")
+        if not raw_map:
+            return []
+        try:
+            import json as _json
+
+            model_map = _json.loads(raw_map)
+        except (_json.JSONDecodeError, ValueError, TypeError):
+            return []
+        if not isinstance(model_map, dict):
+            return []
+
+        mapped_targets = {
+            v for v in model_map.values()
+            if isinstance(v, str) and v
+        }
+        if not mapped_targets:
+            return []
+
+        # Collect all model names across the online fleet
+        all_available: set[str] = set()
+        all_loaded: set[str] = set()
+        for node in nodes:
+            if node.status.value != "online":
+                continue
+            ollama = getattr(node, "ollama", None)
+            if ollama is None:
+                continue
+            for m in ollama.models_available or []:
+                if isinstance(m, str):
+                    all_available.add(m)
+            for m in ollama.models_loaded or []:
+                name = getattr(m, "name", None)
+                if isinstance(name, str):
+                    all_loaded.add(name)
+
+        missing_entirely: list[str] = []
+        not_hot: list[str] = []
+        for target in mapped_targets:
+            if target not in all_available:
+                missing_entirely.append(target)
+            elif target.startswith("mlx:"):
+                # MLX models don't appear in models_loaded (that's Ollama's
+                # hot-list).  Presence in models_available means the MLX
+                # server is reachable — good enough.
+                continue
+            elif target not in all_loaded:
+                not_hot.append(target)
+
+        recs: list[Recommendation] = []
+        if missing_entirely:
+            recs.append(Recommendation(
+                check_id="mapped_model_missing",
+                severity=Severity.CRITICAL,
+                title="Mapped model not on any node",
+                description=(
+                    f"{len(missing_entirely)} model(s) in "
+                    f"FLEET_ANTHROPIC_MODEL_MAP aren't on any fleet node: "
+                    f"{', '.join(sorted(missing_entirely))}. Claude Code "
+                    f"requests mapped to them will fail with 404."
+                ),
+                fix=(
+                    "Pull the missing models — `ollama pull <name>` for "
+                    "Ollama models, or `herd mlx pull <name>` (then start "
+                    "mlx_lm.server) for MLX models. "
+                    "If the name is wrong, fix FLEET_ANTHROPIC_MODEL_MAP."
+                ),
+                data={"missing": sorted(missing_entirely)},
+            ))
+        if not_hot:
+            recs.append(Recommendation(
+                check_id="mapped_model_cold",
+                severity=Severity.WARNING,
+                title="Mapped model not currently hot",
+                description=(
+                    f"{len(not_hot)} mapped model(s) are available on disk "
+                    f"but not currently loaded: {', '.join(sorted(not_hot))}. "
+                    f"Next Claude Code request pays cold-load penalty (~30s) "
+                    f"and may trigger VRAM fallback."
+                ),
+                fix=(
+                    "Pre-warm with: ollama run <name> 'hi' (or a curl POST to "
+                    "/api/generate with keep_alive=-1). Or accept the "
+                    "first-request cold-load cost."
+                ),
+                data={"not_hot": sorted(not_hot)},
+            ))
         return recs
 
     # ------------------------------------------------------------------

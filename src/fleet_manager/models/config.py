@@ -101,6 +101,31 @@ class ServerSettings(BaseSettings):
     anthropic_require_key: bool = False
     anthropic_api_key: str = ""
     anthropic_default_max_tokens: int = 4096
+    # When the incoming /v1/messages request contains image content blocks, route
+    # to this vision-capable model regardless of what the Claude tier would map to.
+    # Empty string disables the override — images pass through to the mapped model,
+    # which may or may not be vision-capable (qwen3-coder is not; gemma3:27b is).
+    # Typical values: "gemma3:27b", "llava:13b".
+    anthropic_vision_model: str = ""
+
+    # MLX backend — opt-in alternative serving path for large models that can't
+    # coexist with Ollama's hardcoded 3-model concurrent-load cap on macOS.  Each
+    # `mlx_lm.server` is an independent process with its own memory budget, so
+    # running it alongside Ollama lets us keep 4+ models hot simultaneously on a
+    # 512GB Mac Studio.  See `docs/plans/mlx-backend-for-large-models.md`.
+    #
+    # Model names prefixed with `mlx:` route to this backend instead of Ollama.
+    # Example: FLEET_ANTHROPIC_MODEL_MAP='{"claude-opus-4-7":"mlx:Qwen3-Coder-480B-A35B-4bit", ...}'
+    mlx_enabled: bool = False
+    mlx_url: str = "http://localhost:11440"
+    # When auto-start is on, herd-node will spawn `mlx_lm.server` as a subprocess.
+    # Requires `mlx-lm` installed and a valid `mlx_auto_start_model` path.
+    mlx_auto_start: bool = False
+    mlx_auto_start_model: str = ""  # path or HF repo id for --model
+    # KV cache quantization (matches Ollama's OLLAMA_KV_CACHE_TYPE=q8_0).  Requires
+    # upstream PR #1073 merged or our local patch applied to mlx_lm.server.  Set
+    # to 0 to skip the flag (f16 KV, works on stock mlx_lm).
+    mlx_kv_bits: int = 0  # 0 disables; 4 or 8 for quantized KV (needs patched server)
 
     model_config = {"env_prefix": "FLEET_"}
 
@@ -128,5 +153,32 @@ class NodeSettings(BaseSettings):
     # Telemetry opt-ins (require platform connection to take effect)
     telemetry_local_summary: bool = False
     telemetry_include_tags: bool = False
+
+    # MLX backend — when enabled, the node agent polls mlx_lm.server and merges
+    # its models into the heartbeat alongside Ollama's.  Each MLX model shows
+    # up in the fleet with an `mlx:` prefix so routers / Anthropic routes can
+    # direct requests to it.  See `docs/plans/mlx-backend-for-large-models.md`.
+    mlx_enabled: bool = False
+    mlx_url: str = "http://localhost:11440"
+    # Subprocess lifecycle (Phase 3): when auto_start is true, the node agent
+    # launches `mlx_lm.server` with the configured model + KV bits, monitors
+    # its health, and restarts it on crash.
+    mlx_auto_start: bool = False
+    mlx_auto_start_model: str = ""  # local path or HF repo id for --model
+    mlx_kv_bits: int = 0  # 0 disables; 4 or 8 for quantized KV (needs patched server)
+    mlx_prompt_cache_size: int = 4
+    mlx_prompt_cache_bytes: int = 17179869184  # 16 GiB
+
+    # Ollama watchdog — detects stuck runners and auto-kicks them.  Observed
+    # on Ollama 0.20.4 / macOS under concurrent stream=False + large body
+    # requests: /api/chat stops responding while /api/tags still works.
+    # The fix is pkill -9 on the runner subprocesses; ollama serve respawns
+    # them within 2-3s.  Defaults are tuned to be slow to kick (avoids
+    # thrashing on legitimate long-running requests).
+    ollama_watchdog_enabled: bool = True
+    ollama_watchdog_interval: float = 60.0
+    ollama_watchdog_probe_timeout: float = 15.0
+    ollama_watchdog_consecutive_failures_before_kick: int = 2
+    ollama_watchdog_cooldown: float = 120.0
 
     model_config = {"env_prefix": "FLEET_NODE_"}

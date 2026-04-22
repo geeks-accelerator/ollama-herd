@@ -54,6 +54,48 @@ export FLEET_ANTHROPIC_MODEL_MAP='{
 
 You can also pass a real Ollama model name (e.g. `"model": "qwen3-coder:30b"`) and ollama-herd will pass it through unchanged.
 
+### Running more than 3 models with MLX backend
+
+Ollama on macOS caps concurrent hot models at 3 ([docs/issues.md](../issues.md)).
+To keep a 4th model (typically an opus-tier giant like `qwen3-coder:480b`) hot,
+route it through the MLX backend — an independent `mlx_lm.server` process
+that has its own memory budget, separate from Ollama's.
+
+Setup on the node (single-command everything-auto-starts path):
+
+```bash
+# 1. Install mlx-lm
+uv tool install mlx-lm  # or: pip install mlx-lm
+
+# 2. Pull an MLX-quantized model (helper command)
+herd mlx pull mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
+
+# 3. Tell herd-node to auto-start and supervise mlx_lm.server
+export FLEET_NODE_MLX_ENABLED=true
+export FLEET_NODE_MLX_AUTO_START=true
+export FLEET_NODE_MLX_AUTO_START_MODEL=mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
+export FLEET_NODE_MLX_KV_BITS=8  # optional — requires patched mlx_lm.server
+
+# 4. Tell the router it can forward to MLX
+export FLEET_MLX_ENABLED=true
+export FLEET_MLX_URL=http://localhost:11440
+
+# 5. Map opus to the MLX model (note the mlx: prefix)
+export FLEET_ANTHROPIC_MODEL_MAP='{"default":"qwen3-coder:30b",
+  "claude-sonnet-4-5":"qwen3-coder:30b",
+  "claude-opus-4-7":"mlx:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"}'
+```
+
+Restart `herd` and `herd-node`. The router now routes opus-tier requests to
+`mlx_lm.server` and sonnet/haiku to Ollama. Response headers expose which
+backend served each request: `X-Fleet-Node: mlx-local` + `X-Fleet-Backend: mlx`
+for MLX, `X-Fleet-Node: <your-node>` for Ollama.
+
+See [`docs/plans/mlx-backend-for-large-models.md`](../plans/mlx-backend-for-large-models.md)
+for the architecture, and [`docs/experiments/mlx-lm-q8kv-benchmark.md`](../experiments/mlx-lm-q8kv-benchmark.md)
+for the benchmark showing MLX + `--kv-bits 8` ties Ollama's tuned llama.cpp
+(320ms vs 306ms median TTFT on a 25-turn Claude Code workload).
+
 ### Recommended models for Claude Code
 
 Claude Code is heavily agentic — it uses tools constantly (Read, Edit, Bash, Grep, Glob, etc.). Model quality for *tool use* matters more than raw chat quality.
@@ -147,6 +189,7 @@ Then Claude Code clients must set `ANTHROPIC_AUTH_TOKEN=sk-local-something-long`
 These are honest tradeoffs, not bugs:
 
 - **Tool quality varies by model.** `qwen3-coder:30b` and `qwen3:32b` handle Claude Code's agentic loops well; smaller / non-coding-tuned models drop tool calls or hallucinate args. Prefer the recommended list above.
+- **Ollama caps at 3 concurrently-loaded models on macOS.** Unconfigurable via env vars as of Ollama 0.20.4 — see `docs/issues.md`. If `FLEET_ANTHROPIC_MODEL_MAP` references >3 distinct models, some will be evicted and Claude Code requests will silently fall back to whatever model *is* hot. Symptom: Claude Code's tool calls start coming back as plain-text JSON instead of `tool_use` blocks. Detection: check the `X-Fleet-Fallback` response header (present means fallback fired) or `SELECT original_model, model FROM request_traces WHERE original_model != model` in `~/.fleet-manager/latency.db`.
 - **No extended thinking.** Anthropic `thinking` content blocks are returned as plain text. Reasoning models (qwen3 thinking variants) emit reasoning into `content` rather than a separate block. Claude Code still works — it just can't show you the thinking pane.
 - **No prompt caching.** Every request is a full re-encode. Long Claude Code sessions are slower than against real Claude. Workaround: run a model with a large warm KV cache (`OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=-1`).
 - **Token counts are estimates.** `usage.input_tokens` / `output_tokens` come from tiktoken (`cl100k`) and Ollama's `eval_count` respectively. Use them for budgeting, not billing.
@@ -171,6 +214,21 @@ The model id Claude Code is sending isn't in your map and the local model name d
 
 **Tool calls never come back.**
 Almost always a model issue. Switch to `qwen3-coder:30b` or `qwen3:32b`. Check the herd log for `Anthropic request: ... tools=N` to confirm tools were forwarded.
+
+**Claude Code was working, then suddenly returns text instead of tool calls.**
+Likely cause: your mapped model got evicted from VRAM by Ollama's 3-model cap, and requests are falling back to a weaker model (e.g. `gemma3:4b`) that can't emit the `tool_calls` format. Verify with:
+```bash
+curl -sI -X POST http://localhost:11435/v1/messages \
+  -H "Content-Type: application/json" -H "anthropic-version: 2023-06-01" \
+  -d '{"model":"claude-sonnet-4-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}' \
+  | grep -i x-fleet-fallback
+```
+If `x-fleet-fallback` is present, the mapped model isn't hot. Pre-warm it:
+```bash
+curl http://localhost:11434/api/generate \
+  -d '{"model":"qwen3-coder:30b","prompt":"hi","keep_alive":-1,"stream":false}'
+```
+Also check `ollama ps` to see what's currently hot. If you consistently need >3 models hot, see `docs/issues.md` for workarounds.
 
 **`auth required` errors from Claude Code.**
 You enabled `FLEET_ANTHROPIC_REQUIRE_KEY=true` but Claude Code's `ANTHROPIC_AUTH_TOKEN` doesn't match. Either disable the gate or set the env var to the matching key.

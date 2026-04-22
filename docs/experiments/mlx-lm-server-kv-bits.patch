@@ -1,0 +1,81 @@
+# mlx-lm server patch: expose --kv-bits / --kv-group-size / --quantized-kv-start
+#
+# Context: mlx_lm.generate (CLI) supports these flags for KV cache quantization,
+# matching Ollama's OLLAMA_KV_CACHE_TYPE=q8_0 tuning.  But mlx_lm.server didn't
+# expose them.  This patch forwards them through to the stream_generate call,
+# with two necessary safeguards pulled from upstream PRs #934 and #1073:
+#
+#   1. choices=[4, 8] constraint on --kv-bits — MLX only supports 4-bit and
+#      8-bit quantization; without this, --kv-bits 3 silently fails at runtime.
+#      (source: ml-explore/mlx-lm PR #934)
+#
+#   2. _is_batchable returns False when kv_bits is set — BatchQuantizedKVCache
+#      doesn't exist yet, so continuous batching must be disabled when the user
+#      has asked for a quantized KV cache.  Without this, running with
+#      --decode-concurrency > 1 + --kv-bits will crash.
+#      (source: ml-explore/mlx-lm PR #1073)
+#
+# Verified 2026-04-22 on mlx_lm 0.31.3: with --kv-bits 8, MLX matches Ollama
+# (llama.cpp + FA + Q8 KV) performance on qwen3-coder:30b — 320ms vs 306ms
+# median TTFT on a 25-turn Claude Code-style benchmark.
+#
+# Target file: mlx_lm/server.py  (tested against mlx_lm 0.31.3)
+# Upstream status: duplicate-equivalent of PR #1073 (open) and PR #934 (open,
+# contributor-approved).  Local patch is a stop-gap until either merges.
+
+--- a/mlx_lm/server.py
++++ b/mlx_lm/server.py
+@@ -685,6 +685,10 @@
+     def _is_batchable(self, args):
++        # ollama-herd patch: BatchQuantizedKVCache doesn't exist yet, so continuous
++        # batching must be disabled when the user has asked for a quantized KV cache.
++        if getattr(self.cli_args, "kv_bits", None) is not None:
++            return False
+         return self.model_provider.is_batchable and args.seed is None
+
+@@ -975,6 +979,13 @@
+             # Process the prompt and generate tokens
++            # ollama-herd patch: forward KV cache quantization flags
++            kv_kwargs = {}
++            if getattr(self.cli_args, "kv_bits", None) is not None:
++                kv_kwargs["kv_bits"] = self.cli_args.kv_bits
++                kv_kwargs["kv_group_size"] = self.cli_args.kv_group_size
++                kv_kwargs["quantized_kv_start"] = self.cli_args.quantized_kv_start
+             for gen in stream_generate(
+                 model=model,
+                 tokenizer=tokenizer,
+@@ -988,6 +999,7 @@
+                 num_draft_tokens=args.num_draft_tokens,
+                 prompt_progress_callback=progress,
+                 prefill_step_size=self.cli_args.prefill_step_size,
++                **kv_kwargs,
+             ):
+
+@@ -1882,6 +1894,27 @@
+     parser.add_argument(
+         "--pipeline",
+         action="store_true",
+         help="Use pipelining instead of tensor parallelism",
+     )
++    # --- ollama-herd patch: expose KV cache quantization (matches Ollama's OLLAMA_KV_CACHE_TYPE) ---
++    parser.add_argument(
++        "--kv-bits",
++        type=int,
++        default=None,
++        choices=[4, 8],
++        help="Quantize KV cache to N bits (4 or 8). 8 matches OLLAMA_KV_CACHE_TYPE=q8_0. Default: no quantization (f16).",
++    )
++    parser.add_argument(
++        "--kv-group-size",
++        type=int,
++        default=64,
++        help="Group size for KV cache quantization (default: 64).",
++    )
++    parser.add_argument(
++        "--quantized-kv-start",
++        type=int,
++        default=0,
++        help="Start KV quantization after N tokens (default: 0 = from start).",
++    )
++    # --- end patch ---
+     args = parser.parse_args()
