@@ -105,6 +105,7 @@ Key docs (Claude reads on demand — NOT loaded every turn):
 - `docs/adaptive-capacity.md` — capacity learner, meeting detection, app fingerprinting
 - `docs/troubleshooting.md` — common issues, LAN debugging, operational gotchas
 - `docs/openclaw-integration.md` — OpenClaw agent setup guide
+- `docs/guides/claude-code-integration.md` — point Claude Code CLI at the herd via `ANTHROPIC_BASE_URL` (native `/v1/messages` endpoint, full tool use)
 - `docs/issues.md` — known issues (mark `FIXED` when resolved, never delete)
 - `docs/observations.md` — operational insights (append new learnings, never delete)
 - `docs/plans/` — implementation plans for major features

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 class RequestFormat(StrEnum):
     OPENAI = "openai"
     OLLAMA = "ollama"
+    ANTHROPIC = "anthropic"
 
 
 class RequestStatus(StrEnum):

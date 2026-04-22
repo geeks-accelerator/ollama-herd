@@ -86,6 +86,22 @@ class ServerSettings(BaseSettings):
     # Retry
     max_retries: int = 2
 
+    # Anthropic Messages API compat (for Claude Code etc.)
+    # JSON map of claude-* model id → local Ollama model.
+    # Always include a "default" key to catch unknown claude-* requests.
+    anthropic_model_map: dict[str, str] = {
+        "default": "qwen3-coder:30b",
+        "claude-opus-4-7": "qwen3:32b",
+        "claude-sonnet-4-6": "qwen3-coder:30b",
+        "claude-sonnet-4-5": "qwen3-coder:30b",
+        "claude-haiku-4-5": "qwen3:14b",
+    }
+    # Optional shared secret for /v1/messages. When require_key is true and the
+    # client's x-api-key header doesn't match anthropic_api_key, return 401.
+    anthropic_require_key: bool = False
+    anthropic_api_key: str = ""
+    anthropic_default_max_tokens: int = 4096
+
     model_config = {"env_prefix": "FLEET_"}
 
 

@@ -449,6 +449,111 @@ The `backend` field indicates which system handles the model: `mflux` (mflux/Dif
 
 ---
 
+## Anthropic-Compatible Endpoints
+
+Native Anthropic Messages API surface for Claude Code and other anthropic-SDK clients. See [docs/guides/claude-code-integration.md](guides/claude-code-integration.md) for the full setup walkthrough.
+
+### `POST /v1/messages`
+
+Anthropic Messages endpoint — streaming + non-streaming, full tool use, system prompts, stop sequences.
+
+**Request body:**
+
+```json
+{
+  "model": "claude-sonnet-4-5",
+  "max_tokens": 4096,
+  "messages": [
+    {"role": "user", "content": "What's the weather in Paris?"}
+  ],
+  "system": "You are a helpful assistant.",
+  "tools": [{
+    "name": "get_weather",
+    "description": "Get current weather for a city",
+    "input_schema": {
+      "type": "object",
+      "properties": {"city": {"type": "string"}},
+      "required": ["city"]
+    }
+  }],
+  "tool_choice": {"type": "auto"},
+  "stream": false,
+  "temperature": 0.7,
+  "stop_sequences": ["\n\nHuman:"],
+  "metadata": {"user_id": "alice"}
+}
+```
+
+**Headers (recommended):**
+
+- `x-api-key: <key>` — required when `FLEET_ANTHROPIC_REQUIRE_KEY=true`
+- `anthropic-version: 2023-06-01` — reflected back in response headers
+
+**Model mapping:** `claude-*` model ids are mapped to local Ollama models via `FLEET_ANTHROPIC_MODEL_MAP`. Real Ollama model names (e.g. `qwen3-coder:30b`) pass through unchanged. See [configuration-reference.md](configuration-reference.md).
+
+**Non-streaming response:**
+
+```json
+{
+  "id": "msg_abc123...",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-4-5",
+  "content": [
+    {"type": "text", "text": "I'll check that for you."},
+    {"type": "tool_use", "id": "toolu_xyz...", "name": "get_weather", "input": {"city": "Paris"}}
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 25, "output_tokens": 18}
+}
+```
+
+**Stop reasons:** `end_turn`, `max_tokens`, `stop_sequence`, `tool_use`.
+
+**Streaming SSE events:** `message_start` → `content_block_start/delta/stop` (one set per text or tool_use block) → `message_delta` → `message_stop`. Tool calls open a new `content_block_start` of type `tool_use` mid-stream and emit args via `input_json_delta`.
+
+**Tool result round-trip:** Send a follow-up request with the assistant's `tool_use` block in `messages` and a `user` message containing a `tool_result` block referencing the same `tool_use_id`:
+
+```json
+{
+  "role": "user",
+  "content": [{"type": "tool_result", "tool_use_id": "toolu_xyz...", "content": "18C, sunny"}]
+}
+```
+
+### `POST /v1/messages/count_tokens`
+
+Token estimate for a Messages payload — used by Claude Code for budget gating before each turn. Best-effort: tiktoken `cl100k` if installed, otherwise `len(text)/4`. Not for billing.
+
+**Request body:** same shape as `/v1/messages`.
+
+**Response:**
+
+```json
+{"input_tokens": 142}
+```
+
+### `GET /v1/messages`
+
+Friendly probe endpoint — Claude Code may GET this during connection setup.
+
+**Response:**
+
+```json
+{"ok": true, "service": "ollama-herd", "endpoint": "/v1/messages", "ts": 1776857000}
+```
+
+### Response headers (all `/v1/messages` calls)
+
+- `X-Fleet-Node` — node id that served the request
+- `X-Fleet-Score` — routing score (higher = better fit)
+- `X-Fleet-Fallback` — present when a fallback model was used
+- `X-Fleet-Retries` — present when the request was retried
+- `anthropic-version` — echoed from the request
+
+---
+
 ## Fleet Management
 
 ### `GET /fleet/status`

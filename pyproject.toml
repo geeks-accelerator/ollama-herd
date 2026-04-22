@@ -40,6 +40,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "cryptography>=42.0.0",
     "websockets>=13.0",
+    "tiktoken>=0.7.0",
 ]
 
 [project.urls]

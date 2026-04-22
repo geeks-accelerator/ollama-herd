@@ -109,6 +109,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
 
     # Register routes
     from fleet_manager.server.routes import (
+        anthropic_compat,
         dashboard,
         embedding_compat,
         fleet,
@@ -123,6 +124,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     app.include_router(heartbeat.router)
     app.include_router(openai_compat.router)
     app.include_router(ollama_compat.router)
+    app.include_router(anthropic_compat.router)
     app.include_router(image_compat.router)
     app.include_router(transcription_compat.router)
     app.include_router(embedding_compat.router)

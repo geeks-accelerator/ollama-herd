@@ -1031,9 +1031,16 @@ class StreamingProxy:
 
     def _build_ollama_body(self, request: InferenceRequest, node_id: str) -> dict:
         """Convert normalized request to Ollama API format."""
-        if request.original_format == RequestFormat.OLLAMA and request.raw_body:
+        # ANTHROPIC requests are pre-translated by routes/anthropic_compat into a
+        # ready-to-send Ollama body (messages, tools, options) stored in raw_body.
+        # Treat them the same as OLLAMA for body construction.
+        if (
+            request.original_format in (RequestFormat.OLLAMA, RequestFormat.ANTHROPIC)
+            and request.raw_body
+        ):
             body = dict(request.raw_body)
             body["stream"] = True
+            body["model"] = request.model
             # Strip tagging fields that Ollama doesn't understand
             body.pop("metadata", None)
             body.pop("fallback_models", None)

@@ -160,6 +160,17 @@ Only applies when the client explicitly sets `num_predict` / `max_tokens`. If om
 |----------|---------|-------------|
 | `FLEET_DATA_DIR` | `~/.fleet-manager` | Directory for SQLite databases and logs |
 
+### Anthropic Messages API Compat (Claude Code)
+
+See [docs/guides/claude-code-integration.md](guides/claude-code-integration.md) for the full setup walkthrough.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_ANTHROPIC_MODEL_MAP` | `{"default":"qwen3-coder:30b","claude-opus-4-7":"qwen3:32b","claude-sonnet-4-6":"qwen3-coder:30b","claude-sonnet-4-5":"qwen3-coder:30b","claude-haiku-4-5":"qwen3:14b"}` | JSON map of `claude-*` model id → local Ollama model. Always include a `"default"` key. Real Ollama model names pass through unchanged. |
+| `FLEET_ANTHROPIC_REQUIRE_KEY` | `false` | If true, validate the `x-api-key` header against `FLEET_ANTHROPIC_API_KEY`. Default off — local trust boundary like the rest of the router. |
+| `FLEET_ANTHROPIC_API_KEY` | `""` | Shared secret for `/v1/messages` when `require_key` is true. Set the matching value as `ANTHROPIC_AUTH_TOKEN` in Claude Code. |
+| `FLEET_ANTHROPIC_DEFAULT_MAX_TOKENS` | `4096` | Used when the client omits `max_tokens` from the request. |
+
 ---
 
 ## Node Settings (`FLEET_NODE_` prefix)
