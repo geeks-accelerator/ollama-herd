@@ -39,6 +39,7 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "python-multipart>=0.0.9",
     "cryptography>=42.0.0",
+    "websockets>=13.0",
 ]
 
 [project.urls]
