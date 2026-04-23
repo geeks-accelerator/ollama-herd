@@ -26,6 +26,7 @@ alongside Ollama traffic.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -125,21 +126,74 @@ class MlxModelMissingError(ValueError):
     """
 
 
+class MlxQueueFullError(Exception):
+    """Raised when the MLX admission queue is saturated.
+
+    mlx_lm.server is single-threaded per process.  Without admission control,
+    a Claude Code retry storm stacks requests inside mlx's HTTP queue faster
+    than it can drain them, and the whole backend wedges — requests sit in
+    that queue for tens of seconds or time out entirely.
+
+    Instead, the proxy bounds the queue at ``max_queue_depth`` pending +
+    1 in-flight.  Overflow raises this exception, which the route handler
+    translates to an HTTP 503 with a ``Retry-After`` header.  Clients (and
+    Claude Code in particular) respect that signal and back off rather than
+    piling on more retries.
+
+    Attributes:
+        model_key: Which MLX model rejected the request (for logs + metrics)
+        queued:    Current pending count at rejection time
+        in_flight: Current in-flight count at rejection time (usually 1)
+        retry_after: Suggested retry delay in seconds
+    """
+
+    def __init__(
+        self,
+        model_key: str,
+        queued: int,
+        in_flight: int,
+        retry_after: int,
+    ):
+        self.model_key = model_key
+        self.queued = queued
+        self.in_flight = in_flight
+        self.retry_after = retry_after
+        super().__init__(
+            f"MLX backend busy for model {model_key!r}: "
+            f"{queued} queued + {in_flight} in-flight "
+            f"(cap reached). Retry in {retry_after}s."
+        )
+
+
 class MlxProxy:
     """Minimal OpenAI-compat → Anthropic SSE bridge for a single mlx_lm.server."""
 
-    def __init__(self, base_url: str, trace_store=None):
+    def __init__(
+        self,
+        base_url: str,
+        trace_store=None,
+        *,
+        max_queue_depth: int = 3,
+        retry_after_seconds: int = 10,
+    ):
         self._base_url = base_url.rstrip("/")
         self._trace_store = trace_store
         self._client: httpx.AsyncClient | None = None
-        # In-flight counter — mlx_lm.server is single-threaded per process, so
-        # this also tells you how many requests are *queued* behind the active
-        # one (count - 1). Surfaced in /fleet/queue + dashboard so users can
-        # see when MLX is busy. Per-model so we can show separate chips when
-        # multiple MLX models eventually run side-by-side.
+        # Admission control config (see MlxQueueFullError docstring).
+        self.max_queue_depth = max_queue_depth
+        self.retry_after_seconds = retry_after_seconds
+        # Per-model asyncio.Semaphore(1) enforces mlx_lm.server's real
+        # concurrency limit at the herd boundary.  Lazily created so we
+        # don't depend on an event loop existing at __init__ time (tests).
+        self._semaphores: dict[str, asyncio.Semaphore] = {}
+        # Accurate counters for dashboard / /fleet/queue.  _queued counts
+        # coroutines waiting on the semaphore; _inflight counts those past
+        # it (i.e. actively executing against mlx_lm.server).
+        self._queued: dict[str, int] = {}
         self._inflight: dict[str, int] = {}
         self._completed: dict[str, int] = {}
         self._failed: dict[str, int] = {}
+        self._rejected: dict[str, int] = {}  # queue-full 503s per model
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -181,8 +235,66 @@ class MlxProxy:
     ) -> tuple[int | None, int | None]:
         return _mlx_request_tokens.pop(request_id, (None, None))
 
+    def _get_semaphore(self, model_key: str) -> asyncio.Semaphore:
+        """Return (creating if needed) the per-model admission semaphore."""
+        sem = self._semaphores.get(model_key)
+        if sem is None:
+            sem = asyncio.Semaphore(1)
+            self._semaphores[model_key] = sem
+        return sem
+
+    async def _acquire_slot(self, model_key: str) -> None:
+        """Admission control — wait for mlx_lm.server slot or reject.
+
+        Enforces the design's core invariant: at most 1 request is
+        executing against mlx_lm.server at a time, with at most
+        ``max_queue_depth`` additional requests waiting their turn.
+        Raises :class:`MlxQueueFullError` immediately if the queue would
+        exceed the cap, so clients get a fast 503 instead of an indefinite
+        queue wait that just multiplies the problem.
+
+        Counter semantics:
+            _queued[m]   — coroutines waiting on the semaphore
+            _inflight[m] — coroutines that have acquired and are running
+
+        Transition happens inside this method: we increment _queued, wait
+        for the semaphore, then move the count to _inflight.
+        """
+        current_queued = self._queued.get(model_key, 0)
+        current_inflight = self._inflight.get(model_key, 0)
+        # Hard cap: reject anything that would exceed max_queue_depth pending.
+        # ``+1`` accounts for this request being the one that would overflow.
+        if current_queued + 1 > self.max_queue_depth:
+            self._rejected[model_key] = self._rejected.get(model_key, 0) + 1
+            raise MlxQueueFullError(
+                model_key=model_key,
+                queued=current_queued,
+                in_flight=current_inflight,
+                retry_after=self.retry_after_seconds,
+            )
+        # Claim the queue slot atomically (single-threaded asyncio — no race)
+        self._queued[model_key] = current_queued + 1
+        sem = self._get_semaphore(model_key)
+        try:
+            await sem.acquire()
+        except BaseException:
+            # Cancellation / shutdown — release the queue slot so counters
+            # stay honest even if we never actually run.
+            self._queued[model_key] = max(0, self._queued.get(model_key, 1) - 1)
+            raise
+        # Move from queued → in-flight
+        self._queued[model_key] = max(0, self._queued.get(model_key, 1) - 1)
+        self._inflight[model_key] = self._inflight.get(model_key, 0) + 1
+
+    def _release_slot(self, model_key: str) -> None:
+        """Release the slot after request completion (or failure)."""
+        self._inflight[model_key] = max(0, self._inflight.get(model_key, 1) - 1)
+        sem = self._semaphores.get(model_key)
+        if sem is not None:
+            sem.release()
+
     async def stream_openai(
-        self, request: InferenceRequest
+        self, request: InferenceRequest, *, already_admitted: bool = False,
     ) -> AsyncIterator[bytes]:
         """Forward request to mlx_lm.server's /v1/chat/completions, streaming.
 
@@ -190,11 +302,24 @@ class MlxProxy:
         Anthropic translator).  We convert it to OpenAI chat.completions
         format for MLX.  Yields raw SSE chunks from mlx_lm.server — the
         caller is responsible for translating them to Anthropic SSE.
+
+        Args:
+            request: inference request
+            already_admitted: when True, the caller has already acquired a
+                slot via :meth:`_acquire_slot` and is responsible for calling
+                :meth:`_release_slot` after iteration completes.  Used by the
+                streaming route so admission failures surface as a proper
+                HTTP 503 *before* StreamingResponse locks in the 200 status.
         """
         client = await self._get_client()
         mlx_body = self._to_openai_body(request)
         model_key = strip_mlx_prefix(request.model)
-        self._inflight[model_key] = self._inflight.get(model_key, 0) + 1
+        # Admission control — skipped when the caller pre-admitted (streaming
+        # route).  May raise MlxQueueFullError, which the route translates
+        # to HTTP 503 + Retry-After.  Otherwise this blocks until a slot
+        # opens (previous request finishes).
+        if not already_admitted:
+            await self._acquire_slot(model_key)
         try:
             async with client.stream(
                 "POST", "/v1/chat/completions", json=mlx_body
@@ -215,7 +340,10 @@ class MlxProxy:
             self._failed[model_key] = self._failed.get(model_key, 0) + 1
             raise
         finally:
-            self._inflight[model_key] = max(0, self._inflight.get(model_key, 1) - 1)
+            # Only release if we acquired here; the streaming-route case
+            # releases on its own after the StreamingResponse completes.
+            if not already_admitted:
+                self._release_slot(model_key)
 
     async def completions_non_streaming(
         self, request: InferenceRequest
@@ -229,7 +357,8 @@ class MlxProxy:
         mlx_body = self._to_openai_body(request)
         mlx_body["stream"] = False
         model_key = strip_mlx_prefix(request.model)
-        self._inflight[model_key] = self._inflight.get(model_key, 0) + 1
+        # Same admission control as streaming path — see _acquire_slot.
+        await self._acquire_slot(model_key)
         try:
             resp = await client.post("/v1/chat/completions", json=mlx_body)
             resp.raise_for_status()
@@ -239,30 +368,38 @@ class MlxProxy:
             self._failed[model_key] = self._failed.get(model_key, 0) + 1
             raise
         finally:
-            self._inflight[model_key] = max(0, self._inflight.get(model_key, 1) - 1)
+            self._release_slot(model_key)
 
     def get_queue_info(self) -> dict[str, dict]:
         """Return a queue-shaped dict so MLX shows up alongside Ollama queues.
 
-        mlx_lm.server is single-threaded per process — concurrency=1, and
-        ``in_flight - 1`` requests are effectively pending behind the active
-        one. We synthesize that here so /fleet/queue + the dashboard can
-        render MLX traffic without a separate code path.
+        With admission control in place, the counters are now honest:
+        ``_queued`` = waiting on the semaphore, ``_inflight`` = executing
+        against mlx_lm.server.  Earlier version synthesized ``pending`` from
+        ``inflight - 1`` which only worked by accident.
         """
         out: dict[str, dict] = {}
-        # Models touched in any counter (so completed/failed history shows
-        # up even when nothing is in-flight right now).
-        all_models = set(self._inflight) | set(self._completed) | set(self._failed)
+        all_models = (
+            set(self._inflight)
+            | set(self._queued)
+            | set(self._completed)
+            | set(self._failed)
+            | set(self._rejected)
+        )
         for model_key in all_models:
-            inflight = self._inflight.get(model_key, 0)
             out[f"mlx-local:mlx:{model_key}"] = {
                 "node_id": "mlx-local",
                 "model": f"mlx:{model_key}",
-                "pending": max(0, inflight - 1),
-                "in_flight": min(inflight, 1),
+                "pending": self._queued.get(model_key, 0),
+                "in_flight": self._inflight.get(model_key, 0),
                 "concurrency": 1,
+                "max_queue_depth": self.max_queue_depth,
                 "completed": self._completed.get(model_key, 0),
                 "failed": self._failed.get(model_key, 0),
+                # Requests rejected with 503 due to admission control —
+                # distinct from `failed` (real errors) so operators can
+                # tell "backend is overloaded" from "backend is broken".
+                "rejected": self._rejected.get(model_key, 0),
                 "backend": "mlx",
             }
         return out

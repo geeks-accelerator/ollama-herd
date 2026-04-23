@@ -131,6 +131,13 @@ async def fleet_queue(request: Request):
                 "model": q["model"],
                 "node_id": q["node_id"],
                 "backend": q.get("backend", "ollama"),
+                # MLX-only fields: admission control exposure so clients +
+                # dashboard can distinguish "backend overloaded" from
+                # "request errored" and tune retry behavior accordingly.
+                "completed": q.get("completed", 0),
+                "failed": q.get("failed", 0),
+                "rejected": q.get("rejected", 0),
+                "max_queue_depth": q.get("max_queue_depth"),
             }
             for key, q in queue_info.items()
         },

@@ -542,3 +542,132 @@ def test_ollama_to_openai_drops_images_field():
     out = _ollama_messages_to_openai(msgs)
     assert "images" not in out[0]
     assert out[0]["content"] == "see this"
+
+
+# ---------------------------------------------------------------------------
+# Admission control — MlxQueueFullError + per-model semaphore
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_acquire_slot_first_request_goes_through():
+    """First request acquires immediately, counters reflect in-flight=1."""
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test", max_queue_depth=3)
+    await proxy._acquire_slot("model-a")
+    assert proxy._inflight["model-a"] == 1
+    assert proxy._queued.get("model-a", 0) == 0
+    proxy._release_slot("model-a")
+    assert proxy._inflight["model-a"] == 0
+
+
+@pytest.mark.asyncio
+async def test_acquire_slot_blocks_second_until_first_releases():
+    """Second concurrent request waits on the semaphore."""
+    import asyncio as aio
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test", max_queue_depth=3)
+
+    # First request: acquire and hold
+    await proxy._acquire_slot("model-a")
+
+    # Second request: start but don't await — should be in queue
+    task = aio.create_task(proxy._acquire_slot("model-a"))
+    await aio.sleep(0.05)  # let task run until it blocks
+    # Second is queued, not yet in-flight
+    assert proxy._queued["model-a"] == 1
+    assert proxy._inflight["model-a"] == 1
+    assert not task.done()
+
+    # Release first; task should complete
+    proxy._release_slot("model-a")
+    await aio.wait_for(task, timeout=1.0)
+    assert proxy._inflight["model-a"] == 1  # now the 2nd is in-flight
+    assert proxy._queued["model-a"] == 0
+    proxy._release_slot("model-a")
+
+
+@pytest.mark.asyncio
+async def test_queue_full_raises_when_exceeding_depth():
+    """Nth+1 concurrent request (1 in-flight + N queued) → MlxQueueFullError."""
+    import asyncio as aio
+    from fleet_manager.server.mlx_proxy import MlxProxy, MlxQueueFullError
+    proxy = MlxProxy("http://test", max_queue_depth=2, retry_after_seconds=5)
+
+    # 1 in-flight
+    await proxy._acquire_slot("model-a")
+    # 2 queued — both should block, not raise
+    t1 = aio.create_task(proxy._acquire_slot("model-a"))
+    t2 = aio.create_task(proxy._acquire_slot("model-a"))
+    await aio.sleep(0.05)
+    assert proxy._queued["model-a"] == 2
+    assert not t1.done()
+    assert not t2.done()
+
+    # 3rd queued attempt → overflow → raise
+    with pytest.raises(MlxQueueFullError) as exc_info:
+        await proxy._acquire_slot("model-a")
+    assert exc_info.value.queued == 2
+    assert exc_info.value.in_flight == 1
+    assert exc_info.value.retry_after == 5
+    assert exc_info.value.model_key == "model-a"
+    # rejected counter incremented
+    assert proxy._rejected["model-a"] == 1
+
+    # Cleanup: release the first, let the queued ones finish
+    proxy._release_slot("model-a")
+    await aio.wait_for(t1, timeout=1.0)
+    proxy._release_slot("model-a")
+    await aio.wait_for(t2, timeout=1.0)
+    proxy._release_slot("model-a")
+
+
+@pytest.mark.asyncio
+async def test_per_model_semaphores_are_independent():
+    """Two different MLX models can each have one in-flight simultaneously."""
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test", max_queue_depth=1)
+    await proxy._acquire_slot("model-a")
+    await proxy._acquire_slot("model-b")
+    assert proxy._inflight["model-a"] == 1
+    assert proxy._inflight["model-b"] == 1
+    proxy._release_slot("model-a")
+    proxy._release_slot("model-b")
+
+
+@pytest.mark.asyncio
+async def test_queue_full_does_not_affect_inflight_counter():
+    """A rejected request must not leak into the queued or inflight counts."""
+    from fleet_manager.server.mlx_proxy import MlxProxy, MlxQueueFullError
+    import asyncio as aio
+    proxy = MlxProxy("http://test", max_queue_depth=1)
+    await proxy._acquire_slot("model-a")
+    t1 = aio.create_task(proxy._acquire_slot("model-a"))
+    await aio.sleep(0.05)
+    assert proxy._queued["model-a"] == 1
+
+    with pytest.raises(MlxQueueFullError):
+        await proxy._acquire_slot("model-a")
+    # Queued count still 1 (the legitimate waiter), not 2 or 0
+    assert proxy._queued["model-a"] == 1
+    assert proxy._inflight["model-a"] == 1
+
+    # Cleanup
+    proxy._release_slot("model-a")
+    await aio.wait_for(t1, timeout=1.0)
+    proxy._release_slot("model-a")
+
+
+def test_get_queue_info_surfaces_rejected_count():
+    """The /fleet/queue endpoint must expose admission rejections."""
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test", max_queue_depth=1)
+    # Fake some state
+    proxy._rejected["model-a"] = 5
+    proxy._completed["model-a"] = 10
+    info = proxy.get_queue_info()
+    entry = info["mlx-local:mlx:model-a"]
+    assert entry["rejected"] == 5
+    assert entry["completed"] == 10
+    assert entry["backend"] == "mlx"
+    assert entry["max_queue_depth"] == 1

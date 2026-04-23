@@ -150,6 +150,17 @@ class ServerSettings(BaseSettings):
     # upstream PR #1073 merged or our local patch applied to mlx_lm.server.  Set
     # to 0 to skip the flag (f16 KV, works on stock mlx_lm).
     mlx_kv_bits: int = 0  # 0 disables; 4 or 8 for quantized KV (needs patched server)
+    # Queue admission control for the MLX backend.  mlx_lm.server is
+    # single-threaded per process — without a bound, Claude Code retry storms
+    # stack up inside mlx's HTTP queue and wedge the whole backend.  With
+    # this cap, the proxy accepts at most 1 in-flight + N queued requests;
+    # overflow returns HTTP 503 + Retry-After so clients back off cleanly.
+    # Tune per device: faster hardware drains the queue faster so can tolerate
+    # a larger depth without excessive worst-case wait.  On a 512GB M3 Ultra
+    # at ~20s/request, depth=3 means max wait ≈ 60s.
+    mlx_max_queue_depth: int = 3
+    # Seconds to advertise in the Retry-After header when shedding load.
+    mlx_retry_after_seconds: int = 10
 
     model_config = {"env_prefix": "FLEET_"}
 

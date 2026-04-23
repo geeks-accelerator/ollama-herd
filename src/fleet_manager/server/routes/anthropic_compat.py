@@ -41,6 +41,7 @@ from fleet_manager.server.anthropic_translator import (
 )
 from fleet_manager.server.mlx_proxy import (
     MlxModelMissingError,
+    MlxQueueFullError,
     build_anthropic_non_streaming_response,
     is_mlx_model,
     openai_sse_to_anthropic_events,
@@ -241,6 +242,32 @@ async def _serve_via_mlx(
         try:
             try:
                 openai_resp = await mlx_proxy.completions_non_streaming(inference_req)
+            except MlxQueueFullError as exc:
+                # Admission control tripped — mlx backend is at capacity.
+                # Return 503 + Retry-After so Claude Code (or any well-behaved
+                # client) backs off instead of piling on retries that would
+                # just wedge mlx's internal HTTP queue.
+                ns_error = exc
+                logger.warning(
+                    f"Anthropic[{rid}] MLX queue full: "
+                    f"{exc.queued} queued + {exc.in_flight} in-flight "
+                    f"(model={exc.model_key}) — returning 503"
+                )
+                record_trace_mlx(
+                    trace_store, inference_req, t_start, None, "failed",
+                    error_message=str(exc),
+                )
+                return JSONResponse(
+                    status_code=503,
+                    headers={"Retry-After": str(exc.retry_after)},
+                    content={
+                        "type": "error",
+                        "error": {
+                            "type": "overloaded_error",
+                            "message": str(exc),
+                        },
+                    },
+                )
             except MlxModelMissingError as exc:
                 # Defensive: model name went missing somewhere in the route.
                 # Surface as 500 with a clear operator-facing message instead
@@ -313,14 +340,76 @@ async def _serve_via_mlx(
                     retention_days=debug_retention,
                 )
 
-    # Streaming path — OpenAI SSE → Anthropic SSE translation
+    # Streaming path — OpenAI SSE → Anthropic SSE translation.
+    # Pre-admit BEFORE constructing the StreamingResponse.  Once FastAPI
+    # starts iterating the generator it commits to a 200 status; we need
+    # admission failures to surface as a clean 503 before then.
+    stream_model_key = strip_mlx_prefix(inference_req.model)
+    try:
+        await mlx_proxy._acquire_slot(stream_model_key)
+    except MlxModelMissingError as exc:
+        logger.error(f"Anthropic[{rid}] MLX model-missing (stream): {exc}")
+        record_trace_mlx(
+            trace_store, inference_req, t_start, None, "failed",
+            error_message=str(exc),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"type": "error", "error": {"type": "api_error", "message": str(exc)}},
+        )
+    except MlxQueueFullError as exc:
+        logger.warning(
+            f"Anthropic[{rid}] MLX queue full (stream): "
+            f"{exc.queued} queued + {exc.in_flight} in-flight "
+            f"(model={exc.model_key}) — returning 503"
+        )
+        record_trace_mlx(
+            trace_store, inference_req, t_start, None, "failed",
+            error_message=str(exc),
+        )
+        if debug_enabled and debug_data_dir:
+            debug_log.append_request(
+                enabled=True,
+                data_dir=str(debug_data_dir),
+                record={
+                    "request_id": inference_req.request_id,
+                    "timestamp": t_start,
+                    "node_id": "mlx-local",
+                    "model": inference_req.model,
+                    "original_model": inference_req.original_model or body.model,
+                    "original_format": "anthropic",
+                    "tags": list(inference_req.tags),
+                    "status": "rejected",
+                    "error": str(exc),
+                    "latency_ms": int((time.time() - t_start) * 1000),
+                    "ttft_ms": None,
+                    "client_body": body.model_dump(by_alias=True, exclude_none=True),
+                    "backend": "mlx",
+                    "stream": True,
+                    "response": None,
+                },
+                retention_days=debug_retention,
+            )
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": str(exc.retry_after)},
+            content={
+                "type": "error",
+                "error": {
+                    "type": "overloaded_error",
+                    "message": str(exc),
+                },
+            },
+        )
+
     async def _sse_generator():
         state = AnthropicSSEState(model=body.model)
         tools_state: dict[int, _MlxToolState] = {}
         first_token_time: float | None = None
         error: Exception | None = None
         try:
-            async for raw in mlx_proxy.stream_openai(inference_req):
+            # already_admitted=True — slot acquired above, we own the release.
+            async for raw in mlx_proxy.stream_openai(inference_req, already_admitted=True):
                 for event in openai_sse_to_anthropic_events(
                     raw.decode("utf-8", errors="replace"),
                     state,
@@ -369,6 +458,10 @@ async def _serve_via_mlx(
             )
             raise
         finally:
+            # Release the admission slot we acquired before entering the
+            # StreamingResponse — guaranteed to fire whether iteration
+            # completed, raised, or was cancelled by a client disconnect.
+            mlx_proxy._release_slot(stream_model_key)
             mlx_proxy.pop_token_counts(inference_req.request_id)
             status = "failed" if error else "completed"
             err_msg = str(error) if error else None

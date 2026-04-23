@@ -47,8 +47,16 @@ async def lifespan(app: FastAPI):
     # alongside the Ollama 3-model cap.  See `docs/plans/mlx-backend-for-large-models.md`.
     mlx_proxy: MlxProxy | None = None
     if getattr(settings, "mlx_enabled", False):
-        mlx_proxy = MlxProxy(settings.mlx_url, trace_store=trace_store)
-        logger.info(f"MLX backend enabled at {settings.mlx_url}")
+        mlx_proxy = MlxProxy(
+            settings.mlx_url,
+            trace_store=trace_store,
+            max_queue_depth=getattr(settings, "mlx_max_queue_depth", 3),
+            retry_after_seconds=getattr(settings, "mlx_retry_after_seconds", 10),
+        )
+        logger.info(
+            f"MLX backend enabled at {settings.mlx_url} "
+            f"(admission: 1 in-flight + {mlx_proxy.max_queue_depth} queued max)"
+        )
 
     # Store on app state
     app.state.registry = registry
