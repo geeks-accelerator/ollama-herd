@@ -1991,11 +1991,20 @@ function renderQueues(queues) {
     const backendColor = backend === 'mlx' ? 'rgba(168,85,247,0.85)' : 'rgba(148,163,184,0.65)';
     const backendBg = backend === 'mlx' ? 'rgba(168,85,247,0.18)' : 'rgba(148,163,184,0.12)';
     const backendBadge = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${backendBg};color:${backendColor};text-transform:uppercase">${backend}</span>`;
-    // MLX-only: rolling prompt-cache hit rate (fraction in [0, 1] or null).
-    // Color coded: ≥80% green, ≥40% yellow, <40% red — see plan
-    // docs/plans/mlx-prompt-cache-optimization.md for rationale.
+    // MLX-only: prompt-cache stats.  Prefer the warm/cold split when available
+    // (more honest than the simple averaged hit rate), fall back to the rate.
     let cacheChip = '';
-    if (q.cache_hit_rate !== undefined && q.cache_hit_rate !== null) {
+    if (q.warm_hit_rate !== undefined && q.warm_hit_rate !== null) {
+      // Show warm-cache hit rate (should be ~100% when caching is healthy)
+      // and cold-request fraction (how often a session pays the cold-start cost)
+      const warmPct = Math.round(q.warm_hit_rate * 100);
+      const coldPct = Math.round((q.cold_request_pct || 0) * 100);
+      const samples = q.cache_sample_count || 0;
+      const warmColor = warmPct >= 80 ? 'var(--green)' : warmPct >= 40 ? 'var(--yellow)' : 'var(--red)';
+      const tip = `Warm ${warmPct}% hit · ${coldPct}% of last ${samples} requests were cold-start (no cache benefit)`;
+      cacheChip = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-left:6px;background:${warmColor}22;color:${warmColor}" title="${tip}">WARM ${warmPct}% · COLD ${coldPct}%</span>`;
+    } else if (q.cache_hit_rate !== undefined && q.cache_hit_rate !== null) {
+      // Fallback: simple averaged hit rate (older data, before warm/cold split)
       const pct = Math.round(q.cache_hit_rate * 100);
       const color = pct >= 80 ? 'var(--green)' : pct >= 40 ? 'var(--yellow)' : 'var(--red)';
       cacheChip = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-left:6px;background:${color}22;color:${color}" title="Rolling prompt-cache hit rate (last 50 requests)">CACHE ${pct}%</span>`;

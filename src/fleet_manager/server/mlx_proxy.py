@@ -326,6 +326,50 @@ class MlxProxy:
             return None
         return total_cached / total_prompt
 
+    def get_cache_stats(self) -> dict[str, float | int | None]:
+        """Return a richer breakdown than just the average hit rate.
+
+        The single rolling `cache_hit_rate` averages cold first turns
+        (~0% hit) with warm subsequent turns (~100% hit), which can be
+        misleading: a session that's working PERFECTLY shows up as
+        ~50% if half the samples are cold starts.  Splitting the
+        observations into "warm" (≥80% hit) and "cold" (<10% hit)
+        buckets lets operators see "is the cache mechanism actually
+        working when it should?" separately from "how often do we hit
+        cold-start cost?"
+
+        Returns dict with:
+            warm_hit_rate    — average hit rate of warm-cache requests
+            cold_request_pct — fraction of recent requests that were cold
+            sample_count     — total observations in window
+        """
+        if not hasattr(self, "_cache_observations"):
+            return {
+                "warm_hit_rate": None,
+                "cold_request_pct": None,
+                "sample_count": 0,
+            }
+        obs = self._cache_observations.get("_default") or []
+        if not obs:
+            return {
+                "warm_hit_rate": None,
+                "cold_request_pct": None,
+                "sample_count": 0,
+            }
+        warm_obs = [(p, c) for p, c in obs if p > 0 and c / p >= 0.8]
+        cold_obs = [(p, c) for p, c in obs if p > 0 and c / p < 0.1]
+        warm_rate = None
+        if warm_obs:
+            wp = sum(p for p, _ in warm_obs)
+            wc = sum(c for _, c in warm_obs)
+            warm_rate = wc / wp if wp else None
+        cold_pct = len(cold_obs) / len(obs) if obs else None
+        return {
+            "warm_hit_rate": warm_rate,
+            "cold_request_pct": cold_pct,
+            "sample_count": len(obs),
+        }
+
     def _get_semaphore(self, model_key: str) -> asyncio.Semaphore:
         """Return (creating if needed) the per-model admission semaphore."""
         sem = self._semaphores.get(model_key)
@@ -528,6 +572,7 @@ class MlxProxy:
         # model per process), so the same rate applies to every entry until
         # we go multi-model.  Reported as a fraction in [0, 1] or None.
         hit_rate = self.get_cache_hit_rate()
+        cache_stats = self.get_cache_stats()
         for model_key in all_models:
             samples = self._stats_samples.get(model_key, 0)
             avg_latency_ms = (
@@ -557,6 +602,16 @@ class MlxProxy:
                 # observations.  See docs/plans/mlx-prompt-cache-optimization.md
                 # for why this matters (target: ≥80% on cached turns).
                 "cache_hit_rate": hit_rate,
+                # Disambiguated cache stats: warm_hit_rate is the average
+                # of requests that DID hit cache (≥80% hit) — should be
+                # near 100% when the prefix is byte-stable.  cold_request_pct
+                # is what fraction of recent requests were cold-start (<10%
+                # hit), which tells operators if cold starts are dominating
+                # the experience.  These two together are more honest than
+                # the simple averaged rate.
+                "warm_hit_rate": cache_stats["warm_hit_rate"],
+                "cold_request_pct": cache_stats["cold_request_pct"],
+                "cache_sample_count": cache_stats["sample_count"],
                 "backend": "mlx",
                 "avg_latency_ms": round(avg_latency_ms, 1),
                 "avg_prompt_tokens": round(avg_prompt_tokens, 1),
@@ -663,6 +718,15 @@ class MlxProxy:
                         }
                     )
             if openai_tools:
+                # Stable order by tool name → byte-identical tool array
+                # across turns of the same session, so mlx_lm.server's
+                # prefix cache reliably hits.  Claude Code currently sends
+                # tools in stable order (verified across 177 captured
+                # sequential pairs) but defensive sort guards against
+                # future client-side ordering shifts that would silently
+                # bust ~50K cached tokens per request.  See Phase 3 of
+                # docs/plans/mlx-prompt-cache-optimization.md.
+                openai_tools.sort(key=lambda t: t.get("function", {}).get("name", ""))
                 out["tools"] = openai_tools
 
         return out

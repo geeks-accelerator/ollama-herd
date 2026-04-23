@@ -142,6 +142,14 @@ async def fleet_queue(request: Request):
                 # None until the proxy has observations; clients should
                 # treat as "no data yet" rather than 0%.
                 "cache_hit_rate": q.get("cache_hit_rate"),
+                # MLX-only: warm/cold split is more honest than the simple
+                # average — see MlxProxy.get_cache_stats().  warm_hit_rate
+                # is the average of requests that DID cache-hit (≥80%);
+                # cold_request_pct is the fraction that were cold-start
+                # (<10% hit).  Both None when no observations.
+                "warm_hit_rate": q.get("warm_hit_rate"),
+                "cold_request_pct": q.get("cold_request_pct"),
+                "cache_sample_count": q.get("cache_sample_count"),
                 # Per-queue running averages (Ollama + MLX both populate).
                 # 0 with stats_samples=0 means "no data yet" rather than
                 # genuinely-zero performance — clients should check samples

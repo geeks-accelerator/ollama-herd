@@ -792,3 +792,91 @@ def test_to_openai_body_no_stream_options_for_non_streaming():
     body = MlxProxy._to_openai_body(req)
     assert body["stream"] is False
     assert "stream_options" not in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 enhancements: deterministic tool sort + warm/cold split
+# ---------------------------------------------------------------------------
+
+
+def test_to_openai_body_sorts_tools_deterministically():
+    """Tools array must be byte-stable across requests so mlx prefix cache
+    hits.  Even if Claude Code shuffles tool order between turns (currently
+    doesn't, but defensive), our translator outputs alphabetical."""
+    req = _make_request(
+        raw_body={
+            "model": "mlx:foo", "messages": [], "stream": True,
+            "tools": [
+                {"name": "Zebra", "description": "z", "parameters": {}},
+                {"name": "Apple", "description": "a", "parameters": {}},
+                {"name": "Mango", "description": "m", "parameters": {}},
+            ],
+        },
+    )
+    body = MlxProxy._to_openai_body(req)
+    names = [t["function"]["name"] for t in body["tools"]]
+    assert names == ["Apple", "Mango", "Zebra"]
+
+
+def test_to_openai_body_sort_preserves_when_tools_already_wrapped():
+    """Pre-wrapped (OpenAI shape) tools also get sorted."""
+    req = _make_request(
+        raw_body={
+            "model": "mlx:foo", "messages": [],
+            "tools": [
+                {"type": "function", "function": {"name": "B", "parameters": {}}},
+                {"type": "function", "function": {"name": "A", "parameters": {}}},
+            ],
+        },
+    )
+    body = MlxProxy._to_openai_body(req)
+    names = [t["function"]["name"] for t in body["tools"]]
+    assert names == ["A", "B"]
+
+
+def test_get_cache_stats_no_observations():
+    """Fresh proxy returns None hit rates + 0 samples."""
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test")
+    stats = proxy.get_cache_stats()
+    assert stats["warm_hit_rate"] is None
+    assert stats["cold_request_pct"] is None
+    assert stats["sample_count"] == 0
+
+
+def test_get_cache_stats_distinguishes_warm_from_cold():
+    """Warm hit rate and cold-request fraction are reported separately —
+    the simple avg can be misleading when sessions mix cold + warm turns."""
+    from fleet_manager.server.mlx_proxy import MlxProxy, _mlx_request_tokens
+    proxy = MlxProxy("http://test")
+    # 3 cold (<10% hit), 2 warm (>80% hit)
+    for rid, (p, c) in [
+        ("cold1", (1000, 5)),    # 0.5% — cold
+        ("cold2", (1000, 0)),    # 0%   — cold
+        ("cold3", (1000, 10)),   # 1%   — cold
+        ("warm1", (1000, 950)),  # 95%  — warm
+        ("warm2", (1000, 990)),  # 99%  — warm
+    ]:
+        _mlx_request_tokens[rid] = (p, 50, c)
+        proxy.pop_token_counts(rid)
+    stats = proxy.get_cache_stats()
+    assert stats["sample_count"] == 5
+    # cold = 3 of 5 = 60%
+    assert abs(stats["cold_request_pct"] - 0.6) < 0.001
+    # warm rate = (950+990)/(1000+1000) = 0.97
+    assert abs(stats["warm_hit_rate"] - 0.97) < 0.001
+
+
+def test_get_queue_info_exposes_warm_cold_split():
+    """Dashboard can show 'CACHE 100% on warm, 30% of requests are cold'."""
+    from fleet_manager.server.mlx_proxy import MlxProxy, _mlx_request_tokens
+    proxy = MlxProxy("http://test")
+    proxy._completed["m"] = 1
+    _mlx_request_tokens["x"] = (1000, 50, 1000)  # 100% hit
+    proxy.pop_token_counts("x")
+    info = proxy.get_queue_info()["mlx-local:mlx:m"]
+    assert "warm_hit_rate" in info
+    assert "cold_request_pct" in info
+    assert "cache_sample_count" in info
+    assert info["warm_hit_rate"] == 1.0
+    assert info["cold_request_pct"] == 0.0
