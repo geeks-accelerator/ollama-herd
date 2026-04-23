@@ -59,6 +59,61 @@ def is_mlx_model(model: str) -> bool:
     return model.startswith("mlx:")
 
 
+def _ollama_messages_to_openai(messages: list[dict]) -> list[dict]:
+    """Convert Ollama-shaped messages to strict OpenAI chat.completions shape.
+
+    The Anthropic translator (anthropic_to_ollama_messages) produces
+    Ollama-friendly output that the Ollama HTTP API accepts but mlx_lm.server
+    rejects with cryptic 404s:
+
+      - tool_calls[].function.arguments is a *dict* in Ollama; OpenAI/mlx
+        requires it to be a JSON-stringified *string*.  Symptom from mlx:
+        ``"the JSON object must be str, bytes or bytearray, not dict"``.
+      - tool_calls items lack ``id`` and ``type:"function"`` wrappers in
+        the Ollama form; OpenAI requires them.
+      - Ollama tolerates extra fields like ``images: [...]`` on user
+        messages; OpenAI doesn't expect them.  Drop quietly.
+
+    Pure passthrough for the common case (string content, no tool_calls).
+    """
+    import uuid
+    out: list[dict] = []
+    for m in messages:
+        new_m = dict(m)  # shallow copy — we'll only rewrite specific fields
+        # Drop Ollama-specific fields mlx ignores or chokes on
+        new_m.pop("images", None)
+        # Translate tool_calls if present
+        tcs = new_m.get("tool_calls")
+        if tcs and isinstance(tcs, list):
+            new_tcs = []
+            for tc in tcs:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                args = fn.get("arguments")
+                # OpenAI expects arguments as a JSON-encoded string
+                if isinstance(args, dict):
+                    args_str = json.dumps(args)
+                elif isinstance(args, str):
+                    args_str = args
+                else:
+                    args_str = "{}"
+                new_tcs.append({
+                    "id": tc.get("id") or f"call_{uuid.uuid4().hex[:24]}",
+                    "type": tc.get("type", "function"),
+                    "function": {
+                        "name": fn.get("name", ""),
+                        "arguments": args_str,
+                    },
+                })
+            new_m["tool_calls"] = new_tcs
+            # OpenAI: assistant messages with tool_calls may have null content
+            if new_m.get("content") is None:
+                new_m["content"] = ""
+        out.append(new_m)
+    return out
+
+
 class MlxModelMissingError(ValueError):
     """Raised when the proxy would send an empty/missing model name to mlx_lm.server.
 
@@ -256,7 +311,13 @@ class MlxProxy:
 
         out: dict = {
             "model": outbound_model,
-            "messages": raw.get("messages", []),
+            # Translate Ollama-shaped messages → OpenAI shape mlx_lm.server
+            # accepts.  The Anthropic translator (which built raw_body) emits
+            # Ollama-friendly forms that Ollama accepts but mlx_lm.server
+            # rejects with cryptic 404s — see the historical "tool_calls
+            # arguments must be string" + "Only 'text' content type
+            # supported" failures in docs/issues.md.
+            "messages": _ollama_messages_to_openai(raw.get("messages", [])),
             "stream": raw.get("stream", True),
         }
         # Flatten Ollama options to OpenAI top-level params

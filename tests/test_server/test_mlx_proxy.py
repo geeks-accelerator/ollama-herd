@@ -474,3 +474,71 @@ async def test_list_models_returns_empty_on_error(httpx_mock):
         assert await proxy.list_models() == []
     finally:
         await proxy.close()
+
+
+# ---------------------------------------------------------------------------
+# _ollama_messages_to_openai — strict format conversion for mlx_lm.server
+# ---------------------------------------------------------------------------
+
+
+def test_ollama_to_openai_passthrough_simple_messages():
+    """Plain string-content messages pass through unchanged."""
+    from fleet_manager.server.mlx_proxy import _ollama_messages_to_openai
+    msgs = [
+        {"role": "system", "content": "you are helpful"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello back"},
+    ]
+    out = _ollama_messages_to_openai(msgs)
+    assert out == msgs
+
+
+def test_ollama_to_openai_stringifies_tool_call_arguments():
+    """The historical 33-failure trigger: arguments dict → JSON string."""
+    from fleet_manager.server.mlx_proxy import _ollama_messages_to_openai
+    msgs = [
+        {
+            "role": "assistant",
+            "content": "calling Read",
+            "tool_calls": [{
+                "function": {"name": "Read", "arguments": {"path": "/foo"}},
+            }],
+        },
+    ]
+    out = _ollama_messages_to_openai(msgs)
+    tc = out[0]["tool_calls"][0]
+    # arguments must be a JSON-encoded STRING for mlx_lm.server
+    assert isinstance(tc["function"]["arguments"], str)
+    import json
+    assert json.loads(tc["function"]["arguments"]) == {"path": "/foo"}
+    # Must have id and type (OpenAI required wrappers)
+    assert tc["type"] == "function"
+    assert tc["id"].startswith("call_")
+
+
+def test_ollama_to_openai_preserves_string_arguments():
+    """If arguments is already a string (rare but valid), keep it."""
+    from fleet_manager.server.mlx_proxy import _ollama_messages_to_openai
+    msgs = [{
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": "call_abc",
+            "type": "function",
+            "function": {"name": "X", "arguments": '{"already":"string"}'},
+        }],
+    }]
+    out = _ollama_messages_to_openai(msgs)
+    assert out[0]["tool_calls"][0]["function"]["arguments"] == '{"already":"string"}'
+    assert out[0]["tool_calls"][0]["id"] == "call_abc"  # preserved
+    # Null content gets normalized to "" (OpenAI quirk)
+    assert out[0]["content"] == ""
+
+
+def test_ollama_to_openai_drops_images_field():
+    """Ollama-only `images` array isn't accepted by mlx_lm.server."""
+    from fleet_manager.server.mlx_proxy import _ollama_messages_to_openai
+    msgs = [{"role": "user", "content": "see this", "images": ["base64..."]}]
+    out = _ollama_messages_to_openai(msgs)
+    assert "images" not in out[0]
+    assert out[0]["content"] == "see this"
