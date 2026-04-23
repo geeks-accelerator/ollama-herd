@@ -61,6 +61,15 @@ class DeviceModelQueue:
     concurrency: int = _MIN_CONCURRENCY
     completed_count: int = 0
     failed_count: int = 0
+    # Running sums for dashboard averages — same lifecycle as the counts
+    # above (reset on restart, no persistence).  Only incremented on
+    # successful completions where stats are available; ``stats_samples``
+    # is the denominator for averages and may be ≤ ``completed_count`` if a
+    # completion didn't yield token counts (e.g. non-streaming image gen).
+    total_latency_ms: float = 0.0
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    stats_samples: int = 0
 
 
 class QueueManager:
@@ -137,6 +146,15 @@ class QueueManager:
                     request_type = "stt"
                 elif "embed" in q.model:
                     request_type = "embed"
+            # Running averages since process start.  ``stats_samples`` is the
+            # honest denominator — may be below completed_count when some
+            # completions didn't carry tokens (e.g. image gen).  Expose it
+            # alongside the averages so the dashboard can decide whether to
+            # render or suppress (e.g. "—" when samples == 0).
+            samples = q.stats_samples
+            avg_latency_ms = (q.total_latency_ms / samples) if samples else 0.0
+            avg_prompt_tokens = (q.total_prompt_tokens / samples) if samples else 0.0
+            avg_completion_tokens = (q.total_completion_tokens / samples) if samples else 0.0
             info[key] = {
                 "node_id": q.node_id,
                 "model": q.model,
@@ -146,6 +164,10 @@ class QueueManager:
                 "failed": q.failed_count,
                 "concurrency": q.concurrency,
                 "request_type": request_type,
+                "avg_latency_ms": round(avg_latency_ms, 1),
+                "avg_prompt_tokens": round(avg_prompt_tokens, 1),
+                "avg_completion_tokens": round(avg_completion_tokens, 1),
+                "stats_samples": samples,
             }
         return info
 
@@ -247,14 +269,41 @@ class QueueManager:
                     future.set_exception(e)
                 logger.error(f"Queue worker error for {entry.request.request_id}: {e}")
 
-    def mark_completed(self, queue_key: str, entry: QueueEntry):
-        """Remove an entry from in-flight and mark completed."""
+    def mark_completed(
+        self,
+        queue_key: str,
+        entry: QueueEntry,
+        *,
+        latency_ms: float | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+    ):
+        """Remove an entry from in-flight and mark completed.
+
+        Optional ``latency_ms``/``prompt_tokens``/``completion_tokens`` feed
+        the per-queue running averages surfaced on the dashboard.  Pass all
+        three when available — partial updates are accepted (missing values
+        treated as 0 for that sample) to keep the happy path simple for
+        callers that don't always have token counts (e.g. image generation).
+        """
         if queue_key in self._queues:
             q = self._queues[queue_key]
             entry.status = RequestStatus.COMPLETED
             entry.completed_at = time.time()
             q.in_flight.pop(entry.request.request_id, None)
             q.completed_count += 1
+            # Accumulate stats only when at least one value is provided,
+            # otherwise the averages would drift to zero for completions
+            # that never reported tokens (e.g. image generation).
+            if (
+                latency_ms is not None
+                or prompt_tokens is not None
+                or completion_tokens is not None
+            ):
+                q.total_latency_ms += latency_ms or 0.0
+                q.total_prompt_tokens += prompt_tokens or 0
+                q.total_completion_tokens += completion_tokens or 0
+                q.stats_samples += 1
             logger.debug(f"Completed {entry.request.request_id[:8]} on {queue_key}")
 
     def mark_failed(self, queue_key: str, entry: QueueEntry):

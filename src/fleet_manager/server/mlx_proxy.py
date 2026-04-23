@@ -194,6 +194,33 @@ class MlxProxy:
         self._completed: dict[str, int] = {}
         self._failed: dict[str, int] = {}
         self._rejected: dict[str, int] = {}  # queue-full 503s per model
+        # Running sums for dashboard averages (per-model, since-start lifecycle
+        # matching ``_completed`` above).  ``_stats_samples`` is the denominator;
+        # may be ≤ _completed[model] if a completion didn't yield token counts.
+        self._sum_latency_ms: dict[str, float] = {}
+        self._sum_prompt_tokens: dict[str, int] = {}
+        self._sum_completion_tokens: dict[str, int] = {}
+        self._stats_samples: dict[str, int] = {}
+
+    def _record_stats(
+        self,
+        model_key: str,
+        latency_ms: float,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+    ) -> None:
+        """Accumulate per-model stats for dashboard averages.  Safe to call
+        with None tokens — stored as 0 for that sample."""
+        self._sum_latency_ms[model_key] = (
+            self._sum_latency_ms.get(model_key, 0.0) + latency_ms
+        )
+        self._sum_prompt_tokens[model_key] = (
+            self._sum_prompt_tokens.get(model_key, 0) + (prompt_tokens or 0)
+        )
+        self._sum_completion_tokens[model_key] = (
+            self._sum_completion_tokens.get(model_key, 0) + (completion_tokens or 0)
+        )
+        self._stats_samples[model_key] = self._stats_samples.get(model_key, 0) + 1
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -320,6 +347,13 @@ class MlxProxy:
         # opens (previous request finishes).
         if not already_admitted:
             await self._acquire_slot(model_key)
+        start_time = time.time()
+        # Parse usage from the final SSE chunk if present; mlx_lm.server emits
+        # {"usage": {"prompt_tokens": N, "completion_tokens": M}} in the last
+        # "data:" line before [DONE].  Missing is fine — stats still records
+        # latency with 0 tokens.
+        prompt_tokens: int | None = None
+        completion_tokens: int | None = None
         try:
             async with client.stream(
                 "POST", "/v1/chat/completions", json=mlx_body
@@ -334,8 +368,24 @@ class MlxProxy:
                 async for line in response.aiter_lines():
                     if not line:
                         continue
+                    # Opportunistic usage sniff — don't break on malformed JSON.
+                    if line.startswith("data:") and '"usage"' in line:
+                        try:
+                            payload = json.loads(line[5:].strip())
+                            usage = payload.get("usage") if isinstance(payload, dict) else None
+                            if isinstance(usage, dict):
+                                prompt_tokens = usage.get("prompt_tokens")
+                                completion_tokens = usage.get("completion_tokens")
+                        except (ValueError, TypeError):
+                            pass
                     yield line.encode()
             self._completed[model_key] = self._completed.get(model_key, 0) + 1
+            self._record_stats(
+                model_key,
+                (time.time() - start_time) * 1000,
+                prompt_tokens,
+                completion_tokens,
+            )
         except Exception:
             self._failed[model_key] = self._failed.get(model_key, 0) + 1
             raise
@@ -359,11 +409,23 @@ class MlxProxy:
         model_key = strip_mlx_prefix(request.model)
         # Same admission control as streaming path — see _acquire_slot.
         await self._acquire_slot(model_key)
+        start_time = time.time()
         try:
             resp = await client.post("/v1/chat/completions", json=mlx_body)
             resp.raise_for_status()
             self._completed[model_key] = self._completed.get(model_key, 0) + 1
-            return resp.json()
+            data = resp.json()
+            usage = data.get("usage") if isinstance(data, dict) else None
+            if isinstance(usage, dict):
+                self._record_stats(
+                    model_key,
+                    (time.time() - start_time) * 1000,
+                    usage.get("prompt_tokens"),
+                    usage.get("completion_tokens"),
+                )
+            else:
+                self._record_stats(model_key, (time.time() - start_time) * 1000, None, None)
+            return data
         except Exception:
             self._failed[model_key] = self._failed.get(model_key, 0) + 1
             raise
@@ -387,6 +449,16 @@ class MlxProxy:
             | set(self._rejected)
         )
         for model_key in all_models:
+            samples = self._stats_samples.get(model_key, 0)
+            avg_latency_ms = (
+                self._sum_latency_ms.get(model_key, 0.0) / samples if samples else 0.0
+            )
+            avg_prompt_tokens = (
+                self._sum_prompt_tokens.get(model_key, 0) / samples if samples else 0.0
+            )
+            avg_completion_tokens = (
+                self._sum_completion_tokens.get(model_key, 0) / samples if samples else 0.0
+            )
             out[f"mlx-local:mlx:{model_key}"] = {
                 "node_id": "mlx-local",
                 "model": f"mlx:{model_key}",
@@ -401,6 +473,10 @@ class MlxProxy:
                 # tell "backend is overloaded" from "backend is broken".
                 "rejected": self._rejected.get(model_key, 0),
                 "backend": "mlx",
+                "avg_latency_ms": round(avg_latency_ms, 1),
+                "avg_prompt_tokens": round(avg_prompt_tokens, 1),
+                "avg_completion_tokens": round(avg_completion_tokens, 1),
+                "stats_samples": samples,
             }
         return out
 
