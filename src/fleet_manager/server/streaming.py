@@ -211,12 +211,20 @@ class StreamingProxy:
                 got_done = entry.request.request_id in self._request_tokens
 
                 if got_done:
-                    queue_manager.mark_completed(queue_key, entry)
                     elapsed_ms = (time.time() - start_time) * 1000
                     # Read (don't pop) token counts — the route handler may still
                     # need them for the OpenAI-compat usage response.
                     prompt_tokens, completion_tokens = self._request_tokens.get(
                         entry.request.request_id, (None, None)
+                    )
+                    # Feed running averages on the queue (dashboard).  Token
+                    # counts may be None for routes that don't surface them;
+                    # mark_completed handles that gracefully.
+                    queue_manager.mark_completed(
+                        queue_key, entry,
+                        latency_ms=elapsed_ms,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
                     )
                     logger.info(
                         f"Request {entry.request.request_id[:8]} completed on "
@@ -497,9 +505,14 @@ class StreamingProxy:
                 elapsed_ms = (time.time() - start_time) * 1000
 
                 if got_done:
-                    queue_manager.mark_completed(current_queue_key, entry)
                     prompt_tokens, completion_tokens = self._request_tokens.get(
                         entry.request.request_id, (None, None)
+                    )
+                    queue_manager.mark_completed(
+                        current_queue_key, entry,
+                        latency_ms=elapsed_ms,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
                     )
                     logger.info(
                         f"Request {entry.request.request_id[:8]} completed on {current_node} "
@@ -744,7 +757,8 @@ class StreamingProxy:
                     f"Image {entry.request.request_id[:8]} completed "
                     f"on {entry.assigned_node} in {elapsed_ms:.0f}ms"
                 )
-                queue_manager.mark_completed(queue_key, entry)
+                # Image gen has no token counts — feed latency only.
+                queue_manager.mark_completed(queue_key, entry, latency_ms=elapsed_ms)
                 yield png_bytes
             except Exception as e:
                 queue_manager.mark_failed(queue_key, entry)
@@ -776,7 +790,7 @@ class StreamingProxy:
                     f"Embedding {entry.request.request_id[:8]} completed "
                     f"on {entry.assigned_node} in {elapsed_ms:.0f}ms"
                 )
-                queue_manager.mark_completed(queue_key, entry)
+                queue_manager.mark_completed(queue_key, entry, latency_ms=elapsed_ms)
                 yield json.dumps(result)
             except Exception as e:
                 queue_manager.mark_failed(queue_key, entry)
@@ -889,7 +903,7 @@ class StreamingProxy:
                     f"Transcription {entry.request.request_id[:8]} completed "
                     f"on {entry.assigned_node} in {elapsed_ms:.0f}ms"
                 )
-                queue_manager.mark_completed(queue_key, entry)
+                queue_manager.mark_completed(queue_key, entry, latency_ms=elapsed_ms)
                 import json
 
                 yield json.dumps(result)

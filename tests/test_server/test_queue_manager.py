@@ -77,6 +77,85 @@ class TestQueueManager:
         info = qm.get_queue_info()
         assert info["studio:phi4:14b"]["completed"] == 1
 
+    async def test_mark_completed_accumulates_stats(self):
+        """Regression guard: running averages for dashboard.
+
+        mark_completed must accumulate latency + token counts per queue so
+        get_queue_info can surface avg_latency_ms / avg_prompt_tokens /
+        avg_completion_tokens.  These run alongside completed_count with the
+        same lifecycle (reset on restart)."""
+        qm = QueueManager()
+
+        def sync_process(e):
+            async def gen():
+                yield "data"
+            return gen()
+
+        # Three completions with different stats
+        for latency_ms, pt, ct in [(100.0, 200, 50), (200.0, 400, 100), (300.0, 600, 150)]:
+            entry = _make_entry()
+            await qm.enqueue(entry, sync_process)
+            await asyncio.sleep(0.05)
+            qm.mark_completed(
+                "studio:phi4:14b", entry,
+                latency_ms=latency_ms,
+                prompt_tokens=pt,
+                completion_tokens=ct,
+            )
+
+        info = qm.get_queue_info()["studio:phi4:14b"]
+        assert info["completed"] == 3
+        assert info["stats_samples"] == 3
+        # Averages: latency (100+200+300)/3 = 200; prompt (200+400+600)/3 = 400;
+        # completion (50+100+150)/3 = 100
+        assert info["avg_latency_ms"] == 200.0
+        assert info["avg_prompt_tokens"] == 400.0
+        assert info["avg_completion_tokens"] == 100.0
+
+    async def test_mark_completed_without_stats_keeps_averages_at_zero(self):
+        """A completion without stats args (e.g. image gen) must not drift
+        the averages to zero — ``stats_samples`` stays 0 as the signal that
+        no denominator is available yet."""
+        qm = QueueManager()
+        entry = _make_entry()
+
+        def sync_process(e):
+            async def gen():
+                yield "data"
+            return gen()
+
+        await qm.enqueue(entry, sync_process)
+        await asyncio.sleep(0.05)
+        qm.mark_completed("studio:phi4:14b", entry)  # no stats kwargs
+
+        info = qm.get_queue_info()["studio:phi4:14b"]
+        assert info["completed"] == 1
+        assert info["stats_samples"] == 0
+        assert info["avg_latency_ms"] == 0.0
+        assert info["avg_prompt_tokens"] == 0.0
+        assert info["avg_completion_tokens"] == 0.0
+
+    async def test_mark_completed_partial_stats_counts_sample(self):
+        """Image/STT pass only latency_ms — averages should reflect that
+        latency, with tokens accumulating as 0 for that sample."""
+        qm = QueueManager()
+        entry = _make_entry()
+
+        def sync_process(e):
+            async def gen():
+                yield "data"
+            return gen()
+
+        await qm.enqueue(entry, sync_process)
+        await asyncio.sleep(0.05)
+        qm.mark_completed("studio:phi4:14b", entry, latency_ms=250.0)
+
+        info = qm.get_queue_info()["studio:phi4:14b"]
+        assert info["stats_samples"] == 1
+        assert info["avg_latency_ms"] == 250.0
+        assert info["avg_prompt_tokens"] == 0.0
+        assert info["avg_completion_tokens"] == 0.0
+
     async def test_mark_failed(self):
         qm = QueueManager()
         entry = _make_entry()

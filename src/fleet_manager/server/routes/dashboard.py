@@ -1991,6 +1991,21 @@ function renderQueues(queues) {
       const color = pct >= 80 ? 'var(--green)' : pct >= 40 ? 'var(--yellow)' : 'var(--red)';
       cacheChip = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-left:6px;background:${color}22;color:${color}" title="Rolling prompt-cache hit rate (last 50 requests)">CACHE ${pct}%</span>`;
     }
+    // Per-queue running averages — same lifecycle as completed/failed
+    // counts (reset on restart).  Hidden when there are no samples yet
+    // so a fresh queue doesn't show a row of zeros.
+    const samples = q.stats_samples || 0;
+    const avgLat = q.avg_latency_ms || 0;
+    const avgIn = q.avg_prompt_tokens || 0;
+    const avgOut = q.avg_completion_tokens || 0;
+    const latDisplay = avgLat >= 1000 ? (avgLat / 1000).toFixed(1) + 's' : Math.round(avgLat) + 'ms';
+    const avgRow = samples > 0 ? `
+        <div class="queue-stats" style="margin-top:6px;opacity:0.75">
+          <div class="queue-stat"><div class="num" style="color:var(--text-dim);font-size:13px">${latDisplay}</div><div class="lbl">Avg Time</div></div>
+          <div class="queue-stat"><div class="num" style="color:var(--text-dim);font-size:13px">${Math.round(avgIn)}</div><div class="lbl">Avg In</div></div>
+          <div class="queue-stat"><div class="num" style="color:var(--text-dim);font-size:13px">${Math.round(avgOut)}</div><div class="lbl">Avg Out</div></div>
+          <div class="queue-stat"><div class="num" style="color:var(--text-dim);font-size:13px">${samples}</div><div class="lbl">Samples</div></div>
+        </div>` : '';
     return `
       <div class="queue-card">
         <div class="queue-name"><span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${typeColors[rt]}22;color:${typeColors[rt]}">${typeLabels[rt]}</span>${backendBadge}${key}${cacheChip}</div>
@@ -1999,7 +2014,7 @@ function renderQueues(queues) {
           <div class="queue-stat"><div class="num" style="color:${inflightColor}">${q.in_flight}/${q.concurrency || 1}</div><div class="lbl">In-Flight</div></div>
           <div class="queue-stat"><div class="num" style="color:var(--green)">${q.completed}</div><div class="lbl">Done</div></div>
           <div class="queue-stat"><div class="num" style="color:var(--red)">${q.failed || 0}</div><div class="lbl">Failed</div></div>
-        </div>
+        </div>${avgRow}
       </div>`;
   }).join('');
   var sq = document.getElementById('stat-queued');
