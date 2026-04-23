@@ -1,10 +1,33 @@
-"""Priority Model Preloader — loads highest-priority models after restart.
+"""Priority Model Preloader — keeps the right models warm without thrashing.
 
-Uses weighted usage data from the trace store to determine which models
-to load first:  priority = (requests_24h * 3) + (requests_7d_daily_avg).
+Two concerns:
 
-Runs once after the first node registers, loading models in priority
-order until memory is full.  Non-blocking — runs as a background task.
+1.  **Pinned models** — user-declared "always keep this hot."  Configured
+    via FLEET_PINNED_MODELS (comma-separated).  Loaded first on startup
+    and actively reloaded if evicted.  Example: ``gpt-oss:120b,gemma3:27b``
+    for projects that depend on them across sessions.
+
+2.  **Priority models** — scored by 24h/7d request frequency.  After
+    pinned models are loaded, the preloader fills remaining slots up to
+    FLEET_MODEL_PRELOAD_MAX_COUNT (default 3, matches Ollama's hardcoded
+    hot cap).
+
+Critical invariant: **don't load more models than the backend can hold
+concurrently.**  Ollama 0.20.4 on macOS has a hardcoded 3-model cap.
+Historically the preloader ignored this and blindly pre-warmed 10+
+models based on usage scoring, which caused each new load to evict an
+older one — thrashing the LRU and kicking out whatever was loaded
+before the restart (including pinned models).  2026-04-23 observation:
+restart of the router caused gpt-oss:120b eviction because the
+preloader pre-warmed 6+ models past the 3-slot cap.
+
+Design:
+  - Startup: query ``/api/ps``, load pinned models first, fill remaining
+    slots up to max_count.  Never exceed max_count total loads.
+  - Refresh (every 10 min): check pinned models, reload any evicted;
+    separately check top N priority models with recent activity.
+  - Disable: FLEET_DISABLE_MODEL_PRELOADER=true → no-op, models load
+    on demand on first request.
 """
 
 from __future__ import annotations
@@ -72,17 +95,76 @@ def _estimate_model_size(model: str) -> float:
     return 10.0  # Conservative default
 
 
+def _parse_pinned_models(setting: str) -> list[str]:
+    """Parse FLEET_PINNED_MODELS into a clean list of model names."""
+    return [m.strip() for m in (setting or "").split(",") if m.strip()]
+
+
+def _model_is_loaded_anywhere(model: str, nodes) -> bool:
+    """True if any online node has the model currently hot."""
+    return any(
+        n.ollama and model in [m.name for m in n.ollama.models_loaded]
+        for n in nodes
+    )
+
+
+def _nodes_with_model_on_disk(model: str, nodes):
+    """Nodes that have the model available on disk (pullable, not necessarily hot)."""
+    return [n for n in nodes if n.ollama and model in n.ollama.models_available]
+
+
+async def _load_model_on_best_node(
+    model: str, nodes, proxy: StreamingProxy, *, why: str = "preload",
+) -> bool:
+    """Pick the best node and pre-warm.  Returns True if load was attempted."""
+    available_nodes = _nodes_with_model_on_disk(model, nodes)
+    if not available_nodes:
+        logger.info(f"Preloader: {model} not on disk anywhere — skipping ({why})")
+        return False
+    best = max(
+        available_nodes,
+        key=lambda n: n.memory.available_gb if n.memory else 0,
+    )
+    model_size = _estimate_model_size(model)
+    available = best.memory.available_gb if best.memory else 0
+    if available < model_size * 1.2:
+        logger.info(
+            f"Preloader: skipping {model} — need {model_size:.0f}GB "
+            f"but only {available:.0f}GB free on {best.node_id} ({why})"
+        )
+        return False
+    logger.info(
+        f"Preloader: loading {model} (~{model_size:.0f}GB) "
+        f"on {best.node_id} ({why})"
+    )
+    try:
+        await proxy.pre_warm(best.node_id, model)
+        return True
+    except Exception as exc:
+        logger.warning(f"Preloader: failed to load {model}: {exc}")
+        return False
+
+
 async def preload_priority_models(
     registry: NodeRegistry,
     trace_store: TraceStore,
     proxy: StreamingProxy,
     settings: ServerSettings,
 ) -> None:
-    """Wait for first node, then preload highest-priority models.
+    """Startup: load pinned models, then fill remaining slots up to cap.
 
-    Runs once at startup.  Waits up to 60s for a node to register,
-    then loads models in priority order until memory would be exceeded.
+    Refresh loop: every 10 min, reload any pinned model that got evicted,
+    plus top priority models with recent activity.  Respects
+    ``model_preload_max_count`` as the total-slots budget so the
+    preloader never thrashes the Ollama hot cap.
     """
+    if getattr(settings, "disable_model_preloader", False):
+        logger.info("Preloader disabled via FLEET_DISABLE_MODEL_PRELOADER")
+        return
+
+    pinned = _parse_pinned_models(getattr(settings, "pinned_models", ""))
+    max_count = getattr(settings, "model_preload_max_count", 3)
+
     # Wait for at least one node to come online
     for _ in range(60):
         nodes = registry.get_online_nodes()
@@ -90,168 +172,166 @@ async def preload_priority_models(
             break
         await asyncio.sleep(1)
     else:
-        logger.info("Priority preload: no nodes registered after 60s, skipping")
+        logger.info("Preloader: no nodes registered after 60s, skipping startup")
         return
 
     # Brief delay to let the node's heartbeat fully populate
     await asyncio.sleep(3)
+    nodes = registry.get_online_nodes()
 
-    # Use cached priorities so VRAM fallback can read the same data
-    priorities = await get_cached_priorities(trace_store)
-    if not priorities:
-        logger.info("Priority preload: no usage history, skipping")
-        return
-
-    logger.info(
-        f"Priority preload: {len(priorities)} model(s) in history, "
-        f"top={priorities[0]['model']} (score={priorities[0]['priority_score']})"
-    )
-
+    # --- Step 1: load pinned models ---------------------------------------
     loaded_count = 0
-    for entry in priorities:
-        model = entry["model"]
-        score = entry["priority_score"]
-
-        if score < 1.0:
-            break  # No point loading rarely-used models
-
-        nodes = registry.get_online_nodes()
-        if not nodes:
-            break
-
-        # Check if already loaded on any node
-        already_loaded = any(
-            n.ollama and model in [m.name for m in n.ollama.models_loaded]
-            for n in nodes
-        )
-        if already_loaded:
-            continue
-
-        # Check if available on disk on any node
-        # models_available is list[str] (model name strings)
-        available_nodes = [
-            n for n in nodes
-            if n.ollama and model in n.ollama.models_available
-        ]
-        if not available_nodes:
-            continue
-
-        # Pick node with most available memory
-        best = max(
-            available_nodes,
-            key=lambda n: n.memory.available_gb if n.memory else 0,
-        )
-
-        # Check if there's enough memory (with 20% headroom)
-        model_size = _estimate_model_size(model)
-        available = best.memory.available_gb if best.memory else 0
-        if available < model_size * 1.2:
-            logger.info(
-                f"Priority preload: stopping at {model} — "
-                f"need {model_size:.0f}GB but only {available:.0f}GB free "
-                f"on {best.node_id}"
+    for model in pinned:
+        if loaded_count >= max_count:
+            logger.warning(
+                f"Preloader: pinned-models list ({len(pinned)}) exceeds "
+                f"max_count ({max_count}); truncating at {loaded_count}.  "
+                f"Raise FLEET_MODEL_PRELOAD_MAX_COUNT if your backend can "
+                f"handle more concurrent models."
             )
             break
-
-        logger.info(
-            f"Priority preload: loading {model} "
-            f"(score={score}, ~{model_size:.0f}GB) on {best.node_id}"
-        )
-        try:
-            await proxy.pre_warm(best.node_id, model)
+        if _model_is_loaded_anywhere(model, nodes):
+            logger.info(f"Preloader: {model} already hot (pinned)")
             loaded_count += 1
-            # Brief pause to let Ollama update its model list
-            await asyncio.sleep(2)
-        except Exception as e:
-            logger.warning(f"Priority preload: failed to load {model}: {e}")
+            continue
+        if await _load_model_on_best_node(model, nodes, proxy, why="pinned"):
+            loaded_count += 1
+            await asyncio.sleep(2)  # let Ollama update /api/ps
+            nodes = registry.get_online_nodes()  # refresh after load
 
-    logger.info(f"Priority preload complete: loaded {loaded_count} model(s)")
+    # --- Step 2: fill remaining slots with priority models ----------------
+    priorities = await get_cached_priorities(trace_store)
+    if priorities:
+        logger.info(
+            f"Preloader: {len(priorities)} model(s) in usage history; "
+            f"will fill up to {max_count - loaded_count} more slot(s)"
+        )
+        for entry in priorities:
+            if loaded_count >= max_count:
+                logger.info(
+                    f"Preloader: reached max_count ({max_count}) — "
+                    f"stopping to avoid Ollama LRU thrash"
+                )
+                break
+            model = entry["model"]
+            score = entry["priority_score"]
+            if score < 1.0:
+                break  # rarely-used models not worth warming
+            if model in pinned:
+                continue  # already handled above
+            if _model_is_loaded_anywhere(model, nodes):
+                continue  # already hot, no need to load
+            if await _load_model_on_best_node(
+                model, nodes, proxy, why=f"priority score={score}",
+            ):
+                loaded_count += 1
+                await asyncio.sleep(2)
+                nodes = registry.get_online_nodes()
 
-    # Keep priority models loaded — check every 10 minutes and reload
-    # if they've been evicted.  Ollama's KEEP_ALIVE=-1 should prevent
-    # this, but memory pressure or other models can force eviction.
+    logger.info(
+        f"Preloader startup complete: {loaded_count}/{max_count} models warm "
+        f"({len(pinned)} pinned configured)"
+    )
+
+    # --- Step 3: refresh loop ---------------------------------------------
+    # Every 10 min, ensure pinned models stay hot + top priorities with
+    # recent activity stay hot.  Respects max_count as the overall budget.
     while True:
-        await asyncio.sleep(600)  # 10 minutes
+        await asyncio.sleep(600)
         try:
-            await _refresh_priority_models(registry, trace_store, proxy)
+            await _refresh_priority_models(
+                registry, trace_store, proxy, pinned=pinned, max_count=max_count,
+            )
         except Exception as exc:
-            logger.warning(f"Priority refresh failed: {exc}")
+            logger.warning(f"Preloader refresh failed: {exc}")
 
 
 async def _refresh_priority_models(
     registry: NodeRegistry,
     trace_store: TraceStore,
     proxy: StreamingProxy,
+    *,
+    pinned: list[str] | None = None,
+    max_count: int = 3,
 ) -> None:
-    """Reload priority models if they've been evicted from memory.
+    """Keep pinned models hot + top priorities with recent activity hot.
 
-    Only refreshes models with recent activity (at least 1 request in the
-    last hour).  This respects user intent: if you stop using a model or
-    manually unload it, we don't reload it just because it has historical
-    priority.
+    Ordering matters:
+      1. Pinned models FIRST — reload any that were evicted (regardless
+         of recent activity; if the user pinned them, they stay hot)
+      2. Top priority models with recent activity — fill remaining slots
+         after pinned models
+
+    Budget: total post-refresh hot-count stays ≤ max_count.  Pinned
+    models get their slots first; priority models only fill what's left.
     """
-    # Refresh priority cache (also used by VRAM fallback protection)
+    pinned = pinned or []
+
+    nodes = registry.get_online_nodes()
+    if not nodes:
+        return
+
+    # --- Count currently-hot models, reserving slots for pinned -----------
+    hot_models: set[str] = set()
+    for n in nodes:
+        if n.ollama:
+            for m in n.ollama.models_loaded:
+                hot_models.add(m.name)
+    currently_hot_count = len(hot_models)
+
+    # --- Step 1: ensure pinned models are hot -----------------------------
+    loaded_this_cycle = 0
+    for model in pinned:
+        if loaded_this_cycle >= max_count:
+            break  # already filled the budget with pins alone
+        if model in hot_models:
+            continue  # already loaded, nothing to do
+        # Pinned-but-missing: ALWAYS reload (no recency check — user pinned it)
+        logger.info(
+            f"Preloader refresh: pinned model {model} was evicted — reloading"
+        )
+        if await _load_model_on_best_node(model, nodes, proxy, why="pinned-refresh"):
+            loaded_this_cycle += 1
+            await asyncio.sleep(2)
+            nodes = registry.get_online_nodes()
+            # Update hot_models snapshot after successful load
+            for n in nodes:
+                if n.ollama:
+                    for m in n.ollama.models_loaded:
+                        hot_models.add(m.name)
+
+    # --- Step 2: fill remaining slots with top priority models ------------
     priorities = await get_cached_priorities(trace_store)
     if not priorities:
         return
 
-    # Only reload models actually used in the last hour — respects user
-    # intent.  If a user unloads a model and stops using it, we don't
-    # auto-reload it just because it has historical priority.
+    # Respect user intent: only reload priorities with recent activity.
+    # Pinned models bypass this — they're reloaded regardless.
     recent_models = await trace_store.get_recently_used_models(seconds=3600)
 
-    # Only reload the top 3 priority models to avoid memory thrashing
-    top_priorities = [p for p in priorities[:3] if p["priority_score"] >= 10]
+    # Budget: total hot + loaded-this-cycle must stay ≤ max_count
+    remaining_budget = max_count - max(currently_hot_count, loaded_this_cycle)
+    if remaining_budget <= 0:
+        return
+
+    top_priorities = [
+        p for p in priorities if p["priority_score"] >= 10 and p["model"] not in pinned
+    ][: max_count]  # cap search scope
 
     for entry in top_priorities:
+        if remaining_budget <= 0:
+            break
         model = entry["model"]
-        score = entry["priority_score"]
-
-        # Respect user intent: skip models with no requests in the last
-        # hour.  If the user unloaded the model or stopped using it, we
-        # don't reload it just because it has historical priority.
+        if model in hot_models:
+            continue
         if model not in recent_models:
             logger.info(
-                f"Priority refresh: skipping {model} — no requests in last hour "
-                f"(user may have intentionally stopped using it)"
+                f"Preloader refresh: skipping {model} — no requests in last hour"
             )
             continue
-
-        nodes = registry.get_online_nodes()
-        if not nodes:
-            return
-
-        # Already loaded? Nothing to do.
-        already_loaded = any(
-            n.ollama and model in [m.name for m in n.ollama.models_loaded]
-            for n in nodes
-        )
-        if already_loaded:
-            continue
-
-        # Available on disk?
-        available_nodes = [
-            n for n in nodes
-            if n.ollama and model in n.ollama.models_available
-        ]
-        if not available_nodes:
-            continue
-
-        best = max(
-            available_nodes,
-            key=lambda n: n.memory.available_gb if n.memory else 0,
-        )
-        model_size = _estimate_model_size(model)
-        available = best.memory.available_gb if best.memory else 0
-        if available < model_size * 1.2:
-            continue  # Not enough memory — skip silently
-
-        logger.info(
-            f"Priority refresh: reloading evicted {model} "
-            f"(score={score}, ~{model_size:.0f}GB) on {best.node_id}"
-        )
-        try:
-            await proxy.pre_warm(best.node_id, model)
+        if await _load_model_on_best_node(
+            model, nodes, proxy, why=f"priority-refresh score={entry['priority_score']}",
+        ):
+            remaining_budget -= 1
             await asyncio.sleep(2)
-        except Exception as e:
-            logger.warning(f"Priority refresh: failed to reload {model}: {e}")
+            nodes = registry.get_online_nodes()

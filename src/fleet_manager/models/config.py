@@ -188,6 +188,25 @@ class ServerSettings(BaseSettings):
     # original content passes through (fail-open).
     context_compaction_curator_timeout_s: float = 60.0
 
+    # -- Model preloader + pinned models ------------------------------------
+    # Ollama (as of 0.20.4 on macOS) has a HARDCODED 3-model hot cap that
+    # no env override can raise.  The preloader's job is to keep the
+    # right 3 models warm without thrashing the cap.
+    #
+    # Pinned models are ALWAYS kept warm — if evicted, the preloader
+    # reloads them at its next refresh.  Useful for models you depend on
+    # across projects (e.g. gpt-oss:120b for scripts + gemma3:27b for
+    # vision).  Comma-separated list.
+    pinned_models: str = ""  # e.g. "gpt-oss:120b,gemma3:27b"
+    # Cap on how many models the preloader will load during startup or
+    # refresh.  Should be <= Ollama's hot cap to avoid self-inflicted
+    # thrashing.  3 is the Ollama 0.20.4 macOS default.
+    model_preload_max_count: int = 3
+    # Kill switch — set true to disable the preloader entirely (models
+    # load on-demand on first request).  Useful if preloader is causing
+    # unexpected eviction behavior.
+    disable_model_preloader: bool = False
+
     model_config = {"env_prefix": "FLEET_"}
 
 
