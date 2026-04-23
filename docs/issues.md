@@ -29,6 +29,46 @@ When an Ollama native image model (e.g., `x/z-image-turbo` at 12GB) is requested
 
 ---
 
+### Ollama watchdog can't escalate to `ollama serve` restart `OPEN`
+
+**File:** `src/fleet_manager/node/ollama_watchdog.py`
+**Severity:** High (root cause of multi-hour gpt-oss outages)
+
+The watchdog detects stuck `/api/chat` and kills `ollama runner` processes via `pkill -9`. That recovers the case where `ollama serve` is healthy but a runner is wedged. It does **not** recover the more pernicious case where `ollama serve` itself has accumulated state corruption — `/api/tags` keeps answering, runners keep getting kicked, but each respawn wedges immediately under load.
+
+**Observed:** 2026-04-22, ~5h `ollama serve` uptime under sustained load (Claude Code + dashboard briefing + concurrent `hf download`):
+
+- 28 consecutive `gpt-oss:120b` requests in debug log, all `status=retried`, all `err=ReadError('')`
+- Latencies climbing **monotonically** 50s → 130s → 190s → 250s → 310s → 370s → 452s → 458s → 512s → 572s
+  - That growing-tail pattern means requests stack serially behind a stuck runner; each one waits longer than the last for a slot that never opens
+- Watchdog log shows `KICKING stuck runner` firing on schedule (18:10:18) — kicks landing fine
+- `ollama serve` log: repeated `"llama runner process no longer running" sys=9 string="signal: killed"` — runners die before serving anything
+- `/api/tags` answers in 12ms throughout (so the watchdog's tags-probe stays green)
+- `/api/chat` returns `HTTP 000` after 30s
+- **Recovery only happened after manual `pkill -9 ollama serve` + relaunch** — runner kicks alone did nothing
+
+**Why the current design is insufficient:**
+
+1. **Treats one failure mode, not the whole space.** The watchdog assumes "runner stuck, serve healthy." It can't see the "serve healthy but every runner dies under load" mode that today's outage exhibited.
+2. **No escalation.** After N kicks with no recovery, it should escalate to bouncing `ollama serve`. Today it kicked, watched the next probe still fail, kicked again on the next cooldown, and so on indefinitely.
+3. **Cooldown vs probe-interval mismatch.** Probe every 60s, cooldown 120s — the watchdog is silent for 2 minutes after each kick while damage compounds. A growing-latency stack-up like today's was visible in the trace store within ~3 cycles, but the watchdog couldn't act on it.
+4. **No load-shedding.** When the watchdog detects the system is in trouble, it does nothing to slow incoming traffic. The dashboard briefing kept firing `num_predict=4800` requests every ~60s (because each failure cleared the cache, triggering immediate retry on next pageview) — the watchdog couldn't see that load source, let alone throttle it.
+
+**Proposed fixes (in order of complexity):**
+
+1. **Add escalation path** — after 3 consecutive kicks where the next probe still fails within the cooldown window, restart `ollama serve` itself (`pkill -9 -f "ollama serve"` then `open -a Ollama` on macOS, `systemctl restart ollama` on Linux). Add a higher-level cooldown (e.g. 30 min) on serve restarts to prevent a flap loop. *This alone would have ended today's outage in ~5 minutes instead of multiple hours.*
+2. **Add a third probe: per-cycle latency trend.** If the rolling p95 of `/api/chat` latency from the trace store grows monotonically over 3 cycles AND the absolute latency exceeds a threshold (e.g. 60s), treat that as a soft failure and trigger a kick BEFORE the request fully times out. Catches the stack-up pattern early.
+3. **Failed briefings must update the cache.** `dashboard.py:_generate_briefing` should write a "last failure" record to the cache when the LLM call fails, so the next pageview/poll doesn't immediately re-trigger another `num_predict=4800` request. The endless 60s briefing-spam loop was a major load multiplier today.
+4. **Load shedding via `/fleet/queue` 503**. When the watchdog has fired ≥1 kick in the last cycle, the router should return 503 Service Unavailable to non-critical traffic (everything except real user-facing requests) so health probes and briefings back off automatically. Hard to classify "critical" cleanly without explicit tags, but even a coarse "anything from `127.0.0.1` is internal → defer" rule would have helped.
+5. **Separate watchdog from per-node agent.** Today's watchdog runs in the same process as the heartbeat/collector. If the node agent itself wedges, no watchdog. A small standalone supervisor (launchd plist on macOS, systemd unit on Linux) is a better long-term home — survives node-agent restarts, can kill `ollama serve` cleanly, can use a different binary so it doesn't share the failure mode.
+6. **Stop using Ollama for what we don't need.** The briefing call could go to MLX (Qwen3-Coder-30B serves it in ~3s vs gpt-oss:120b's 50s+ when working). `nomic-embed-text` could move to an MLX-native embedding model. If Ollama's only tenant becomes "things users explicitly request via `/api/chat`," it's much harder to overload accidentally and the watchdog's blast radius shrinks proportionally.
+
+**Recommendation:** Land #1 + #3 immediately (small surface, big impact). #2 next as additional signal. #4–#6 are larger architectural moves to tee up.
+
+**Related:** Today's outage compounded with a `huggingface_hub` download running in parallel — disk-write saturation made runners crash even faster. Already noted in `docs/observations.md`. The watchdog has no awareness of disk I/O or other resource competition.
+
+---
+
 ## External Dependencies
 
 ### DiffusionKit `argmaxtools` crashes on macOS 26+ `FIXED` (local patch)
