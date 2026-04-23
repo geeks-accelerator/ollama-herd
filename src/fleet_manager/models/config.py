@@ -86,6 +86,22 @@ class ServerSettings(BaseSettings):
     # Retry
     max_retries: int = 2
 
+    # Device-aware scoring — see docs/plans/device-aware-scoring.md.
+    # When true, Signal 5 (role affinity) rewards nodes proportional to their
+    # memory bandwidth instead of using flat memory-size tiers, so a Mac
+    # Studio (800 GB/s) outscores a MacBook (300 GB/s) for big models even
+    # when both have plenty of free RAM.  Falls back to memory-tier scoring
+    # when a node's bandwidth is unknown (older agents / unrecognized chips).
+    bandwidth_aware_scoring: bool = True
+
+    # Capacity-normalized queue penalty.  When true, a queue of N on a node
+    # that's 4× faster than the fleet baseline is treated like a queue of
+    # N/4 for Signal 3's penalty calculation — so the scorer doesn't flip
+    # away from a fast node until it's genuinely saturated.  Combined with
+    # ``bandwidth_aware_scoring`` this produces load distribution roughly
+    # proportional to each node's bandwidth share of the fleet.
+    queue_penalty_bandwidth_normalize: bool = True
+
     # Debug request capture — writes every request's full lifecycle (client body,
     # translated Ollama body, response, tokens, timings, error) to a JSONL file at
     # ``<data_dir>/debug/requests.<date>.jsonl``.  Intended for internal fleets

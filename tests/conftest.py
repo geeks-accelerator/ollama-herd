@@ -50,6 +50,8 @@ def make_heartbeat(
     agent_version: str = "",
     connection_failures: int = 0,
     connection_failures_total: int = 0,
+    chip: str = "",
+    memory_bandwidth_gbps: float = 0.0,
 ) -> HeartbeatPayload:
     loaded = []
     for entry in loaded_models or []:
@@ -82,6 +84,8 @@ def make_heartbeat(
         agent_version=agent_version,
         connection_failures=connection_failures,
         connection_failures_total=connection_failures_total,
+        chip=chip,
+        memory_bandwidth_gbps=memory_bandwidth_gbps,
     )
 
 

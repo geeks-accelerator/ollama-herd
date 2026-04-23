@@ -67,7 +67,8 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 
 | Module | Purpose |
 |--------|---------|
-| `server/scorer.py` | 7-signal scoring: thermal, memory, queue, wait, affinity, availability, context fit |
+| `server/scorer.py` | 7-signal scoring: thermal, memory, queue, wait, affinity, availability, context fit — Signals 3/4/5 are bandwidth-aware when `memory_bandwidth_gbps` is populated |
+| `server/hardware_lookup.py` | Chip → memory bandwidth table (Apple Silicon + discrete GPUs) powering device-aware scoring |
 | `server/queue_manager.py` | Per `node:model` queues with dynamic concurrency + zombie reaper |
 | `server/streaming.py` | httpx proxy to Ollama + NDJSON↔SSE + auto-retry + context protection + thinking model inflate |
 | `server/health_engine.py` | 18 health checks (offline, degraded, memory, KV bloat, context waste, thrashing, timeouts, errors, retries, disconnects, streams, version, protection, zombies, connection failures, priority models) |

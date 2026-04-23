@@ -35,16 +35,26 @@ class NodeRegistry:
                     node_id=payload.node_id,
                     hardware=HardwareProfile(
                         node_id=payload.node_id,
+                        arch=payload.arch or "apple_silicon",
+                        chip=payload.chip,
                         memory_total_gb=payload.memory.total_gb,
                         cores_physical=payload.cpu.cores_physical,
+                        memory_bandwidth_gbps=payload.memory_bandwidth_gbps,
                         ollama_host=payload.ollama_host,
                     ),
                     ollama_base_url=ollama_url,
                 )
                 self._nodes[payload.node_id] = node
+                bw_str = (
+                    f", {payload.memory_bandwidth_gbps:.0f}GB/s"
+                    if payload.memory_bandwidth_gbps
+                    else ""
+                )
+                chip_str = f" [{payload.chip}]" if payload.chip else ""
                 logger.info(
-                    f"New node registered: {payload.node_id} "
-                    f"({payload.memory.total_gb:.0f}GB, {payload.cpu.cores_physical} cores, "
+                    f"New node registered: {payload.node_id}{chip_str} "
+                    f"({payload.memory.total_gb:.0f}GB, "
+                    f"{payload.cpu.cores_physical} cores{bw_str}, "
                     f"ollama={ollama_url})"
                 )
 
@@ -72,6 +82,16 @@ class NodeRegistry:
             node.connection_failures = payload.connection_failures
             node.connection_failures_total = payload.connection_failures_total
             node.last_heartbeat = time.time()
+            # Keep the hardware profile in sync — lets a node that starts
+            # before its chip detection completes (rare) pick up the numbers
+            # on a later heartbeat without needing to restart.
+            if payload.chip and node.hardware.chip != payload.chip:
+                node.hardware.chip = payload.chip
+            if (
+                payload.memory_bandwidth_gbps
+                and node.hardware.memory_bandwidth_gbps != payload.memory_bandwidth_gbps
+            ):
+                node.hardware.memory_bandwidth_gbps = payload.memory_bandwidth_gbps
             node.missed_heartbeats = 0
             node.status = NodeStatus.ONLINE
 

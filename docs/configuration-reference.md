@@ -98,6 +98,19 @@ Pre-warm proactively loads models on runner-up nodes before they're needed.
 | `FLEET_MAX_RETRIES` | `2` | Max retry attempts on node failure (before first chunk) |
 | `FLEET_STALE_TIMEOUT` | `600.0` | Seconds before in-flight requests are considered zombied and reaped (10 min) |
 
+### Device-Aware Scoring
+
+When on (the default), the scorer uses each node's detected chip and memory bandwidth to rank candidates — an M3 Ultra Mac Studio (800 GB/s) outscores a MacBook Pro (300 GB/s) for big models even when both have plenty of free RAM. Nodes with unknown bandwidth fall back to the original memory-tier behaviour, so older agents and unrecognized chips keep working without any operator action.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_BANDWIDTH_AWARE_SCORING` | `true` | Signal 5 (role affinity) scales with memory bandwidth instead of flat memory tiers |
+| `FLEET_QUEUE_PENALTY_BANDWIDTH_NORMALIZE` | `true` | Signal 3 (queue depth) divides penalty by each node's bandwidth share of the fleet — a queue of 4 on a 4× faster node is treated like a queue of 1 |
+
+See `docs/plans/device-aware-scoring.md` for the math and expected
+steady-state distribution under load (roughly proportional to each
+node's bandwidth share of the fleet).
+
 ### Debug Request Capture
 
 **DISABLED BY DEFAULT.** When enabled on an internal fleet, every inference request's full lifecycle is appended as one JSON line per request to `~/.fleet-manager/debug/requests.<date>.jsonl` on the router. Captures: original client body, translated Ollama body, reconstructed response, prompt/completion tokens, latency, TTFT, error, status, tags. Intended for reproducing failures on trusted fleets where you own every caller. **Never enable on a public gateway** — this records user prompts and responses verbatim.

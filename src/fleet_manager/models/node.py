@@ -133,6 +133,13 @@ class HeartbeatPayload(BaseModel):
     # Connection health: failures since last successful heartbeat
     connection_failures: int = 0
     connection_failures_total: int = 0  # Total since agent start
+    # Hardware identity — used for device-aware scoring.  ``chip`` is the raw
+    # string from the OS (e.g. "Apple M3 Ultra"); ``memory_bandwidth_gbps``
+    # comes from hardware_lookup.resolve_bandwidth().  Both are optional —
+    # older agents will report them as empty / 0, and the router falls back
+    # to memory-tier heuristics.  See docs/plans/device-aware-scoring.md.
+    chip: str = ""
+    memory_bandwidth_gbps: float = 0.0
 
 
 class HardwareProfile(BaseModel):
@@ -141,6 +148,10 @@ class HardwareProfile(BaseModel):
     chip: str = ""
     cores_physical: int = 0
     memory_total_gb: float = 0.0
+    # Unified-memory / GPU memory bandwidth in GB/s.  0 means unknown — the
+    # scorer falls back to memory-tier heuristics.  Populated by the collector
+    # via ``hardware_lookup.resolve_bandwidth(chip)`` on startup.
+    memory_bandwidth_gbps: float = 0.0
     ollama_host: str = "http://localhost:11434"
 
 

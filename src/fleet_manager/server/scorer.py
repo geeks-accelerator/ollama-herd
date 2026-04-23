@@ -45,7 +45,7 @@ class ScoringEngine:
 
             queue_key = f"{node.node_id}:{model}"
             depth = queue_depths.get(queue_key, 0)
-            s3 = self._score_queue_depth(depth)
+            s3 = self._score_queue_depth(depth, node=node, queue_depths=queue_depths)
             breakdown["queue_depth"] = s3
 
             s4 = self._score_wait_time(node, model, depth)
@@ -132,7 +132,9 @@ class ScoringEngine:
                 breakdown = {
                     "thermal": self._score_thermal(node, model),
                     "memory_fit": self._score_memory_fit(node, model),
-                    "queue_depth": self._score_queue_depth(depth),
+                    "queue_depth": self._score_queue_depth(
+                        depth, node=node, queue_depths=queue_depths
+                    ),
                     "wait_time": self._score_wait_time(node, model, depth),
                     "role_affinity": self._score_role_affinity(node, model),
                     "availability_trend": self._score_availability_trend(node),
@@ -264,24 +266,89 @@ class ScoringEngine:
             return 3.0
         return 0.0
 
-    def _score_queue_depth(self, depth: int) -> float:
-        """Signal 3: Penalty for busy queues."""
+    def _score_queue_depth(
+        self,
+        depth: int,
+        node: NodeState | None = None,
+        queue_depths: dict[str, int] | None = None,
+    ) -> float:
+        """Signal 3: Penalty for busy queues.
+
+        When ``settings.queue_penalty_bandwidth_normalize`` is enabled and the
+        node has known bandwidth, the penalty is scaled down by how much
+        faster this node is than the fleet median.  A queue of 4 on an 800
+        GB/s Mac Studio (when fleet median is 200 GB/s) is treated like a
+        queue of 1 for penalty purposes — so routing doesn't prematurely
+        flip away from a fast node that's only superficially busy.
+        """
+        if depth == 0:
+            return 0.0
+
+        normalize = (
+            node is not None
+            and getattr(self._s, "queue_penalty_bandwidth_normalize", False)
+            and node.hardware.memory_bandwidth_gbps > 0
+        )
+        if normalize:
+            median_bw = self._fleet_median_bandwidth()
+            if median_bw > 0:
+                relative = node.hardware.memory_bandwidth_gbps / median_bw
+                relative = max(0.25, min(4.0, relative))  # clamp to sane range
+                effective_depth = depth / relative
+            else:
+                effective_depth = float(depth)
+        else:
+            effective_depth = float(depth)
+
         penalty = min(
             self._s.score_queue_depth_max_penalty,
-            depth * self._s.score_queue_depth_penalty_per,
+            effective_depth * self._s.score_queue_depth_penalty_per,
         )
         return -penalty
 
+    def _fleet_median_bandwidth(self) -> float:
+        """Return the median known bandwidth across online nodes, or 0.
+
+        Used by Signal 3 to set the "baseline" capacity for normalization.
+        Cached briefly via the registry's get_all_nodes() — fleet size is
+        small so recomputing per scoring pass is fine.
+        """
+        bws = [
+            n.hardware.memory_bandwidth_gbps
+            for n in self._registry.get_all_nodes()
+            if n.hardware.memory_bandwidth_gbps > 0 and n.status != NodeStatus.OFFLINE
+        ]
+        if not bws:
+            return 0.0
+        bws.sort()
+        mid = len(bws) // 2
+        if len(bws) % 2 == 1:
+            return bws[mid]
+        return (bws[mid - 1] + bws[mid]) / 2.0
+
     def _score_wait_time(self, node: NodeState, model: str, depth: int) -> float:
-        """Signal 4: Penalty based on estimated wait time using historical latency."""
+        """Signal 4: Penalty based on estimated wait time.
+
+        Primary source is historical p75 latency from the latency store.
+        When that's unavailable (cold fleet, new model), falls back to a
+        bandwidth-derived throughput estimate so the first N requests to a
+        fresh deployment still route sensibly.
+        """
         if depth == 0 or self._latency_store is None:
             return 0.0
 
         p75_ms = self._latency_store.get_cached_percentile(node.node_id, model)
         if p75_ms is None:
-            # Heuristic: estimate from model size
+            # Cold-start fallback: derive expected tokens/sec from node's
+            # memory bandwidth and model size.  Empirically, prompt-eval
+            # tokens/sec on Apple Silicon scales roughly as bandwidth / model
+            # size, clamped to a sensible floor.
             model_size = self._estimate_model_size(model, node)
-            tokens_per_sec = max(1.0, 100.0 / max(1.0, model_size))
+            bw = node.hardware.memory_bandwidth_gbps
+            if bw > 0:
+                tokens_per_sec = max(10.0, bw * 1.2 / max(1.0, model_size / 10.0))
+            else:
+                tokens_per_sec = max(1.0, 100.0 / max(1.0, model_size))
             p75_ms = (100.0 / tokens_per_sec) * 1000
 
         est_wait_s = (depth * p75_ms) / 1000.0
@@ -289,17 +356,53 @@ class ScoringEngine:
         return -penalty
 
     def _score_role_affinity(self, node: NodeState, model: str) -> float:
-        """Signal 5: Large models prefer big nodes, small models prefer small nodes."""
+        """Signal 5: Match model size to node capability.
+
+        When ``settings.bandwidth_aware_scoring`` is enabled and the node has
+        known bandwidth, we reward it proportional to bandwidth (the true
+        prompt-eval bottleneck) instead of memory-size tiers.  Nodes without
+        known bandwidth fall back to the original memory-tier logic so older
+        agents and unrecognized chips keep working unchanged.
+
+        For big models (≥ score_role_large_threshold_gb):
+            Fast nodes get the full bonus (up to +25 at 800 GB/s).
+        For small models (< score_role_small_threshold_gb):
+            Slower, smaller nodes are preferred (keeps the big/fast node
+            free for heavy work).
+        """
         model_size = self._estimate_model_size(model, node)
         node_mem = node.hardware.memory_total_gb
+        bw = node.hardware.memory_bandwidth_gbps
 
-        if model_size > self._s.score_role_large_threshold_gb:
+        is_large = model_size > self._s.score_role_large_threshold_gb
+        is_small = model_size < self._s.score_role_small_threshold_gb
+
+        if getattr(self._s, "bandwidth_aware_scoring", False) and bw > 0:
+            # Scale continuously across the bandwidth range:
+            #   100 GB/s  →  ~7.5
+            #   200 GB/s  →  ~10
+            #   400 GB/s  →  ~15
+            #   800 GB/s  →  ~25 (clamped)
+            bw_bonus = min(25.0, 5.0 + bw / 40.0)
+            if is_large:
+                return bw_bonus
+            if is_small:
+                # Small models — invert preference so small/slow nodes
+                # score well.  Keeps the fast machine available for big
+                # work.  Floor at +3 so a small model on a fast node
+                # isn't completely unviable.
+                return max(3.0, 18.0 - bw_bonus * 0.6)
+            # Mid-size: partial bandwidth credit
+            return bw_bonus * 0.6
+
+        # Fallback path: original memory-tier scoring (unchanged behaviour)
+        if is_large:
             if node_mem >= 128:
                 return 15.0
             elif node_mem >= 32:
                 return 5.0
             return 0.0
-        elif model_size < self._s.score_role_small_threshold_gb:
+        elif is_small:
             if node_mem <= 32:
                 return 15.0
             elif node_mem <= 128:

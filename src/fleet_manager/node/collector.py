@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
+import platform
 import shutil
+import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -38,6 +41,74 @@ def _make_lan_reachable_url(ollama_host: str, lan_ip: str) -> str:
         port = parsed.port or 11434
         return f"http://{lan_ip}:{port}"
     return ollama_host
+
+
+@functools.lru_cache(maxsize=1)
+def _detect_chip() -> str:
+    """Return the CPU / SoC name as a best-effort human-readable string.
+
+    Cached for the agent's lifetime — chips don't change at runtime.  Returns
+    empty string when detection fails so the router's fallback heuristics
+    still work.
+
+    Platform coverage:
+        - macOS:  ``sysctl -n machdep.cpu.brand_string`` (e.g. "Apple M3 Ultra")
+        - Linux:  parses ``/proc/cpuinfo`` for ``model name``; appends
+                  first NVIDIA GPU from ``nvidia-smi`` when present
+        - Windows: ``wmic cpu get name`` (deprecated but widely available)
+    """
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            out = subprocess.check_output(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                timeout=2.0, text=True,
+            ).strip()
+            return out
+        if system == "Linux":
+            import contextlib
+            cpu = ""
+            with contextlib.suppress(OSError), open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        cpu = line.split(":", 1)[1].strip()
+                        break
+            gpu = ""
+            nvidia_smi = shutil.which("nvidia-smi")
+            if nvidia_smi:
+                with contextlib.suppress(subprocess.SubprocessError, OSError, IndexError):
+                    gpu = subprocess.check_output(
+                        [nvidia_smi, "--query-gpu=name", "--format=csv,noheader"],
+                        timeout=2.0, text=True,
+                    ).strip().splitlines()[0]
+            return f"{cpu} + {gpu}".strip(" +") if cpu or gpu else ""
+        if system == "Windows":
+            out = subprocess.check_output(
+                ["wmic", "cpu", "get", "name"],
+                timeout=2.0, text=True,
+            )
+            lines = [line.strip() for line in out.splitlines() if line.strip()]
+            # First line is the header "Name"
+            return lines[1] if len(lines) > 1 else ""
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        pass
+    return ""
+
+
+@functools.lru_cache(maxsize=1)
+def _detect_memory_bandwidth_gbps() -> float:
+    """Return estimated memory bandwidth in GB/s, or 0.0 when unknown.
+
+    Uses the chip string from ``_detect_chip()`` and looks it up in the
+    bandwidth table.  Cached for the agent's lifetime.
+    """
+    # Local import to avoid a node→server dependency at module-import time.
+    # The lookup table is pure data, so importing it from the server module
+    # doesn't pull in FastAPI or the router's async machinery.
+    from fleet_manager.server.hardware_lookup import resolve_bandwidth
+
+    bw = resolve_bandwidth(_detect_chip())
+    return bw if bw is not None else 0.0
 
 
 # Known mflux binaries and their model names
@@ -285,4 +356,6 @@ async def collect_heartbeat(
         image=image,
         transcription=transcription,
         vision_embedding=vision_embedding,
+        chip=_detect_chip(),
+        memory_bandwidth_gbps=_detect_memory_bandwidth_gbps(),
     )
