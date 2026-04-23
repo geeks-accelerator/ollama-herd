@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -58,12 +59,46 @@ async def lifespan(app: FastAPI):
             f"(admission: 1 in-flight + {mlx_proxy.max_queue_depth} queued max)"
         )
 
+    # Context Hygiene Compactor — shrinks bloated tool_result blocks before
+    # the main model sees them.  Closes the effective-context gap between
+    # local and hosted Claude on agent workloads.  See plan file.
+    context_compactor = None
+    if getattr(settings, "context_compaction_enabled", False):
+        from fleet_manager.common.ollama_client import OllamaClient
+        from fleet_manager.server.context_compactor import (
+            ContextCompactor,
+            OllamaCurator,
+            SummaryCache,
+        )
+
+        # Local Ollama on the router's machine hosts the curator model.
+        # (Could extend to point at a specific node's Ollama later.)
+        curator_client = OllamaClient(base_url="http://localhost:11434")
+        curator = OllamaCurator(
+            curator_client, model=settings.context_compaction_model,
+        )
+        summary_cache = SummaryCache(
+            Path(settings.data_dir).expanduser() / "context_summaries.sqlite",
+        )
+        context_compactor = ContextCompactor(
+            curator=curator,
+            cache=summary_cache,
+            budget_tokens=settings.context_compaction_budget_tokens,
+            preserve_last_turns=settings.context_compaction_preserve_turns,
+        )
+        logger.info(
+            f"Context Compactor enabled (curator={settings.context_compaction_model}, "
+            f"budget={settings.context_compaction_budget_tokens} tokens, "
+            f"preserve={settings.context_compaction_preserve_turns} turns)"
+        )
+
     # Store on app state
     app.state.registry = registry
     app.state.scorer = scorer
     app.state.queue_mgr = queue_mgr
     app.state.streaming_proxy = streaming_proxy
     app.state.mlx_proxy = mlx_proxy
+    app.state.context_compactor = context_compactor
     app.state.latency_store = latency_store
     app.state.trace_store = trace_store
     from fleet_manager.server.context_optimizer import ContextOptimizer

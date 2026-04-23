@@ -633,10 +633,30 @@ async def messages(
     # Pre-translate to Ollama body — stored in raw_body for _build_ollama_body
     ollama_body = _build_ollama_request_body(body, local_model)
 
+    # Context Hygiene Compactor — summarize bloated tool_result blocks
+    # BEFORE they reach the main model.  Only runs when configured +
+    # enabled; passes through unchanged when prompt is under budget.
+    # Critical: runs AFTER translation (so summaries replace Ollama-shape
+    # tool results) but BEFORE inference (so the main model sees the
+    # compacted version).  See plan + research docs.
+    compaction_report = None
+    compactor = getattr(request.app.state, "context_compactor", None)
+    if compactor is not None:
+        try:
+            compacted_messages, compaction_report = await compactor.maybe_compact(
+                ollama_body["messages"],
+            )
+            ollama_body["messages"] = compacted_messages
+        except Exception as exc:  # noqa: BLE001 — compactor failure must fail-open
+            logger.warning(
+                f"Context compactor failed, passing through: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
     inference_req = InferenceRequest(
         model=local_model,
         original_model=local_model,
-        messages=ollama_body["messages"],  # already Ollama-shaped
+        messages=ollama_body["messages"],  # already Ollama-shaped (possibly compacted)
         stream=body.stream,
         temperature=body.temperature if body.temperature is not None else 0.7,
         max_tokens=body.max_tokens,
@@ -645,6 +665,15 @@ async def messages(
         tags=tags,
     )
     rid = inference_req.request_id[:8]
+
+    # Log compaction outcome for observability
+    if compaction_report and compaction_report.triggered:
+        logger.info(
+            f"Anthropic[{rid}] compaction: "
+            f"{compaction_report.tokens_before}→{compaction_report.tokens_after} "
+            f"tokens ({compaction_report.ratio:.1%}), "
+            f"{len(compaction_report.compactions)} blocks summarized"
+        )
 
     # MLX backend fast-path — when the resolved model has an `mlx:` prefix, bypass
     # the scoring + queue pipeline and forward directly to mlx_lm.server.  This is

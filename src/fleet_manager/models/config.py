@@ -162,6 +162,32 @@ class ServerSettings(BaseSettings):
     # Seconds to advertise in the Retry-After header when shedding load.
     mlx_retry_after_seconds: int = 10
 
+    # -- Context Hygiene Compactor ------------------------------------------
+    # Server-side middleware that summarizes bloated tool_result blocks
+    # (Read/Bash/WebFetch output) before they reach the main model.
+    # Closes the effective-context gap between local LLMs and hosted Claude
+    # on agent workloads.  See docs/experiments/context-bloat-analysis.py
+    # for the opportunity measurement, and src/fleet_manager/server/
+    # context_compactor.py for the implementation.
+    #
+    # Default OFF during soak; flip after validation.  Requires a curator
+    # model (default gpt-oss:120b on the local Ollama) to be available.
+    context_compaction_enabled: bool = False
+    # Budget above which compaction fires.  Below this, pass through
+    # unchanged.  Measured: median real Claude Code request is ~32K tokens,
+    # 83% exceed 20K.  Tune based on model effective context.
+    context_compaction_budget_tokens: int = 20_000
+    # Curator model — must be an Ollama model id reachable via the local
+    # Ollama client.  gpt-oss:120b works well; qwen3-coder:30b is faster.
+    context_compaction_model: str = "gpt-oss:120b"
+    # Recent turns to preserve verbatim.  Too low and compaction damages the
+    # model's active reasoning context; too high and we don't compact enough
+    # to help.
+    context_compaction_preserve_turns: int = 3
+    # Curator timeout per summary call.  Failures return None and the
+    # original content passes through (fail-open).
+    context_compaction_curator_timeout_s: float = 60.0
+
     model_config = {"env_prefix": "FLEET_"}
 
 
