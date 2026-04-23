@@ -1,11 +1,36 @@
 # MLX Prompt Pruning — Strip Unused Tools from Forwarded Prompts
 
-**Status**: Proposed
+**Status**: ⚠️ DEFERRED INDEFINITELY (2026-04-22) — see "Why this is deprioritized" below.
 **Created**: 2026-04-22
+**Updated**: 2026-04-22 — research into Claude Code internals showed pruning's win is much smaller than the original analysis assumed.
 **Related**:
-- `docs/plans/mlx-prompt-cache-optimization.md` — companion plan, complementary
-- `src/fleet_manager/server/anthropic_translator.py` — where pruning would integrate
+- `docs/plans/mlx-prompt-cache-optimization.md` — the work that subsumed this plan's purpose; see its "How Anthropic does this" section
+- `src/fleet_manager/server/anthropic_translator.py` — where pruning would integrate, if revived
 - `docs/observations.md` — discovery write-up (tools=27 but only 3 ever called)
+
+---
+
+## Why this is deprioritized
+
+This plan was written under the assumption that **tool schemas were a per-turn cost worth fighting**. Subsequent research into how Anthropic's API and Claude Code's request-building work showed that's only true when prompt caching is broken:
+
+- **Hosted Claude users** get tools cached server-side via `cache_control` markers — tools cost ~10% of nominal rate after turn 1, essentially free.
+- **Our MLX setup** with the cch normalization fix (Phase 1+2 of `mlx-prompt-cache-optimization.md`) puts tools in the byte-stable cached prefix → 0% additional cost on cached turns.
+
+So the pruning win shrinks to:
+
+- **Turn 1 (cold cache):** save 5-7K tokens of dead-weight tools = ~15s faster cold start. **Real, but bounded.**
+- **Turn 2+ (warm cache):** save ~0 tokens — those tokens were already free. **Marginal.**
+
+A better answer for the cold-start problem is **prompt cache warming** (Phase 4 of the cache plan): send a synthetic warm-up request when a session is first established so turn 1 is also cached. Cheaper to build, no risk of stripping a tool the model wanted to call, no cache-stability concerns.
+
+**Reconsider this plan only if:** real Claude Code cache hit rate stays low (<50%) even after Phase 3 of the cache plan finds and normalizes all per-request fingerprints. In that scenario, mlx's cache is fundamentally not helping us and we'd need this plan's per-request strip-down. Until then, leave the work undone.
+
+---
+
+> _The original plan content follows for reference — it remains internally consistent under its original assumptions._
+
+---
 
 ---
 
