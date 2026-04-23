@@ -766,3 +766,29 @@ def test_cache_hit_rate_is_none_in_queue_info_before_observations():
     proxy._completed["model-a"] = 1
     info = proxy.get_queue_info()
     assert info["mlx-local:mlx:model-a"]["cache_hit_rate"] is None
+
+
+def test_to_openai_body_sets_include_usage_when_streaming():
+    """Streaming requests must ask mlx_lm.server for the final usage chunk
+    so we can measure cache_hit_rate on the path Claude Code actually uses."""
+    req = _make_request(
+        raw_body={
+            "model": "mlx:foo", "messages": [], "stream": True,
+        },
+    )
+    body = MlxProxy._to_openai_body(req)
+    assert body["stream"] is True
+    assert body.get("stream_options") == {"include_usage": True}
+
+
+def test_to_openai_body_no_stream_options_for_non_streaming():
+    """Non-streaming responses already include usage at top level — don't
+    add the stream_options field for those (server-side no-op but cleaner)."""
+    req = _make_request(
+        raw_body={
+            "model": "mlx:foo", "messages": [], "stream": False,
+        },
+    )
+    body = MlxProxy._to_openai_body(req)
+    assert body["stream"] is False
+    assert "stream_options" not in body

@@ -607,6 +607,7 @@ class MlxProxy:
             f"messages={len(raw.get('messages') or [])}"
         )
 
+        is_stream = raw.get("stream", True)
         out: dict = {
             "model": outbound_model,
             # Translate Ollama-shaped messages → OpenAI shape mlx_lm.server
@@ -616,8 +617,18 @@ class MlxProxy:
             # arguments must be string" + "Only 'text' content type
             # supported" failures in docs/issues.md.
             "messages": _ollama_messages_to_openai(raw.get("messages", [])),
-            "stream": raw.get("stream", True),
+            "stream": is_stream,
         }
+        if is_stream:
+            # OpenAI spec: streaming responses omit `usage` by default.  Set
+            # this flag so mlx_lm.server emits a final usage-only chunk after
+            # the content stream completes.  Without it, our cache-hit-rate
+            # observability (cached_tokens) is blind for streaming requests
+            # — and Claude Code traffic is overwhelmingly streaming, so
+            # without this we can't measure the cache benefit for the path
+            # that matters most.  See docs/plans/mlx-prompt-cache-optimization.md
+            # Phase 3 — this is the fix that actually surfaces the data.
+            out["stream_options"] = {"include_usage": True}
         # Flatten Ollama options to OpenAI top-level params
         if "num_predict" in options:
             out["max_tokens"] = options["num_predict"]
