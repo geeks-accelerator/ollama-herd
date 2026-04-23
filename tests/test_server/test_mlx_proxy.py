@@ -9,6 +9,7 @@ import pytest
 from fleet_manager.models.request import InferenceRequest, RequestFormat
 from fleet_manager.server.anthropic_translator import AnthropicSSEState
 from fleet_manager.server.mlx_proxy import (
+    MlxModelMissingError,
     MlxProxy,
     _MlxToolState,
     build_anthropic_non_streaming_response,
@@ -92,6 +93,35 @@ def test_to_openai_body_preserves_messages_and_stream():
     body = MlxProxy._to_openai_body(req)
     assert body["messages"] == [{"role": "user", "content": "hi"}]
     assert body["stream"] is True
+
+
+# ---------------------------------------------------------------------------
+# MlxModelMissingError guard — defends against the empty-model 404 incident
+# ---------------------------------------------------------------------------
+
+
+def test_to_openai_body_raises_on_empty_model():
+    """Empty model name must raise instead of letting mlx_lm.server 404 us."""
+    req = _make_request(model="", original_model="")
+    with pytest.raises(MlxModelMissingError) as exc_info:
+        MlxProxy._to_openai_body(req)
+    assert "empty model" in str(exc_info.value).lower()
+    # The error message should include the request_id for traceability
+    assert req.request_id in str(exc_info.value)
+
+
+def test_to_openai_body_raises_on_just_mlx_prefix():
+    """`mlx:` with nothing after strips to empty → must raise."""
+    req = _make_request(model="mlx:", original_model="mlx:")
+    with pytest.raises(MlxModelMissingError):
+        MlxProxy._to_openai_body(req)
+
+
+def test_to_openai_body_passes_with_normal_model():
+    """Sanity: well-formed request must not raise."""
+    req = _make_request()  # default has mlx:Test-Model-4bit
+    body = MlxProxy._to_openai_body(req)
+    assert body["model"] == "Test-Model-4bit"
 
 
 def test_to_openai_body_converts_ollama_tools_to_openai_schema():

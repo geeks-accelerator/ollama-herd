@@ -59,6 +59,17 @@ def is_mlx_model(model: str) -> bool:
     return model.startswith("mlx:")
 
 
+class MlxModelMissingError(ValueError):
+    """Raised when the proxy would send an empty/missing model name to mlx_lm.server.
+
+    Defends against the historical 33-failure incident where ``model=""`` was
+    being sent and mlx_lm.server returned a confusing 404 with
+    ``"[Errno 2] No such file or directory: 'config.json'"``.  Catching this
+    upstream lets the route return a clear 500 telling operators to check the
+    model map / inference_req.model.
+    """
+
+
 class MlxProxy:
     """Minimal OpenAI-compat → Anthropic SSE bridge for a single mlx_lm.server."""
 
@@ -212,12 +223,39 @@ class MlxProxy:
           - Strip any MLX prefix from the model name (mlx_lm doesn't expect it)
           - Tool schemas: Ollama uses {function: {name, parameters}};
             OpenAI uses {type: "function", function: {...}} — convert
+
+        Raises:
+            MlxModelMissingError: if ``request.model`` is empty/missing after
+                stripping the ``mlx:`` prefix.  mlx_lm.server would otherwise
+                respond with a confusing 404 (``[Errno 2] config.json``); we
+                fail fast with a clear message instead.
         """
         raw = request.raw_body or {}
         options = raw.get("options", {}) or {}
 
+        outbound_model = strip_mlx_prefix(request.model)
+        if not outbound_model:
+            # Defensive: 33 historical failures (2026-04-22) all came from
+            # this exact case — empty model string sent to mlx_lm.server.
+            # Root cause was elusive; this guard surfaces it loudly if it
+            # ever recurs.  See docs/issues.md for the original incident.
+            raise MlxModelMissingError(
+                f"MlxProxy would send empty model name to mlx_lm.server. "
+                f"InferenceRequest.model={request.model!r} request_id="
+                f"{request.request_id} — check FLEET_ANTHROPIC_MODEL_MAP "
+                f"and the route's local_model resolution."
+            )
+        # One INFO line per outbound request — invaluable when diagnosing
+        # mismatched model names between herd and mlx_lm.server.  Cheap.
+        logger.info(
+            f"MLX proxy: forwarding request_id={request.request_id} "
+            f"model={outbound_model} stream={raw.get('stream', True)} "
+            f"tools={len(raw.get('tools') or [])} "
+            f"messages={len(raw.get('messages') or [])}"
+        )
+
         out: dict = {
-            "model": strip_mlx_prefix(request.model),
+            "model": outbound_model,
             "messages": raw.get("messages", []),
             "stream": raw.get("stream", True),
         }

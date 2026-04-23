@@ -40,6 +40,7 @@ from fleet_manager.server.anthropic_translator import (
     ollama_chunk_to_anthropic_events,
 )
 from fleet_manager.server.mlx_proxy import (
+    MlxModelMissingError,
     build_anthropic_non_streaming_response,
     is_mlx_model,
     openai_sse_to_anthropic_events,
@@ -240,6 +241,26 @@ async def _serve_via_mlx(
         try:
             try:
                 openai_resp = await mlx_proxy.completions_non_streaming(inference_req)
+            except MlxModelMissingError as exc:
+                # Defensive: model name went missing somewhere in the route.
+                # Surface as 500 with a clear operator-facing message instead
+                # of letting it fall through to a confusing 502.
+                ns_error = exc
+                logger.error(f"Anthropic[{rid}] MLX model-missing guard fired: {exc}")
+                record_trace_mlx(
+                    trace_store, inference_req, t_start, None, "failed",
+                    error_message=str(exc),
+                )
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "type": "error",
+                        "error": {
+                            "type": "api_error",
+                            "message": str(exc),
+                        },
+                    },
+                )
             except Exception as exc:
                 ns_error = exc
                 logger.exception(f"Anthropic[{rid}] MLX non-streaming failed: {exc}")
