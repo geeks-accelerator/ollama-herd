@@ -9,7 +9,60 @@ belongs to which of my tool calls" in the same turn.
 
 from __future__ import annotations
 
-from fleet_manager.server.anthropic_translator import anthropic_to_ollama_messages
+from fleet_manager.server.anthropic_translator import (
+    _normalize_cache_busting_tokens,
+    anthropic_system_to_text,
+    anthropic_to_ollama_messages,
+)
+
+# ---------------------------------------------------------------------------
+# Cache-busting token normalization (cch=X → NORMALIZED)
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_cch_token_stripped():
+    """Claude Code's per-request ``cch=<hex>`` fingerprint gets normalized."""
+    inp = "x-anthropic-billing-header: cc_version=2.1.117.bc2; cc_entrypoint=cli; cch=3247f;"
+    out = _normalize_cache_busting_tokens(inp)
+    assert "cch=3247f" not in out
+    assert "cch=NORMALIZED" in out
+    # Rest of the header is preserved
+    assert "cc_version=2.1.117.bc2" in out
+    assert "cc_entrypoint=cli" in out
+
+
+def test_normalize_cch_stable_across_invocations():
+    """Different fingerprints collapse to the same normalized string — this
+    is what unlocks mlx_lm.server prompt cache hits on subsequent turns."""
+    a = _normalize_cache_busting_tokens("cch=3247f;")
+    b = _normalize_cache_busting_tokens("cch=f1ace;")
+    c = _normalize_cache_busting_tokens("cch=40156;")
+    assert a == b == c == "cch=NORMALIZED;"
+
+
+def test_normalize_cch_leaves_unmatched_text_alone():
+    """Prompts without a cch= pass through unchanged."""
+    inp = "You are a helpful assistant. Use tools when needed."
+    assert _normalize_cache_busting_tokens(inp) == inp
+
+
+def test_system_to_text_normalizes_cch_in_string_form():
+    system = "billing cch=abc12; you are a helpful assistant"
+    out = anthropic_system_to_text(system)
+    assert "cch=abc12" not in out
+    assert "cch=NORMALIZED" in out
+
+
+def test_system_to_text_normalizes_cch_in_block_array():
+    """The text-block-array form of system prompt also gets normalized."""
+    system = [
+        {"type": "text", "text": "header cch=deadbeef;"},
+        {"type": "text", "text": "rules"},
+    ]
+    out = anthropic_system_to_text(system)
+    assert "cch=deadbeef" not in out
+    assert "cch=NORMALIZED" in out
+    assert "rules" in out  # other text preserved
 
 # ---------------------------------------------------------------------------
 # Basic shape — plain text

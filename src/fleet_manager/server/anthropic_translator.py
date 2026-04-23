@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import Iterator
@@ -31,20 +32,44 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-# --- Request: Anthropic → Ollama --------------------------------------------
+# Claude Code injects a per-request fingerprint hash into the system prompt:
+#   "x-anthropic-billing-header: cc_version=2.1.117.bc2; cc_entrypoint=cli; cch=3247f;"
+# That ``cch=XXXXX`` 5-char hex token CHANGES on every request — and breaks
+# mlx_lm.server's prompt cache (which requires byte-exact prefix match).
+# Without normalization, every Claude Code turn re-processes the entire
+# 25K-token prompt from scratch, even though only the last user message is new.
+# Stripping/normalizing this single token unlocks ~10× cache-hit speedup on
+# turn 2+ of a session.  See docs/observations.md for the discovery write-up.
+_CCH_RE = re.compile(r"cch=[a-f0-9]+;")
+
+
+def _normalize_cache_busting_tokens(text: str) -> str:
+    """Replace per-request fingerprints with a stable placeholder.
+
+    Currently handles:
+      - ``cch=<hex>;`` from Claude Code's billing header
+
+    Pure-string transformation; safe to call on any prompt text.
+    """
+    return _CCH_RE.sub("cch=NORMALIZED;", text)
 
 
 def anthropic_system_to_text(system: str | list[dict[str, Any]] | None) -> str:
-    """Flatten Anthropic system prompt (string or text-block array) to a string."""
+    """Flatten Anthropic system prompt (string or text-block array) to a string.
+
+    Also normalizes Claude Code's per-request ``cch=`` fingerprint so the
+    output is stable across turns of the same session — critical for
+    mlx_lm.server's prompt cache to actually hit on subsequent turns.
+    """
     if not system:
         return ""
     if isinstance(system, str):
-        return system
+        return _normalize_cache_busting_tokens(system)
     parts = []
     for block in system:
         if isinstance(block, dict) and block.get("type") == "text":
             parts.append(block.get("text", ""))
-    return "\n".join(p for p in parts if p)
+    return _normalize_cache_busting_tokens("\n".join(p for p in parts if p))
 
 
 def _coerce_blocks(content: Any) -> list[dict[str, Any]]:
