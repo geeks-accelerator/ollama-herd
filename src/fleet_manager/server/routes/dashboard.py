@@ -1982,9 +1982,18 @@ function renderQueues(queues) {
     const backendColor = backend === 'mlx' ? 'rgba(168,85,247,0.85)' : 'rgba(148,163,184,0.65)';
     const backendBg = backend === 'mlx' ? 'rgba(168,85,247,0.18)' : 'rgba(148,163,184,0.12)';
     const backendBadge = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${backendBg};color:${backendColor};text-transform:uppercase">${backend}</span>`;
+    // MLX-only: rolling prompt-cache hit rate (fraction in [0, 1] or null).
+    // Color coded: ≥80% green, ≥40% yellow, <40% red — see plan
+    // docs/plans/mlx-prompt-cache-optimization.md for rationale.
+    let cacheChip = '';
+    if (q.cache_hit_rate !== undefined && q.cache_hit_rate !== null) {
+      const pct = Math.round(q.cache_hit_rate * 100);
+      const color = pct >= 80 ? 'var(--green)' : pct >= 40 ? 'var(--yellow)' : 'var(--red)';
+      cacheChip = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-left:6px;background:${color}22;color:${color}" title="Rolling prompt-cache hit rate (last 50 requests)">CACHE ${pct}%</span>`;
+    }
     return `
       <div class="queue-card">
-        <div class="queue-name"><span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${typeColors[rt]}22;color:${typeColors[rt]}">${typeLabels[rt]}</span>${backendBadge}${key}</div>
+        <div class="queue-name"><span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${typeColors[rt]}22;color:${typeColors[rt]}">${typeLabels[rt]}</span>${backendBadge}${key}${cacheChip}</div>
         <div class="queue-stats">
           <div class="queue-stat"><div class="num" style="color:${pendingColor}">${q.pending}</div><div class="lbl">Pending</div></div>
           <div class="queue-stat"><div class="num" style="color:${inflightColor}">${q.in_flight}/${q.concurrency || 1}</div><div class="lbl">In-Flight</div></div>

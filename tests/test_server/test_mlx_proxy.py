@@ -671,3 +671,98 @@ def test_get_queue_info_surfaces_rejected_count():
     assert entry["completed"] == 10
     assert entry["backend"] == "mlx"
     assert entry["max_queue_depth"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Cache-hit-rate observability — Phase 2 of mlx-prompt-cache-optimization
+# ---------------------------------------------------------------------------
+
+
+def test_pop_token_counts_returns_three_tuple():
+    """Tuple is (prompt, completion, cached) — cached may be None for older mlx."""
+    from fleet_manager.server.mlx_proxy import MlxProxy, _mlx_request_tokens
+    proxy = MlxProxy("http://test")
+    _mlx_request_tokens["req-1"] = (1234, 56, 1100)
+    result = proxy.pop_token_counts("req-1")
+    assert result == (1234, 56, 1100)
+    # Drained from the global dict
+    assert "req-1" not in _mlx_request_tokens
+
+
+def test_pop_token_counts_missing_request_returns_all_none():
+    """Missing request_id returns the canonical (None, None, None) tuple."""
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test")
+    assert proxy.pop_token_counts("never-existed") == (None, None, None)
+
+
+def test_cache_hit_rate_none_when_no_observations():
+    """Fresh proxy has no observations → returns None, not 0%."""
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test")
+    assert proxy.get_cache_hit_rate() is None
+
+
+def test_cache_hit_rate_computed_from_pop():
+    """pop_token_counts() folds cached observations into rolling stats."""
+    from fleet_manager.server.mlx_proxy import MlxProxy, _mlx_request_tokens
+    proxy = MlxProxy("http://test")
+    # Three requests: 80% hit, 90% hit, 50% hit
+    for rid, (p, c) in [("a", (10000, 8000)), ("b", (10000, 9000)), ("c", (10000, 5000))]:
+        _mlx_request_tokens[rid] = (p, 50, c)
+        proxy.pop_token_counts(rid)
+    # Weighted: (8000 + 9000 + 5000) / (10000*3) = 22000/30000 ≈ 73.3%
+    rate = proxy.get_cache_hit_rate()
+    assert rate is not None
+    assert abs(rate - 22000/30000) < 0.001
+
+
+def test_cache_hit_rate_excludes_observations_with_no_cached_tokens():
+    """If mlx didn't report cached_tokens, observation is skipped (not 0%)."""
+    from fleet_manager.server.mlx_proxy import MlxProxy, _mlx_request_tokens
+    proxy = MlxProxy("http://test")
+    _mlx_request_tokens["a"] = (10000, 50, None)  # mlx didn't report
+    proxy.pop_token_counts("a")
+    # Should NOT register as 0% hit — should remain "no data"
+    assert proxy.get_cache_hit_rate() is None
+
+
+def test_cache_hit_rate_rolling_window_caps_at_50():
+    """Window keeps the most recent 50 observations to reflect current state."""
+    from fleet_manager.server.mlx_proxy import MlxProxy, _mlx_request_tokens
+    proxy = MlxProxy("http://test")
+    # First 50 observations: 0% hit
+    for i in range(50):
+        _mlx_request_tokens[f"old-{i}"] = (1000, 50, 0)
+        proxy.pop_token_counts(f"old-{i}")
+    assert proxy.get_cache_hit_rate() == 0.0
+    # 51st observation: 100% hit — should evict the oldest 0%
+    _mlx_request_tokens["new-1"] = (1000, 50, 1000)
+    proxy.pop_token_counts("new-1")
+    # Window now has 49 zeros + 1 perfect → rate = 1000 / (49*1000 + 1000) = 0.02
+    rate = proxy.get_cache_hit_rate()
+    assert rate is not None
+    assert abs(rate - 0.02) < 0.001
+
+
+def test_cache_hit_rate_surfaced_in_get_queue_info():
+    """The /fleet/queue endpoint must expose cache_hit_rate per MLX entry."""
+    from fleet_manager.server.mlx_proxy import MlxProxy, _mlx_request_tokens
+    proxy = MlxProxy("http://test", max_queue_depth=3)
+    proxy._completed["model-a"] = 5
+    # Seed cache observations
+    _mlx_request_tokens["x"] = (1000, 10, 800)
+    proxy.pop_token_counts("x")
+    info = proxy.get_queue_info()
+    entry = info["mlx-local:mlx:model-a"]
+    assert "cache_hit_rate" in entry
+    assert entry["cache_hit_rate"] == 0.8
+
+
+def test_cache_hit_rate_is_none_in_queue_info_before_observations():
+    """Before any cache-fold, the field is present but None (not 0)."""
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test")
+    proxy._completed["model-a"] = 1
+    info = proxy.get_queue_info()
+    assert info["mlx-local:mlx:model-a"]["cache_hit_rate"] is None

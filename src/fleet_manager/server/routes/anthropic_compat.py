@@ -313,6 +313,18 @@ async def _serve_via_mlx(
             )
             return JSONResponse(content=ns_response_body, headers=headers)
         finally:
+            # Drain captured token counts (also folds cached_tokens into
+            # the proxy's rolling cache-hit-rate stats).  Tuple is
+            # (prompt, completion, cached); any may be None.
+            ns_prompt_tok, _ns_completion_tok, ns_cached_tok = mlx_proxy.pop_token_counts(
+                inference_req.request_id
+            )
+            if not ns_error and ns_prompt_tok and ns_cached_tok:
+                logger.info(
+                    f"Anthropic[{rid}] MLX non-stream: "
+                    f"prompt_tok={ns_prompt_tok} cached_tok={ns_cached_tok} "
+                    f"({100*ns_cached_tok/ns_prompt_tok:.0f}% hit)"
+                )
             if debug_enabled and debug_data_dir:
                 debug_log.append_request(
                     enabled=True,
@@ -329,6 +341,10 @@ async def _serve_via_mlx(
                         "error": str(ns_error) if ns_error else None,
                         "latency_ms": int((time.time() - t_start) * 1000),
                         "ttft_ms": None,
+                        # Cache observability — see plan
+                        # docs/plans/mlx-prompt-cache-optimization.md.
+                        "prompt_tokens": ns_prompt_tok,
+                        "cached_tokens": ns_cached_tok,
                         # Real Anthropic body the client sent — not the
                         # internal translated form. This is what replay POSTs.
                         "client_body": body.model_dump(by_alias=True, exclude_none=True),
@@ -462,7 +478,11 @@ async def _serve_via_mlx(
             # StreamingResponse — guaranteed to fire whether iteration
             # completed, raised, or was cancelled by a client disconnect.
             mlx_proxy._release_slot(stream_model_key)
-            mlx_proxy.pop_token_counts(inference_req.request_id)
+            # pop_token_counts returns (prompt, completion, cached); side-
+            # effect folds cached_tokens into the proxy's rolling stats.
+            prompt_tok, _completion_tok, cached_tok = mlx_proxy.pop_token_counts(
+                inference_req.request_id
+            )
             status = "failed" if error else "completed"
             err_msg = str(error) if error else None
             record_trace_mlx(
@@ -471,9 +491,16 @@ async def _serve_via_mlx(
             )
             elapsed_ms = (time.time() - t_start) * 1000
             if error is None:
+                # Include cache hit rate when available — instantly visible
+                # in the live router log when watching real Claude Code load.
+                cache_pct = (
+                    f" cache={100*cached_tok/prompt_tok:.0f}%"
+                    if cached_tok and prompt_tok else ""
+                )
                 logger.info(
                     f"Anthropic[{rid}] MLX stream done: tools={len(state.emitted_tools)} "
-                    f"output_tok≈{state.output_tokens} elapsed_ms={elapsed_ms:.0f}"
+                    f"output_tok≈{state.output_tokens} prompt_tok={prompt_tok} "
+                    f"cached_tok={cached_tok}{cache_pct} elapsed_ms={elapsed_ms:.0f}"
                 )
             if debug_enabled and debug_data_dir:
                 ttft_ms = (
@@ -497,6 +524,13 @@ async def _serve_via_mlx(
                         "ttft_ms": ttft_ms,
                         "completion_tokens": state.output_tokens,
                         "tool_calls_emitted": len(state.emitted_tools),
+                        # Cache observability — see plan
+                        # docs/plans/mlx-prompt-cache-optimization.md.
+                        # Captured for replay/analysis: the prompt-cache hit
+                        # rate per request is what tells us if the cch=
+                        # normalization is paying off in production.
+                        "prompt_tokens": prompt_tok,
+                        "cached_tokens": cached_tok,
                         "client_body": body.model_dump(by_alias=True, exclude_none=True),
                         "ollama_body": None,
                         "backend": "mlx",

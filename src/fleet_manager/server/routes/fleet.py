@@ -138,6 +138,10 @@ async def fleet_queue(request: Request):
                 "failed": q.get("failed", 0),
                 "rejected": q.get("rejected", 0),
                 "max_queue_depth": q.get("max_queue_depth"),
+                # Rolling MLX prompt-cache hit rate (fraction in [0, 1]).
+                # None until the proxy has observations; clients should
+                # treat as "no data yet" rather than 0%.
+                "cache_hit_rate": q.get("cache_hit_rate"),
             }
             for key, q in queue_info.items()
         },

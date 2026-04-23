@@ -39,9 +39,19 @@ from fleet_manager.models.request import InferenceRequest, RequestFormat
 
 logger = logging.getLogger(__name__)
 
-# Request-queue-equivalent tracking for MLX so headers + usage reporting work
-# the same as the Ollama path.  Keyed by request_id.
-_mlx_request_tokens: dict[str, tuple[int | None, int | None]] = {}
+# Per-request token counts captured from mlx_lm.server's usage field.
+# Keyed by request_id.  Tuple shape: (prompt_tokens, completion_tokens,
+# cached_tokens).  cached_tokens is the slice of prompt_tokens that hit
+# mlx_lm.server's prompt cache (i.e. were skipped during prompt processing
+# because the prefix matched a previously-cached prompt).
+#
+# Cache-hit-rate computation (per request): cached_tokens / prompt_tokens.
+# The proxy aggregates these into rolling per-model stats so the dashboard
+# can show "cache hit: 87%" alongside the queue depth.
+#
+# See docs/plans/mlx-prompt-cache-optimization.md for why this matters
+# (10-50× turn 2+ speedup when cache hits work end-to-end).
+_mlx_request_tokens: dict[str, tuple[int | None, int | None, int | None]] = {}
 
 
 def strip_mlx_prefix(model: str) -> str:
@@ -232,8 +242,62 @@ class MlxProxy:
 
     def pop_token_counts(
         self, request_id: str
-    ) -> tuple[int | None, int | None]:
-        return _mlx_request_tokens.pop(request_id, (None, None))
+    ) -> tuple[int | None, int | None, int | None]:
+        """Drain captured token counts for a finished request.
+
+        Returns (prompt_tokens, completion_tokens, cached_tokens).  Any
+        component may be None if mlx_lm.server didn't report it (older
+        versions don't expose ``prompt_tokens_details.cached_tokens``).
+
+        Side effect: also folds the cache_hit observation into the
+        per-model rolling stats so the dashboard can show hit rate.
+        """
+        result = _mlx_request_tokens.pop(request_id, (None, None, None))
+        prompt, _completion, cached = result
+        if prompt is not None and cached is not None:
+            self._record_cache_observation(prompt, cached)
+        return result
+
+    def _record_cache_observation(self, prompt_tokens: int, cached_tokens: int) -> None:
+        """Append a cache hit observation to the per-model rolling window.
+
+        Stored as (prompt_tokens, cached_tokens) tuples; the rolling
+        window is fixed size (50 most recent observations) so old data
+        doesn't dominate the displayed rate after a workload shift.
+        Per-model so MLX deployments serving multiple models report
+        hit rate correctly per-model, not averaged.
+        """
+        # Lazy init the per-proxy ring buffer
+        if not hasattr(self, "_cache_observations"):
+            self._cache_observations: dict[str, list[tuple[int, int]]] = {}
+        # Single-tenant for now (one model per mlx_lm.server process), so
+        # use a static key.  Expand to per-model when we run multi-model.
+        key = "_default"
+        obs = self._cache_observations.setdefault(key, [])
+        obs.append((prompt_tokens, cached_tokens))
+        # Cap at 50 observations — recent enough to reflect current state,
+        # numerous enough to smooth single-request noise.
+        if len(obs) > 50:
+            obs.pop(0)
+
+    def get_cache_hit_rate(self) -> float | None:
+        """Return rolling cache hit rate over recent requests, or None.
+
+        Computed as sum(cached) / sum(prompt) over the rolling window —
+        weighted by request size so big requests dominate the rate (which
+        is what we care about for latency).  Returns None when no
+        observations are available yet.
+        """
+        if not hasattr(self, "_cache_observations"):
+            return None
+        obs = self._cache_observations.get("_default") or []
+        if not obs:
+            return None
+        total_prompt = sum(p for p, _ in obs)
+        total_cached = sum(c for _, c in obs)
+        if total_prompt == 0:
+            return None
+        return total_cached / total_prompt
 
     def _get_semaphore(self, model_key: str) -> asyncio.Semaphore:
         """Return (creating if needed) the per-model admission semaphore."""
@@ -363,7 +427,19 @@ class MlxProxy:
             resp = await client.post("/v1/chat/completions", json=mlx_body)
             resp.raise_for_status()
             self._completed[model_key] = self._completed.get(model_key, 0) + 1
-            return resp.json()
+            body = resp.json()
+            # Capture usage (incl. cached_tokens) for the same observability
+            # path the streaming code uses.  Non-streaming responses always
+            # carry usage at the top level.
+            usage = body.get("usage") or {}
+            if usage:
+                details = usage.get("prompt_tokens_details") or {}
+                _mlx_request_tokens[request.request_id] = (
+                    usage.get("prompt_tokens"),
+                    usage.get("completion_tokens"),
+                    details.get("cached_tokens"),
+                )
+            return body
         except Exception:
             self._failed[model_key] = self._failed.get(model_key, 0) + 1
             raise
@@ -386,6 +462,10 @@ class MlxProxy:
             | set(self._failed)
             | set(self._rejected)
         )
+        # Cache hit rate is currently single-tenant (mlx_lm.server runs one
+        # model per process), so the same rate applies to every entry until
+        # we go multi-model.  Reported as a fraction in [0, 1] or None.
+        hit_rate = self.get_cache_hit_rate()
         for model_key in all_models:
             out[f"mlx-local:mlx:{model_key}"] = {
                 "node_id": "mlx-local",
@@ -400,6 +480,11 @@ class MlxProxy:
                 # distinct from `failed` (real errors) so operators can
                 # tell "backend is overloaded" from "backend is broken".
                 "rejected": self._rejected.get(model_key, 0),
+                # Rolling prompt-cache hit rate (cached / total prompt
+                # tokens, weighted by request size).  None until we have
+                # observations.  See docs/plans/mlx-prompt-cache-optimization.md
+                # for why this matters (target: ≥80% on cached turns).
+                "cache_hit_rate": hit_rate,
                 "backend": "mlx",
             }
         return out
@@ -552,15 +637,26 @@ def openai_sse_to_anthropic_events(
     except json.JSONDecodeError:
         return []
 
+    def _capture_usage(usage: dict) -> None:
+        """Pull (prompt, completion, cached) tokens out of a usage dict.
+
+        ``cached_tokens`` lives at ``prompt_tokens_details.cached_tokens``
+        in OpenAI-spec responses (which mlx_lm.server now follows).  Older
+        mlx versions or other backends may omit it; treat as None.
+        """
+        details = usage.get("prompt_tokens_details") or {}
+        _mlx_request_tokens[request_id] = (
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+            details.get("cached_tokens"),
+        )
+
     choices = chunk.get("choices") or []
     if not choices:
         # mlx_lm occasionally emits a final usage-only chunk with choices=[]
         usage = chunk.get("usage")
         if usage:
-            _mlx_request_tokens[request_id] = (
-                usage.get("prompt_tokens"),
-                usage.get("completion_tokens"),
-            )
+            _capture_usage(usage)
         return []
     choice = choices[0]
     delta = choice.get("delta") or {}
@@ -569,10 +665,7 @@ def openai_sse_to_anthropic_events(
     # Usage on any chunk (mlx_lm sometimes includes it alongside deltas)
     usage = chunk.get("usage")
     if usage:
-        _mlx_request_tokens[request_id] = (
-            usage.get("prompt_tokens"),
-            usage.get("completion_tokens"),
-        )
+        _capture_usage(usage)
 
     def _alloc_block_index() -> int:
         idx = state.next_block_index
@@ -828,9 +921,12 @@ def record_trace_mlx(
 
     elapsed_ms = (time.time() - start_time) * 1000
     ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else None
-    prompt_tokens, completion_tokens = _mlx_request_tokens.get(
-        request.request_id, (None, None)
-    )
+    # Tuple is (prompt, completion, cached) — cached_tokens is consumed by
+    # the route via pop_token_counts (which folds it into rolling stats);
+    # we just need prompt/completion for the trace record here.
+    tok_entry = _mlx_request_tokens.get(request.request_id, (None, None, None))
+    prompt_tokens = tok_entry[0]
+    completion_tokens = tok_entry[1]
 
     async def _record():
         try:
