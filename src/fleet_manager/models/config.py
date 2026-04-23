@@ -86,6 +86,14 @@ class ServerSettings(BaseSettings):
     # Retry
     max_retries: int = 2
 
+    # Debug request capture — writes every request's full lifecycle (client body,
+    # translated Ollama body, response, tokens, timings, error) to a JSONL file at
+    # ``<data_dir>/debug/requests.<date>.jsonl``.  Intended for internal fleets
+    # where you want to replay exact failures.  **Captures user prompts and
+    # responses** — never enable on public gateways. See server/debug_log.py.
+    debug_request_bodies: bool = False
+    debug_request_retention_days: int = 7
+
     # Anthropic Messages API compat (for Claude Code etc.)
     # JSON map of claude-* model id → local Ollama model.
     # Always include a "default" key to catch unknown claude-* requests.

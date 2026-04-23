@@ -98,6 +98,17 @@ Pre-warm proactively loads models on runner-up nodes before they're needed.
 | `FLEET_MAX_RETRIES` | `2` | Max retry attempts on node failure (before first chunk) |
 | `FLEET_STALE_TIMEOUT` | `600.0` | Seconds before in-flight requests are considered zombied and reaped (10 min) |
 
+### Debug Request Capture
+
+**DISABLED BY DEFAULT.** When enabled on an internal fleet, every inference request's full lifecycle is appended as one JSON line per request to `~/.fleet-manager/debug/requests.<date>.jsonl` on the router. Captures: original client body, translated Ollama body, reconstructed response, prompt/completion tokens, latency, TTFT, error, status, tags. Intended for reproducing failures on trusted fleets where you own every caller. **Never enable on a public gateway** — this records user prompts and responses verbatim.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_DEBUG_REQUEST_BODIES` | `false` | Set to `true` to enable full request/response capture |
+| `FLEET_DEBUG_REQUEST_RETENTION_DAYS` | `7` | Auto-prune daily log files older than this. `0` disables pruning |
+
+Replay captured requests with `scripts/replay-debug-requests.py` — e.g. `--list`, `--failures-only --since 1h`, or `--request-id <id>`.
+
 ### Dynamic Context Management
 
 | Variable | Default | Description |

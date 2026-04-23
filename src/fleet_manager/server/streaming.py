@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator, Callable
 import httpx
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
+from fleet_manager.server import debug_log
 from fleet_manager.server.registry import NodeRegistry
 
 logger = logging.getLogger(__name__)
@@ -147,10 +148,21 @@ class StreamingProxy:
         start_time = time.time()
         first_token_time = None
         error_occurred = False
+        # Buffer chunks for debug log (only kept when debug_request_bodies=true).
+        # Cap at 2 MB to prevent runaway memory on pathological streams.
+        capture_chunks: list[str] = []
+        debug_enabled = bool(
+            self._settings and getattr(self._settings, "debug_request_bodies", False)
+        )
+        capture_bytes = 0
+        DEBUG_CAPTURE_MAX_BYTES = 2 * 1024 * 1024
         try:
             async for chunk in self.stream_from_node(entry.assigned_node, entry.request):
                 if first_token_time is None:
                     first_token_time = time.time()
+                if debug_enabled and capture_bytes < DEBUG_CAPTURE_MAX_BYTES:
+                    capture_chunks.append(chunk)
+                    capture_bytes += len(chunk)
                 yield chunk
         except GeneratorExit:
             # Client disconnected (HTTP timeout, connection drop, etc.)
@@ -168,6 +180,7 @@ class StreamingProxy:
                 first_token_time,
                 "client_disconnected",
                 error_message="Client disconnected before stream completed",
+                response_chunks=capture_chunks,
             )
             self._request_tokens.pop(entry.request.request_id, None)
         except Exception as e:
@@ -187,6 +200,7 @@ class StreamingProxy:
                 first_token_time,
                 "failed",
                 error_message=str(e) or repr(e),
+                response_chunks=capture_chunks,
             )
             raise
         finally:
@@ -228,6 +242,7 @@ class StreamingProxy:
                         start_time,
                         first_token_time,
                         "completed",
+                        response_chunks=capture_chunks,
                     )
                 else:
                     # Stream ended without done:true — Ollama dropped the connection
@@ -245,6 +260,7 @@ class StreamingProxy:
                         first_token_time,
                         "incomplete",
                         error_message="Stream ended without done:true from Ollama",
+                        response_chunks=capture_chunks,
                     )
             else:
                 # Clean up token tracking on error
@@ -258,37 +274,78 @@ class StreamingProxy:
         first_token_time: float | None,
         status: str,
         error_message: str | None = None,
+        response_chunks: list[str] | None = None,
     ):
-        """Fire-and-forget trace recording."""
-        if not self._trace_store:
-            return
+        """Fire-and-forget trace recording.
+
+        When ``settings.debug_request_bodies`` is true, also appends a full
+        lifecycle record (including client body, ollama body, captured
+        response chunks, and error) to the debug JSONL log.  Trace recording
+        always runs first so DB writes aren't blocked by debug I/O.
+        """
         elapsed_ms = (time.time() - start_time) * 1000
         ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else None
         prompt_tokens, completion_tokens = self._request_tokens.get(
             entry.request.request_id, (None, None)
         )
-        _create_logged_task(
-            self._trace_store.record_trace(
-                request_id=entry.request.request_id,
-                model=entry.request.model,
-                original_model=entry.request.original_model or entry.request.model,
-                node_id=node_id,
-                score=entry.routing_score,
-                scores_breakdown=entry.routing_breakdown,
-                status=status,
-                latency_ms=elapsed_ms,
-                time_to_first_token_ms=ttft_ms,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                retry_count=entry.retry_count,
-                fallback_used=entry.fallback_used,
-                excluded_nodes=entry.excluded_nodes if entry.excluded_nodes else None,
-                original_format=entry.request.original_format.value,
-                error_message=error_message,
-                tags=entry.request.tags if entry.request.tags else None,
-            ),
-            name=f"trace-record-{entry.request.request_id[:8]}",
-        )
+
+        if self._trace_store:
+            _create_logged_task(
+                self._trace_store.record_trace(
+                    request_id=entry.request.request_id,
+                    model=entry.request.model,
+                    original_model=entry.request.original_model or entry.request.model,
+                    node_id=node_id,
+                    score=entry.routing_score,
+                    scores_breakdown=entry.routing_breakdown,
+                    status=status,
+                    latency_ms=elapsed_ms,
+                    time_to_first_token_ms=ttft_ms,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    retry_count=entry.retry_count,
+                    fallback_used=entry.fallback_used,
+                    excluded_nodes=entry.excluded_nodes if entry.excluded_nodes else None,
+                    original_format=entry.request.original_format.value,
+                    error_message=error_message,
+                    tags=entry.request.tags if entry.request.tags else None,
+                ),
+                name=f"trace-record-{entry.request.request_id[:8]}",
+            )
+
+        # Optional debug capture — full request/response body to JSONL.  Disabled
+        # by default; enable with FLEET_DEBUG_REQUEST_BODIES=true on trusted fleets.
+        if self._settings and getattr(self._settings, "debug_request_bodies", False):
+            try:
+                ollama_body = self._build_ollama_body(entry.request, node_id)
+            except Exception:  # noqa: BLE001 — fall back to a marker rather than crash
+                ollama_body = {"__error__": "failed to rebuild ollama body for debug"}
+            debug_log.append_request(
+                enabled=True,
+                data_dir=self._settings.data_dir,
+                retention_days=getattr(self._settings, "debug_request_retention_days", 7),
+                record={
+                    "request_id": entry.request.request_id,
+                    "timestamp": start_time,
+                    "node_id": node_id,
+                    "model": entry.request.model,
+                    "original_model": entry.request.original_model or entry.request.model,
+                    "original_format": entry.request.original_format.value,
+                    "tags": entry.request.tags or [],
+                    "status": status,
+                    "error": error_message,
+                    "latency_ms": elapsed_ms,
+                    "ttft_ms": ttft_ms,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "retry_count": entry.retry_count,
+                    "fallback_used": entry.fallback_used,
+                    "excluded_nodes": entry.excluded_nodes or [],
+                    "client_body": entry.request.raw_body,
+                    "ollama_body": ollama_body,
+                    "response_chunks": response_chunks or [],
+                },
+            )
 
     @staticmethod
     def _is_retryable_error(e: Exception) -> bool:
@@ -321,15 +378,25 @@ class StreamingProxy:
         current_queue_key = queue_key
         attempt = 0
 
+        debug_enabled = bool(
+            self._settings and getattr(self._settings, "debug_request_bodies", False)
+        )
+        DEBUG_CAPTURE_MAX_BYTES = 2 * 1024 * 1024
+
         while attempt <= max_retries:
             first_chunk_sent = False
             first_token_time = None
             start_time = time.time()
+            capture_chunks: list[str] = []
+            capture_bytes = 0
             try:
                 async for chunk in self.stream_from_node(current_node, entry.request):
                     if not first_chunk_sent:
                         first_chunk_sent = True
                         first_token_time = time.time()
+                    if debug_enabled and capture_bytes < DEBUG_CAPTURE_MAX_BYTES:
+                        capture_chunks.append(chunk)
+                        capture_bytes += len(chunk)
                     yield chunk
             except GeneratorExit:
                 # Client disconnected — not a successful completion
@@ -342,6 +409,7 @@ class StreamingProxy:
                     entry, current_node, start_time, first_token_time,
                     "client_disconnected",
                     error_message="Client disconnected before stream completed",
+                    response_chunks=capture_chunks,
                 )
                 self._request_tokens.pop(entry.request.request_id, None)
                 return
@@ -360,6 +428,7 @@ class StreamingProxy:
                         first_token_time,
                         "failed",
                         error_message=str(e) or repr(e),
+                        response_chunks=capture_chunks,
                     )
                     if first_chunk_sent:
                         logger.error(
@@ -392,6 +461,7 @@ class StreamingProxy:
                     None,
                     "retried",
                     error_message=str(e) or repr(e),
+                    response_chunks=capture_chunks,
                 )
 
                 if attempt > max_retries:
@@ -449,6 +519,7 @@ class StreamingProxy:
                         )
                     self._record_trace(
                         entry, current_node, start_time, first_token_time, "completed",
+                        response_chunks=capture_chunks,
                     )
                 else:
                     # Stream ended without done:true — Ollama dropped the connection
@@ -462,6 +533,7 @@ class StreamingProxy:
                         entry, current_node, start_time, first_token_time,
                         "incomplete",
                         error_message="Stream ended without done:true from Ollama",
+                        response_chunks=capture_chunks,
                     )
                 return
 
