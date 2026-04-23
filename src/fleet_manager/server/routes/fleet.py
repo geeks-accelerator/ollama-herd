@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 
 from fastapi import APIRouter, Request
@@ -75,6 +76,14 @@ async def fleet_queue(request: Request):
     registry = request.app.state.registry
 
     queue_info = queue_mgr.get_queue_info()
+    # Merge in MLX synthetic queues so the MLX backend is visible alongside
+    # Ollama queues. mlx_lm.server is single-threaded per process — its
+    # in-flight count tells you when MLX is busy and how many are waiting.
+    mlx_proxy = getattr(request.app.state, "mlx_proxy", None)
+    if mlx_proxy is not None:
+        # Never break /fleet/queue on MLX stats hiccups
+        with contextlib.suppress(Exception):
+            queue_info = {**queue_info, **mlx_proxy.get_queue_info()}
     total_pending = sum(q["pending"] for q in queue_info.values())
     total_in_flight = sum(q["in_flight"] for q in queue_info.values())
     total_completed = sum(q["completed"] for q in queue_info.values())
@@ -118,6 +127,7 @@ async def fleet_queue(request: Request):
                 "concurrency": q.get("concurrency", 1),
                 "model": q["model"],
                 "node_id": q["node_id"],
+                "backend": q.get("backend", "ollama"),
             }
             for key, q in queue_info.items()
         },

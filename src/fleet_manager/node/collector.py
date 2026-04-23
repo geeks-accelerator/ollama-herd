@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from pathlib import Path
 from urllib.parse import urlparse
 
 from fleet_manager import __version__
@@ -65,7 +66,6 @@ def _which_extended(binary: str) -> str | None:
         return found
     # Check common tool binary locations (platform-aware)
     import sys
-    from pathlib import Path
 
     extra_dirs = [
         Path.home() / ".local" / "bin",           # uv tool, pipx (Unix/Linux/macOS)
@@ -211,13 +211,37 @@ async def collect_heartbeat(
         try:
             mlx_models = await mlx.get_available_models()
             if mlx_models:
-                from fleet_manager.node.mlx_client import prefix_mlx
+                from fleet_manager.node.mlx_client import (
+                    get_running_mlx_model,
+                    prefix_mlx,
+                )
 
-                prefixed = [prefix_mlx(m) for m in mlx_models]
+                # CRITICAL: mlx_lm.server's /v1/models returns every model it
+                # can *find* on disk (HF cache scan), not what's actually
+                # loaded into memory.  Only the model passed as ``--model`` to
+                # the running process is resident; everything else is just
+                # discoverable.  Filter so the dashboard reports truth.
+                running = get_running_mlx_model()
+                if running:
+                    # Canonicalize so equivalent ids (full HF, snapshot path,
+                    # short id) all collapse to one entry.
+                    def _canon(s: str) -> str:
+                        if "/" in s and "models--" in s:
+                            for p in Path(s).parts:
+                                if p.startswith("models--"):
+                                    return p.removeprefix("models--").replace("--", "/", 1)
+                        return s
+
+                    canon_running = _canon(running)
+                    found_running = any(_canon(m) == canon_running for m in mlx_models)
+                    cleaned = [running] if found_running else []
+                else:
+                    cleaned = []
+                prefixed = [prefix_mlx(m) for m in cleaned]
                 models_available = list(models_available) + prefixed
                 logger.debug(
-                    f"MLX state: +{len(prefixed)} models merged "
-                    f"({', '.join(prefixed[:3])}{'...' if len(prefixed) > 3 else ''})"
+                    f"MLX state: +{len(prefixed)} loaded model(s) "
+                    f"({', '.join(prefixed) if prefixed else 'none — server not running'})"
                 )
         except Exception as e:  # noqa: BLE001
             logger.debug(f"MLX polling failed: {type(e).__name__}: {e}")

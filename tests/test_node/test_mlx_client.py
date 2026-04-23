@@ -101,7 +101,7 @@ async def test_get_available_models_empty_on_error(httpx_mock):
 
 @pytest.mark.asyncio
 async def test_collect_heartbeat_merges_mlx_models_with_prefix():
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     from fleet_manager.node.collector import collect_heartbeat
 
@@ -116,14 +116,21 @@ async def test_collect_heartbeat_merges_mlx_models_with_prefix():
         return_value=["mlx-community/Qwen3-Coder-480B-A35B-4bit"]
     )
 
-    payload = await collect_heartbeat("test-node", ollama, mlx=mlx)
+    # collector now filters /v1/models down to the actually-running --model
+    # arg by inspecting the live process — mock that to claim the 480B is
+    # the loaded model so the merge logic still runs.
+    with patch(
+        "fleet_manager.node.mlx_client.get_running_mlx_model",
+        return_value="mlx-community/Qwen3-Coder-480B-A35B-4bit",
+    ):
+        payload = await collect_heartbeat("test-node", ollama, mlx=mlx)
     models = payload.ollama.models_available
     # Ollama models present as-is
     assert "qwen3-coder:30b" in models
     assert "gpt-oss:120b" in models
     # MLX model prefixed with mlx:
     assert "mlx:mlx-community/Qwen3-Coder-480B-A35B-4bit" in models
-    # Total count = 2 Ollama + 1 MLX
+    # Total count = 2 Ollama + 1 MLX (only the running --model is reported)
     assert len(models) == 3
 
 

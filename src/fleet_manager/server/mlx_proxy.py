@@ -66,6 +66,14 @@ class MlxProxy:
         self._base_url = base_url.rstrip("/")
         self._trace_store = trace_store
         self._client: httpx.AsyncClient | None = None
+        # In-flight counter — mlx_lm.server is single-threaded per process, so
+        # this also tells you how many requests are *queued* behind the active
+        # one (count - 1). Surfaced in /fleet/queue + dashboard so users can
+        # see when MLX is busy. Per-model so we can show separate chips when
+        # multiple MLX models eventually run side-by-side.
+        self._inflight: dict[str, int] = {}
+        self._completed: dict[str, int] = {}
+        self._failed: dict[str, int] = {}
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -119,21 +127,29 @@ class MlxProxy:
         """
         client = await self._get_client()
         mlx_body = self._to_openai_body(request)
-
-        async with client.stream(
-            "POST", "/v1/chat/completions", json=mlx_body
-        ) as response:
-            if response.status_code >= 400:
-                body = await response.aread()
-                logger.error(
-                    f"MLX server returned {response.status_code} for "
-                    f"{request.model}: {body.decode(errors='replace')[:500]}"
-                )
-                response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
-                yield line.encode()
+        model_key = strip_mlx_prefix(request.model)
+        self._inflight[model_key] = self._inflight.get(model_key, 0) + 1
+        try:
+            async with client.stream(
+                "POST", "/v1/chat/completions", json=mlx_body
+            ) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    logger.error(
+                        f"MLX server returned {response.status_code} for "
+                        f"{request.model}: {body.decode(errors='replace')[:500]}"
+                    )
+                    response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    yield line.encode()
+            self._completed[model_key] = self._completed.get(model_key, 0) + 1
+        except Exception:
+            self._failed[model_key] = self._failed.get(model_key, 0) + 1
+            raise
+        finally:
+            self._inflight[model_key] = max(0, self._inflight.get(model_key, 1) - 1)
 
     async def completions_non_streaming(
         self, request: InferenceRequest
@@ -146,9 +162,44 @@ class MlxProxy:
         client = await self._get_client()
         mlx_body = self._to_openai_body(request)
         mlx_body["stream"] = False
-        resp = await client.post("/v1/chat/completions", json=mlx_body)
-        resp.raise_for_status()
-        return resp.json()
+        model_key = strip_mlx_prefix(request.model)
+        self._inflight[model_key] = self._inflight.get(model_key, 0) + 1
+        try:
+            resp = await client.post("/v1/chat/completions", json=mlx_body)
+            resp.raise_for_status()
+            self._completed[model_key] = self._completed.get(model_key, 0) + 1
+            return resp.json()
+        except Exception:
+            self._failed[model_key] = self._failed.get(model_key, 0) + 1
+            raise
+        finally:
+            self._inflight[model_key] = max(0, self._inflight.get(model_key, 1) - 1)
+
+    def get_queue_info(self) -> dict[str, dict]:
+        """Return a queue-shaped dict so MLX shows up alongside Ollama queues.
+
+        mlx_lm.server is single-threaded per process — concurrency=1, and
+        ``in_flight - 1`` requests are effectively pending behind the active
+        one. We synthesize that here so /fleet/queue + the dashboard can
+        render MLX traffic without a separate code path.
+        """
+        out: dict[str, dict] = {}
+        # Models touched in any counter (so completed/failed history shows
+        # up even when nothing is in-flight right now).
+        all_models = set(self._inflight) | set(self._completed) | set(self._failed)
+        for model_key in all_models:
+            inflight = self._inflight.get(model_key, 0)
+            out[f"mlx-local:mlx:{model_key}"] = {
+                "node_id": "mlx-local",
+                "model": f"mlx:{model_key}",
+                "pending": max(0, inflight - 1),
+                "in_flight": min(inflight, 1),
+                "concurrency": 1,
+                "completed": self._completed.get(model_key, 0),
+                "failed": self._failed.get(model_key, 0),
+                "backend": "mlx",
+            }
+        return out
 
     @staticmethod
     def _to_openai_body(request: InferenceRequest) -> dict:

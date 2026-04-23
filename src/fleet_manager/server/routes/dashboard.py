@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 
@@ -80,6 +81,7 @@ async def dashboard_events(request: Request):
         while True:
             registry = request.app.state.registry
             queue_mgr = request.app.state.queue_mgr
+            mlx_proxy = getattr(request.app.state, "mlx_proxy", None)
 
             nodes = []
             for node in registry.get_all_nodes():
@@ -104,6 +106,15 @@ async def dashboard_events(request: Request):
                         "pressure": node.memory.pressure.value,
                     }
                 if node.ollama:
+                    # MLX-prefixed entries are advertised by the node-side
+                    # MlxClient when FLEET_NODE_MLX_ENABLED=true.  Surface them
+                    # separately so the dashboard renders a "loaded via MLX"
+                    # row instead of confusing them with on-disk Ollama models.
+                    mlx_models = [
+                        m for m in node.ollama.models_available
+                        if isinstance(m, str) and m.startswith("mlx:")
+                    ]
+                    ollama_avail_count = len(node.ollama.models_available) - len(mlx_models)
                     node_data["ollama"] = {
                         "models_loaded": [
                             {
@@ -115,7 +126,8 @@ async def dashboard_events(request: Request):
                             }
                             for m in node.ollama.models_loaded
                         ],
-                        "models_available_count": len(node.ollama.models_available),
+                        "models_available_count": ollama_avail_count,
+                        "mlx_models": mlx_models,
                         "requests_active": node.ollama.requests_active,
                     }
                 if node.image and node.image.models_available:
@@ -151,9 +163,15 @@ async def dashboard_events(request: Request):
                     }
                 nodes.append(node_data)
 
+            queues = queue_mgr.get_queue_info()
+            # Merge MLX synthetic queues so the dashboard shows MLX traffic
+            # alongside Ollama queues (single unified backends-agnostic view).
+            if mlx_proxy is not None:
+                with contextlib.suppress(Exception):
+                    queues = {**queues, **mlx_proxy.get_queue_info()}
             data = {
                 "nodes": nodes,
-                "queues": queue_mgr.get_queue_info(),
+                "queues": queues,
                 "timestamp": time.time(),
             }
 
@@ -1827,19 +1845,31 @@ function renderNodes(nodes) {
     const memPct = memTotal > 0 ? (memUsed / memTotal) * 100 : 0;
     const pressure = node.memory ? node.memory.pressure : 'normal';
     const models = node.ollama ? node.ollama.models_loaded : [];
-    totalModels += models.length;
-    const availCount = node.ollama ? node.ollama.models_available_count : 0;
+    // MLX models advertised via mlx_lm.server's /v1/models — already loaded
+    // in MLX subprocess memory. Server-side splits them out from Ollama in
+    // the SSE payload (mlx_models vs models_available_count).
+    const mlxLoaded = (node.ollama && node.ollama.mlx_models) || [];
+    const totalLoadedHere = models.length + mlxLoaded.length;
+    totalModels += totalLoadedHere;
+    const ollamaOnDisk = node.ollama ? node.ollama.models_available_count : 0;
     const serviceCount = (node.image_models ? node.image_models.length : 0) + (node.stt_models ? node.stt_models.length : 0) + (node.vision_embed_models ? node.vision_embed_models.length : 0);
-    const modelsHtml = models.length > 0
-      ? models.map(m => {
-          const meta = m.parameter_size ? m.parameter_size + (m.quantization ? ' ' + m.quantization : '') : formatGB(m.size_gb);
-          const ctx = m.context_length ? ' · ' + (m.context_length >= 1024 ? Math.round(m.context_length/1024) + 'K ctx' : m.context_length + ' ctx') : '';
-          const nm = m.name.toLowerCase();
-          const typeClass = (nm.includes('embed') || nm.includes('nomic') || nm.includes('bge')) ? 'embed'
-            : (nm.includes('image') || nm.includes('flux') || nm.includes('diffusion') || nm.startsWith('x/') || nm.startsWith('sd')) ? 'image'
-            : (nm.includes('asr') || nm.includes('whisper')) ? 'stt' : '';
-          return `<span class="model-chip ${typeClass} hot">${m.name} <span class="size">${meta}${ctx}</span></span>`;
-        }).join('')
+    const ollamaChips = models.map(m => {
+      const meta = m.parameter_size ? m.parameter_size + (m.quantization ? ' ' + m.quantization : '') : formatGB(m.size_gb);
+      const ctx = m.context_length ? ' · ' + (m.context_length >= 1024 ? Math.round(m.context_length/1024) + 'K ctx' : m.context_length + ' ctx') : '';
+      const nm = m.name.toLowerCase();
+      const typeClass = (nm.includes('embed') || nm.includes('nomic') || nm.includes('bge')) ? 'embed'
+        : (nm.includes('image') || nm.includes('flux') || nm.includes('diffusion') || nm.startsWith('x/') || nm.startsWith('sd')) ? 'image'
+        : (nm.includes('asr') || nm.includes('whisper')) ? 'stt' : '';
+      return `<span class="model-chip ${typeClass} hot">${m.name} <span class="size">${meta}${ctx}</span><span class="size" style="opacity:0.6;margin-left:4px">ollama</span></span>`;
+    });
+    const mlxChips = mlxLoaded.map(m => {
+      // Strip mlx: prefix and the org/ part for a shorter label
+      const short = m.replace(/^mlx:/, '').split('/').pop();
+      return `<span class="model-chip hot" style="border-color:rgba(168,85,247,0.5)">${short} <span class="size" style="opacity:0.6;margin-left:4px">mlx</span></span>`;
+    });
+    const allChips = [...ollamaChips, ...mlxChips];
+    const modelsHtml = allChips.length > 0
+      ? allChips.join('')
       : '<span style="color:var(--text-dim);font-size:12px">No models loaded</span>';
     // Capacity learner panel (only for nodes with adaptive capacity)
     const cap = node.capacity;
@@ -1904,7 +1934,7 @@ function renderNodes(nodes) {
         </div>
         <div class="models-list">
           <div class="label" style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
-            Ollama Models: ${models.length} loaded, ${availCount} on disk${serviceCount ? ' | Services: ' + serviceCount + ' loaded' : ''}
+            Models: ${totalLoadedHere} loaded${mlxLoaded.length ? ' (' + models.length + ' ollama + ' + mlxLoaded.length + ' mlx)' : ''}, ${ollamaOnDisk} on disk${serviceCount ? ' | Services: ' + serviceCount + ' loaded' : ''}
           </div>
           ${modelsHtml}
         </div>
@@ -1943,9 +1973,15 @@ function renderQueues(queues) {
     const typeColors = {text:'var(--accent)',image:'var(--orange)',stt:'var(--blue)',embed:'var(--purple,#a855f7)'};
     const typeLabels = {text:'TEXT',image:'IMAGE',stt:'STT',embed:'EMBED'};
     const rt = q.request_type || 'text';
+    const backend = q.backend || 'ollama';
+    // Distinct color for MLX so users can tell at a glance which backend
+    // handled the request — purple for MLX, default theme for ollama.
+    const backendColor = backend === 'mlx' ? 'rgba(168,85,247,0.85)' : 'rgba(148,163,184,0.65)';
+    const backendBg = backend === 'mlx' ? 'rgba(168,85,247,0.18)' : 'rgba(148,163,184,0.12)';
+    const backendBadge = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${backendBg};color:${backendColor};text-transform:uppercase">${backend}</span>`;
     return `
       <div class="queue-card">
-        <div class="queue-name"><span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${typeColors[rt]}22;color:${typeColors[rt]}">${typeLabels[rt]}</span>${key}</div>
+        <div class="queue-name"><span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${typeColors[rt]}22;color:${typeColors[rt]}">${typeLabels[rt]}</span>${backendBadge}${key}</div>
         <div class="queue-stats">
           <div class="queue-stat"><div class="num" style="color:${pendingColor}">${q.pending}</div><div class="lbl">Pending</div></div>
           <div class="queue-stat"><div class="num" style="color:${inflightColor}">${q.in_flight}/${q.concurrency || 1}</div><div class="lbl">In-Flight</div></div>
