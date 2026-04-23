@@ -43,17 +43,30 @@ class OllamaWatchdog:
         probe_timeout_s: float = 15.0,
         consecutive_failures_before_kick: int = 2,
         cooldown_s: float = 120.0,
+        consecutive_kicks_before_serve_restart: int = 3,
+        serve_restart_cooldown_s: float = 1800.0,
     ):
         self.ollama_host = ollama_host.rstrip("/")
         self.interval_s = interval_s
         self.probe_timeout_s = probe_timeout_s
         self.consecutive_failures_before_kick = consecutive_failures_before_kick
         self.cooldown_s = cooldown_s
+        # Escalation: when N kicks in a row don't restore /api/chat health, the
+        # problem isn't a stuck runner — it's accumulated `ollama serve` state
+        # corruption.  Restart the whole server.  See docs/issues.md
+        # ("Ollama watchdog can't escalate to ollama serve restart") for why.
+        self.consecutive_kicks_before_serve_restart = consecutive_kicks_before_serve_restart
+        self.serve_restart_cooldown_s = serve_restart_cooldown_s
 
         self._running = False
         self._task: asyncio.Task | None = None
         self._consecutive_failures = 0
         self._last_kick_ts: float = 0.0
+        # Counts kicks that didn't lead to a healthy probe by the next cycle.
+        # Reset on healthy probe.  When this hits the escalation threshold,
+        # restart `ollama serve` itself (not just runners).
+        self._kicks_without_recovery: int = 0
+        self._last_serve_restart_ts: float = 0.0
         # Stats exposed for health-check integration (see fleet_manager.server.health_engine)
         self.stats = {
             "probes_total": 0,
@@ -61,6 +74,9 @@ class OllamaWatchdog:
             "kicks_total": 0,
             "last_kick_reason": "",
             "last_kick_at": None,  # unix time
+            "serve_restarts_total": 0,
+            "last_serve_restart_at": None,
+            "last_serve_restart_reason": "",
         }
 
     # ------------------------------------------------------------------
@@ -212,6 +228,96 @@ class OllamaWatchdog:
         return True
 
     # ------------------------------------------------------------------
+    # Escalation: restart `ollama serve` when kicks alone don't recover
+    # ------------------------------------------------------------------
+
+    def _can_restart_serve(self) -> bool:
+        """Respect the longer serve-restart cooldown to prevent flap loops."""
+        elapsed = time.time() - self._last_serve_restart_ts
+        return elapsed >= self.serve_restart_cooldown_s
+
+    def _restart_serve(self, reason: str) -> bool:
+        """Restart `ollama serve` itself (not just runners).
+
+        Used as the escalation when N consecutive kicks haven't restored
+        ``/api/chat`` health — see docs/issues.md for the failure mode this
+        addresses.  Platform-aware: macOS uses ``open -a Ollama``, Linux uses
+        ``systemctl restart ollama``.  Returns True if the restart command
+        succeeded; the next probe cycle will determine if Ollama actually
+        came back healthy.
+        """
+        logger.warning(
+            f"Ollama watchdog: ESCALATING — restarting `ollama serve` ({reason}). "
+            f"Kicks alone have not restored health after "
+            f"{self._kicks_without_recovery} attempts."
+        )
+        try:
+            if sys.platform == "win32":
+                # Windows: stop the Ollama service via taskkill on the parent
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", "ollama.exe"],
+                    capture_output=True, timeout=15, check=False,
+                )
+                # Restart via `start` — assumes ollama is on PATH
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "", "ollama", "serve"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            elif sys.platform == "darwin":
+                # macOS: kill ollama serve + helpers, then relaunch the .app
+                subprocess.run(
+                    ["pkill", "-9", "-f", "ollama serve"],
+                    capture_output=True, timeout=10, check=False,
+                )
+                subprocess.run(
+                    ["pkill", "-9", "-f", "Ollama.app"],
+                    capture_output=True, timeout=10, check=False,
+                )
+                # `open -a Ollama` re-launches the .app which spawns ollama serve
+                subprocess.run(
+                    ["open", "-a", "Ollama"],
+                    capture_output=True, timeout=15, check=False,
+                )
+            else:
+                # Linux: prefer systemctl, fall back to pkill+restart
+                rc = subprocess.run(
+                    ["systemctl", "restart", "ollama"],
+                    capture_output=True, timeout=30, check=False,
+                ).returncode
+                if rc != 0:
+                    # systemctl unavailable — best effort kill + relaunch
+                    subprocess.run(
+                        ["pkill", "-9", "-f", "ollama serve"],
+                        capture_output=True, timeout=10, check=False,
+                    )
+                    subprocess.Popen(
+                        ["ollama", "serve"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+        except FileNotFoundError as exc:
+            logger.error(
+                f"Ollama watchdog: serve-restart command not found "
+                f"({exc}); can't escalate on this platform"
+            )
+            return False
+        except Exception as exc:  # noqa: BLE001 — never break the watchdog loop
+            logger.error(
+                f"Ollama watchdog: serve restart failed: {type(exc).__name__}: {exc}"
+            )
+            return False
+
+        self._last_serve_restart_ts = time.time()
+        self._kicks_without_recovery = 0  # reset escalation counter
+        self.stats["serve_restarts_total"] += 1
+        self.stats["last_serve_restart_at"] = self._last_serve_restart_ts
+        self.stats["last_serve_restart_reason"] = reason
+        logger.info(
+            "Ollama watchdog: ollama serve restart issued — "
+            "next probe will determine recovery."
+        )
+        return True
+
+    # ------------------------------------------------------------------
     # Main loop
     # ------------------------------------------------------------------
 
@@ -251,17 +357,19 @@ class OllamaWatchdog:
             return
         chat_ok, chat_reason = await self._probe_chat(client, model)
         if chat_ok:
-            if self._consecutive_failures:
+            if self._consecutive_failures or self._kicks_without_recovery:
                 logger.info(
                     f"Ollama watchdog: recovered after "
-                    f"{self._consecutive_failures} failure(s)"
+                    f"{self._consecutive_failures} failure(s), "
+                    f"{self._kicks_without_recovery} kick(s) without recovery"
                 )
             self._consecutive_failures = 0
+            self._kicks_without_recovery = 0  # successful chat → escalation reset
             return
         await self._record_failure(f"chat_probe on {model}: {chat_reason}")
 
     async def _record_failure(self, reason: str) -> None:
-        """Increment failure counter and kick if threshold reached."""
+        """Increment failure counter; kick or escalate to serve restart."""
         self._consecutive_failures += 1
         self.stats["probes_failed"] += 1
         logger.warning(
@@ -277,7 +385,36 @@ class OllamaWatchdog:
                 f"Ollama watchdog: would kick but cooldown active "
                 f"({cooldown_remaining:.0f}s remaining) — something else may be wrong"
             )
+            # Escalation path: if kicks aren't even cooling down, the system
+            # is in trouble.  Check if we've already exhausted the kick budget.
+            if (
+                self._kicks_without_recovery >= self.consecutive_kicks_before_serve_restart
+                and self._can_restart_serve()
+            ):
+                self._restart_serve(
+                    f"{self._kicks_without_recovery} kicks without recovery "
+                    f"(cooldown blocked next kick)"
+                )
             return
-        # Kick and reset failure counter so we give the new runners a chance
+
+        # Kick: reset failure counter so we give the new runners a chance,
+        # but increment kicks_without_recovery — it'll reset on the next
+        # healthy probe (in _one_cycle) or trigger escalation if it doesn't.
         if self._kick_runners(reason):
             self._consecutive_failures = 0
+            self._kicks_without_recovery += 1
+            logger.info(
+                f"Ollama watchdog: kick recorded — "
+                f"kicks_without_recovery={self._kicks_without_recovery}/"
+                f"{self.consecutive_kicks_before_serve_restart}"
+            )
+            # If we've now hit the escalation threshold, restart `ollama serve`
+            # itself.  This catches the "runners die immediately on respawn
+            # under load" failure mode that runner kicks alone can't fix.
+            if (
+                self._kicks_without_recovery >= self.consecutive_kicks_before_serve_restart
+                and self._can_restart_serve()
+            ):
+                self._restart_serve(
+                    f"{self._kicks_without_recovery} consecutive kicks did not restore health"
+                )

@@ -285,6 +285,128 @@ async def test_cycle_no_hot_models_treated_as_healthy(httpx_mock):
     assert wd._consecutive_failures == 0
 
 
+# ---------------------------------------------------------------------------
+# Escalation — restart `ollama serve` when kicks alone don't recover
+# ---------------------------------------------------------------------------
+
+
+def test_can_restart_serve_true_at_startup():
+    wd = OllamaWatchdog(serve_restart_cooldown_s=1800.0)
+    assert wd._can_restart_serve() is True
+
+
+def test_can_restart_serve_false_within_cooldown():
+    wd = OllamaWatchdog(serve_restart_cooldown_s=1800.0)
+    wd._last_serve_restart_ts = time.time()
+    assert wd._can_restart_serve() is False
+
+
+def test_restart_serve_calls_open_on_macos():
+    wd = OllamaWatchdog()
+    calls: list = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return MagicMock(returncode=0, stderr=b"")
+
+    with patch("fleet_manager.node.ollama_watchdog.sys.platform", "darwin"), patch(
+        "fleet_manager.node.ollama_watchdog.subprocess.run", _fake_run,
+    ):
+        result = wd._restart_serve("test_escalation")
+
+    assert result is True
+    # Should kill ollama serve, kill Ollama.app, then `open -a Ollama`
+    cmds = [c[0] for c in calls]
+    assert "pkill" in cmds
+    assert "open" in cmds
+    open_call = next(c for c in calls if c[0] == "open")
+    assert open_call == ["open", "-a", "Ollama"]
+    assert wd.stats["serve_restarts_total"] == 1
+    assert wd.stats["last_serve_restart_reason"] == "test_escalation"
+    assert wd._kicks_without_recovery == 0  # counter resets
+
+
+def test_restart_serve_uses_systemctl_on_linux():
+    wd = OllamaWatchdog()
+    calls: list = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return MagicMock(returncode=0, stderr=b"")
+
+    with patch("fleet_manager.node.ollama_watchdog.sys.platform", "linux"), patch(
+        "fleet_manager.node.ollama_watchdog.subprocess.run", _fake_run,
+    ):
+        wd._restart_serve("linux_test")
+
+    assert calls[0] == ["systemctl", "restart", "ollama"]
+    assert wd.stats["serve_restarts_total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_kick_increments_kicks_without_recovery():
+    wd = OllamaWatchdog(consecutive_failures_before_kick=1)
+    with patch.object(wd, "_kick_runners", return_value=True):
+        await wd._record_failure("test")
+    assert wd._kicks_without_recovery == 1
+
+
+@pytest.mark.asyncio
+async def test_healthy_cycle_resets_kicks_without_recovery(httpx_mock):
+    """Once /api/chat answers again, the escalation counter must reset."""
+    httpx_mock.add_response(url="http://localhost:11434/api/tags", json={"models": []})
+    httpx_mock.add_response(
+        url="http://localhost:11434/api/ps",
+        json={"models": [{"model": "m:4b", "size": 3_000_000_000}]},
+    )
+    httpx_mock.add_response(
+        url="http://localhost:11434/api/chat",
+        method="POST",
+        json={"message": {"content": "hi"}, "done": True},
+    )
+    wd = OllamaWatchdog()
+    wd._kicks_without_recovery = 2  # pretend we'd kicked twice
+    async with httpx.AsyncClient() as c:
+        await wd._one_cycle(c)
+    assert wd._kicks_without_recovery == 0
+
+
+@pytest.mark.asyncio
+async def test_third_kick_triggers_serve_restart():
+    """After N kicks without recovery, the next failure escalates to serve restart."""
+    wd = OllamaWatchdog(
+        consecutive_failures_before_kick=1,
+        consecutive_kicks_before_serve_restart=3,
+    )
+    with patch.object(wd, "_kick_runners", return_value=True), patch.object(
+        wd, "_restart_serve", return_value=True,
+    ) as mock_restart:
+        # 3 failures → 3 kicks → counter reaches threshold → 3rd kick triggers restart
+        await wd._record_failure("first")
+        await wd._record_failure("second")
+        await wd._record_failure("third")
+    assert mock_restart.call_count == 1
+    # Reason should mention the kick count
+    assert "3 consecutive kicks" in mock_restart.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_serve_restart_blocked_by_serve_cooldown():
+    wd = OllamaWatchdog(
+        consecutive_failures_before_kick=1,
+        consecutive_kicks_before_serve_restart=2,
+        serve_restart_cooldown_s=1800.0,
+    )
+    wd._last_serve_restart_ts = time.time()  # just restarted
+    with patch.object(wd, "_kick_runners", return_value=True), patch.object(
+        wd, "_restart_serve",
+    ) as mock_restart:
+        await wd._record_failure("first")
+        await wd._record_failure("second")
+        # Counter hits threshold but serve cooldown blocks restart
+    mock_restart.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_cycle_chat_hang_triggers_failure(httpx_mock):
     """Simulate the observed stuck state: tags OK but chat times out."""
