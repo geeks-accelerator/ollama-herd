@@ -213,6 +213,25 @@ class TestFleetStatus:
         assert len(data["nodes"]) == 1
         assert data["nodes"][0]["node_id"] == "studio"
 
+    def test_fleet_status_exposes_chip_and_bandwidth(self, client):
+        """Regression guard: /fleet/status must surface new HardwareProfile
+        fields so dashboards and debug tooling can see device-aware scoring
+        inputs.  Was an oversight when chip/bandwidth landed — fields were
+        populated internally but the route only serialized memory+cores."""
+        hb = make_heartbeat(
+            node_id="studio",
+            loaded_models=[("phi4:14b", 9.0)],
+            chip="Apple M3 Ultra",
+            memory_bandwidth_gbps=819.0,
+        ).model_dump()
+        client.post("/heartbeat", json=hb)
+
+        resp = client.get("/fleet/status")
+        hw = resp.json()["nodes"][0]["hardware"]
+        assert hw["chip"] == "Apple M3 Ultra"
+        assert hw["memory_bandwidth_gbps"] == 819.0
+        assert "arch" in hw
+
 
 class TestOpenAICompat:
     def test_list_models_empty(self, client):

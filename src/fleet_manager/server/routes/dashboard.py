@@ -91,6 +91,9 @@ async def dashboard_events(request: Request):
                     "hardware": {
                         "memory_total_gb": node.hardware.memory_total_gb,
                         "cores_physical": node.hardware.cores_physical,
+                        "chip": node.hardware.chip,
+                        "memory_bandwidth_gbps": node.hardware.memory_bandwidth_gbps,
+                        "arch": node.hardware.arch,
                     },
                 }
                 if node.cpu:
