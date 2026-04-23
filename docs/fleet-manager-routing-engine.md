@@ -110,7 +110,7 @@ depth = queue.in_flight_count + queue.pending_count
 penalty = min(30, depth × 6)
 ```
 
-A queue of depth 5 subtracts the maximum 30 points, making it unattractive even if the model is hot. This naturally spreads load across the fleet when multiple nodes can serve the same model.
+**Bandwidth-aware normalization (on by default via `FLEET_QUEUE_PENALTY_BANDWIDTH_NORMALIZE`):** When node memory bandwidth is known, the penalty is scaled by the node's bandwidth share of the fleet median. A queue of 4 on a node 4× faster than the baseline is treated like a queue of 1 for penalty purposes — so routing doesn't prematurely flip away from a fast node that's only superficially busy. Combined with Signal 5's bandwidth-aware affinity, this produces load distribution roughly proportional to each node's bandwidth share of the fleet (see `docs/plans/device-aware-scoring.md` for the math).
 
 ---
 
@@ -127,35 +127,54 @@ penalty   = min(25, est_wait_seconds / 10)
 
 The p75 latency (75th percentile) is used as the planning estimate — pessimistic enough to avoid over-routing to a busy node, optimistic enough not to under-utilize capacity.
 
-**Cold start bootstrap:** In the first 7 days before sufficient latency data is collected, the router falls back to a heuristic:
+**Cold start bootstrap:** Before sufficient latency data is collected for a node+model pair, the router falls back to a bandwidth-derived throughput estimate when the node's memory bandwidth is known:
 
 ```
-estimated_tokens_per_second = node.memory_bandwidth_gb_s / model.size_gb × 0.85
-heuristic_ms_per_request    = expected_output_tokens / estimated_tokens_per_second × 1000
+tokens_per_sec = max(10, bandwidth_gbps × 1.2 / max(1, model_size_gb / 10))
+p75_ms_est     = 100000 / tokens_per_sec
 ```
+
+So a fresh fleet (no trace data) still routes sensibly — a Mac Studio Ultra's 800 GB/s immediately outscores a MacBook's 300 GB/s on day one. When bandwidth is unknown (older agents, unrecognized chips), a model-size-only heuristic is used instead.
 
 ---
 
 ### Signal 5 — Node Role Affinity
-**Weight: 0 to +15 points**
+**Weight: 0 to +25 points**
 
-The fleet has natural structural roles. Large models belong on the Mac Studio. Small fast models should run on the old MacBook to preserve the Mac Studio's capacity for what it's uniquely suited for. Affinity scores encode this without hard-wiring it — the scoring system can be overridden by the other signals when circumstances warrant.
+The fleet has natural structural roles. Large models belong on machines with the memory bandwidth to feed them; small fast models should run on smaller nodes to preserve big-node capacity for what it's uniquely suited for. Affinity encodes this without hard-wiring it — the scoring system can be overridden by the other signals when circumstances warrant.
+
+**Bandwidth-aware scoring (default, via `FLEET_BANDWIDTH_AWARE_SCORING`):** When node memory bandwidth is known, the affinity bonus scales continuously with bandwidth instead of using flat memory tiers — because prompt-eval throughput is memory-bandwidth-bound on Apple Silicon:
 
 ```
-Model size > 30B parameters:
-  Mac Studio              +15
-  New MacBook             +5
-  Old MacBook             +0  (eliminated in Stage 1 anyway — won't fit)
+bandwidth_bonus = min(25.0, 5.0 + bandwidth_gbps / 40.0)
 
-Model size < 10B parameters:
-  Old MacBook             +15  (preserve Mac Studio for large models)
-  New MacBook             +8
-  Mac Studio              +3
+Examples:
+  Apple M3 Ultra   (800 GB/s)  →  +25  (max)
+  Apple M4 Max     (546 GB/s)  →  +18
+  Apple M3 Max     (400 GB/s)  →  +15
+  Apple M2 Pro     (200 GB/s)  →  +10
+  Apple M3 base    (100 GB/s)  →  +7.5
 
-Embedding request (any model):
-  Node with model hot     +15  (embeddings must never block large model capacity)
-  Any other node          +0
+Large model (≥ 20GB):    full bonus
+Small model (< 8GB):     inverted — prefer smaller/slower nodes
+Mid-size (8–20GB):       60% of full bonus
 ```
+
+**Legacy memory-tier fallback:** Used when a node's bandwidth is unknown (`memory_bandwidth_gbps = 0`) — older agents without chip detection, unrecognized chips. Preserves the original memory-size-tier logic unchanged:
+
+```
+Model size > 20GB:
+  ≥128GB node    +15
+  ≥32GB  node    +5
+  <32GB  node    +0
+
+Model size < 8GB:
+  ≤32GB  node    +15  (preserve big nodes for big models)
+  ≤128GB node    +8
+  >128GB node    +3
+```
+
+Embedding requests bypass scoring entirely — they route to any node with the embedding model hot.
 
 The small-model affinity toward the old MacBook is particularly important. Without it, every `qwen2.5:7b` request would drift toward the Mac Studio (highest score on other signals), starving the old MacBook of work and eventually crowding the Mac Studio's large model capacity.
 
@@ -359,9 +378,14 @@ weights:
   memory_fit:       20           # max points for Signal 2
   queue_depth:      30           # max penalty for Signal 3
   wait_time:        25           # max penalty for Signal 4
-  role_affinity:    15           # max points for Signal 5
+  role_affinity:    25           # max points for Signal 5 (bandwidth-aware)
   availability_trend: 10         # max points for Signal 6
   context_fit:      15           # max points for Signal 7
+
+# Device-aware scoring toggles
+device_aware_scoring:
+  bandwidth_aware_scoring:            true   # Signal 5 scales with memory bandwidth
+  queue_penalty_bandwidth_normalize:  true   # Signal 3 divides penalty by node's bandwidth share
 ```
 
 ---

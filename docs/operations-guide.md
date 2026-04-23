@@ -340,6 +340,50 @@ Concurrency is recalculated each time work is enqueued, so it adapts as memory c
 
 ---
 
+## Memory Tuning for Memory-Tight Nodes
+
+On nodes running large-context models (e.g. qwen3-coder:30b-agent at 131K ctx) with modest system memory (e.g. 128 GB MacBook that also runs a browser + Claude Code CLI + misc apps), Ollama's defaults can trigger SIGKILL / Jetsam OOM kills of the llama runner mid-generation. Four environment variables combine into the reliable configuration we've validated:
+
+| Variable | Value | What it does |
+|----------|-------|--------------|
+| `OLLAMA_NUM_PARALLEL` | `1` | One KV slot instead of the default 4. Pre-allocated KV buffer shrinks ~4×. |
+| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | 8-bit KV cache quantization. Halves the remaining KV footprint. |
+| `OLLAMA_FLASH_ATTENTION` | `1` | Required for q8_0 KV to work correctly; faster overall anyway. |
+| `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model hot indefinitely; Herd manages model lifecycle, not Ollama's idle timer. |
+
+### Set them persistently (macOS)
+
+```bash
+# ~/.zshrc — persists across terminal sessions
+export OLLAMA_NUM_PARALLEL=1
+export OLLAMA_KV_CACHE_TYPE=q8_0
+export OLLAMA_FLASH_ATTENTION=1
+export OLLAMA_KEEP_ALIVE=-1
+
+# launchctl — required because GUI-launched Ollama.app reads from launchd env
+launchctl setenv OLLAMA_NUM_PARALLEL 1
+launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0
+launchctl setenv OLLAMA_FLASH_ATTENTION 1
+launchctl setenv OLLAMA_KEEP_ALIVE -1
+```
+
+You must set both. Quitting and relaunching Ollama.app afterward makes it pick up the new env — models loaded prior to the restart keep their old KV config.
+
+### Observed before/after
+
+On an M4 Max 128 GB MacBook with qwen3-coder:30b-agent @ 131K ctx, the default configuration resulted in Jetsam kills under any real Claude Code load. With the four-var combo:
+
+- Model VRAM footprint: 31 GB → 25 GB
+- Free memory headroom under sustained load: ~500 MB → 14 GB
+- Big-agentic (55 msgs, 27 tools) success rate: ~0% → 100%
+- p50 latency on that pattern: timeout → ~1 s
+
+Big nodes (Mac Studio 512 GB) don't need q8_0 KV for correctness — f16 KV costs a few extra GB but is fine with 400+ GB free. Tune per node based on headroom.
+
+See also: `docs/troubleshooting.md` → "Ollama llama runner killed by OS."
+
+---
+
 ## Graceful Drain
 
 When a node agent receives SIGTERM or SIGINT:

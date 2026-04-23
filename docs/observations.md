@@ -77,6 +77,32 @@ When you see a pattern, add it below with the date and evidence.
 
 ## Observations
 
+### 2026-04-22 — Four-env-var combo makes 30B models at 131K ctx viable on 128 GB Macs
+
+**Evidence:** qwen3-coder:30b-agent at 131K ctx on an M4 Max 128 GB MacBook was failing every real Claude Code request with SIGKILL'd llama runners (`sys=9 string="signal: killed"`, `Post /completion: EOF`) during generation. Latencies climbed 19s → 281s before Jetsam killed the subprocess. Model fit at rest (31 GB ollama ps footprint) but KV growth during actual generation pushed system memory from ~90 GB in use to 127+ GB. Setting one knob at a time:
+
+- `OLLAMA_NUM_PARALLEL=1` alone — model footprint dropped at-rest, but KV still grew during generation because of f16 KV cache
+- Adding `OLLAMA_KV_CACHE_TYPE=q8_0` + `OLLAMA_FLASH_ATTENTION=1` — halved remaining KV footprint; 25 GB model, 14 GB free headroom during sustained load
+- `OLLAMA_KEEP_ALIVE=-1` — necessary so Herd controls lifecycle instead of Ollama's 5-minute idle timer evicting mid-session
+
+Stress test result after all four: 6/6 of the `big_agentic` pattern (55 messages, 27 tools, 32K max_tokens, streaming) passed with p50 ≈ 1s latency. Pre-fix: 0%.
+
+**Insight:** `OLLAMA_NUM_PARALLEL` defaults to 4 on macOS regardless of memory. At 131K ctx that's ~60 GB of pre-allocated KV buffer on a 128 GB machine — invisible at rest, fatal the moment real generation starts. The "the model fits!" gut check is wrong here; what matters is `weights + parallel_slots × ctx_length × kv_bytes_per_token`. For memory-tight Apple Silicon fleets running large-context MoE models, the four-env-var combo is the difference between "toy" and "production Claude Code backend."
+
+**Action taken:** Documented in `docs/troubleshooting.md` ("Ollama llama runner killed by OS") and `docs/operations-guide.md` ("Memory Tuning for Memory-Tight Nodes") with observed before/after numbers. Health engine's "KV cache bloat" detector already surfaces this class of issue on the dashboard. Complements the Ollama watchdog's new escalation path that restarts `ollama serve` after 3 failed kicks.
+
+---
+
+### 2026-04-22 — Role affinity ties 100/100 between same-tier nodes, MacBook hogs Claude Code traffic
+
+**Evidence:** Production traces showed every qwen3-coder:30b-agent request landing on Lucass-MacBook-Pro-2 with a perfect 100/100 score breakdown (`thermal=50, mem=20, queue=0, wait=0, affinity=15, ctx=15`). The Mac Studio M3 Ultra (800 GB/s memory bandwidth, 4× faster at prompt eval) was scoring identically 100/100 — both sat in the same `≥128 GB` role-affinity tier. With no tiebreaker, whichever node was listed first won every request. The MacBook (M4 Max 546 GB/s) then choked on real Claude Code prompt sizes while the Studio sat idle.
+
+**Insight:** Memory-size tiers fail to distinguish nodes that all clear the "big" bar — a MacBook Pro 128 GB and a Mac Studio 512 GB cluster into the same bucket, but their prompt-eval throughput differs by 3–4×. On Apple Silicon, *memory bandwidth* is the right discriminator because prompt eval is memory-bandwidth-bound. Adding chip detection + a chip→bandwidth lookup table flows the real capability into scoring; sub-dividing Signal 5 into a continuous bandwidth-proportional bonus (+25 max at 800 GB/s) breaks the tie. Capacity-normalizing Signal 3 so a queue of N on a faster node counts as N/(relative_speed) produces roughly proportional load distribution under pressure — for Studio+MacBook at 800+400 GB/s, that's a 67/33 split rather than 100/0 or 50/50.
+
+**Action taken:** Shipped `server/hardware_lookup.py` (chip→bandwidth table for M1–M4 + common discrete GPUs), extended `HardwareProfile` with `chip` + `memory_bandwidth_gbps`, rewrote Signals 3/4/5 to be bandwidth-aware with memory-tier fallback for unknown chips. Two new env vars (default on). Plan doc: `docs/plans/device-aware-scoring.md`.
+
+---
+
 ### 2025-03-08 — Registry localhost rewrite was masking node reachability
 
 **Evidence:** Nodes running Ollama bound only to localhost (127.0.0.1:11434) were being registered with their LAN IP in heartbeats, but the router was sometimes building Ollama URLs using `request_ip == payload.lan_ip` to determine locality — which gave false positives when the router happened to be on the same machine.

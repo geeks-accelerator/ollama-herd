@@ -256,6 +256,48 @@ Meeting detection is disabled by default — it only activates when `FLEET_NODE_
 
 ---
 
+## Ollama llama runner killed by OS (SIGKILL / Jetsam) on memory-tight nodes
+
+**Symptom:** Requests to a large-context model on a memory-constrained node (128 GB MacBook running qwen3-coder:30b-agent at 131K ctx is the canonical case) randomly fail with 500s from Ollama after seconds to minutes of generation. Ollama server log shows:
+
+```
+llama runner process no longer running sys=9 string="signal: killed"
+post predict error="Post http://127.0.0.1:PORT/completion: EOF"
+```
+
+**Cause:** macOS Jetsam (or Linux OOM killer) terminates the llama runner subprocess when system memory gets tight. The model itself fits at rest, but KV cache growth during actual generation — especially with `OLLAMA_NUM_PARALLEL > 1` pre-allocating slots × ctx_length of buffer — tips memory over the OOM threshold mid-request. Other apps (browsers, Claude Code CLI, etc.) compete for the same memory.
+
+**Fix — the reliable four-env-var combination for memory-tight Apple Silicon fleets:**
+
+```bash
+# ~/.zshrc  (persistence across sessions)
+export OLLAMA_NUM_PARALLEL=1          # 1 KV slot instead of 4 — ~4× less buffer
+export OLLAMA_KV_CACHE_TYPE=q8_0      # 8-bit KV cache — halves remaining KV memory
+export OLLAMA_FLASH_ATTENTION=1       # required for q8_0 KV to work correctly
+export OLLAMA_KEEP_ALIVE=-1           # keep hot; router manages lifecycle
+```
+
+```bash
+# launchctl — required on macOS because GUI-launched Ollama.app reads from launchd env
+launchctl setenv OLLAMA_NUM_PARALLEL 1
+launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0
+launchctl setenv OLLAMA_FLASH_ATTENTION 1
+launchctl setenv OLLAMA_KEEP_ALIVE -1
+```
+
+**Observed impact** on an M4 Max 128GB MacBook running qwen3-coder:30b-agent at 131K ctx:
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Model footprint in VRAM | 31 GB | 25 GB |
+| Free memory under sustained Claude Code load | ~500 MB | 14 GB |
+| Success rate on 55-message tool-using prompts | ~0% (Jetsam kills) | 100% |
+| p50 latency on big_agentic pattern | timeout / retry | ~1 s |
+
+If kills persist, the next layer of defense is the Ollama watchdog's escalation (lands automatically in node agent): after 3 consecutive runner kicks without recovery, it restarts `ollama serve` itself. See `ollama_watchdog.py` and `docs/issues.md` → "Ollama watchdog can't escalate."
+
+---
+
 ## Debug Checklist
 
 ## Requests hang with 0 bytes returned when using `num_ctx`

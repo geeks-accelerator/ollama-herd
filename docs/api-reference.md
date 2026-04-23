@@ -576,7 +576,10 @@ Full fleet state — nodes, queues, hardware metrics, and health summary.
       "status": "online",
       "hardware": {
         "memory_total_gb": 192,
-        "cores_physical": 24
+        "cores_physical": 24,
+        "chip": "Apple M3 Ultra",
+        "memory_bandwidth_gbps": 819.0,
+        "arch": "apple_silicon"
       },
       "ollama_url": "http://10.0.0.100:11434",
       "cpu": {
@@ -631,7 +634,13 @@ Receives heartbeats from node agents. Internal endpoint — not intended for ext
     "models_available": ["llama3.3:70b", "qwen2.5:32b"],
     "requests_active": 1
   },
-  "hardware": {"memory_total_gb": 192, "cores_physical": 24}
+  "hardware": {
+    "memory_total_gb": 192,
+    "cores_physical": 24,
+    "chip": "Apple M3 Ultra",
+    "memory_bandwidth_gbps": 819.0,
+    "arch": "apple_silicon"
+  }
 }
 ```
 
