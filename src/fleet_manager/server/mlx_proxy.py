@@ -691,8 +691,26 @@ class MlxProxy:
             out["temperature"] = options["temperature"]
         if "top_p" in options:
             out["top_p"] = options["top_p"]
-        if "stop" in options:
-            out["stop"] = options["stop"]
+        # Always include Qwen chat-template turn-boundary tokens as stop
+        # sequences.  At long context (30K+), Qwen3-Coder models can
+        # hallucinate `<|im_start|>` tokens mid-response — attention to role
+        # separators weakens and the model "predicts" the next turn.  The
+        # tokenizer decodes these back to literal strings that stream to the
+        # client, which then truncates or behaves strangely.
+        #
+        # `<|im_end|>` is already the EOS token (id 151645), so the model
+        # stops there naturally.  `<|im_start|>` (id 151644) is NOT a stop
+        # token — but semantically, if the model is emitting a turn-start,
+        # the turn is done.  Force stop.  Same for `<|endoftext|>` which
+        # can leak in at session boundaries.
+        stop_list = ["<|im_start|>", "<|endoftext|>"]
+        user_stop = options.get("stop")
+        if user_stop:
+            if isinstance(user_stop, list):
+                stop_list.extend(user_stop)
+            elif isinstance(user_stop, str):
+                stop_list.append(user_stop)
+        out["stop"] = stop_list
 
         # Tools — OpenAI spec wraps each function in {type:"function", function:{...}}
         if raw.get("tools"):
@@ -853,6 +871,22 @@ def openai_sse_to_anthropic_events(
 
     # --- Text content ---
     text = delta.get("content")
+    if text:
+        # Defensive: strip Qwen chat-template turn-boundary tokens that can
+        # leak into the output stream at long context.  The `stop` parameter
+        # in _to_openai_body tells mlx_lm.server to halt on these, but if a
+        # partial token leaks through before the stop triggers, don't let
+        # the literal "<|im_start|>" text reach the client — it confuses
+        # Claude Code's response handling.  See the patent-factory-style
+        # debugging note: at 30K+ tokens Qwen3-Coder hallucinates role
+        # separators mid-response.
+        for marker in ("<|im_start|>", "<|im_end|>", "<|endoftext|>"):
+            if marker in text:
+                text = text.split(marker, 1)[0]
+                # Once we hit a turn-boundary marker, stop emitting further
+                # text for this delta — rest of the chunk is post-turn noise.
+                if not text:
+                    break
     if text:
         if not state.text_open:
             state.text_block_index = _alloc_block_index()
@@ -1016,7 +1050,15 @@ def build_anthropic_non_streaming_response(
 
     text = message.get("content")
     if text:
-        content_blocks.append({"type": "text", "text": text})
+        # Same defense as the streaming path: strip Qwen turn-boundary tokens
+        # that can leak at long context.  Splits on first marker and drops
+        # everything after it — semantically "the model ended the turn here,
+        # the rest is hallucination."
+        for marker in ("<|im_start|>", "<|im_end|>", "<|endoftext|>"):
+            if marker in text:
+                text = text.split(marker, 1)[0]
+        if text:
+            content_blocks.append({"type": "text", "text": text})
 
     for tc in message.get("tool_calls") or []:
         fn = tc.get("function") or {}
