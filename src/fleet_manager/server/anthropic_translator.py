@@ -99,15 +99,27 @@ def anthropic_to_ollama_messages(
                     images.append(source["data"])
                 # url-type images are not supported by Ollama — skip silently
             elif btype == "tool_use":
-                # Assistant turn calling a tool
-                tool_calls.append({
+                # Assistant turn calling a tool.  Preserve the Anthropic-side
+                # tool_use id so the downstream ``tool_result`` → OpenAI
+                # ``role:"tool"`` message can reference it via tool_call_id
+                # (OpenAI/mlx_lm.server require that link for multi-call
+                # turns; Ollama ignores the field but tolerates its presence).
+                tc: dict[str, Any] = {
                     "function": {
                         "name": block.get("name", ""),
                         "arguments": block.get("input", {}) or {},
-                    }
-                })
+                    },
+                }
+                tool_use_id = block.get("id")
+                if tool_use_id:
+                    tc["id"] = tool_use_id
+                tool_calls.append(tc)
             elif btype == "tool_result":
-                # User turn returning a tool's output — flatten content
+                # User turn returning a tool's output — flatten content.
+                # ``tool_use_id`` is REQUIRED on this block by the Anthropic
+                # spec; preserve it as ``tool_call_id`` on the emitted tool
+                # message so OpenAI-strict backends (like mlx_lm.server) can
+                # correlate the result with the earlier tool_use call.
                 content = block.get("content", "")
                 if isinstance(content, list):
                     flat = []
@@ -115,10 +127,14 @@ def anthropic_to_ollama_messages(
                         if isinstance(sub, dict) and sub.get("type") == "text":
                             flat.append(sub.get("text", ""))
                     content = "\n".join(flat)
-                pending_tool_results.append({
+                tool_msg: dict[str, Any] = {
                     "role": "tool",
                     "content": str(content) if content is not None else "",
-                })
+                }
+                tool_use_id = block.get("tool_use_id")
+                if tool_use_id:
+                    tool_msg["tool_call_id"] = tool_use_id
+                pending_tool_results.append(tool_msg)
             elif btype == "thinking":
                 # Drop — don't replay reasoning to non-thinking models
                 continue
