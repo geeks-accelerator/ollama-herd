@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
+from fleet_manager.server import debug_log
 from fleet_manager.server.anthropic_models import AnthropicMessagesRequest
 from fleet_manager.server.anthropic_translator import (
     AnthropicSSEState,
@@ -227,33 +228,69 @@ async def _serve_via_mlx(
     if anthropic_version:
         headers["anthropic-version"] = anthropic_version
 
+    settings = getattr(request.app.state, "settings", None)
+    debug_enabled = bool(getattr(settings, "debug_request_bodies", False)) if settings else False
+    debug_data_dir = getattr(settings, "data_dir", None) if settings else None
+    debug_retention = getattr(settings, "debug_request_retention_days", 7) if settings else 7
+
     if not body.stream:
         # Non-streaming path — one-shot request/response translation
+        ns_error: Exception | None = None
+        ns_response_body: dict | None = None
         try:
-            openai_resp = await mlx_proxy.completions_non_streaming(inference_req)
-        except Exception as exc:
-            logger.exception(f"Anthropic[{rid}] MLX non-streaming failed: {exc}")
-            record_trace_mlx(
-                trace_store, inference_req, t_start, None, "failed",
-                error_message=str(exc),
-            )
-            return JSONResponse(
-                status_code=502,
-                content={
-                    "type": "error",
-                    "error": {
-                        "type": "api_error",
-                        "message": f"MLX backend error: {exc}",
+            try:
+                openai_resp = await mlx_proxy.completions_non_streaming(inference_req)
+            except Exception as exc:
+                ns_error = exc
+                logger.exception(f"Anthropic[{rid}] MLX non-streaming failed: {exc}")
+                record_trace_mlx(
+                    trace_store, inference_req, t_start, None, "failed",
+                    error_message=str(exc),
+                )
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "type": "error",
+                        "error": {
+                            "type": "api_error",
+                            "message": f"MLX backend error: {exc}",
+                        },
                     },
-                },
+                )
+            record_trace_mlx(
+                trace_store, inference_req, t_start, time.time(), "completed",
             )
-        record_trace_mlx(
-            trace_store, inference_req, t_start, time.time(), "completed",
-        )
-        response_body = build_anthropic_non_streaming_response(
-            openai_resp, body.model,
-        )
-        return JSONResponse(content=response_body, headers=headers)
+            ns_response_body = build_anthropic_non_streaming_response(
+                openai_resp, body.model,
+            )
+            return JSONResponse(content=ns_response_body, headers=headers)
+        finally:
+            if debug_enabled and debug_data_dir:
+                debug_log.append_request(
+                    enabled=True,
+                    data_dir=str(debug_data_dir),
+                    record={
+                        "request_id": inference_req.request_id,
+                        "timestamp": t_start,
+                        "node_id": "mlx-local",
+                        "model": inference_req.model,
+                        "original_model": inference_req.original_model or body.model,
+                        "original_format": "anthropic",
+                        "tags": list(inference_req.tags),
+                        "status": "failed" if ns_error else "completed",
+                        "error": str(ns_error) if ns_error else None,
+                        "latency_ms": int((time.time() - t_start) * 1000),
+                        "ttft_ms": None,
+                        # Real Anthropic body the client sent — not the
+                        # internal translated form. This is what replay POSTs.
+                        "client_body": body.model_dump(by_alias=True, exclude_none=True),
+                        "ollama_body": None,  # MLX path doesn't translate to Ollama
+                        "backend": "mlx",
+                        "stream": False,
+                        "response": ns_response_body,
+                    },
+                    retention_days=debug_retention,
+                )
 
     # Streaming path — OpenAI SSE → Anthropic SSE translation
     async def _sse_generator():
@@ -323,6 +360,39 @@ async def _serve_via_mlx(
                 logger.info(
                     f"Anthropic[{rid}] MLX stream done: tools={len(state.emitted_tools)} "
                     f"output_tok≈{state.output_tokens} elapsed_ms={elapsed_ms:.0f}"
+                )
+            if debug_enabled and debug_data_dir:
+                ttft_ms = (
+                    int((first_token_time - t_start) * 1000)
+                    if first_token_time else None
+                )
+                debug_log.append_request(
+                    enabled=True,
+                    data_dir=str(debug_data_dir),
+                    record={
+                        "request_id": inference_req.request_id,
+                        "timestamp": t_start,
+                        "node_id": "mlx-local",
+                        "model": inference_req.model,
+                        "original_model": inference_req.original_model or body.model,
+                        "original_format": "anthropic",
+                        "tags": list(inference_req.tags),
+                        "status": status,
+                        "error": err_msg,
+                        "latency_ms": int(elapsed_ms),
+                        "ttft_ms": ttft_ms,
+                        "completion_tokens": state.output_tokens,
+                        "tool_calls_emitted": len(state.emitted_tools),
+                        "client_body": body.model_dump(by_alias=True, exclude_none=True),
+                        "ollama_body": None,
+                        "backend": "mlx",
+                        "stream": True,
+                        # Stream output isn't reconstructed here — chunks flow
+                        # straight to the client. Replay can re-execute against
+                        # client_body and collect a fresh response.
+                        "response": None,
+                    },
+                    retention_days=debug_retention,
                 )
 
     return StreamingResponse(
