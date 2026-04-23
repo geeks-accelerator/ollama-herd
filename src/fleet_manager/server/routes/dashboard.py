@@ -1740,18 +1740,27 @@ _OVERVIEW_BODY = """
 }
 .queue-card {
   background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-  padding: 14px 18px; display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px;
+  /* Stack vertically: name on its own row, then stats rows below.
+     Was previously horizontal flex with space-between; that worked for
+     name + 4-stat row but broke when the running-averages row was added
+     (8 numbers fighting for room → text overflow).  Vertical stack lets
+     each row use full card width independently. */
+  display: flex; flex-direction: column; align-items: stretch; gap: 10px;
 }
-.queue-name { font-size: 13px; font-weight: 500; font-family: 'SF Mono', 'Fira Code', monospace; }
-.queue-stats { display: flex; gap: 14px; align-items: center; }
-.queue-stat { text-align: center; }
+.queue-name {
+  font-size: 13px; font-weight: 500; font-family: 'SF Mono', 'Fira Code', monospace;
+  /* Allow long mlx model names to wrap instead of crashing the layout */
+  word-break: break-word;
+}
+.queue-stats { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.queue-stat { text-align: center; min-width: 56px; }
 .queue-stat .num { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .queue-stat .lbl { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
 @media (max-width: 768px) {
   .metrics-row { flex-wrap: wrap; gap: 10px; }
   .metric { min-width: calc(50% - 10px); }
-  .queue-card { flex-direction: column; align-items: flex-start; gap: 8px; }
-  .queue-stats { flex-wrap: wrap; gap: 10px; }
+  .queue-stats { gap: 10px; }
 }
 </style>
 

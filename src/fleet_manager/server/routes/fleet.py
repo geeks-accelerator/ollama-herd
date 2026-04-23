@@ -142,6 +142,14 @@ async def fleet_queue(request: Request):
                 # None until the proxy has observations; clients should
                 # treat as "no data yet" rather than 0%.
                 "cache_hit_rate": q.get("cache_hit_rate"),
+                # Per-queue running averages (Ollama + MLX both populate).
+                # 0 with stats_samples=0 means "no data yet" rather than
+                # genuinely-zero performance — clients should check samples
+                # before drawing conclusions from a 0 average.
+                "stats_samples": q.get("stats_samples", 0),
+                "avg_latency_ms": q.get("avg_latency_ms", 0),
+                "avg_prompt_tokens": q.get("avg_prompt_tokens", 0),
+                "avg_completion_tokens": q.get("avg_completion_tokens", 0),
             }
             for key, q in queue_info.items()
         },
