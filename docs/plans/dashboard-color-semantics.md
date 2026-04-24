@@ -111,7 +111,7 @@ Why blue→purple (and not green→purple, which was considered):
 | CPU | cyan `~#38bdf8` (hue 195°) | purple `~#6c63ff` (hue 255°) |
 | Memory | soft blue `~#818cf8` (hue 225°) | deep purple `~#7c3aed` (hue 270°) |
 
-Concrete function:
+Concrete function (as shipped, post-brightness-tune):
 
 ```javascript
 function utilizationColor(pct, metric) {
@@ -124,12 +124,14 @@ function utilizationColor(pct, metric) {
   var hueStart = metric === "cpu" ? 195 : 225;  // cyan vs soft-blue
   var hueEnd   = metric === "cpu" ? 255 : 270;  // purple vs deep purple
   var hue        = hueStart + (pct / 100) * (hueEnd - hueStart);
-  var saturation = 60 + (pct / 100) * 25;       // 60% → 85%
-  var lightness  = 55 - (pct / 100) * 10;       // 55% → 45% (slight deepening)
-  var alpha      = 0.45 + (pct / 100) * 0.45;   // 0.45 → 0.90
+  var saturation = 78 + (pct / 100) * 14;       // 78% → 92%
+  var lightness  = 62 - (pct / 100) * 10;       // 62% → 52%
+  var alpha      = 0.72 + (pct / 100) * 0.28;   // 0.72 → 1.00
   return `hsla(${hue}, ${saturation}%, ${lightness}%, ${alpha})`;
 }
 ```
+
+The initial proposal in this plan used lower saturation (60→85), lower lightness (55→45), and a lower alpha floor (0.45→0.90). That shipped on first pass and was correct in its progression but read as dull against the dark card background — low-% bars were washed out compared to the MLX chip borders and IMG/STT/VIS badges on the same card. The values above are the tuned version that matches chip/badge visual energy while preserving the "low = waiting, high = engaged" gradient. See commit 40c8e0e.
 
 Why three channels instead of one:
 
