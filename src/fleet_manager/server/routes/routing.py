@@ -224,7 +224,10 @@ def _try_vram_fallback(
             f"VRAM fallback: '{inference_req.model}' ({category.value}) not loaded, "
             f"routing to loaded '{best_model}' instead"
         )
-        _record_vram_fallback(inference_req.model, best_model, category.value)
+        _record_vram_fallback(
+            inference_req.model, best_model, category.value,
+            cross_category=False, fallback_category=category.value,
+        )
         return [best_result], best_model
 
     # No loaded model in same category — try ANY loaded model (with priority check)
@@ -247,23 +250,55 @@ def _try_vram_fallback(
             return None
 
         fallback_cat = classify_model(best_model).value
-        logger.info(
-            f"VRAM fallback (cross-category): '{inference_req.model}' not loaded, "
-            f"no {category.value} model available, using '{best_model}' ({fallback_cat})"
+        # Cross-category fallback is a QUALITY RISK — the client asked for a
+        # model in one category (often because the payload depends on that
+        # category's abilities, e.g. images for a vision model) and we're
+        # giving them a different category.  Escalate to ERROR so it shows
+        # up in log scans; the caller still gets ``X-Fleet-Fallback`` in
+        # the response headers to detect this programmatically.
+        risk_note = ""
+        if category.value == "vision" and fallback_cat != "vision":
+            risk_note = (
+                " — QUALITY RISK: non-vision model answering a vision "
+                "request; images in the payload will be dropped or ignored"
+            )
+        logger.error(
+            f"VRAM fallback (cross-category): '{inference_req.model}' "
+            f"({category.value}) not loaded, no {category.value} model "
+            f"available, using '{best_model}' ({fallback_cat}){risk_note}"
         )
-        _record_vram_fallback(inference_req.model, best_model, category.value)
+        _record_vram_fallback(
+            inference_req.model, best_model, category.value,
+            cross_category=True, fallback_category=fallback_cat,
+        )
         return [best_result], best_model
 
     return None
 
 
-def _record_vram_fallback(requested: str, actual: str, category: str) -> None:
-    """Record a VRAM fallback event for health visibility."""
+def _record_vram_fallback(
+    requested: str,
+    actual: str,
+    category: str,
+    *,
+    cross_category: bool = False,
+    fallback_category: str | None = None,
+) -> None:
+    """Record a VRAM fallback event for health visibility.
+
+    ``cross_category=True`` means the served model is in a DIFFERENT
+    category from the requested one (e.g. reasoning answering a vision
+    request).  The dashboard health page filters on this because
+    cross-category substitutions are a quality risk, not just a
+    latency/memory optimization.
+    """
     _vram_fallback_events.append({
         "timestamp": time.time(),
         "requested_model": requested,
         "actual_model": actual,
         "category": category,
+        "cross_category": cross_category,
+        "fallback_category": fallback_category or category,
     })
     # Keep last 100 events
     if len(_vram_fallback_events) > 100:
