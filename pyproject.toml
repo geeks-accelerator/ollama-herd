@@ -41,6 +41,10 @@ dependencies = [
     "cryptography>=42.0.0",
     "websockets>=13.0",
     "tiktoken>=0.7.0",
+    # Tool-call JSON repair — recovers model output with minor syntax
+    # errors (trailing commas, missing brackets, unescaped quotes) that
+    # would otherwise fail to parse on the Claude Code side.  Pure Python.
+    "json-repair>=0.29",
 ]
 
 [project.urls]
