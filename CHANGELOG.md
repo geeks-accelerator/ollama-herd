@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-24
+
+Multi-MLX, Claude Code reliability, and layered context management. The long-context failure modes that made Claude Code CLI feel broken around 30K tokens on local Qwen3-Coder models are systematically addressed: tool-schema fixup for the llama.cpp#20164 optional-param trap, mechanical tool-result clearing with stable-cut prefix-cache preservation, LLM-based compactor with force_all escape, pre-inference 413 cap, MLX wall-clock timeout. Multi-MLX-server support lets a single node run main + dedicated-compactor models side-by-side without Ollama eviction risk. Tool-use reliability layer repairs malformed JSON tool-call arguments. Ollama watchdog removed after it caused production incidents.
+
 ### Added
 
 - **Multi-MLX-server support** — the node agent can now spawn N `mlx_lm.server` subprocesses on N ports simultaneously, with per-server memory-pressure gate, per-URL health reporting, and multi-node aggregation. Closes [`docs/issues/multi-mlx-server-support.md`](docs/issues/multi-mlx-server-support.md). Config shape: `FLEET_NODE_MLX_SERVERS='[{"model":"mlx-community/Qwen3-Coder-Next-4bit","port":11440,"kv_bits":8},{"model":"mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit","port":11441,"kv_bits":8}]'`. Legacy single-server config (`FLEET_NODE_MLX_AUTO_START_MODEL` + `FLEET_NODE_MLX_URL`) is synthesized into a one-entry list when the new var is unset — no breaking change.
