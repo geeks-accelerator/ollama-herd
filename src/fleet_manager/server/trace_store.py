@@ -589,6 +589,32 @@ class TraceStore:
             "total_retries": row[3] or 0,
         }
 
+    async def get_request_count_by_model(
+        self, seconds: int = 120,
+    ) -> dict[str, int]:
+        """Return {model_name: request_count} over the last N seconds.
+
+        Used by the context compactor's curator selector: a model with
+        active traffic is a poor curator choice (we'd queue summary work
+        behind real user requests), while an idle model — especially a
+        pinned one — is ideal.  Short window (default 2 min) captures
+        "currently in a conversation" rather than all-time popularity.
+        """
+        if not self._db:
+            return {}
+        cutoff = time.time() - seconds
+        cursor = await self._db.execute(
+            """
+            SELECT model, COUNT(*) as n
+            FROM request_traces
+            WHERE timestamp >= ? AND model != ''
+            GROUP BY model
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        return {row[0]: row[1] for row in rows}
+
     async def get_recently_used_models(self, seconds: int = 3600) -> set[str]:
         """Return model names with at least 1 request in the last N seconds.
 

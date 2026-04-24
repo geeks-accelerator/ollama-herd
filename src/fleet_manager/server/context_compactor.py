@@ -45,6 +45,31 @@ Key invariants — DO NOT VIOLATE:
   5. **Fail open.**  If the curator fails or times out, pass the
      original content through unchanged and log the failure.  Bad
      compaction is worse than no compaction.
+
+# EXTRACTION SEAM (recorded 2026-04-24):
+# - Fleet-manager dependencies (at runtime, not import time):
+#     * ``CuratorSelector.select()`` reads ``NodeState``-like objects but only
+#       touches ``.ollama.models_loaded[].name`` and ``.node_id`` — duck-typed.
+#       Extraction would replace with any shape that exposes that surface.
+#     * The ``curator_selector`` + ``resolve_curator_context`` callbacks are
+#       LATE-BOUND — constructed by ``app.py`` when the compactor is wired up.
+#       The module itself has no fleet_manager imports.
+#     * Lazy import inside ``CuratorSelector._eligible()`` for
+#       ``fleet_manager.server.model_knowledge`` — would need to be
+#       parameterized or inlined on extraction.
+# - External dependencies: stdlib + sqlite3 + logging.
+# - Public surface to preserve if extracted:
+#     STRATEGY_VERSION, STRATEGIES_BY_TOOL (Strategy dataclass + tool→strategy map)
+#     CuratorProtocol (Protocol), OllamaCurator (example impl)
+#     SummaryCache (SQLite-backed)
+#     CompactionReport, ContextCompactor, CuratorSelector
+# - Critical invariant: byte-stable summaries across runs.  See module
+#   docstring invariant (1).  Any extraction MUST preserve the
+#   deterministic-curator-call + content-hash-keyed-cache contract.
+# - Medium coupling; extract together with ``context_management.py`` as a
+#   layer-1 + layer-2 pair for a cohesive "context management" package.
+#   Remove the ``model_knowledge`` import (or make it a pluggable predicate)
+#   to sever the last fleet-manager tie.
 """
 
 from __future__ import annotations
@@ -93,6 +118,10 @@ class OllamaCurator:
 
     Reuses the herd's existing Ollama client infrastructure.  Uses
     non-streaming chat.  Deterministic via temperature=0.
+
+    The ``model`` passed at construction time is the fallback/default.
+    Callers can override per-summarise call when using dynamic curator
+    selection (see ``CuratorSelector``).
     """
 
     def __init__(self, ollama_client, model: str):
@@ -100,10 +129,17 @@ class OllamaCurator:
         self.model = model
 
     async def summarize(
-        self, system: str, prompt: str, max_tokens: int = 512, timeout_s: float = 60.0,
+        self,
+        system: str,
+        prompt: str,
+        max_tokens: int = 512,
+        timeout_s: float = 60.0,
+        *,
+        model: str | None = None,
     ) -> str | None:
+        effective_model = model or self.model
         body = {
-            "model": self.model,
+            "model": effective_model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
@@ -118,16 +154,163 @@ class OllamaCurator:
         try:
             resp = await asyncio.wait_for(self._ollama.chat(body), timeout=timeout_s)
         except TimeoutError:
-            logger.warning(f"Curator {self.model} timed out after {timeout_s}s")
+            logger.warning(f"Curator {effective_model} timed out after {timeout_s}s")
             return None
         except Exception as exc:  # noqa: BLE001 — curator failure must fail-open
-            logger.warning(f"Curator {self.model} failed: {type(exc).__name__}: {exc}")
+            logger.warning(
+                f"Curator {effective_model} failed: {type(exc).__name__}: {exc}"
+            )
             return None
         try:
             return resp["message"]["content"].strip()
         except (KeyError, AttributeError, TypeError):
-            logger.warning(f"Curator {self.model} returned unparseable response")
+            logger.warning(
+                f"Curator {effective_model} returned unparseable response"
+            )
             return None
+
+
+# ----------------------------------------------------------------------------
+# Curator selector — pick the best available model for summary work
+# ----------------------------------------------------------------------------
+
+
+@dataclass
+class CuratorCandidate:
+    """A model considered for curator duty, with its ranking inputs."""
+
+    model: str
+    node_id: str
+    params_b: float
+    is_pinned: bool
+    recent_requests: int  # in the idle window
+    score: float = 0.0
+
+
+class CuratorSelector:
+    """Pick a curator model based on current fleet state.
+
+    Policy (highest-wins ranking):
+
+      1. Candidate must be a hot (``models_loaded``) instruct-capable
+         model — categories GENERAL / CODING / REASONING — with params
+         >= ``min_params_b``.  Smaller models produce unreliable
+         summaries; we'd rather skip compaction than use them.
+
+      2. Activity penalty: each request in the last ``idle_window_s``
+         subtracts from the score.  An idle model ranks far above a
+         busy one, regardless of quality.
+
+      3. Pinned bonus: pinned models are reliably hot across sessions
+         (won't evict), so they're preferred for repeated curator work
+         when idle.
+
+      4. Quality tiebreaker: larger params → better summaries.
+
+    If no hot candidate is idle enough, returns the configured default
+    model (which the curator will cold-load — only acceptable because
+    the default is usually itself pinned + hot).  If even the default
+    has activity above threshold, returns ``None`` and the compactor
+    fails-open (no compaction this request).
+    """
+
+    def __init__(
+        self,
+        *,
+        default_model: str,
+        idle_window_s: int = 120,
+        min_params_b: float = 7.0,
+        activity_penalty_per_request: float = 100.0,
+        pinned_bonus: float = 20.0,
+    ):
+        self.default_model = default_model
+        self.idle_window_s = idle_window_s
+        self.min_params_b = min_params_b
+        self.activity_penalty_per_request = activity_penalty_per_request
+        self.pinned_bonus = pinned_bonus
+
+    def _eligible(self, model_name: str) -> tuple[bool, float]:
+        """Return (eligible?, params_b).  Imported lazily to avoid cycles."""
+        from fleet_manager.server.model_knowledge import (
+            ModelCategory,
+            classify_model,
+            lookup_model,
+        )
+
+        category = classify_model(model_name)
+        # Instruct-capable text categories are all fine as curators.  VISION
+        # models (gemma3, llama3.2-vision) are still instruct LLMs that
+        # handle text summarization; their vision capability is just extra.
+        # Excluded: VISION_EMBEDDING (encoder only), IMAGE (generation).
+        if category in {
+            ModelCategory.VISION_EMBEDDING,
+            ModelCategory.IMAGE,
+        }:
+            return False, 0.0
+        spec = lookup_model(model_name)
+        params_b = spec.params_b if spec else 0.0
+        if params_b < self.min_params_b:
+            return False, params_b
+        return True, params_b
+
+    def select(
+        self,
+        *,
+        nodes: list,
+        env_pins: list[str],
+        per_node_pins: dict[str, list[str]],
+        activity: dict[str, int],
+    ) -> str | None:
+        """Pick the best curator model, or None to skip compaction.
+
+        ``nodes`` is a list of NodeState.  ``activity`` is the trace
+        store's request-count-by-model over ``idle_window_s``.
+        """
+        # Gather hot candidates across the fleet
+        candidates: list[CuratorCandidate] = []
+        seen: set[tuple[str, str]] = set()
+        for node in nodes:
+            if not node.ollama:
+                continue
+            node_pins = set(per_node_pins.get(node.node_id, []))
+            for lm in node.ollama.models_loaded:
+                key = (node.node_id, lm.name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                ok, params_b = self._eligible(lm.name)
+                if not ok:
+                    continue
+                is_pinned = lm.name in env_pins or lm.name in node_pins
+                recent = activity.get(lm.name, 0)
+                score = (
+                    params_b  # quality tiebreaker (1-500 range)
+                    - recent * self.activity_penalty_per_request
+                    + (self.pinned_bonus if is_pinned else 0.0)
+                )
+                candidates.append(CuratorCandidate(
+                    model=lm.name, node_id=node.node_id,
+                    params_b=params_b, is_pinned=is_pinned,
+                    recent_requests=recent, score=score,
+                ))
+
+        if candidates:
+            # Pick the highest-scoring eligible candidate
+            candidates.sort(key=lambda c: c.score, reverse=True)
+            best = candidates[0]
+            # Only accept if activity is low enough — a heavily-hit model
+            # beats out quality only if every candidate is busy.
+            if best.recent_requests == 0:
+                return best.model
+            # All candidates have activity — fall through to default policy
+
+        # Fallback: configured default.  Check if the default is itself
+        # currently saturated; if so, skip compaction this request.
+        default_activity = activity.get(self.default_model, 0)
+        # Threshold: > 3 requests in the idle window = "busy enough to skip"
+        if default_activity > 3:
+            return None
+        return self.default_model
 
 
 # ----------------------------------------------------------------------------
@@ -372,11 +555,22 @@ class ContextCompactor:
         *,
         budget_tokens: int = 20_000,
         preserve_last_turns: int = 3,
+        curator_selector: CuratorSelector | None = None,
+        resolve_curator_context=None,
     ):
         self.curator = curator
         self.cache = cache
         self.budget_tokens = budget_tokens
         self.preserve_last_turns = preserve_last_turns
+        # Dynamic curator selection — optional.  When provided, the
+        # selector is invoked once per ``maybe_compact`` call to pick
+        # the best hot/idle model for summary work.  ``resolve_curator_context``
+        # is a callable (sync or async) returning the kwargs the selector
+        # needs (nodes/env_pins/per_node_pins/activity).  Kept as a
+        # callback so the compactor doesn't need to know about the
+        # registry / pin store / trace store directly.
+        self.curator_selector = curator_selector
+        self._resolve_curator_context = resolve_curator_context
 
     # ------------------------------------------------------------------
     # Public API
@@ -384,6 +578,8 @@ class ContextCompactor:
 
     async def maybe_compact(
         self, messages: list[dict],
+        *,
+        force_all: bool = False,
     ) -> tuple[list[dict], CompactionReport]:
         """Compact messages if they exceed the budget; otherwise pass through.
 
@@ -391,6 +587,14 @@ class ContextCompactor:
         Output: (possibly-modified messages, report).
 
         Does NOT modify the input list in place.
+
+        ``force_all``: when True, ignore each strategy's ``min_bloat_tokens``
+        gate and try to compact EVERY eligible tool_result block regardless
+        of size.  Used for session-level rescue: after Layer 1 mechanical
+        clearing has run, if the total prompt is still huge, we want the
+        LLM compactor to work on every remaining block — even small ones
+        — to shrink as aggressively as possible.  Pre-inference 413 is the
+        fallback if even force_all doesn't get us under budget.
         """
         report = CompactionReport()
         report.tokens_before = self._total_tokens(messages)
@@ -411,17 +615,51 @@ class ContextCompactor:
         report.triggered = True
         out_messages: list[dict] = []
 
+        # Resolve curator model ONCE per request.  This gives us a
+        # stable choice across all summaries in this request, and lets
+        # us bail out entirely when no suitable curator is available
+        # (fail-open rather than queue behind real user traffic).
+        curator_model = await self._pick_curator_model()
+        if curator_model is None:
+            logger.info(
+                "Compactor: no eligible curator available — skipping "
+                "compaction for this request (fail-open)",
+            )
+            report.tokens_after = report.tokens_before
+            report.triggered = False
+            return messages, report
+
         for i, msg in enumerate(messages):
             if i >= preserved_start:
                 # Preserve verbatim — recent turns
                 out_messages.append(msg)
                 continue
             # Compactable range: look at content blocks for tool_results
-            new_msg = await self._compact_message(msg, tool_use_names, report)
+            new_msg = await self._compact_message(
+                msg, tool_use_names, report,
+                curator_model=curator_model,
+                force_all=force_all,
+            )
             out_messages.append(new_msg)
 
         report.tokens_after = self._total_tokens(out_messages)
         return out_messages, report
+
+    async def _pick_curator_model(self) -> str | None:
+        """Ask the selector which model to use, or fall back to the default."""
+        if self.curator_selector is None or self._resolve_curator_context is None:
+            return getattr(self.curator, "model", None)
+        try:
+            ctx = self._resolve_curator_context()
+            if asyncio.iscoroutine(ctx):
+                ctx = await ctx
+            return self.curator_selector.select(**ctx)
+        except Exception as exc:  # noqa: BLE001 — selection must never crash a request
+            logger.warning(
+                f"Curator selection failed: {type(exc).__name__}: {exc}; "
+                f"falling back to configured default",
+            )
+            return getattr(self.curator, "model", None)
 
     # ------------------------------------------------------------------
     # Internals
@@ -479,6 +717,9 @@ class ContextCompactor:
         msg: dict,
         tool_use_names: dict[str, str],
         report: CompactionReport,
+        *,
+        curator_model: str | None = None,
+        force_all: bool = False,
     ) -> dict:
         """Walk a message's content blocks, compact tool_results if eligible."""
         content = msg.get("content")
@@ -507,11 +748,17 @@ class ContextCompactor:
                 new_blocks.append(block)
                 continue
             tok_before = _estimate_tokens(raw_text)
-            if tok_before < strategy.min_bloat_tokens:
+            # ``force_all`` mode: bypass the per-strategy min_bloat_tokens
+            # gate.  Session-level rescue path — even small blocks get
+            # summarised because the total prompt is already catastrophic
+            # and we need to shrink everything we can.
+            if not force_all and tok_before < strategy.min_bloat_tokens:
                 new_blocks.append(block)
                 continue
             # Compaction eligible — look up or generate summary
-            summary = await self._get_or_compute_summary(raw_text, strategy)
+            summary = await self._get_or_compute_summary(
+                raw_text, strategy, curator_model=curator_model,
+            )
             if summary is None:
                 # Curator failed — pass through unchanged
                 new_blocks.append(block)
@@ -552,25 +799,38 @@ class ContextCompactor:
         return ""
 
     async def _get_or_compute_summary(
-        self, raw_text: str, strategy: Strategy,
+        self,
+        raw_text: str,
+        strategy: Strategy,
+        *,
+        curator_model: str | None = None,
     ) -> str | None:
         """Return cached summary if available, else call curator + cache.
 
         Critical invariant: same raw_text + same strategy + same version
         MUST return identical bytes every call, forever.  This is what
         makes mlx prefix cache still hit after compaction.
+
+        Note: the cache key is intentionally ``(content_hash, strategy,
+        version)`` — NOT including ``curator_model``.  Once a summary is
+        computed (by whichever curator happened to be chosen that day)
+        it's locked in forever.  Different blocks may have been
+        summarized by different curators, but each individual block's
+        bytes are stable.  This keeps mlx prefix cache stable across
+        curator-selection events.
         """
         content_hash = _sha256(raw_text)
         cached = self.cache.get(content_hash, strategy.name)
         if cached is not None:
             return cached
 
-        # Cache miss — call curator
+        # Cache miss — call curator (with optional per-call model override)
         user_prompt = strategy.user_prompt_template.format(content=raw_text)
         summary = await self.curator.summarize(
             system=strategy.system_prompt,
             prompt=user_prompt,
             max_tokens=strategy.max_output_tokens,
+            model=curator_model,
         )
         if summary is None:
             return None
@@ -581,6 +841,6 @@ class ContextCompactor:
             summary=summary,
             original_tokens=_estimate_tokens(raw_text),
             summary_tokens=_estimate_tokens(summary),
-            curator_model=getattr(self.curator, "model", "unknown"),
+            curator_model=curator_model or getattr(self.curator, "model", "unknown"),
         )
         return summary

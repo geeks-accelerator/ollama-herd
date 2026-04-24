@@ -37,10 +37,12 @@ class DeterministicFakeCurator:
         self.last_prompt = None
 
     async def summarize(
-        self, system: str, prompt: str, max_tokens: int = 512, timeout_s: float = 60.0,
+        self, system: str, prompt: str, max_tokens: int = 512,
+        timeout_s: float = 60.0, *, model: str | None = None,
     ) -> str | None:
         self.call_count += 1
         self.last_prompt = prompt
+        self.last_model = model
         # Mimic a summary: preserve some identifying info from the input so
         # downstream model can still reason.  Deterministic!
         seed = prompt[:40].replace("\n", " ")
@@ -54,7 +56,9 @@ class AlwaysFailCurator:
         self.model = "always-fail"
         self.call_count = 0
 
-    async def summarize(self, system, prompt, max_tokens=512, timeout_s=60.0):
+    async def summarize(
+        self, system, prompt, max_tokens=512, timeout_s=60.0, *, model=None,
+    ):
         self.call_count += 1
         return None
 
@@ -447,3 +451,244 @@ def test_strategies_cover_expected_tools():
     assert "Bash" in STRATEGIES_BY_TOOL
     assert "WebFetch" in STRATEGIES_BY_TOOL
     assert STRATEGY_VERSION  # non-empty
+
+
+# ---------------------------------------------------------------------------
+# CuratorSelector — dynamic curator picking
+# ---------------------------------------------------------------------------
+
+
+def _mk_loaded_nodes(loaded_by_node: dict[str, list[str]]):
+    """Build lightweight node stubs with `ollama.models_loaded` populated."""
+    from fleet_manager.models.node import LoadedModel, OllamaMetrics
+    from tests.conftest import make_node
+
+    nodes = []
+    for node_id, model_names in loaded_by_node.items():
+        n = make_node(node_id=node_id)
+        n.ollama = OllamaMetrics(
+            models_loaded=[LoadedModel(name=m, size_gb=1.0) for m in model_names],
+            models_available=list(model_names),
+        )
+        nodes.append(n)
+    return nodes
+
+
+class TestCuratorSelector:
+    """Curator selection policy: hot + idle + pinned + quality."""
+
+    def setup_method(self):
+        from fleet_manager.server.context_compactor import CuratorSelector
+        self.selector = CuratorSelector(
+            default_model="gpt-oss:120b",
+            idle_window_s=120,
+            min_params_b=7.0,
+        )
+
+    def test_prefers_idle_pinned_high_quality(self):
+        """Pinned + idle + largest should win."""
+        nodes = _mk_loaded_nodes({
+            "mac-studio": ["gpt-oss:120b", "gemma3:27b", "qwen3:8b"],
+        })
+        picked = self.selector.select(
+            nodes=nodes,
+            env_pins=[],
+            per_node_pins={"mac-studio": ["gpt-oss:120b"]},
+            activity={},  # all idle
+        )
+        assert picked == "gpt-oss:120b"
+
+    def test_busy_pinned_yields_to_idle_alternative(self):
+        """If the pinned 120B is hammered, pick an idle smaller model."""
+        nodes = _mk_loaded_nodes({
+            "mac-studio": ["gpt-oss:120b", "gemma3:27b"],
+        })
+        picked = self.selector.select(
+            nodes=nodes,
+            env_pins=[],
+            per_node_pins={"mac-studio": ["gpt-oss:120b"]},
+            activity={"gpt-oss:120b": 10},  # very busy
+        )
+        # gemma3:27b is hot + idle + instruct-capable
+        assert picked == "gemma3:27b"
+
+    def test_filters_out_tiny_models(self):
+        """qwen3:0.6b is too small to be a reliable curator."""
+        nodes = _mk_loaded_nodes({
+            "laptop": ["qwen3:0.6b"],
+        })
+        picked = self.selector.select(
+            nodes=nodes, env_pins=[], per_node_pins={}, activity={},
+        )
+        # Falls back to default (not in hot set, but selector returns it)
+        assert picked == "gpt-oss:120b"
+
+    def test_filters_out_vision_embedding(self):
+        """Embedding models aren't valid curators."""
+        nodes = _mk_loaded_nodes({
+            "laptop": ["dinov2-vit-s14"],
+        })
+        picked = self.selector.select(
+            nodes=nodes, env_pins=[], per_node_pins={}, activity={},
+        )
+        assert picked == "gpt-oss:120b"  # fallback
+
+    def test_returns_none_when_everything_busy(self):
+        """If even the default is saturated, skip compaction (fail-open)."""
+        nodes = _mk_loaded_nodes({
+            "mac-studio": ["gpt-oss:120b"],
+        })
+        picked = self.selector.select(
+            nodes=nodes,
+            env_pins=["gpt-oss:120b"],
+            per_node_pins={},
+            activity={"gpt-oss:120b": 20},  # saturated
+        )
+        assert picked is None
+
+    def test_empty_fleet_returns_default(self):
+        """No hot models, no activity → use default (will cold-load)."""
+        picked = self.selector.select(
+            nodes=[], env_pins=[], per_node_pins={}, activity={},
+        )
+        assert picked == "gpt-oss:120b"
+
+    def test_idle_non_pinned_beats_busy_pinned(self):
+        """Activity penalty outweighs pinned bonus."""
+        nodes = _mk_loaded_nodes({
+            "mac-studio": ["gpt-oss:120b", "gemma3:27b"],
+        })
+        picked = self.selector.select(
+            nodes=nodes,
+            env_pins=["gpt-oss:120b"],  # 120B is pinned...
+            per_node_pins={},
+            activity={"gpt-oss:120b": 8},  # ...but busy
+        )
+        assert picked == "gemma3:27b"
+
+
+class TestDynamicCuratorWiring:
+    """End-to-end: compactor asks the selector, uses the chosen model."""
+
+    async def test_compactor_passes_selected_model_to_curator(self, tmp_path):
+        from fleet_manager.server.context_compactor import (
+            ContextCompactor,
+            CuratorSelector,
+            SummaryCache,
+        )
+
+        curator = DeterministicFakeCurator(model="default-fallback")
+        cache = SummaryCache(tmp_path / "c.sqlite")
+        selector = CuratorSelector(default_model="default-fallback")
+
+        async def resolve():
+            # Fixed context that makes the selector pick gemma3:27b
+            nodes = _mk_loaded_nodes({"node": ["gemma3:27b"]})
+            return {
+                "nodes": nodes, "env_pins": [], "per_node_pins": {},
+                "activity": {},
+            }
+
+        compactor = ContextCompactor(
+            curator=curator, cache=cache,
+            budget_tokens=100, preserve_last_turns=0,
+            curator_selector=selector,
+            resolve_curator_context=resolve,
+        )
+
+        # Message with a compactable Read tool_result
+        messages = [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Read",
+                 "input": {"file_path": "/big.py"}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1",
+                 "content": "x" * 20_000},  # 5K tokens, above min_bloat
+            ]},
+        ]
+        _, report = await compactor.maybe_compact(messages)
+        assert report.triggered
+        assert curator.call_count == 1
+        assert curator.last_model == "gemma3:27b"
+
+    async def test_compactor_skips_when_selector_returns_none(self, tmp_path):
+        """Selector returns None → fail-open, no curator call."""
+        from fleet_manager.server.context_compactor import (
+            ContextCompactor,
+            CuratorSelector,
+            SummaryCache,
+        )
+
+        curator = DeterministicFakeCurator()
+        cache = SummaryCache(tmp_path / "c.sqlite")
+        selector = CuratorSelector(default_model="gpt-oss:120b")
+
+        async def resolve():
+            # Saturated default + no hot alternatives → selector returns None
+            return {
+                "nodes": [], "env_pins": ["gpt-oss:120b"],
+                "per_node_pins": {},
+                "activity": {"gpt-oss:120b": 50},
+            }
+
+        compactor = ContextCompactor(
+            curator=curator, cache=cache,
+            budget_tokens=100, preserve_last_turns=0,
+            curator_selector=selector,
+            resolve_curator_context=resolve,
+        )
+
+        messages = [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Read",
+                 "input": {}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1",
+                 "content": "x" * 20_000},
+            ]},
+        ]
+        out, report = await compactor.maybe_compact(messages)
+        assert out == messages  # unchanged
+        assert curator.call_count == 0
+        assert not report.triggered  # fail-open
+
+
+# ---------------------------------------------------------------------------
+# force_all — session-level rescue trigger (bypass per-strategy min_bloat)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_force_all_compacts_below_min_bloat():
+    """force_all=True makes the compactor summarise ALL tool_results,
+    even those below the per-strategy min_bloat_tokens gate.  Used by the
+    route when the session prompt is still huge after Layer 1 clearing."""
+    cache = _tmp_cache()
+    curator = DeterministicFakeCurator()
+    compactor = ContextCompactor(
+        curator, cache, budget_tokens=500, preserve_last_turns=0,
+    )
+    # A small Read tool_result (well under STRATEGY_READ.min_bloat_tokens=1500)
+    small_body = "x" * 800  # ~200 tokens
+    msgs = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Read", "input": {}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": small_body},
+        ]},
+        # Pad with tokens so we exceed budget_tokens=500
+        {"role": "user", "content": "x" * 3000},
+    ]
+    # Without force_all: skipped (below min_bloat)
+    _, r1 = await compactor.maybe_compact(msgs)
+    assert r1.triggered is True  # budget exceeded, so we entered compaction path
+    assert len(r1.compactions) == 0  # but nothing got summarised (too small)
+
+    # With force_all: the small block gets summarised anyway
+    _, r2 = await compactor.maybe_compact(msgs, force_all=True)
+    assert r2.triggered is True
+    assert len(r2.compactions) == 1
+    assert r2.compactions[0]["strategy"] == "read"
