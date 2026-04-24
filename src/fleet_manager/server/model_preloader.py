@@ -38,6 +38,7 @@ import time
 
 from fleet_manager.models.config import ServerSettings
 from fleet_manager.server.model_knowledge import lookup_model
+from fleet_manager.server.pinned_models import PinnedModelsStore
 from fleet_manager.server.registry import NodeRegistry
 from fleet_manager.server.streaming import StreamingProxy
 from fleet_manager.server.trace_store import TraceStore
@@ -114,17 +115,35 @@ def _nodes_with_model_on_disk(model: str, nodes):
 
 
 async def _load_model_on_best_node(
-    model: str, nodes, proxy: StreamingProxy, *, why: str = "preload",
+    model: str, nodes, proxy: StreamingProxy, *,
+    why: str = "preload", target_node_id: str | None = None,
 ) -> bool:
-    """Pick the best node and pre-warm.  Returns True if load was attempted."""
+    """Pre-warm model; prefer ``target_node_id`` if given, else pick best-mem node.
+
+    Returns True if load was attempted.  When ``target_node_id`` is set but
+    that node doesn't have the model on disk or is offline, we fall back to
+    the best-memory node (so a per-node pin still warms the fleet).
+    """
     available_nodes = _nodes_with_model_on_disk(model, nodes)
     if not available_nodes:
         logger.info(f"Preloader: {model} not on disk anywhere — skipping ({why})")
         return False
-    best = max(
-        available_nodes,
-        key=lambda n: n.memory.available_gb if n.memory else 0,
-    )
+    best = None
+    if target_node_id:
+        for n in available_nodes:
+            if n.node_id == target_node_id:
+                best = n
+                break
+        if best is None:
+            logger.info(
+                f"Preloader: target node {target_node_id} doesn't have {model} "
+                f"on disk; falling back to best-mem node ({why})"
+            )
+    if best is None:
+        best = max(
+            available_nodes,
+            key=lambda n: n.memory.available_gb if n.memory else 0,
+        )
     model_size = _estimate_model_size(model)
     available = best.memory.available_gb if best.memory else 0
     if available < model_size * 1.2:
@@ -145,11 +164,36 @@ async def _load_model_on_best_node(
         return False
 
 
+def _build_pinned_plan(
+    env_pins: list[str],
+    per_node_map: dict[str, list[str]],
+) -> list[tuple[str, str | None]]:
+    """Return ordered (model, target_node_id) list for pin loading.
+
+    Env pins come first with ``None`` target (load on best-mem node).  Per-node
+    pins follow with their node id set.  Duplicates within the same target
+    bucket are collapsed.  A model pinned both env-wide and per-node will
+    appear twice — once as fleet-wide, once targeted — and the preloader's
+    "already hot anywhere" check skips the second if the first succeeded.
+    """
+    plan: list[tuple[str, str | None]] = [(m, None) for m in env_pins if m]
+    seen_per_node: set[tuple[str, str]] = set()
+    for node_id, models in per_node_map.items():
+        for m in models:
+            key = (node_id, m)
+            if m and key not in seen_per_node:
+                seen_per_node.add(key)
+                plan.append((m, node_id))
+    return plan
+
+
 async def preload_priority_models(
     registry: NodeRegistry,
     trace_store: TraceStore,
     proxy: StreamingProxy,
     settings: ServerSettings,
+    *,
+    pinned_store: PinnedModelsStore | None = None,
 ) -> None:
     """Startup: load pinned models, then fill remaining slots up to cap.
 
@@ -162,7 +206,11 @@ async def preload_priority_models(
         logger.info("Preloader disabled via FLEET_DISABLE_MODEL_PRELOADER")
         return
 
-    pinned = _parse_pinned_models(getattr(settings, "pinned_models", ""))
+    env_pins = _parse_pinned_models(getattr(settings, "pinned_models", ""))
+    per_node_map = pinned_store.load() if pinned_store else {}
+    pinned_plan = _build_pinned_plan(env_pins, per_node_map)
+    # Flat list preserved for step-2 priority fill exclusions + logging
+    pinned = list(dict.fromkeys([m for m, _ in pinned_plan]))
     max_count = getattr(settings, "model_preload_max_count", 3)
 
     # Wait for at least one node to come online
@@ -181,10 +229,10 @@ async def preload_priority_models(
 
     # --- Step 1: load pinned models ---------------------------------------
     loaded_count = 0
-    for model in pinned:
+    for model, target in pinned_plan:
         if loaded_count >= max_count:
             logger.warning(
-                f"Preloader: pinned-models list ({len(pinned)}) exceeds "
+                f"Preloader: pinned-models plan ({len(pinned_plan)}) exceeds "
                 f"max_count ({max_count}); truncating at {loaded_count}.  "
                 f"Raise FLEET_MODEL_PRELOAD_MAX_COUNT if your backend can "
                 f"handle more concurrent models."
@@ -194,7 +242,10 @@ async def preload_priority_models(
             logger.info(f"Preloader: {model} already hot (pinned)")
             loaded_count += 1
             continue
-        if await _load_model_on_best_node(model, nodes, proxy, why="pinned"):
+        why = f"pinned:{target}" if target else "pinned"
+        if await _load_model_on_best_node(
+            model, nodes, proxy, why=why, target_node_id=target,
+        ):
             loaded_count += 1
             await asyncio.sleep(2)  # let Ollama update /api/ps
             nodes = registry.get_online_nodes()  # refresh after load
@@ -239,8 +290,16 @@ async def preload_priority_models(
     while True:
         await asyncio.sleep(600)
         try:
+            # Re-read per-node pins so dashboard toggles land within a cycle
+            if pinned_store is not None:
+                refreshed_plan = _build_pinned_plan(
+                    env_pins, pinned_store.load(),
+                )
+            else:
+                refreshed_plan = pinned_plan
             await _refresh_priority_models(
-                registry, trace_store, proxy, pinned=pinned, max_count=max_count,
+                registry, trace_store, proxy,
+                pinned_plan=refreshed_plan, max_count=max_count,
             )
         except Exception as exc:
             logger.warning(f"Preloader refresh failed: {exc}")
@@ -252,6 +311,7 @@ async def _refresh_priority_models(
     proxy: StreamingProxy,
     *,
     pinned: list[str] | None = None,
+    pinned_plan: list[tuple[str, str | None]] | None = None,
     max_count: int = 3,
 ) -> None:
     """Keep pinned models hot + top priorities with recent activity hot.
@@ -265,7 +325,10 @@ async def _refresh_priority_models(
     Budget: total post-refresh hot-count stays ≤ max_count.  Pinned
     models get their slots first; priority models only fill what's left.
     """
-    pinned = pinned or []
+    if pinned_plan is None:
+        pinned_plan = [(m, None) for m in (pinned or [])]
+    # Flat de-duped name list for priority-exclusion in step 2
+    pinned_names = list(dict.fromkeys([m for m, _ in pinned_plan]))
 
     nodes = registry.get_online_nodes()
     if not nodes:
@@ -281,7 +344,7 @@ async def _refresh_priority_models(
 
     # --- Step 1: ensure pinned models are hot -----------------------------
     loaded_this_cycle = 0
-    for model in pinned:
+    for model, target in pinned_plan:
         if loaded_this_cycle >= max_count:
             break  # already filled the budget with pins alone
         if model in hot_models:
@@ -289,8 +352,12 @@ async def _refresh_priority_models(
         # Pinned-but-missing: ALWAYS reload (no recency check — user pinned it)
         logger.info(
             f"Preloader refresh: pinned model {model} was evicted — reloading"
+            + (f" on {target}" if target else "")
         )
-        if await _load_model_on_best_node(model, nodes, proxy, why="pinned-refresh"):
+        why = f"pinned-refresh:{target}" if target else "pinned-refresh"
+        if await _load_model_on_best_node(
+            model, nodes, proxy, why=why, target_node_id=target,
+        ):
             loaded_this_cycle += 1
             await asyncio.sleep(2)
             nodes = registry.get_online_nodes()
@@ -315,7 +382,8 @@ async def _refresh_priority_models(
         return
 
     top_priorities = [
-        p for p in priorities if p["priority_score"] >= 10 and p["model"] not in pinned
+        p for p in priorities
+        if p["priority_score"] >= 10 and p["model"] not in pinned_names
     ][: max_count]  # cap search scope
 
     for entry in top_priorities:
