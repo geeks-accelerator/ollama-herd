@@ -1710,9 +1710,9 @@ function utilizationColor(pct, metric) {{
   var hueStart = metric === "cpu" ? 195 : 225;  // cyan vs soft-blue
   var hueEnd   = metric === "cpu" ? 255 : 270;  // purple vs deep purple
   var hue        = hueStart + (pct / 100) * (hueEnd - hueStart);
-  var saturation = 60 + (pct / 100) * 25;       // 60% -> 85%
-  var lightness  = 55 - (pct / 100) * 10;       // 55% -> 45%
-  var alpha      = 0.45 + (pct / 100) * 0.45;   // 0.45 -> 0.90
+  var saturation = 78 + (pct / 100) * 14;       // 78% -> 92%   (was 60->85; more vivid)
+  var lightness  = 62 - (pct / 100) * 10;       // 62% -> 52%   (was 55->45; brighter)
+  var alpha      = 0.72 + (pct / 100) * 0.28;   // 0.72 -> 1.00 (was 0.45->0.90; higher floor so low-% bars don't wash out against dark cards)
   return 'hsla(' + hue + ', ' + saturation + '%, ' + lightness + '%, ' + alpha + ')';
 }}
 function initTimeRange(containerId, callback, defaultRange) {{
