@@ -8,6 +8,12 @@ import logging
 import typer
 from rich.logging import RichHandler
 
+# MUST run before any settings class is imported — pydantic-settings reads
+# ``os.environ`` at instantiation.  See ``common/env_file.py``.
+from fleet_manager.common.env_file import load_env_file
+
+load_env_file()
+
 app = typer.Typer(
     name="herd-node",
     help="Ollama Herd — Node Agent",

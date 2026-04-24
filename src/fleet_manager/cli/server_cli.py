@@ -10,6 +10,14 @@ import typer
 import uvicorn
 from rich.logging import RichHandler
 
+# Load ~/.fleet-manager/env before any settings class instantiates.
+# ``ServerSettings`` is only imported inside ``start()`` below, so calling
+# ``load_env_file()`` here at module-import time is early enough.
+# See ``fleet_manager/common/env_file.py`` for the rationale.
+from fleet_manager.common.env_file import load_env_file
+
+load_env_file()
+
 app = typer.Typer(
     name="herd",
     help="Ollama Herd — Smart Inference Router",

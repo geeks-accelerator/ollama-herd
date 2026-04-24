@@ -1,0 +1,52 @@
+# Copy to ~/.fleet-manager/env — herd and herd-node read this file at
+# startup (before any shell env) so they work even when launched from
+# non-interactive shells (nohup, launchd, CI, Bash subshells that
+# don't source ~/.zshrc, etc.).
+#
+# Rules:
+#   - Shell env ALWAYS wins.  This file is a fallback, not an override.
+#   - Plain KEY=value lines.  Optional `export ` prefix is supported
+#     so the same file can also be `set -a; source ~/.fleet-manager/env; set +a`
+#     from a shell if you prefer that workflow.
+#   - `#` starts a comment.
+#   - Quoted values have their outer quotes stripped.
+#
+# Override the path with FLEET_ENV_FILE=/some/other/path.
+
+# ---- MLX backend (Apple Silicon) ---------------------------------------
+# Run ./scripts/setup-mlx.sh first to install + patch mlx_lm.
+# FLEET_MLX_ENABLED=true
+# FLEET_MLX_URL=http://127.0.0.1:11440
+# FLEET_NODE_MLX_ENABLED=true
+# FLEET_NODE_MLX_URL=http://127.0.0.1:11440
+# FLEET_NODE_MLX_AUTO_START=true
+# FLEET_NODE_MLX_AUTO_START_MODEL=mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit
+# FLEET_NODE_MLX_KV_BITS=8
+# FLEET_NODE_MLX_PROMPT_CACHE_BYTES=17179869184
+
+# ---- Anthropic compatibility → which local model serves each tier ------
+# Route Claude Code / Anthropic SDK requests to a local model via the
+# model-map.  `mlx:` prefix bypasses Ollama's 3-model cap.
+# FLEET_ANTHROPIC_DEFAULT_MAX_TOKENS=4096
+# FLEET_ANTHROPIC_MODEL_MAP={"default":"mlx:mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit","claude-sonnet-4-5":"mlx:mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit","claude-opus-4-7":"mlx:mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit"}
+
+# ---- Context Hygiene Compactor -----------------------------------------
+# Shrinks bloated tool_result blocks before main-model inference.  Only
+# fires above the budget; never compacts recent turns.  Dynamic curator
+# selection uses whatever capable model is hot + idle, respecting pins.
+# FLEET_CONTEXT_COMPACTION_ENABLED=true
+# FLEET_CONTEXT_COMPACTION_BUDGET_TOKENS=20000
+# FLEET_CONTEXT_COMPACTION_IDLE_WINDOW_S=120
+
+# ---- Model preloader pins ---------------------------------------------
+# Fleet-wide pins (per-node pins live in ~/.fleet-manager/pinned_models.json
+# and are toggled from the Recommendations dashboard).
+# FLEET_PINNED_MODELS=gpt-oss:120b,gemma3:27b
+# FLEET_MODEL_PRELOAD_MAX_COUNT=3
+
+# ---- Dynamic context windows ------------------------------------------
+# FLEET_DYNAMIC_NUM_CTX=true
+
+# ---- Debug request capture (optional, internal fleets only) ----------
+# FLEET_DEBUG_REQUEST_BODIES=true
+# FLEET_DEBUG_REQUEST_RETENTION_DAYS=7
