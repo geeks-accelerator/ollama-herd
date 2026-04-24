@@ -195,7 +195,20 @@ class ONNXBackend:
     """
 
     def __init__(self, model_dir: Path, model_name: str = "clip-vit-b32"):
-        import onnxruntime as ort
+        try:
+            import onnxruntime as ort
+        except ImportError as exc:
+            # Generic "No module named 'onnxruntime'" is misleading because
+            # the dashboard shows embedding models as "loaded" (meaning
+            # downloaded on disk) — users think the backend is serving when
+            # it's actually failing on every request.  Point at the fix.
+            raise ImportError(
+                "onnxruntime is required to serve vision embeddings "
+                "(DINOv2 / SigLIP / CLIP) but is not installed in the "
+                "herd-node venv.  Install the embedding extras: "
+                "`uv sync --extra embedding` (from the ollama-herd repo "
+                "root) or `uv pip install onnxruntime`."
+            ) from exc
 
         spec = VISION_EMBEDDING_MODELS.get(model_name, {})
         # Find the ONNX file

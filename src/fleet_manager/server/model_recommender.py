@@ -241,9 +241,18 @@ class ModelRecommender:
         disk_used_by_recs = 0.0  # Track new downloads only
 
         # What's already on this node?
+        # Include both Ollama models AND vision embedding models (DINOv2,
+        # SigLIP, CLIP) — the latter run outside Ollama on :11438 but their
+        # catalog names (e.g. "dinov2-vit-s14") match ``ollama_name`` in
+        # model_knowledge, so merging them keeps the recommender from
+        # suggesting "pull dinov2-vit-s14" when it's already serving.
         current_models: list[str] = []
         if node.ollama:
             current_models = list(node.ollama.models_available)
+        if node.vision_embedding:
+            current_models.extend(
+                ve.name for ve in node.vision_embedding.models_available
+            )
 
         recommendations: list[ModelRecommendation] = []
         ram_used = 0.0

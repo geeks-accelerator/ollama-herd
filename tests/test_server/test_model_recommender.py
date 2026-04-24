@@ -394,3 +394,40 @@ class TestRecommender:
         qwen_recs = [r for r in plan.recommendations if "qwen3" in r.model]
         assert len(qwen_recs) > 0
         assert qwen_recs[0].already_available
+
+
+class TestVisionEmbeddingAvailability:
+    """Vision embedding models (DINOv2, SigLIP, CLIP) live outside Ollama.
+
+    Regression: the recommender previously checked only ``node.ollama.
+    models_available``, so DINOv2 served by the vision embedding service
+    on :11438 was always flagged "not downloaded — run ollama pull",
+    which would fail because it's not an Ollama model.
+    """
+
+    def setup_method(self):
+        self.recommender = ModelRecommender()
+
+    def test_dinov2_served_by_vision_service_is_available(self):
+        from fleet_manager.models.node import (
+            VisionEmbeddingMetrics,
+            VisionEmbeddingModel,
+        )
+
+        node = make_node("studio", memory_total=128.0, memory_used=20.0)
+        node.vision_embedding = VisionEmbeddingMetrics(
+            models_available=[
+                VisionEmbeddingModel(
+                    name="dinov2-vit-s14", runtime="onnx", dimensions=384,
+                ),
+            ],
+        )
+        report = self.recommender.analyze([node])
+        plan = report.nodes[0]
+        dino_recs = [r for r in plan.recommendations if r.model == "dinov2-vit-s14"]
+        # If recommended at all, it must be flagged already_available
+        for r in dino_recs:
+            assert r.already_available, (
+                "DINOv2 served by vision embedding service must not prompt "
+                "for `ollama pull dinov2-vit-s14`"
+            )
