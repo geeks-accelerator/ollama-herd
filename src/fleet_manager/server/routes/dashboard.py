@@ -1687,11 +1687,33 @@ def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>{_SHARED_CSS}</style>
 <script>
+// barColor: green-to-red scale.  USE ONLY for metrics where high IS a
+// warning (disk usage, availability-loss risk).  See
+// docs/plans/dashboard-color-semantics.md for policy.
 function barColor(pct) {{
   var h = 142 - (pct / 100) * 142;
   var s = 71 + (pct / 100) * 13;
   var l = 45 + (pct / 100) * 15;
   return 'hsl(' + h + ',' + s + '%,' + l + '%)';
+}}
+
+// utilizationColor: blue-to-purple gradient for product-VALUE metrics
+// (CPU, memory, model RAM).  Low = "waiting," high = "engaged."  NOT a
+// warning scale — warning state is carried independently by the
+// .bar-outer wrapper's modifier classes (.bar-warning / .bar-critical /
+// .bar-thermal).  See docs/plans/dashboard-color-semantics.md.
+//
+// Two gradients in the same cool-hue family so CPU and memory bars are
+// distinguishable at a glance on dense multi-node views while yellow/red
+// warning outlines keep maximum contrast at every utilization level.
+function utilizationColor(pct, metric) {{
+  var hueStart = metric === "cpu" ? 195 : 225;  // cyan vs soft-blue
+  var hueEnd   = metric === "cpu" ? 255 : 270;  // purple vs deep purple
+  var hue        = hueStart + (pct / 100) * (hueEnd - hueStart);
+  var saturation = 60 + (pct / 100) * 25;       // 60% -> 85%
+  var lightness  = 55 - (pct / 100) * 10;       // 55% -> 45%
+  var alpha      = 0.45 + (pct / 100) * 0.45;   // 0.45 -> 0.90
+  return 'hsla(' + hue + ', ' + saturation + '%, ' + lightness + '%, ' + alpha + ')';
 }}
 function initTimeRange(containerId, callback, defaultRange) {{
   var c = document.getElementById(containerId);
@@ -1791,8 +1813,20 @@ _OVERVIEW_BODY = """
 .metric { flex: 1; }
 .metric .label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
 .metric .value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.bar-container { height: 6px; background: var(--border); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+.bar-container { height: 6px; background: var(--border); border-radius: 3px; margin-top: 6px; overflow: hidden; position: relative; }
 .bar-fill { height: 100%; border-radius: 3px; transition: width 0.8s ease, background 0.5s ease; }
+/* Axis B — warning-state overlays that fire INDEPENDENTLY of bar fill.
+ * .bar-warning fires on psutil-reported memory pressure = "warning"
+ * .bar-critical fires on pressure = "critical"
+ * .bar-thermal fires when CPU sustained >= 95% (throttling proxy)
+ * See docs/plans/dashboard-color-semantics.md. */
+.bar-container.bar-warning  { box-shadow: 0 0 0 1px var(--yellow), 0 0 6px rgba(234,179,8,0.35); }
+.bar-container.bar-critical { box-shadow: 0 0 0 1px var(--red),    0 0 8px rgba(239,68,68,0.45); animation: bar-pulse 1.8s ease-in-out infinite; }
+.bar-container.bar-thermal  { box-shadow: 0 0 0 1px var(--orange), 0 0 6px rgba(249,115,22,0.35); }
+@keyframes bar-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px var(--red), 0 0 4px rgba(239,68,68,0.25); }
+  50%      { box-shadow: 0 0 0 1px var(--red), 0 0 10px rgba(239,68,68,0.6); }
+}
 .models-list { margin-top: 12px; }
 .model-chip {
   display: inline-flex; align-items: center; gap: 4px;
@@ -1908,9 +1942,22 @@ function renderNodes(nodes) {
       var memPct = memTotal > 0 ? (memUsed / memTotal) * 100 : 0;
       var el;
       el = card.querySelector('.cpu-val'); if (el) el.textContent = cpu.toFixed(1) + '%';
-      el = card.querySelector('.cpu-bar'); if (el) { el.style.width = cpu + '%'; el.style.background = barColor(cpu); }
+      el = card.querySelector('.cpu-bar'); if (el) { el.style.width = cpu + '%'; el.style.background = utilizationColor(cpu, 'cpu'); }
       el = card.querySelector('.mem-val'); if (el) el.textContent = formatGB(memUsed) + ' / ' + formatGB(memTotal);
-      el = card.querySelector('.mem-bar'); if (el) { el.style.width = memPct + '%'; el.style.background = barColor(memPct); }
+      el = card.querySelector('.mem-bar'); if (el) { el.style.width = memPct + '%'; el.style.background = utilizationColor(memPct, 'mem'); }
+      // Axis B — pressure-driven warning outlines, independent of % fill
+      var cpuOuter = card.querySelector('.cpu-outer');
+      var memOuter = card.querySelector('.mem-outer');
+      var pressure = node.memory ? node.memory.pressure : 'normal';
+      if (memOuter) {
+        memOuter.classList.toggle('bar-warning', pressure === 'warning');
+        memOuter.classList.toggle('bar-critical', pressure === 'critical');
+      }
+      if (cpuOuter) {
+        // Sustained >=95% CPU is a throttling proxy until we surface a
+        // proper thermal signal from the node agent.
+        cpuOuter.classList.toggle('bar-thermal', cpu >= 95);
+      }
     });
     if (!needsRebuild) {
       var hn = document.getElementById('stat-nodes');
@@ -2007,12 +2054,12 @@ function renderNodes(nodes) {
           <div class="metric">
             <div class="label">CPU</div>
             <div class="value cpu-val">${cpu.toFixed(1)}%</div>
-            <div class="bar-container"><div class="bar-fill cpu-bar" style="width:${cpu}%;background:${barColor(cpu)}"></div></div>
+            <div class="bar-container cpu-outer ${cpu >= 95 ? 'bar-thermal' : ''}"><div class="bar-fill cpu-bar" style="width:${cpu}%;background:${utilizationColor(cpu, 'cpu')}"></div></div>
           </div>
           <div class="metric">
             <div class="label">Memory (${pressure})</div>
             <div class="value mem-val">${formatGB(memUsed)} / ${formatGB(memTotal)}</div>
-            <div class="bar-container"><div class="bar-fill mem-bar" style="width:${memPct}%;background:${barColor(memPct)}"></div></div>
+            <div class="bar-container mem-outer ${pressure === 'critical' ? 'bar-critical' : pressure === 'warning' ? 'bar-warning' : ''}"><div class="bar-fill mem-bar" style="width:${memPct}%;background:${utilizationColor(memPct, 'mem')}"></div></div>
           </div>
           <div class="metric">
             <div class="label">Cores</div>
@@ -4065,11 +4112,15 @@ function renderRecommendations(data) {
     html += '<div class="node-plan-title">' + node.node_id + '</div>';
     html += '<div class="node-bars">';
     html += '<div class="node-ram-bar">';
-    html += '<div class="ram-bar"><div class="ram-bar-fill" style="width:' + ramPct + '%;background:' + barColor(ramPct) + '"></div></div>';
+    // RAM bar: product-value utilization (using more RAM = using the box the
+    // user paid for).  Blue->purple, NOT a warning scale.
+    html += '<div class="ram-bar"><div class="ram-bar-fill" style="width:' + ramPct + '%;background:' + utilizationColor(ramPct, 'mem') + '"></div></div>';
     html += '<div class="ram-bar-label">' + node.total_recommended_ram_gb + ' / ' + node.usable_ram_gb + ' GB RAM</div>';
     html += '</div>';
     if (node.disk_total_gb > 0) {
       html += '<div class="node-ram-bar">';
+      // Disk bar: hard-ceiling capacity.  Full disk = model downloads fail,
+      // SQLite writes stop.  Busy-IS-bad semantic correct; keep barColor.
       html += '<div class="ram-bar"><div class="ram-bar-fill" style="width:' + diskPct + '%;background:' + barColor(diskPct) + '"></div></div>';
       html += '<div class="ram-bar-label">' + node.disk_available_gb.toFixed(0) + ' / ' + node.disk_total_gb.toFixed(0) + ' GB Disk free</div>';
       html += '</div>';

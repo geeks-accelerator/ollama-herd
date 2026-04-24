@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Dashboard color semantics: utilization is no longer a warning.** CPU, memory, and per-node RAM bars now render in a blue→purple gradient (`utilizationColor(pct, metric)`) instead of the old green-to-red busy-is-bad scale. A Mac Studio at 95% memory is the product working as designed, not a problem — the previous coloring contradicted the product's own thesis that idle hardware is waste. Warning state moved to a separate visual axis: `.bar-warning` / `.bar-critical` outlines fire on OS-reported memory pressure (`psutil.virtual_memory().pressure`), and `.bar-thermal` fires on sustained ≥95% CPU as a throttling proxy. **Preserved:** disk bar still uses the busy-is-bad scale (disk full genuinely breaks things), and the capacity-score bar keeps its green-at-high-availability semantic. Also added `docs/guides/dashboard-color-reference.md` as a one-page cheat sheet for future UI additions so the semantic doesn't drift back into server-ops defaults. See `docs/plans/dashboard-color-semantics.md` for the full rationale and audit.
+
 ## [0.6.0] - 2026-04-24
 
 Multi-MLX, Claude Code reliability, and layered context management. The long-context failure modes that made Claude Code CLI feel broken around 30K tokens on local Qwen3-Coder models are systematically addressed: tool-schema fixup for the llama.cpp#20164 optional-param trap, mechanical tool-result clearing with stable-cut prefix-cache preservation, LLM-based compactor with force_all escape, pre-inference 413 cap, MLX wall-clock timeout. Multi-MLX-server support lets a single node run main + dedicated-compactor models side-by-side without Ollama eviction risk. Tool-use reliability layer repairs malformed JSON tool-call arguments. Ollama watchdog removed after it caused production incidents.
