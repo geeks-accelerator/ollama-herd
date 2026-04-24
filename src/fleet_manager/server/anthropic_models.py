@@ -6,6 +6,17 @@ non-streaming response.
 
 Permissive: unknown fields (cache_control, computer use blocks, etc.)
 are ignored rather than rejected so we don't 422 future Claude features.
+
+# EXTRACTION SEAM (recorded 2026-04-24):
+# - Fleet-manager dependencies: NONE.
+# - External dependencies: pydantic (which any Anthropic proxy would need).
+# - Public surface: all of the BaseModel classes below.  Stable contract
+#   with Anthropic's Messages API spec; worth keeping untouched if extracted.
+# - ``AnthropicMessage.content`` is deliberately ``str | list[dict[str, Any]]``
+#   rather than a discriminated union so new block types (cache_edits,
+#   cache_control, thinking, etc.) pass through without validation errors.
+#   That laxness is a feature, not a bug — see
+#   ``docs/research/why-claude-code-degrades-at-30k.md`` §7 for why.
 """
 
 from __future__ import annotations

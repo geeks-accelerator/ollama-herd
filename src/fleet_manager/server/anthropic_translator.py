@@ -16,6 +16,28 @@ Two directions:
 
 The translator is pure (no I/O) so it's trivial to unit-test against canned
 NDJSON traces.
+
+# EXTRACTION SEAM (recorded 2026-04-24):
+# - Fleet-manager dependencies: NONE.  Pure translation, stdlib + logging.
+# - External dependencies: NONE at import time.
+# - Public surface to preserve if extracted:
+#     anthropic_to_ollama_messages(messages, system) -> list[dict]
+#     anthropic_tool_to_ollama(tool) -> dict
+#     anthropic_tools_to_ollama(tools) -> list[dict] | None
+#     apply_tool_choice(tools, choice, system_prompt) -> (tools, system)
+#     anthropic_system_to_text(system) -> str
+#     AnthropicSSEState (dataclass)
+#     ollama_chunk_to_anthropic_events(...) — streaming translation
+#     accumulate_anthropic_response(...) — non-streaming
+#     build_anthropic_non_streaming_response(...) — lives in mlx_proxy.py
+#     map_anthropic_model(...), estimate_tokens(...), flatten_text_for_count(...)
+# - ``_log_unknown_block_type_once`` dedupes observability for new Anthropic
+#   beta features (cache_edits, etc.).  Process-lifetime dedupe, no cross-
+#   request state — safe to extract.
+# - Paired with ``anthropic_models.py`` as the protocol layer; paired with
+#   ``tool_schema_fixup.py`` / ``context_management.py`` / ``tool_call_repair.py``
+#   as the reliability layer.  Together these five files are the self-contained
+#   Claude-Code-compat surface.  See the landscape doc.
 """
 
 from __future__ import annotations
@@ -30,6 +52,37 @@ from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# Dedupe set for unknown content block types we've already logged.
+# Anthropic has been adding new block types for beta features
+# (``cache_edits`` from microcompact, ``compaction`` from the server-side
+# Compaction API, etc.); we want to notice when one starts appearing in
+# our traffic without spamming the log for every request that follows.
+_KNOWN_BLOCK_TYPES: set[str] = {
+    "text", "image", "tool_use", "tool_result", "thinking",
+}
+_LOGGED_UNKNOWN_BLOCK_TYPES: set[str] = set()
+
+
+def _log_unknown_block_type_once(btype: str) -> None:
+    """Log the first time we encounter each unknown content block type.
+
+    Silent skipping is semantically correct (directives like ``cache_edits``
+    aren't replayable content for local models), but visibility matters —
+    a new beta feature firing on our traffic changes the risk surface.
+    """
+    if btype in _KNOWN_BLOCK_TYPES or btype in _LOGGED_UNKNOWN_BLOCK_TYPES:
+        return
+    _LOGGED_UNKNOWN_BLOCK_TYPES.add(btype)
+    logger.info(
+        "Anthropic translator: skipping unknown content block type %r "
+        "(semantically correct — directive blocks aren't replayable to "
+        "local models — but worth noticing in case a new Anthropic beta "
+        "feature just started firing).  Subsequent blocks of this type "
+        "will be skipped silently.",
+        btype,
+    )
 
 
 # Claude Code injects a per-request fingerprint hash into the system prompt:
@@ -163,6 +216,16 @@ def anthropic_to_ollama_messages(
             elif btype == "thinking":
                 # Drop — don't replay reasoning to non-thinking models
                 continue
+            else:
+                # Unknown block type.  Log once per process for visibility —
+                # silent skip is the semantically correct behavior (the local
+                # model wouldn't know what to do with e.g. ``cache_edits`` —
+                # those are directives to Anthropic's server-side cache, not
+                # content to replay), but we want to notice if a new Claude
+                # Code beta (microcompact, server-side compaction, etc.)
+                # starts firing on our traffic.  Log is deduped by type name
+                # so a burst of requests from the same beta doesn't spam.
+                _log_unknown_block_type_once(btype or "<missing-type>")
 
         # Build the primary message for this turn (if any non-tool-result content)
         if text_parts or images or tool_calls:

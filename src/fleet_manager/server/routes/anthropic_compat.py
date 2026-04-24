@@ -42,6 +42,7 @@ from fleet_manager.server.anthropic_translator import (
 from fleet_manager.server.mlx_proxy import (
     MlxModelMissingError,
     MlxQueueFullError,
+    MlxWallClockTimeoutError,
     build_anthropic_non_streaming_response,
     is_mlx_model,
     openai_sse_to_anthropic_events,
@@ -156,7 +157,10 @@ def _full_body_preview(ollama_body: dict) -> str:
 
 
 def _build_ollama_request_body(
-    body: AnthropicMessagesRequest, local_model: str,
+    body: AnthropicMessagesRequest,
+    local_model: str,
+    settings=None,
+    clearing_store=None,
 ) -> dict:
     """Translate the validated Anthropic body into an Ollama-shaped dict.
 
@@ -167,14 +171,79 @@ def _build_ollama_request_body(
     system_text = anthropic_system_to_text(body.system)
 
     # Apply tool_choice forcing semantics by appending to system prompt
-    raw_tools = anthropic_tools_to_ollama(
-        [t.model_dump() for t in body.tools] if body.tools else None,
+    # Server-side tool filtering (``FLEET_ANTHROPIC_TOOLS_DENY``) — strip
+    # named tools from the client's tools[] before we do anything else.
+    # Saves ~40% of tool-section tokens when the operator has tools they
+    # don't want the local model to use.  Clients still send them; we
+    # quietly drop them from what the model sees.  Denied tools invoked
+    # by Claude Code will surface an error on the client side (tool not
+    # in schema) — same behavior as if the user had set permissions.deny
+    # in ~/.claude/settings.json.
+    source_tools: list[dict] | None = (
+        [t.model_dump() for t in body.tools] if body.tools else None
+    )
+    deny_csv = getattr(settings, "anthropic_tools_deny", "") if settings else ""
+    if source_tools and deny_csv:
+        deny_set = {
+            name.strip() for name in deny_csv.split(",") if name.strip()
+        }
+        if deny_set:
+            before = len(source_tools)
+            source_tools = [
+                t for t in source_tools if t.get("name") not in deny_set
+            ]
+            removed = before - len(source_tools)
+            if removed > 0:
+                logger.info(
+                    f"anthropic_compat: tools_deny stripped {removed} of "
+                    f"{before} tools ({sorted(deny_set)})"
+                )
+    raw_tools = anthropic_tools_to_ollama(source_tools)
+    # Work around Qwen3-Coder's long-context tool-call bug: promote optional
+    # params with known defaults to required-with-default.  See
+    # ``server/tool_schema_fixup.py`` and ``docs/research/
+    # why-claude-code-degrades-at-30k.md``.  Off by passing mode="off".
+    from fleet_manager.server.tool_schema_fixup import fixup_tool_schemas
+
+    raw_tools = fixup_tool_schemas(
+        raw_tools,
+        mode=getattr(settings, "anthropic_tool_schema_fixup", "inject"),
     )
     tool_choice_dict = body.tool_choice.model_dump() if body.tool_choice else None
     raw_tools, system_text = apply_tool_choice(raw_tools, tool_choice_dict, system_text)
 
+    # Mechanical tool-result clearing — runs on the native Anthropic shape
+    # BEFORE translation because the translator flattens tool_result blocks
+    # into role:"tool" messages, losing the block-level structure we need
+    # to target old tool_results for clearing.  This is the first
+    # (cheapest) layer of context management; mirrors hosted Claude's
+    # Context Editing API.  Fail-open on any error.
+    anthropic_msgs = [m.model_dump() for m in body.messages]
+    clearing_report = None
+    if settings is not None:
+        from fleet_manager.server.context_management import clear_if_over_budget
+        clear_trigger = getattr(
+            settings, "anthropic_auto_clear_tool_uses_trigger_tokens", 100_000,
+        )
+        clear_keep = getattr(
+            settings, "anthropic_auto_clear_tool_uses_keep_recent", 3,
+        )
+        if clear_trigger > 0 and clear_keep >= 0:
+            try:
+                anthropic_msgs, clearing_report = clear_if_over_budget(
+                    anthropic_msgs,
+                    keep_recent=clear_keep,
+                    trigger_tokens=clear_trigger,
+                    sticky_store=clearing_store,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"Tool-result clearing failed, passing through: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
     ollama_messages = anthropic_to_ollama_messages(
-        [m.model_dump() for m in body.messages], system=system_text,
+        anthropic_msgs, system=system_text,
     )
 
     options: dict = {}
@@ -191,6 +260,9 @@ def _build_ollama_request_body(
 
     out: dict = {
         "model": local_model,
+        # Route caller pops this before any downstream use — it's metadata
+        # for logging, not something to forward to Ollama/MLX.
+        "_clearing_report": clearing_report,
         "messages": ollama_messages,
         "stream": True,
         "keep_alive": -1,
@@ -268,6 +340,35 @@ async def _serve_via_mlx(
                         },
                     },
                 )
+            except MlxWallClockTimeoutError as exc:
+                # Wedged request — model kept emitting tokens slowly but
+                # never hit a stop condition.  Slot has been released;
+                # surface 413 so the client knows to /compact + resubmit.
+                ns_error = exc
+                logger.error(
+                    f"Anthropic[{rid}] MLX wall-clock timeout: "
+                    f"elapsed={exc.elapsed_s:.1f}s > limit={exc.limit_s:.1f}s "
+                    f"(model={exc.model_key}) — returning 413"
+                )
+                record_trace_mlx(
+                    trace_store, inference_req, t_start, None, "failed",
+                    error_message=str(exc),
+                )
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "type": "error",
+                        "error": {
+                            "type": "prompt_too_large",
+                            "message": (
+                                "Request exceeded the wall-clock limit, "
+                                "most likely because the prompt pushed the "
+                                "model past its effective context. Run "
+                                "/compact in Claude Code CLI and resubmit."
+                            ),
+                        },
+                    },
+                )
             except MlxModelMissingError as exc:
                 # Defensive: model name went missing somewhere in the route.
                 # Surface as 500 with a clear operator-facing message instead
@@ -308,8 +409,24 @@ async def _serve_via_mlx(
             record_trace_mlx(
                 trace_store, inference_req, t_start, time.time(), "completed",
             )
+            # Build a {tool_name: input_schema} map so the JSON repair
+            # path can structurally validate any tool-call arguments the
+            # model produced with minor syntax errors.
+            tool_schema_map: dict[str, dict] = {}
+            for t in (body.tools or []):
+                t_dict = t.model_dump(exclude_none=True)
+                name = t_dict.get("name")
+                sch = t_dict.get("input_schema")
+                if name and isinstance(sch, dict):
+                    tool_schema_map[name] = sch
+            # Accumulate repair stats on the proxy for /fleet/queue exposure.
+            repair_stats = mlx_proxy.get_repair_stats(
+                strip_mlx_prefix(inference_req.model)
+            )
             ns_response_body = build_anthropic_non_streaming_response(
                 openai_resp, body.model,
+                tool_schemas=tool_schema_map,
+                repair_stats=repair_stats,
             )
             return JSONResponse(content=ns_response_body, headers=headers)
         finally:
@@ -624,33 +741,117 @@ async def messages(
         )
         local_model = vision_model
 
+    # Size-based routing escalation — if the prompt is larger than a
+    # configured threshold, route to a different model regardless of tier.
+    # Useful for sending long-context requests to a larger-context model
+    # while short requests ride the fast/cheap default.  Matches
+    # ``musistudio/claude-code-router``'s longContext pattern.  No-op when
+    # the setting is empty.  See ``docs/plans/claude-code-enhancements-from-field-survey.md``.
+    size_escalation_model = getattr(
+        settings, "anthropic_size_escalation_model", "",
+    ) or ""
+    size_escalation_threshold = getattr(
+        settings, "anthropic_size_escalation_tokens", 0,
+    )
+    if size_escalation_model and size_escalation_threshold > 0:
+        # Estimate tokens on the raw Anthropic-shape body.  Reuse the
+        # tool-result clearing helper to avoid a second tokenizer pass.
+        from fleet_manager.server.context_management import _total_tokens
+        raw_msgs = [m.model_dump() for m in body.messages]
+        raw_tokens = _total_tokens(raw_msgs)
+        if raw_tokens > size_escalation_threshold:
+            logger.info(
+                f"Anthropic size-escalation: {body.model} → "
+                f"{size_escalation_model} (override from {local_model} — "
+                f"prompt {raw_tokens} tok > {size_escalation_threshold})"
+            )
+            local_model = size_escalation_model
+
     tags = extract_tags(raw, request.headers)
     if body.metadata and isinstance(body.metadata, dict):
         user_id = body.metadata.get("user_id")
         if user_id and isinstance(user_id, str):
             tags = list(tags) + [f"user:{user_id}"]
 
-    # Pre-translate to Ollama body — stored in raw_body for _build_ollama_body
-    ollama_body = _build_ollama_request_body(body, local_model)
+    # Pre-translate to Ollama body.  Layer 1 (tool-result clearing) runs
+    # INSIDE this call — it operates on the native Anthropic shape before
+    # translation flattens tool_results into role:"tool" messages.  The
+    # clearing_report is carried on the body dict as ``_clearing_report``
+    # (stripped before anything downstream sees it, just for logging).
+    ollama_body = _build_ollama_request_body(
+        body, local_model, settings=settings,
+        clearing_store=getattr(request.app.state, "clearing_store", None),
+    )
+    clearing_report = ollama_body.pop("_clearing_report", None)
 
-    # Context Hygiene Compactor — summarize bloated tool_result blocks
-    # BEFORE they reach the main model.  Only runs when configured +
-    # enabled; passes through unchanged when prompt is under budget.
-    # Critical: runs AFTER translation (so summaries replace Ollama-shape
-    # tool results) but BEFORE inference (so the main model sees the
-    # compacted version).  See plan + research docs.
+    # Layer 2: LLM-based context compactor.  Summarises what Layer 1 left
+    # behind — bloated tool_results that are recent enough to survive the
+    # clearing window but still individually too big to be cheap.  Matches
+    # hosted Claude's layered cleanup (see
+    # ``docs/research/why-claude-code-degrades-at-30k.md``).
     compaction_report = None
     compactor = getattr(request.app.state, "context_compactor", None)
     if compactor is not None:
+        # Decide whether to escalate to force_all based on current prompt
+        # size.  After Layer 1 clearing, if the conversation is still huge,
+        # we need the LLM compactor to summarise EVERY tool_result regardless
+        # of per-strategy min_bloat gates — otherwise many small-ish results
+        # pass through and we hit the pre-inference cap for nothing.
+        force_trigger = getattr(
+            settings, "context_compaction_force_trigger_tokens", 150_000,
+        )
+        from fleet_manager.server.context_management import _total_tokens
+        current_tokens = _total_tokens(ollama_body["messages"])
+        force_all = (force_trigger > 0 and current_tokens > force_trigger)
+        if force_all:
+            logger.info(
+                f"Anthropic[pre-inference]: post-clearing prompt still "
+                f"{current_tokens} tokens (> {force_trigger} force-trigger); "
+                f"passing force_all=True to compactor"
+            )
         try:
             compacted_messages, compaction_report = await compactor.maybe_compact(
                 ollama_body["messages"],
+                force_all=force_all,
             )
             ollama_body["messages"] = compacted_messages
         except Exception as exc:  # noqa: BLE001 — compactor failure must fail-open
             logger.warning(
                 f"Context compactor failed, passing through: "
                 f"{type(exc).__name__}: {exc}"
+            )
+
+    # Pre-inference cap: after BOTH layers, if the prompt is still larger
+    # than what we'll try to run through the model, bail out with 413
+    # instead of letting the request wedge for 5 minutes on MLX prefill.
+    # Client-driven retry via /compact is correct here — server shouldn't
+    # silently retry with altered context.
+    from fleet_manager.server.context_management import _total_tokens
+    hard_cap = getattr(settings, "anthropic_max_prompt_tokens", 180_000)
+    if hard_cap > 0:
+        final_tokens = _total_tokens(ollama_body["messages"])
+        if final_tokens > hard_cap:
+            logger.warning(
+                f"Anthropic[pre-inference]: prompt {final_tokens} tokens "
+                f"exceeds hard cap {hard_cap} even after Layer 1 clearing "
+                f"+ Layer 2 compaction — refusing with 413"
+            )
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "prompt_too_large",
+                        "message": (
+                            f"Prompt is {final_tokens} tokens after server-"
+                            f"side context management, which exceeds the "
+                            f"{hard_cap}-token effective-context cap for "
+                            f"local models on this fleet. Run /compact in "
+                            f"Claude Code CLI to summarise the conversation "
+                            f"and resubmit."
+                        ),
+                    },
+                },
             )
 
     inference_req = InferenceRequest(
@@ -666,7 +867,15 @@ async def messages(
     )
     rid = inference_req.request_id[:8]
 
-    # Log compaction outcome for observability
+    # Log context-management outcomes for observability
+    if clearing_report and clearing_report.triggered:
+        logger.info(
+            f"Anthropic[{rid}] tool-result clearing: "
+            f"{clearing_report.tokens_before}→{clearing_report.tokens_after} "
+            f"tokens ({clearing_report.ratio:.1%}), "
+            f"cleared {clearing_report.tool_results_cleared}/"
+            f"{clearing_report.tool_results_total} tool_results"
+        )
     if compaction_report and compaction_report.triggered:
         logger.info(
             f"Anthropic[{rid}] compaction: "

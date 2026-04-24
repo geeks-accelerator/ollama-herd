@@ -243,3 +243,60 @@ def test_thinking_blocks_dropped():
     out = anthropic_to_ollama_messages(msgs)
     assert out[0]["content"] == "the answer is 42"
     assert "thinking" not in out[0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Unknown content block types — microcompact / future beta awareness
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_block_types_are_skipped_not_crashed():
+    """Silent skip is the correct behavior for directive blocks like
+    ``cache_edits`` (microcompact) — they're instructions to Anthropic's
+    server cache, not content to replay to local models.  But we should
+    never crash on them or leak them through to the outbound Ollama body."""
+    from fleet_manager.server.anthropic_translator import anthropic_to_ollama_messages
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "cache_edits", "edits": [
+                    {"type": "delete", "cache_reference": "ref-abc"},
+                ]},
+                {"type": "text", "text": "world"},
+            ],
+        },
+    ]
+    out = anthropic_to_ollama_messages(msgs)
+    # Text parts survived; cache_edits silently skipped.
+    user_msg = next(m for m in out if m["role"] == "user")
+    assert "hello" in user_msg["content"]
+    assert "world" in user_msg["content"]
+    # No reference to cache_edits leaked through
+    import json
+    assert "cache_edits" not in json.dumps(out)
+
+
+def test_unknown_block_type_logged_once_per_process(caplog):
+    """Dedupe — a burst of requests with the same unknown block type
+    logs ONCE, not per-block-per-request (otherwise we'd spam the log
+    once microcompact fires)."""
+    import logging
+    from fleet_manager.server.anthropic_translator import (
+        _LOGGED_UNKNOWN_BLOCK_TYPES,
+        anthropic_to_ollama_messages,
+    )
+    # Clear dedupe state for deterministic test
+    _LOGGED_UNKNOWN_BLOCK_TYPES.discard("cache_edits_test_unique")
+    msgs = [
+        {"role": "user", "content": [
+            {"type": "cache_edits_test_unique", "payload": "anything"},
+        ]},
+    ]
+    with caplog.at_level(logging.INFO, logger="fleet_manager.server.anthropic_translator"):
+        anthropic_to_ollama_messages(msgs)
+        anthropic_to_ollama_messages(msgs)
+        anthropic_to_ollama_messages(msgs)
+    unknown_logs = [r for r in caplog.records if "cache_edits_test_unique" in r.getMessage()]
+    assert len(unknown_logs) == 1  # logged once across 3 calls
