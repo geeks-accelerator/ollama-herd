@@ -115,10 +115,10 @@ def make_messages(n: int) -> list[dict[str, Any]]:
         "role": "user",
         "content": (
             "I'm debugging a Python fleet manager that routes LLM requests. "
-            "The watchdog in src/fleet_manager/node/ollama_watchdog.py isn't "
-            "firing when /api/chat hangs but /api/tags still answers. Can you "
-            "read the file and figure out why the cooldown isn't respecting "
-            "the consecutive-failures threshold?"
+            "The MLX supervisor in src/fleet_manager/node/mlx_supervisor.py "
+            "seems to be timing out on mlx_lm.server health checks for large "
+            "models. Can you read the file and figure out whether the "
+            "120s timeout is too tight for a 480B cold-load?"
         ),
     })
     # Alternate assistant/user turns. Assistant turns reference tool usage.

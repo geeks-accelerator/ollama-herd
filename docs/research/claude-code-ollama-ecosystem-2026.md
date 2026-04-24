@@ -3,6 +3,7 @@
 **Created**: 2026-04-22
 **Status**: Research brief — grounded in 2026 community reports + upstream issue inspection
 **Related**:
+- [`why-claude-code-degrades-at-30k.md`](./why-claude-code-degrades-at-30k.md) — deep dive on the Qwen3-Coder optional-param / long-context tool-call bug (filed 2026-04-23)
 - [`claude-code-local-models.md`](./claude-code-local-models.md) — model selection guide (what to map to which Claude tier)
 - [`docs/issues.md`](../issues.md) — Ollama 3-model cap OPEN issue
 - [`docs/plans/mlx-backend-for-large-models.md`](../plans/mlx-backend-for-large-models.md) — our MLX escape hatch
@@ -16,7 +17,7 @@
 
 The bugs we hit running Claude Code against Ollama on a Mac Studio + MacBook Pro fleet are not anomalies — they are documented upstream issues in a 3-month-old integration. Our exact symptom (runner loads, `/api/chat` hangs, `/api/tags` still works) is [ollama/ollama#15258](https://github.com/ollama/ollama/issues/15258) — an open regression in Ollama 0.20.0 GA on Apple Silicon M4 with no root cause identified and no fix shipped. Multiple other failure modes we observed also correspond to open issues on `ollama/ollama` and `anthropics/claude-code`.
 
-The Ollama watchdog we shipped today (`src/fleet_manager/node/ollama_watchdog.py`) is, as far as I can find, **the only automated workaround published anywhere** for the stuck-runner failure mode. Everything else the community recommends — `num_ctx ≥ 64K`, `"reasoning": false`, prefer qwen3-coder:30b — we independently converged on.
+(Historical note: an automated Ollama watchdog (`src/fleet_manager/node/ollama_watchdog.py`) was shipped alongside this research as a workaround for the stuck-runner failure mode, but was **removed on 2026-04-23** after its probe-model selection logic caused a cascade-restart of `ollama serve` and silently evicted all pinned models. See `docs/issues.md` for the post-mortem.  The other mitigations the community recommends — `num_ctx ≥ 64K`, `"reasoning": false`, prefer qwen3-coder:30b — have held up without the watchdog.)
 
 **Ecosystem context (not a pivot recommendation, just reality):** Claude Code + Ollama is the newest and least-mature local-agentic path, explicitly described in [Ollama's own docs](https://docs.ollama.com/integrations/claude-code) as shipped January 2026 with *"edge cases in streaming and tool calling still being patched."* Other tools (Cline, Aider, OpenCode) have more installs and more mature local-model integration paths — that's useful context for understanding why we hit bugs they don't, but our goal is to close the reliability gap **for Claude Code**, not route around it.
 
@@ -100,16 +101,16 @@ We validated the consensus before we knew we were validating it. That's reassuri
 
 Two pieces of shipped work that I can't find elsewhere in public 2026 material:
 
-### 1. Ollama watchdog (`src/fleet_manager/node/ollama_watchdog.py`)
+### 1. ~~Ollama watchdog~~ (removed 2026-04-23)
 
-Every community report of the `/api/chat` hang bug terminates with *"workaround: restart Ollama manually"* or silence. No automated supervisor. Our watchdog:
+The Ollama watchdog that originally lived at `src/fleet_manager/node/ollama_watchdog.py` was **removed** after its probe-model selection logic (pick the smallest loaded model for the chat probe) kept selecting embedding-only models like `nomic-embed-text`; `/api/chat` on an embed model returns HTTP 400, which the watchdog interpreted as "runner stuck" and cascade-escalated to a full `ollama serve` restart that wiped all pinned models.
 
-- Probes `GET /api/tags` (cheap liveness) + `POST /api/chat` with `num_predict=1` (runner path, catches #15258's exact state)
-- Kicks runners via `pkill -9 -f "ollama runner"` after 2 consecutive failures
-- 120-second cooldown prevents thrashing
-- ~280 lines, 21 tests
+Lessons for anyone considering rebuilding this:
+- Never pick probe targets by size — maintain an **explicit allowlist** of chat-capable models.
+- Reset escalation counters on **cause change**, not just elapsed time.
+- Cap `ollama serve` restart attempts per hour hard — the blast radius (every pinned model evicted) is too big to trigger automatically on soft evidence.
 
-This is probably worth a blog post or upstream contribution. The community has the pain; nobody has shipped the fix.
+See `docs/issues.md` → "Ollama watchdog cascade-restarted `ollama serve` and wiped pinned models" for the full post-mortem.
 
 ### 2. `mlx:` prefix routing to bypass Ollama's 3-model cap
 

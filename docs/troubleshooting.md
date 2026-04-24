@@ -2,6 +2,19 @@
 
 Common issues and solutions when running Ollama Herd.
 
+Topic-specific guides:
+- **MLX backend** — see [MLX Setup Guide](guides/mlx-setup.md) for install / patch / env troubleshooting (`mlx_lm.server: error: unrecognized arguments: --kv-bits`, 120s health-check timeouts, silently-unloaded models after `uv tool upgrade mlx-lm`).
+- **Claude Code integration** — see [Claude Code Integration](guides/claude-code-integration.md) for routing, auth, and model-map issues.
+- **`FLEET_*` env vars ignored after restart** — both `herd` and `herd-node` auto-load `~/.fleet-manager/env` at startup (see `docs/examples/fleet-env.example` for the template). If vars are still missing, verify the file exists and that the CLIs were started by a version that includes `common/env_file.py`. Shell env always wins, so a stale `export` in your shell profile can mask changes to the file.
+- **Vision embedding `/embed` calls fail with `No module named 'onnxruntime'`** — `onnxruntime` lives in the optional `embedding` dependency group. Install with `uv sync --extra embedding` from the repo root. The dashboard may show DINOv2 / SigLIP / CLIP as "available" (meaning the weights are on disk) even when the backend can't actually serve them — that's not a false advertisement, the services just need `onnxruntime` to load the weights on first request. As of 2026-04-23 the error message itself points at the fix.
+- **Claude Code CLI quality collapses / tool-call loops around 30K tokens** with local Qwen3-Coder variants — known upstream parser bug ([llama.cpp#20164](https://github.com/ggml-org/llama.cpp/issues/20164)) triggered by tools with multiple optional parameters. Claude Code has 27 tools, most with optional params, so it hits this hard. Mitigations already shipped: `FLEET_ANTHROPIC_TOOL_SCHEMA_FIXUP=inject` (default) promotes known-safe optional params to required-with-default on the outbound schema. If the symptom persists after that, the research doc `docs/research/why-claude-code-degrades-at-30k.md` walks through swapping to Qwen3-Coder-Next (80B MoE / 3B active) which was specifically trained for agentic tool use and runs in ~45 GB vs the 480B's ~200 GB.
+- **Claude Code session feels stuck after 1+ hour / prompt over 100K tokens** — hosted Claude handles this by dropping stale tool_result bodies; we do the same via `server/context_management.py`. Three layers of defense, fail-open from cheap to expensive:
+  - **Layer 1** — mechanical clearing fires at `FLEET_ANTHROPIC_AUTO_CLEAR_TOOL_USES_TRIGGER_TOKENS` (default 100K) and keeps `FLEET_ANTHROPIC_AUTO_CLEAR_TOOL_USES_KEEP_RECENT` recent results verbatim (default 3). Grep for `tool-result clearing: N→M tokens`.
+  - **Layer 2** — LLM-based compactor summarises what Layer 1 left behind. When the post-clearing prompt is still > `FLEET_CONTEXT_COMPACTION_FORCE_TRIGGER_TOKENS` (default 150K), the route passes `force_all=True` to bypass per-strategy bloat gates and summarise everything. Grep for `compaction: N→M tokens`.
+  - **Hard cap** — if the prompt STILL exceeds `FLEET_ANTHROPIC_MAX_PROMPT_TOKENS` (default 180K), the request is refused pre-inference with HTTP 413 + a `"run /compact and resubmit"` message. Claude Code CLI surfaces this to the user.
+  - **Wall-clock timeout** — independently, any MLX request that exceeds `FLEET_MLX_WALL_CLOCK_TIMEOUT_S` (default 300s) gets its slot released and returns 413 with the same hint. Catches the case where `mlx_lm.server` keeps emitting tokens slowly but never stops (wedged-request syndrome).
+  - **If all layers are firing and you're still stuck**: run `/compact` in the Claude Code CLI. Last-resort: restart the Claude Code session (Ctrl+C → new session) — cheap because our prompt cache stays warm across Claude Code restarts.
+
 ---
 
 ## "Model not found on any node"
@@ -294,7 +307,7 @@ launchctl setenv OLLAMA_KEEP_ALIVE -1
 | Success rate on 55-message tool-using prompts | ~0% (Jetsam kills) | 100% |
 | p50 latency on big_agentic pattern | timeout / retry | ~1 s |
 
-If kills persist, the next layer of defense is the Ollama watchdog's escalation (lands automatically in node agent): after 3 consecutive runner kicks without recovery, it restarts `ollama serve` itself. See `ollama_watchdog.py` and `docs/issues.md` → "Ollama watchdog can't escalate."
+If kills persist, the next layer of defense was previously the Ollama watchdog's automatic `ollama serve` restart. That watchdog was removed on 2026-04-23 after it caused more harm than good (see `docs/issues.md` → "Ollama watchdog cascade-restarted `ollama serve` and wiped pinned models"). If you're hitting repeated runner crashes today, restart `ollama serve` manually and re-check the four env vars above — a restart loop usually means one of them isn't actually set in the environment Ollama launched from.
 
 ---
 

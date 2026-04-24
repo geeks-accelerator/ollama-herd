@@ -316,3 +316,90 @@ Critical context for the comparison: **Ollama is NOT running MLX on this machine
 ---
 
 *Add new observations above this line. Date them. Link evidence. Extract the transferable insight.*
+
+---
+
+## 2026-04-23 — `uv tool install mlx-lm` silently wipes the `--kv-bits` patch
+
+**Evidence**: During an operational fix on this machine, `mlx-lm` was reinstalled (via `uv tool install mlx-lm` pulling the latest 0.31.3). The node supervisor immediately started failing with:
+
+```
+mlx_lm.server: error: unrecognized arguments: --kv-bits 8 --kv-group-size 64
+```
+
+Supervisor logged "mlx_lm.server failed to become healthy within 120s" and gave up. The Qwen3-Coder-480B stopped running despite weights still being on disk and `FLEET_NODE_MLX_AUTO_START=true` set. Root cause: upstream `mlx_lm.server` doesn't expose KV-quantization flags — we depend on a local patch (`docs/experiments/mlx-lm-server-kv-bits.patch`). Any reinstall/upgrade overwrites the patched `server.py`.
+
+**Insight**: The patch is a brittle external dependency. We've made the regression **loud** (supervisor errors are ERROR-level in the JSONL log) but not **prevented**. Fix shipped alongside this observation:
+
+- `scripts/setup-mlx.sh` — idempotent installer that pins `mlx-lm==0.31.3`, applies all three patch hunks via Python (more robust than `patch -p1` against this patch file's formatting), and verifies `--kv-bits` is exposed after. Must be re-run after any `uv tool upgrade mlx-lm`.
+- `docs/guides/mlx-setup.md` — canonical setup reference with env block + troubleshooting for this exact failure mode.
+- CLAUDE.md updated with explicit "re-run after upgrade" warning.
+
+Until upstream lands [PR #1073](https://github.com/ml-explore/mlx-lm/pull/1073) or equivalent, this stays as operational toil. A future improvement would be a startup-time check in `mlx_supervisor` that probes `mlx_lm.server --help` for `--kv-bits` before launching; if missing, log a fatal hint pointing at `./scripts/setup-mlx.sh` and skip auto-start rather than timing out at 120s.
+
+---
+
+## 2026-04-24 — Long Claude Code sessions on Next-4bit cluster at ~240s; `FLEET_MLX_WALL_CLOCK_TIMEOUT_S=300` is right at the edge
+
+**Evidence**: Post-deploy traffic sample on `mlx:mlx-community/Qwen3-Coder-Next-4bit` with a 2167-message Claude Code CLI session, after Layer 1 clearing reduced the prompt from 103K → 62K tokens:
+
+| Request | Status | Latency |
+|---------|--------|---------|
+| 11:07:12 | ✅ | 240s |
+| 11:11:14 | ✅ | 241s |
+| 11:15:16 | ✅ | 242s |
+| 11:20:30 | ❌ | 300.5s (timeout) |
+
+Four consecutive turns on the same session cluster within a 2-second band (240-242s), then one edge case fell 0.5s past the 300.0s `FLEET_MLX_WALL_CLOCK_TIMEOUT_S` and got killed. The 30B compactor on port 11441 was not concurrently active — this is pure single-model-long-context generation time, not multi-MLX contention.
+
+**Insight**: On 80B-class MoE models serving long tool-heavy sessions, per-turn latency is remarkably consistent (~1-2% stddev over consecutive turns) because the dominant cost is prefill + KV cache evaluation, both of which scale deterministically with effective token count. **When a workload's p95 latency is ≥80% of the wall-clock budget, the timeout becomes a coin flip** — any momentary slowdown (OS scheduling jitter, memory-bandwidth contention from another process, a KV cache eviction that forces a recomputation) pushes a turn over the edge.
+
+Rule of thumb: set `FLEET_MLX_WALL_CLOCK_TIMEOUT_S` to **at least 2×** your observed p95 turn latency for the worst-case legitimate workload. For our Studio+Next-4bit+2K-message-session pattern that means 600s, not 300s. The default stays 300s for small fleets and short sessions; operators running prolonged agentic workflows should bump it.
+
+Transferable principle beyond MLX: any timeout set to the p95 of observed latency will fire on every adverse-tail request. Set timeouts to catch wedged behavior (orders of magnitude above p95), not to bound best-case behavior.
+
+---
+
+## 2026-04-24 — Dedicated compactor MLX server beats shared Ollama curator on a 3-model-capped host
+
+**Evidence**: Before this, context compaction defaulted to `gpt-oss:120b`
+via Ollama.  On a macOS host capped at 3 concurrent Ollama models, that
+curator permanently occupied one of the three slots — which in practice
+meant that opening a terminal and running `ollama run gemma3:27b` could
+silently evict the mapped Claude Code MLX fallback.  The `x-fleet-fallback`
+signal caught some of these, but the steady-state pressure was real: every
+compaction invocation competed for the same slots the main coding model
+depended on, and Ollama's LRU eviction gave us no say in what got dropped.
+
+After shipping multi-MLX-server support, we moved the compactor to a
+dedicated `mlx_lm.server` subprocess on port 11441 running
+`mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` (≈16 GB, 80B MoE w/
+3B active) alongside the main `Qwen3-Coder-Next-4bit` on 11440 (≈42 GB).
+Both stay hot continuously.  Compaction now has its own process, its own
+prompt cache, its own admission control — and zero pressure on the Ollama
+3-slot budget.
+
+**Insight**: the "compactor uses shared Ollama" design made sense when
+MLX was single-process-per-node — a dedicated MLX curator would have
+forced destructive A/B swaps.  Once multi-MLX was viable, moving the
+compactor there resolved three adjacent problems at once:
+  1. Ollama eviction no longer threatens the MLX fallback chain.
+  2. The compactor's prompt cache persists across invocations (MLX's
+     process keeps it warm; Ollama's doesn't, by default).
+  3. The main coding model's process never blocks on compactor work —
+     they're now fully independent slots.
+
+Generalizable principle: when a background workload (compaction,
+embedding, classification) doesn't need the full quality of the main
+model, give it its own dedicated process.  The RAM cost is a one-time
+static allocation; the slot-contention avoidance compounds over every
+turn.  On our 512 GB Mac Studio, 16 GB for a dedicated compactor buys
+freedom from Ollama's 3-model cap indefinitely.
+
+---
+
+## 2026-04-24 — Model swaps drift `launchctl`/`~/.zshrc` out of sync, supervisor loads the wrong model silently
+
+**Evidence**: Restarted fleet after shipping P1–P4 Claude Code enhancements. `~/.fleet-manager/env` correctly had `FLEET_NODE_MLX_AUTO_START_MODEL=mlx-community/Qwen3-Coder-Next-4bit` (matches the 2026-04-23 swap away from the 480B). Supervisor logs showed `mlx_lm.server exited unexpectedly (rc=1); restarting in 1.0s` in a tight loop — exponential backoff climbing through 1s/2s/4s/8s/16s/32s. Root cause: both `launchctl getenv FLEET_NODE_MLX_AUTO_START_MODEL` AND `~/.zshrc` still exported the old 480B model. Shell env + launchctl env both win over the env file (`env_file.py:load_env_file()` only sets keys *not already in env*), so the supervisor got the stale 480B string, tried to bind port 11440, collided with a leftover `mlx_lm.server` process from a prior session, exited with rc=1, restart loop.
+
+**Insight**: The 2026-04-02 launchctl observation captured "launchctl setenv is a lie" — this is its sibling failure mode one year later. Whenever a model name, env var, or config value lives in *three* places (`~/.fleet-manager/env`, `~/.zshrc`, `launchctl setenv`), any partial update creates a silent divergence where the supervisor loads a model the operator thought they deprecated. Symptom was *not* "MLX won't start" but "MLX is crash-looping" — the supervisor correctly reported the failure, but the root cause was two directories away from the logs. Defense: when doing a model swap, a single command pattern must update all three locations atomically. A future hardening would be a `scripts/set-mlx-model.sh <model>` helper that writes to the env file, updates `launchctl setenv`, rewrites the `~/.zshrc` export line, and prints a diff — one-shot, no partial states. Also: the supervisor should log the *actual* model name it's launching on every spawn (currently it logs the intended `self.model` but not what ended up on the command line after all env resolution), so operators can catch mismatches from the first log line.

@@ -6,7 +6,9 @@
 - `docs/issues.md` — "Ollama 3-model concurrent-load cap unconfigurable on macOS"
 - `docs/plans/hot-fleet-health-checks.md` — detection for silent eviction
 - `docs/experiments/mlx-lm-q8kv-benchmark.md` — benchmark that validated parity
-- `docs/experiments/mlx-lm-server-kv-bits.patch` — the upstream-pending patch we depend on
+- `docs/experiments/mlx-lm-server-kv-bits.patch` — the upstream-pending patch we depend on (applied by the setup script)
+- `scripts/setup-mlx.sh` — idempotent installer: pins `mlx-lm==0.31.3`, applies the patch, verifies flags are live. Must be re-run after any `uv tool upgrade mlx-lm`.
+- `docs/guides/mlx-setup.md` — operator-facing setup + troubleshooting guide
 
 ---
 
@@ -287,11 +289,11 @@ All routes work correctly:
 
 ### The patched mlx_lm.server dependency
 
-Phase 1+ require `--kv-bits` on `mlx_lm.server`. Two options:
+Phase 1+ require `--kv-bits` on `mlx_lm.server`. Resolved 2026-04-23:
 
-1. **Wait for upstream** — [PR #1073](https://github.com/ml-explore/mlx-lm/pull/1073) is complete and has community support. If it merges before Phase 3, we use stock mlx_lm.
-2. **Ship with local patch** — bundle `docs/experiments/mlx-lm-server-kv-bits.patch` in a setup script; apply to user's venv on first run.
-3. **Accept f16 KV for now** — skip `--kv-bits`; MLX still works, just 30% slower than Ollama. Acceptable for opus-tier where latency tolerance is higher.
+1. ~~**Wait for upstream**~~ — [PR #1073](https://github.com/ml-explore/mlx-lm/pull/1073) still hasn't landed.
+2. **Ship with local patch** ✅ — `scripts/setup-mlx.sh` pins `mlx-lm==0.31.3` and applies the patch via embedded Python (more robust than `patch -p1` against the patch file's hunk format). Idempotent; re-run after any upgrade. `mlx_supervisor` preflights for `--kv-bits` support and fails fast with a remediation hint if the patch got wiped.
+3. ~~**Accept f16 KV for now**~~ — rejected; the 30% throughput cost on opus-tier is worse than the operational toil of re-running a script after upgrades.
 
 Leaning toward option 3 for the initial ship — it removes the upstream-dependency block and we can upgrade to Q8 KV when upstream lands.
 

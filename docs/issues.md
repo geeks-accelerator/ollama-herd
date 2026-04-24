@@ -8,6 +8,30 @@ Identified via code review of the full codebase. Organized by priority.
 
 ## Routing Safety
 
+### Ollama watchdog cascade-restarted `ollama serve` and wiped pinned models `FIXED` (removed)
+
+**File:** `src/fleet_manager/node/ollama_watchdog.py` (deleted 2026-04-23)
+**Severity:** High
+
+The node-side watchdog periodically sent a chat probe to Ollama to detect stuck runners. Its probe-model picker (`_pick_probe_model`) chose the **smallest currently-loaded model** as the probe target. When `nomic-embed-text` (an embedding-only model, ~274 MB) was hot — which is common — it was picked. `/api/chat` on an embed-only model returns HTTP 400 every time; the watchdog interpreted the 400 as "runner stuck," kicked runner processes via `pkill`, and the counters never reset on successful kicks. Result:
+
+1. Every ~2 min, 2 consecutive 400s → KICK (kill runner processes).
+2. Repeated 13 times over 13 min without resetting the counter.
+3. Escalated to a full `ollama serve` restart (`launchctl kickstart -k`), wiping **all** hot models.
+4. Subsequent preloader re-loads of pinned models timed out at 120s because the watchdog kept kicking runners mid-cold-load.
+5. During the window, 20 `gemma3:27b` requests were silently routed to `gpt-oss:120b` via VRAM fallback — a cross-category substitution (vision → reasoning) that silently dropped image inputs.
+
+**Observed:** 2026-04-23 21:50–23:10 UTC. User request for `claude-sonnet-4-5 → gemma3:27b` (vision path) got answered by `gpt-oss:120b` silently.
+
+**Fix shipped:**
+- `src/fleet_manager/node/ollama_watchdog.py` deleted entirely. The user's original fleet ran fine without it — the watchdog existed to smooth over intermittent Claude Code CLI issues that are now handled by other layers (admission control, streaming retry, context protection).
+- `src/fleet_manager/node/agent.py` — all `_ensure_ollama_watchdog` / shutdown hooks removed.
+- `src/fleet_manager/models/config.py` — 5 `ollama_watchdog_*` settings removed. Comment left in place describing why (so nobody re-adds it without the two fixes the original lacked: explicit probe-model allowlist, per-cause cooldowns).
+- `src/fleet_manager/server/routes/routing.py` — cross-category VRAM fallback now logs at **ERROR** level (was INFO) with an explicit "QUALITY RISK" warning when vision → non-vision substitutions happen. Event record carries `cross_category` + `fallback_category` for dashboard filtering. Existing `X-Fleet-Fallback` response header continues to flag substitutions to clients.
+- `tests/test_node/test_ollama_watchdog.py` deleted alongside the module.
+
+If stuck-runner detection is ever needed again, re-add it with: (a) an **explicit allowlist** of chat-capable probe models, never size-based selection; (b) per-cause cooldowns so a guaranteed-failing probe can't escalate; (c) hard cap on serve-restart escalations per hour.
+
 ### Ollama native image models can evict LLMs from memory `PARTIAL`
 
 **File:** `src/fleet_manager/server/routes/ollama_compat.py`

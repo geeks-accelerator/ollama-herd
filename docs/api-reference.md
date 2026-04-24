@@ -552,6 +552,18 @@ Friendly probe endpoint — Claude Code may GET this during connection setup.
 - `X-Fleet-Retries` — present when the request was retried
 - `anthropic-version` — echoed from the request
 
+### Error responses
+
+The route emits the following non-2xx status codes in addition to the usual 400/401/5xx from upstream. All error bodies follow the Anthropic error shape: `{"type": "error", "error": {"type": "...", "message": "..."}}`.
+
+- **`413 Payload Too Large`** — `error.type: "prompt_too_large"`. Returned in two situations:
+  - **Pre-inference hard cap.** After server-side context management (tool-result clearing + LLM compaction with `force_all`), the prompt still exceeds `FLEET_ANTHROPIC_MAX_PROMPT_TOKENS` (default 180K). The message tells the caller to run `/compact` in Claude Code and resubmit.
+  - **MLX wall-clock timeout.** An MLX request exceeded `FLEET_MLX_WALL_CLOCK_TIMEOUT_S` (default 300s) from admission → last byte. The slot is released; the caller gets the same `try /compact` hint. Catches wedged-request syndrome where `mlx_lm.server` emits tokens slowly but never hits a stop condition.
+
+  The server **never silently retries** either case — correctness of agentic tool-use workflows depends on the client owning the decision to resubmit with altered context.
+
+- **`503 Service Unavailable`** with `Retry-After` — MLX admission control rejected the request (queue full). `error.type: "overloaded_error"`. Clients should back off and retry after the header value.
+
 ---
 
 ## Fleet Management
@@ -598,7 +610,28 @@ Full fleet state — nodes, queues, hardware metrics, and health summary.
         ],
         "models_available": ["llama3.3:70b", "qwen2.5:32b"],
         "requests_active": 1
-      }
+      },
+      "mlx_servers": [
+        {
+          "port": 11440,
+          "model": "mlx-community/Qwen3-Coder-Next-4bit",
+          "status": "healthy",
+          "status_reason": "",
+          "kv_bits": 8,
+          "model_size_gb": 41.8,
+          "last_ok_ts": 1714000000.0
+        },
+        {
+          "port": 11441,
+          "model": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+          "status": "healthy",
+          "status_reason": "",
+          "kv_bits": 8,
+          "model_size_gb": 16.0,
+          "last_ok_ts": 1714000000.0
+        }
+      ],
+      "mlx_bind_host": "0.0.0.0"
     }
   ],
   "queues": {
@@ -615,6 +648,25 @@ Full fleet state — nodes, queues, hardware metrics, and health summary.
   "timestamp": 1710000000.0
 }
 ```
+
+**`mlx_servers` field** (optional — present only on nodes with MLX configured):
+
+One entry per `mlx_lm.server` subprocess on that node.  Lets operators and
+downstream tooling see per-URL health without polling each port individually.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `port` | int | Port the server listens on (unique per-node) |
+| `model` | string | HF repo id or local path (without `mlx:` prefix) |
+| `status` | string | `healthy` / `starting` / `unhealthy` / `memory_blocked` / `stopped` |
+| `status_reason` | string | Human-readable detail (empty when healthy) — e.g. `"memory gate: 42.0 GB needed, 16 GB available"` or `"subprocess exited rc=1"` |
+| `kv_bits` | int | 0 / 4 / 8 — KV quantization level (requires `setup-mlx.sh` patch) |
+| `model_size_gb` | float | Estimated weight size from HF cache on disk |
+| `last_ok_ts` | float | Epoch seconds of last successful `/v1/models` poll |
+
+`mlx_bind_host` at the node top level is what the servers bind to (`127.0.0.1`
+local-only; `0.0.0.0` LAN-reachable).  Nodes running older agents that predate
+multi-MLX return an empty `mlx_servers` list and omit `mlx_bind_host`.
 
 ---
 
@@ -762,6 +814,14 @@ Lightweight queue status for client-side backoff decisions. Designed for high-fr
       "concurrency": 2,
       "model": "gpt-oss:120b",
       "node_id": "Studio"
+    },
+    "mlx-local:mlx:mlx-community/Qwen3-Coder-Next-4bit": {
+      "pending": 0, "in_flight": 1, "concurrency": 1,
+      "max_queue_depth": 10,
+      "cache_hit_rate": 0.997, "warm_hit_rate": 1.0, "cold_request_pct": 0.02,
+      "avg_latency_ms": 5293.6, "avg_prompt_tokens": 201293, "avg_completion_tokens": 95,
+      "stats_samples": 1244,
+      "tool_repair": {"attempts": 3, "successes": 2, "failures": 1}
     }
   },
   "timestamp": 1712345678.123
@@ -769,6 +829,13 @@ Lightweight queue status for client-side backoff decisions. Designed for high-fr
 ```
 
 Use `estimated_wait_ms` to decide whether to send a request now or back off. `queue_depth` = `pending` + `in_flight`.
+
+**MLX-specific fields** (present on `mlx-local:` queue entries):
+
+- `max_queue_depth` — admission-control cap; requests over this get 503 (see `FLEET_MLX_MAX_QUEUE_DEPTH`)
+- `cache_hit_rate`, `warm_hit_rate`, `cold_request_pct` — prompt-cache observability (see `docs/plans/mlx-prompt-cache-optimization.md`)
+- `avg_latency_ms`, `avg_prompt_tokens`, `avg_completion_tokens`, `stats_samples` — running averages since process start
+- `tool_repair: {attempts, successes, failures}` — tool-call JSON repair counters. `attempts` fires whenever the model emits malformed JSON; `successes` means repair produced a dict that passed the tool's `input_schema`; `failures` means repair couldn't produce valid output and the original was passed through. Sustained rate above ~1% on any model is a signal the model is unreliable. See `server/tool_call_repair.py`.
 
 ---
 
@@ -1285,6 +1352,45 @@ Delete a model from a specific node via Ollama's `DELETE /api/delete` API.
 ```
 
 Returns `{"ok": false, ...}` if the delete fails. This permanently removes the model from the node's disk — it must be re-downloaded to use again.
+
+### `GET /dashboard/api/pinned-models`
+
+Return the pin state that feeds the Ollama preloader. Env-level pins (from `FLEET_PINNED_MODELS`) are fleet-wide and read-only here; per-node pins live in `<data_dir>/pinned_models.json` and are managed via `POST /dashboard/api/pinned-models`.
+
+**Response:**
+
+```json
+{
+  "env_pins": ["gpt-oss:120b"],
+  "per_node": {
+    "Neons-Mac-Studio": ["gemma3:27b", "gpt-oss:120b"]
+  },
+  "max_count": 3
+}
+```
+
+`max_count` is `FLEET_MODEL_PRELOAD_MAX_COUNT`; if the sum of pins on any node exceeds it, the preloader truncates and logs a warning — raise the env var only if your backend can actually hold more concurrent models (macOS Ollama 0.20.4 caps at 3 regardless).
+
+### `POST /dashboard/api/pinned-models`
+
+Toggle a per-node pin. Writes atomically to `<data_dir>/pinned_models.json`. The model preloader re-reads the file every refresh cycle (10 min), so dashboard toggles take effect within that window.
+
+**Request body:**
+
+```json
+{"node_id": "Neons-Mac-Studio", "model": "gemma3:27b", "pinned": true}
+```
+
+**Response:**
+
+```json
+{"ok": true, "per_node": {"Neons-Mac-Studio": ["gemma3:27b", "gpt-oss:120b"]}}
+```
+
+**Validation:**
+
+- `node_id` and `model` required — 400 if either is empty.
+- `vision-embedding` category models (DINOv2, SigLIP, CLIP) are rejected when `pinned=true` — those run on the embedding service, not Ollama, so a preloader pin would be meaningless. Unpin (`pinned=false`) always succeeds so stale entries can be cleaned up.
 
 ### `GET /dashboard/api/model-management`
 

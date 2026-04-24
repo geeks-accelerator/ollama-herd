@@ -3,17 +3,20 @@
 ## Build & Run
 
 ```bash
-uv sync                          # install deps
+uv sync                          # install core deps
+uv sync --extra embedding        # + vision embeddings (DINOv2 / SigLIP / CLIP) — needs onnxruntime
 uv run herd                      # start router on :11435
 uv run herd-node                 # start node agent (auto-discovers router via mDNS)
 uv run herd-node --router-url http://localhost:11435  # explicit router URL
 ```
 
+Without `--extra embedding`, the vision embedding server starts but every `/embed` call fails with an `ImportError` pointing at the fix. The dashboard will still show DINOv2/SigLIP/CLIP as "available" (files on disk) — that's honest because the weights ARE cached, but nothing can actually serve them until `onnxruntime` is installed.
+
 ## Test
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 507 tests (~5s)
+uv run pytest                    # run all 929 tests (~40s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -45,6 +48,8 @@ uv sync && uv run herd &>/dev/null & disown
 sleep 3 && uv run herd-node &>/dev/null & disown
 ```
 
+Both entry points auto-load `~/.fleet-manager/env` at startup (see `src/fleet_manager/common/env_file.py`), so `FLEET_*` vars work even when launched from non-interactive shells (Bash subshells, nohup, launchd). Shell env still wins if set. Template: `docs/examples/fleet-env.example` — copy to `~/.fleet-manager/env` on a fresh machine.
+
 ### Gotchas
 
 - **`launchctl setenv` is overridden by `~/.zshrc`** — update both shell profile AND launchctl for macOS env vars. On Linux: `sudo systemctl edit ollama`. On Windows: `[System.Environment]::SetEnvironmentVariable()`
@@ -53,7 +58,8 @@ sleep 3 && uv run herd-node &>/dev/null & disown
 - **Default context windows waste KV cache** — gpt-oss:120b allocates 131K ctx but p99 usage is ~5K tokens. Enable `FLEET_DYNAMIC_NUM_CTX=true` to auto-optimize. See `docs/plans/dynamic-num-ctx.md`
 - **Ollama `OLLAMA_MAX_LOADED_MODELS=-1` is silently invalid** — parsed as unsigned int, `-1` fails, falls through to default `0` = 3-model cap. Use a positive integer (but see next point — may be ignored anyway on macOS 2026). `OLLAMA_KEEP_ALIVE=-1` IS valid (means "keep forever"). Ollama env var semantics differ per variable; don't assume `-1` means unlimited.
 - **Ollama 0.20.4 macOS has a hardcoded 3-model hot cap** — no env configuration we've found will raise it. When a mapped model gets evicted, silent VRAM fallback fires and Claude Code tool use breaks. Surfaced via `x-fleet-fallback` response header and fallback_rate in trace DB. See `docs/issues.md` and `docs/plans/hot-fleet-health-checks.md`.
-- **Use `mlx:` prefix in `FLEET_ANTHROPIC_MODEL_MAP` to bypass the 3-model cap** — any mapped value starting with `mlx:` routes through an independent `mlx_lm.server` subprocess instead of Ollama. Setup: `FLEET_MLX_ENABLED=true` on the router, `FLEET_NODE_MLX_ENABLED=true` + optional `FLEET_NODE_MLX_AUTO_START=true` on the node. See `docs/plans/mlx-backend-for-large-models.md`.
+- **Use `mlx:` prefix in `FLEET_ANTHROPIC_MODEL_MAP` to bypass the 3-model cap** — any mapped value starting with `mlx:` routes through an independent `mlx_lm.server` subprocess instead of Ollama. Setup: run `./scripts/setup-mlx.sh` (installs pinned mlx-lm 0.31.3 + applies the `--kv-bits` patch the supervisor requires), then set `FLEET_MLX_ENABLED=true` on the router and `FLEET_NODE_MLX_ENABLED=true` + `FLEET_NODE_MLX_AUTO_START=true` on the node. **Re-run the script after any `uv tool upgrade mlx-lm`** — upgrades wipe the patch and supervisor auto-start fails with `unrecognized arguments: --kv-bits 8`. See `docs/guides/mlx-setup.md`.
+- **Run multiple MLX models concurrently via `FLEET_NODE_MLX_SERVERS`** — JSON list of `{model, port, kv_bits}` entries, one `mlx_lm.server` subprocess per entry. Memory-pressure gate (`FLEET_NODE_MLX_MEMORY_HEADROOM_GB`) refuses to start a server that wouldn't fit; surfaces skip reason in heartbeat as `memory_blocked` status. Set `FLEET_NODE_MLX_BIND_HOST=0.0.0.0` for multi-node LAN aggregation. Dashboard renders per-server health table inside each node card. Canonical use case: dedicate a smaller MLX model (e.g. `Qwen3-Coder-30B-A3B-Instruct-4bit`) to context compaction via `FLEET_CONTEXT_COMPACTION_MODEL=mlx:...` so summarization has its own prompt cache and doesn't compete for the main model's slot. See `docs/guides/mlx-setup.md` § "Multi-server setup".
 
 ## Architecture
 
@@ -84,8 +90,8 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `node/platform_client.py` | Shared httpx wrapper with retry — used by heartbeat + telemetry |
 | `node/platform_heartbeat.py` | Signed heartbeat POST every 60s (CPU, memory, VRAM, queues, loaded models) |
 | `node/mlx_client.py` | Node-side client for polling `mlx_lm.server` `/v1/models`; results merged into heartbeat with `mlx:` prefix |
-| `node/mlx_supervisor.py` | Subprocess lifecycle for `mlx_lm.server` — spawn, health-check, auto-restart on crash |
-| `server/mlx_proxy.py` | Server-side proxy forwarding `mlx:` prefixed models to `mlx_lm.server` (OpenAI → Anthropic SSE translation) |
+| `node/mlx_supervisor.py` | Subprocess lifecycle for N `mlx_lm.server` processes — spawn, health-check, auto-restart on crash, memory-pressure gate (via `MlxSupervisorSet`, one child per `FLEET_NODE_MLX_SERVERS` entry) |
+| `server/mlx_proxy.py` | Server-side proxy forwarding `mlx:` prefixed models to the right mlx_lm.server (OpenAI → Anthropic SSE translation, per-URL client pool, registry-driven URL resolution) |
 | `node/telemetry_scheduler.py` | Daily usage rollup POST at 00:05 UTC + jitter (opt-in via env) |
 | `node/daily_rollup.py` | Builds telemetry payload with structural privacy whitelist |
 | `node/device_info.py` | Per-platform hardware probe (macOS/Linux/Windows) for registration |
@@ -167,9 +173,9 @@ Silent failures are dishonest. Fail fast, fail loud.
 ## Current State (as of 2026-04-16)
 
 - **Version:** 0.5.2 (soaking locally, 0.4.1 published on PyPI)
-- **Fleet:** Neons-Mac-Studio (512GB M3 Ultra), single node, `gpt-oss:120b` + `nomic-embed-text` + multi-model via dynamic num_ctx
+- **Fleet:** Neons-Mac-Studio (512GB M3 Ultra) + Lucass-MacBook-Pro-2 (128GB M4 Max). Mac Studio runs two MLX servers: `mlx:Qwen3-Coder-Next-4bit` on :11440 for coding + `mlx:Qwen3-Coder-30B-A3B-Instruct-4bit` on :11441 as dedicated compactor, both via `FLEET_NODE_MLX_SERVERS`. Plus `gpt-oss:120b` + `nomic-embed-text` via Ollama.
 - **Ollama settings:** `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=-1` (in `~/.zshrc`)
-- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "507 tests\|18 checks" skills/`
+- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "929 tests\|18 checks" skills/`
 - **Health:** 18 checks, zero errors. Monitor: `curl http://localhost:11435/dashboard/api/health`
 
 ## Conventions

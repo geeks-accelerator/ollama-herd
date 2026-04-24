@@ -2,7 +2,10 @@
 
 **Created**: 2026-04-22
 **Status**: Evidence-based — web research + local trace data from a 512GB M3 Ultra Mac Studio
-**Related**: [`docs/guides/claude-code-integration.md`](../guides/claude-code-integration.md)
+**Related**:
+- [`why-claude-code-degrades-at-30k.md`](./why-claude-code-degrades-at-30k.md) — companion post-mortem on the tool-call looping failure at 30K tokens and why Qwen3-Coder-Next is the recommended swap (filed 2026-04-23 after the `<function=TaskUpdate>` hallucination regression on the 480B)
+- [`claude-code-ollama-ecosystem-2026.md`](./claude-code-ollama-ecosystem-2026.md) — ecosystem state / symptom-to-upstream-issue mapping
+- [`docs/guides/claude-code-integration.md`](../guides/claude-code-integration.md)
 
 ---
 
