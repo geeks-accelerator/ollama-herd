@@ -9,7 +9,21 @@ import subprocess
 
 import psutil
 
-from fleet_manager.models.node import CpuMetrics, DiskMetrics, MemoryMetrics, MemoryPressure
+from fleet_manager.models.node import (
+    CpuMetrics,
+    DiskMetrics,
+    MemoryMetrics,
+    MemoryPressure,
+    ThermalMetrics,
+    ThermalState,
+)
+
+# Linux temperature threshold for THERMAL WARNING.  Modern Intel / AMD CPUs
+# typically throttle somewhere between 90-105°C depending on chip. Setting the
+# warning at 85°C gives a small margin so the dashboard flags "running hot"
+# before the kernel actually cuts frequency. Tunable if operators on
+# always-hot datacenter nodes want a different bar.
+_LINUX_THERMAL_WARNING_C = 85.0
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +110,107 @@ def _get_memory_pressure_linux() -> MemoryPressure:
     except Exception as e:
         logger.warning(f"Could not read /proc/meminfo (defaulting to NORMAL): {e}")
         return MemoryPressure.NORMAL
+
+
+def get_thermal_metrics() -> ThermalMetrics:
+    """Return the node's thermal state in a platform-aware way.
+
+    Coverage is genuinely uneven across platforms:
+      - **Linux**: ``psutil.sensors_temperatures()`` returns per-sensor temps.
+        We scan for CPU/coretemp/k10temp/zenpower and take the peak reading.
+        This is the only platform with a first-class thermal signal.
+      - **macOS**: ``sensors_temperatures`` isn't implemented. Apple Silicon
+        doesn't expose ``machdep.xcpm`` (Intel-only), and ``powermetrics``
+        requires sudo — a hard no for a node agent. We return UNKNOWN and
+        let the dashboard fall back to a sustained-CPU proxy.
+      - **Windows**: ``sensors_temperatures`` is driver-dependent. Try it;
+        return UNKNOWN if empty.
+
+    This is an honest detection, not a best-effort guess — when we can't
+    tell, we say so, and the caller decides how to surface that.
+    """
+    system = platform.system()
+    if system == "Linux":
+        return _get_thermal_linux()
+    if system == "Windows":
+        return _get_thermal_windows()
+    # Darwin (macOS) + everything else → no reliable thermal source
+    return ThermalMetrics(state=ThermalState.UNKNOWN)
+
+
+def _get_thermal_linux() -> ThermalMetrics:
+    """psutil.sensors_temperatures() on Linux.  Returns UNKNOWN on failure."""
+    sensors_fn = getattr(psutil, "sensors_temperatures", None)
+    if sensors_fn is None:
+        return ThermalMetrics(state=ThermalState.UNKNOWN)
+    try:
+        temps = sensors_fn()
+    except Exception as e:
+        logger.debug(f"psutil.sensors_temperatures() raised: {e}")
+        return ThermalMetrics(state=ThermalState.UNKNOWN)
+    if not temps:
+        return ThermalMetrics(state=ThermalState.UNKNOWN)
+    # Scan the usual CPU-temp drivers in order of specificity.
+    preferred_drivers = ("coretemp", "k10temp", "zenpower", "cpu_thermal")
+    peak_c: float | None = None
+    peak_source: str = ""
+    for driver in preferred_drivers:
+        readings = temps.get(driver) or []
+        for r in readings:
+            # Prefer the "Package id" or "Tctl" readings when labeled.
+            current = getattr(r, "current", None)
+            if current is None:
+                continue
+            if peak_c is None or current > peak_c:
+                peak_c = current
+                peak_source = f"psutil:{driver}"
+    # If we didn't find a preferred driver, try any reading as a fallback.
+    if peak_c is None:
+        for driver, readings in temps.items():
+            for r in readings:
+                current = getattr(r, "current", None)
+                if current is None:
+                    continue
+                if peak_c is None or current > peak_c:
+                    peak_c = current
+                    peak_source = f"psutil:{driver}"
+    if peak_c is None:
+        return ThermalMetrics(state=ThermalState.UNKNOWN)
+    state = (
+        ThermalState.WARNING if peak_c >= _LINUX_THERMAL_WARNING_C
+        else ThermalState.NOMINAL
+    )
+    return ThermalMetrics(state=state, temperature_c=round(peak_c, 1), source=peak_source)
+
+
+def _get_thermal_windows() -> ThermalMetrics:
+    """psutil.sensors_temperatures() on Windows — driver-dependent."""
+    sensors_fn = getattr(psutil, "sensors_temperatures", None)
+    if sensors_fn is None:
+        return ThermalMetrics(state=ThermalState.UNKNOWN)
+    try:
+        temps = sensors_fn()
+    except Exception:
+        return ThermalMetrics(state=ThermalState.UNKNOWN)
+    if not temps:
+        return ThermalMetrics(state=ThermalState.UNKNOWN)
+    peak_c: float | None = None
+    peak_source = ""
+    for driver, readings in temps.items():
+        for r in readings:
+            current = getattr(r, "current", None)
+            if current is None:
+                continue
+            if peak_c is None or current > peak_c:
+                peak_c = current
+                peak_source = f"psutil:{driver}"
+    if peak_c is None:
+        return ThermalMetrics(state=ThermalState.UNKNOWN)
+    state = (
+        ThermalState.WARNING if peak_c >= _LINUX_THERMAL_WARNING_C
+        else ThermalState.NOMINAL
+    )
+    return ThermalMetrics(state=state, temperature_c=round(peak_c, 1), source=peak_source)
 
 
 def get_local_ip() -> str:

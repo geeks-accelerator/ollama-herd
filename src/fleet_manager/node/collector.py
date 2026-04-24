@@ -18,6 +18,7 @@ from fleet_manager.common.system_metrics import (
     get_disk_metrics,
     get_local_ip,
     get_memory_metrics,
+    get_thermal_metrics,
 )
 from fleet_manager.models.node import (
     CapacityMetrics,
@@ -264,6 +265,7 @@ async def collect_heartbeat(
     """
     cpu = get_cpu_metrics()
     memory = get_memory_metrics()
+    thermal = get_thermal_metrics()
     disk = get_disk_metrics()
 
     try:
@@ -391,6 +393,7 @@ async def collect_heartbeat(
         node_id=node_id,
         cpu=cpu,
         memory=memory,
+        thermal=thermal,
         disk=disk,
         ollama=OllamaMetrics(
             models_loaded=models_loaded,

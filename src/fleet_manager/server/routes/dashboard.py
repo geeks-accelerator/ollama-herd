@@ -108,6 +108,12 @@ async def dashboard_events(request: Request):
                         "available_gb": round(node.memory.available_gb, 1),
                         "pressure": node.memory.pressure.value,
                     }
+                if node.thermal:
+                    node_data["thermal"] = {
+                        "state": node.thermal.state.value,
+                        "temperature_c": node.thermal.temperature_c,
+                        "source": node.thermal.source,
+                    }
                 if node.ollama:
                     # MLX-prefixed entries are advertised by the node-side
                     # MlxClient when FLEET_NODE_MLX_ENABLED=true.  Surface them
@@ -1365,6 +1371,20 @@ async def dashboard_settings_page():
     return _dashboard_page("Settings", "settings", _SETTINGS_BODY)
 
 
+@router.get("/dashboard/color-states", response_class=HTMLResponse)
+async def dashboard_color_states_page():
+    """Visual reference: utilization bars in all Axis B warning states.
+
+    Developer tool — renders fake cards side-by-side showing what the
+    dashboard looks like when memory.pressure is normal/warning/critical
+    and when the CPU-thermal proxy fires.  Uses the live CSS + JS from
+    the main dashboard so there's no drift between this reference and
+    what production users see.  Linked from
+    ``docs/guides/dashboard-color-reference.md`` for future designers.
+    """
+    return _dashboard_page("Color States (dev)", "color-states", _COLOR_STATES_BODY)
+
+
 # ---------------------------------------------------------------------------
 # Shared layout helper
 # ---------------------------------------------------------------------------
@@ -1954,9 +1974,14 @@ function renderNodes(nodes) {
         memOuter.classList.toggle('bar-critical', pressure === 'critical');
       }
       if (cpuOuter) {
-        // Sustained >=95% CPU is a throttling proxy until we surface a
-        // proper thermal signal from the node agent.
-        cpuOuter.classList.toggle('bar-thermal', cpu >= 95);
+        // Prefer the node-agent-reported thermal signal when available
+        // (Linux: real psutil.sensors_temperatures readings). Fall back
+        // to the CPU>=95% proxy when state is "unknown" (macOS and any
+        // Windows without exposed sensors) so genuinely hot machines
+        // still flag on platforms without a first-class thermal API.
+        var thermalState = node.thermal ? node.thermal.state : 'unknown';
+        var thermalHot = thermalState === 'warning' || (thermalState === 'unknown' && cpu >= 95);
+        cpuOuter.classList.toggle('bar-thermal', thermalHot);
       }
     });
     if (!needsRebuild) {
@@ -2054,7 +2079,7 @@ function renderNodes(nodes) {
           <div class="metric">
             <div class="label">CPU</div>
             <div class="value cpu-val">${cpu.toFixed(1)}%</div>
-            <div class="bar-container cpu-outer ${cpu >= 95 ? 'bar-thermal' : ''}"><div class="bar-fill cpu-bar" style="width:${cpu}%;background:${utilizationColor(cpu, 'cpu')}"></div></div>
+            <div class="bar-container cpu-outer ${(node.thermal && node.thermal.state === 'warning') || ((!node.thermal || node.thermal.state === 'unknown') && cpu >= 95) ? 'bar-thermal' : ''}"><div class="bar-fill cpu-bar" style="width:${cpu}%;background:${utilizationColor(cpu, 'cpu')}"></div></div>
           </div>
           <div class="metric">
             <div class="label">Memory (${pressure})</div>
@@ -4665,6 +4690,109 @@ setInterval(updateTimestamp, 30000);
 # ---------------------------------------------------------------------------
 # Settings page body
 # ---------------------------------------------------------------------------
+
+_COLOR_STATES_BODY = """
+<style>
+.color-demo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.color-demo-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.color-demo-card h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+.color-demo-card .state-label { font-size: 11px; color: var(--text-dim); margin-bottom: 14px; }
+.color-demo-card .metric { margin-bottom: 12px; }
+.color-demo-card .metric-label { font-size: 11px; color: var(--text-dim); margin-bottom: 2px; }
+.color-demo-card .metric-value { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.color-demo-scale {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  margin-top: 4px;
+}
+.color-demo-scale .pct { color: var(--text-dim); text-align: right; }
+.color-demo-readme {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.color-demo-readme code { background: rgba(108,99,255,0.15); padding: 1px 5px; border-radius: 3px; }
+</style>
+<div class="color-demo-readme">
+  <strong>Developer reference.</strong> This page renders the dashboard's utilization bars
+  in every Axis-B warning state so you can verify the CSS, screenshot it for design review,
+  and catch visual regressions. Cards below use the live <code>utilizationColor()</code>
+  function and <code>.bar-warning</code> / <code>.bar-critical</code> / <code>.bar-thermal</code>
+  classes from the main dashboard — any change to the production CSS shows up here
+  automatically. See <code>docs/guides/dashboard-color-reference.md</code> and
+  <code>docs/plans/dashboard-color-semantics.md</code>.
+</div>
+
+<h2 style="margin-bottom:14px">Axis B states (memory bar, at 75% utilization)</h2>
+<div class="color-demo-grid" id="state-cards"></div>
+
+<h2 style="margin:28px 0 14px">Axis A gradient sweep</h2>
+<div class="color-demo-grid" id="gradient-cards"></div>
+
+<script>
+(function() {
+  // State cards — same utilization %, different Axis B classes.
+  var states = [
+    { name: 'Normal',          klass: '',             label: 'pressure=normal — no outline; just the utilization fill' },
+    { name: 'Memory Warning',  klass: 'bar-warning',  label: 'pressure=warning — yellow outline + soft glow' },
+    { name: 'Memory Critical', klass: 'bar-critical', label: 'pressure=critical — red outline + pulsing glow (1.8s)' },
+    { name: 'CPU Thermal',     klass: 'bar-thermal',  label: 'sustained CPU >=95% (throttling proxy) — orange outline' },
+  ];
+  var scEl = document.getElementById('state-cards');
+  scEl.innerHTML = states.map(function(s) {
+    var pct = 75;
+    var outerCls = 'bar-container ' + s.klass;
+    return '<div class="color-demo-card">' +
+      '<h3>' + s.name + '</h3>' +
+      '<div class="state-label">' + s.label + '</div>' +
+      '<div class="metric">' +
+        '<div class="metric-label">Memory</div>' +
+        '<div class="metric-value">384 GB / 512 GB</div>' +
+        '<div class="' + outerCls + '">' +
+          '<div class="bar-fill" style="width:' + pct + '%;background:' + utilizationColor(pct, 'mem') + '"></div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  // Gradient sweep — same state (normal), utilization from 5% to 100%.
+  var pcts = [5, 15, 30, 50, 70, 85, 95, 100];
+  var gcEl = document.getElementById('gradient-cards');
+  ['cpu', 'mem'].forEach(function(metric) {
+    var title = metric === 'cpu' ? 'CPU (cyan → purple)' : 'Memory (soft-blue → deep purple)';
+    var rows = pcts.map(function(p) {
+      return '<div class="color-demo-scale">' +
+        '<div class="pct">' + p + '%</div>' +
+        '<div class="bar-container"><div class="bar-fill" style="width:' + p + '%;background:' + utilizationColor(p, metric) + '"></div></div>' +
+      '</div>';
+    }).join('');
+    gcEl.innerHTML += '<div class="color-demo-card">' +
+      '<h3>' + title + '</h3>' +
+      '<div class="state-label">utilizationColor(pct, "' + metric + '") — live from dashboard.py</div>' +
+      rows +
+    '</div>';
+  });
+})();
+</script>
+"""
+
 
 _SETTINGS_BODY = """
 <style>

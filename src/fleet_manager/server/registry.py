@@ -69,6 +69,7 @@ class NodeRegistry:
 
             node.cpu = payload.cpu
             node.memory = payload.memory
+            node.thermal = payload.thermal
             node.disk = payload.disk
             node.ollama = payload.ollama
             node.capacity = payload.capacity

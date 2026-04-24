@@ -14,6 +14,27 @@ class MemoryPressure(StrEnum):
     CRITICAL = "critical"
 
 
+class ThermalState(StrEnum):
+    """Platform-aware thermal signal.
+
+    Populating this on every platform is genuinely hard:
+      - Apple Silicon doesn't expose cpu_thermal_state (Intel-only sysctl)
+        and powermetrics requires sudo. ``pmset -g therm`` reports past
+        events, not current state.
+      - Linux exposes ``psutil.sensors_temperatures()`` with real numbers.
+      - Windows support via psutil is driver-dependent; often unavailable.
+
+    So the detection is best-effort with explicit "unknown" when we can't
+    tell. The dashboard renders the CPU>=95% proxy when state is "unknown"
+    so the warning overlay still fires on genuinely hot machines even
+    when we lack a real thermal sensor.
+    """
+
+    NOMINAL = "nominal"   # thermal signal available and within range
+    WARNING = "warning"   # thermal signal available and concerning
+    UNKNOWN = "unknown"   # no reliable thermal signal for this platform
+
+
 class NodeStatus(StrEnum):
     ONLINE = "online"
     DEGRADED = "degraded"
@@ -32,6 +53,19 @@ class MemoryMetrics(BaseModel):
     pressure: MemoryPressure = MemoryPressure.NORMAL
     wired_gb: float = 0.0
     compressed_gb: float = 0.0
+
+
+class ThermalMetrics(BaseModel):
+    """Thermal state reported by the node agent. See ``ThermalState``."""
+
+    state: ThermalState = ThermalState.UNKNOWN
+    # When ``state == NOMINAL`` or ``WARNING`` on Linux we can include the
+    # peak package/core temp that drove the classification. None elsewhere.
+    temperature_c: float | None = None
+    # Brief human-readable hint: what driver / source produced this reading.
+    # Used by the dashboard tooltip + operator diagnostics. Empty when
+    # state == UNKNOWN.
+    source: str = ""
 
 
 class DiskMetrics(BaseModel):
@@ -139,6 +173,10 @@ class HeartbeatPayload(BaseModel):
     timestamp: float = Field(default_factory=time.time)
     cpu: CpuMetrics
     memory: MemoryMetrics
+    # Thermal signal. Default UNKNOWN so older node agents that predate
+    # this field round-trip cleanly; the dashboard falls back to the
+    # CPU>=95% proxy when state is unknown.
+    thermal: ThermalMetrics = Field(default_factory=ThermalMetrics)
     disk: DiskMetrics | None = None
     ollama: OllamaMetrics
     ollama_host: str = "http://localhost:11434"
@@ -194,6 +232,7 @@ class NodeState(BaseModel):
     missed_heartbeats: int = 0
     cpu: CpuMetrics | None = None
     memory: MemoryMetrics | None = None
+    thermal: ThermalMetrics | None = None
     disk: DiskMetrics | None = None
     ollama: OllamaMetrics | None = None
     ollama_base_url: str = "http://localhost:11434"

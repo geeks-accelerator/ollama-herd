@@ -72,8 +72,13 @@ Before picking a color, decide which category the new element falls into:
 
 If in doubt, ask: *"Does a user's dashboard lighting up this color make them feel the product is working, or feel something is wrong?"* The answer should match reality.
 
+## Live reference — `/dashboard/color-states`
+
+When `herd` is running, visit [`http://localhost:11435/dashboard/color-states`](http://localhost:11435/dashboard/color-states) to see every warning state and the full CPU / memory gradient sweep rendered side-by-side using the live CSS + JS. This is the screenshot source for the marketing site and the eyeball regression test for designers. Any change to `utilizationColor()` or the `.bar-*` CSS shows up here automatically — no separate demo to maintain.
+
 ## Cross-references
 
 - [`docs/plans/dashboard-color-semantics.md`](../plans/dashboard-color-semantics.md) — the design rationale and audit that drove this system.
 - [`docs/observations.md`](../observations.md) — 2026-04-24 observation on utilization as product value.
+- [`docs/handoffs/ollamaherd-com-color-refresh.md`](../handoffs/ollamaherd-com-color-refresh.md) — hand-off brief for the marketing-site agent.
 - `src/fleet_manager/server/routes/dashboard.py` — `utilizationColor()`, `barColor()`, and the `.bar-*` CSS rules live in one file.
