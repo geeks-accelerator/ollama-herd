@@ -195,3 +195,86 @@ def test_mapped_models_hot_empty_map_value_no_crash():
     with patch.dict(os.environ, {"FLEET_ANTHROPIC_MODEL_MAP": "[]"}):
         # List instead of dict → no-op
         assert engine._check_mapped_models_hot([node]) == []
+
+
+# ---------------------------------------------------------------------------
+# Multi-MLX per-server health: memory_blocked + server_down
+# ---------------------------------------------------------------------------
+
+
+def _make_node_with_mlx_servers(*, mlx_servers, **kw):
+    """Like _make_node but attaches mlx_servers for the per-server checks."""
+    base = _make_node(**kw)
+    base.mlx_servers = mlx_servers
+    return base
+
+
+def test_mlx_memory_blocked_emits_warning():
+    from fleet_manager.models.node import MlxServerInfo
+
+    engine = HealthEngine()
+    node = _make_node_with_mlx_servers(
+        available=[],
+        mlx_servers=[
+            MlxServerInfo(
+                port=11441,
+                model="big/oversize",
+                status="memory_blocked",
+                status_reason="memory gate: 1000 GB needed, 32 GB avail",
+                model_size_gb=999.0,
+            ),
+        ],
+    )
+    recs = engine._check_mlx_backend([node])
+    ids = {r.check_id: r for r in recs}
+    assert "mlx_memory_blocked" in ids
+    rec = ids["mlx_memory_blocked"]
+    assert rec.severity == Severity.WARNING
+    assert rec.data["port"] == 11441
+    assert rec.data["model"] == "big/oversize"
+    assert "memory gate" in rec.description
+
+
+def test_mlx_server_down_emits_error():
+    from fleet_manager.models.node import MlxServerInfo
+
+    engine = HealthEngine()
+    node = _make_node_with_mlx_servers(
+        available=["mlx:a/healthy-main"],  # main is fine
+        mlx_servers=[
+            MlxServerInfo(port=11440, model="a/healthy-main", status="healthy"),
+            MlxServerInfo(
+                port=11441, model="a/helper",
+                status="unhealthy",
+                status_reason="subprocess exited rc=1",
+            ),
+        ],
+    )
+    recs = engine._check_mlx_backend([node])
+    ids = {r.check_id: [x for x in recs if x.check_id == r.check_id]
+           for r in recs}
+    assert "mlx_server_down" in ids
+    # Should emit exactly one for the unhealthy helper, not for the healthy main
+    down_recs = [r for r in recs if r.check_id == "mlx_server_down"]
+    assert len(down_recs) == 1
+    assert down_recs[0].data["port"] == 11441
+    assert down_recs[0].severity == Severity.CRITICAL
+
+
+def test_mlx_healthy_servers_emit_no_warnings():
+    from fleet_manager.models.node import MlxServerInfo
+
+    engine = HealthEngine()
+    node = _make_node_with_mlx_servers(
+        available=["mlx:a/main", "mlx:a/helper"],
+        mlx_servers=[
+            MlxServerInfo(port=11440, model="a/main", status="healthy"),
+            MlxServerInfo(port=11441, model="a/helper", status="healthy"),
+        ],
+    )
+    recs = engine._check_mlx_backend([node])
+    ids = {r.check_id for r in recs}
+    assert "mlx_memory_blocked" not in ids
+    assert "mlx_server_down" not in ids
+    # But mlx_backend_active should still fire (INFO)
+    assert "mlx_backend_active" in ids

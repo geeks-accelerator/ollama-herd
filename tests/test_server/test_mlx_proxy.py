@@ -880,3 +880,158 @@ def test_get_queue_info_exposes_warm_cold_split():
     assert "cache_sample_count" in info
     assert info["warm_hit_rate"] == 1.0
     assert info["cold_request_pct"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _collect_openai_stream — stream accumulator used by completions_non_streaming
+#
+# Regression guard: a non-streaming client request to a large MLX model
+# (480B) used to fire httpx.ReadTimeout because the direct POST path held
+# the connection silent during prefill.  We now forward stream=True to
+# mlx_lm.server internally and accumulate chunks — each token keeps the
+# read timer alive.  These tests cover the accumulator's fidelity for
+# text-only, tool-calls, finish_reason, and trailing usage chunks.
+# ---------------------------------------------------------------------------
+
+
+import pytest as _pytest
+
+from fleet_manager.server.mlx_proxy import _collect_openai_stream
+
+
+async def _as_aiter(lines):
+    for line in lines:
+        yield line
+
+
+@_pytest.mark.asyncio
+async def test_collect_text_only_concatenates_content():
+    lines = [
+        'data: {"id":"c1","object":"chat.completion.chunk","created":100,"model":"mlx-480b",'
+        '"choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}',
+        'data: {"id":"c1","choices":[{"index":0,"delta":{"content":", "},"finish_reason":null}]}',
+        'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"world!"},"finish_reason":"stop"}]}',
+        "data: [DONE]",
+    ]
+    out = await _collect_openai_stream(_as_aiter(lines))
+    assert out["id"] == "c1"
+    assert out["model"] == "mlx-480b"
+    assert out["object"] == "chat.completion"
+    assert len(out["choices"]) == 1
+    msg = out["choices"][0]["message"]
+    assert msg["role"] == "assistant"
+    assert msg["content"] == "Hello, world!"
+    assert out["choices"][0]["finish_reason"] == "stop"
+
+
+@_pytest.mark.asyncio
+async def test_collect_captures_trailing_usage_chunk():
+    """mlx_lm emits a final chunk with empty choices + populated usage when
+    include_usage=True.  Must land on the response."""
+    lines = [
+        'data: {"id":"c2","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}',
+        'data: {"id":"c2","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,'
+        '"prompt_tokens_details":{"cached_tokens":8}}}',
+        "data: [DONE]",
+    ]
+    out = await _collect_openai_stream(_as_aiter(lines))
+    assert out["usage"]["prompt_tokens"] == 10
+    assert out["usage"]["completion_tokens"] == 1
+    assert out["usage"]["prompt_tokens_details"]["cached_tokens"] == 8
+    assert out["choices"][0]["message"]["content"] == "hi"
+
+
+@_pytest.mark.asyncio
+async def test_collect_accumulates_tool_call_arguments_across_chunks():
+    """Tool-call arguments arrive as partial-JSON string deltas; the
+    accumulator must concatenate them in order per (choice, tool_index)."""
+    lines = [
+        'data: {"id":"c3","choices":[{"index":0,"delta":{"role":"assistant"}}]}',
+        'data: {"id":"c3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1",'
+        '"function":{"name":"list_dir","arguments":"{\\"pa"}}]}}]}',
+        'data: {"id":"c3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,'
+        '"function":{"arguments":"th\\":\\"/tmp\\"}"}}]}}]}',
+        'data: {"id":"c3","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+    ]
+    out = await _collect_openai_stream(_as_aiter(lines))
+    choice = out["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    tool_calls = choice["message"]["tool_calls"]
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["id"] == "call_1"
+    assert tool_calls[0]["type"] == "function"
+    assert tool_calls[0]["function"]["name"] == "list_dir"
+    # Arguments reassembled to valid JSON string
+    assert tool_calls[0]["function"]["arguments"] == '{"path":"/tmp"}'
+
+
+@_pytest.mark.asyncio
+async def test_collect_handles_malformed_and_empty_lines():
+    """Malformed lines must not poison the stream — keep consuming."""
+    lines = [
+        "",
+        "data: not-json-at-all",
+        'data: {"id":"c4","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}',
+        "data: [DONE]",
+    ]
+    out = await _collect_openai_stream(_as_aiter(lines))
+    assert out["choices"][0]["message"]["content"] == "ok"
+
+
+@_pytest.mark.asyncio
+async def test_collect_output_matches_build_anthropic_non_streaming_shape():
+    """The accumulator's dict must be consumable by
+    ``build_anthropic_non_streaming_response`` — that's the contract
+    ``completions_non_streaming`` preserves for the non-streaming route."""
+    from fleet_manager.server.mlx_proxy import (
+        build_anthropic_non_streaming_response,
+    )
+
+    lines = [
+        'data: {"id":"c5","model":"mlx-480b","created":500,"choices":['
+        '{"index":0,"delta":{"role":"assistant","content":"Sure."},"finish_reason":"stop"}]}',
+        'data: {"id":"c5","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1}}',
+        "data: [DONE]",
+    ]
+    collected = await _collect_openai_stream(_as_aiter(lines))
+    # Must not blow up — that's the contract we care about
+    anthropic = build_anthropic_non_streaming_response(
+        collected, "claude-sonnet-4-5",
+    )
+    assert anthropic["type"] == "message"
+    assert anthropic["stop_reason"] == "end_turn"
+    # Content was accumulated into a text block
+    assert any(
+        b.get("type") == "text" and b.get("text") == "Sure."
+        for b in anthropic["content"]
+    )
+    assert anthropic["usage"]["input_tokens"] == 3
+    assert anthropic["usage"]["output_tokens"] == 1
+
+
+# ---------------------------------------------------------------------------
+# MlxWallClockTimeoutError — bound on wedged-request syndrome
+# ---------------------------------------------------------------------------
+
+
+def test_wall_clock_timeout_exception_has_model_and_elapsed():
+    from fleet_manager.server.mlx_proxy import MlxWallClockTimeoutError
+    exc = MlxWallClockTimeoutError("qwen-next", 310.5, 300.0)
+    assert exc.model_key == "qwen-next"
+    assert exc.elapsed_s == 310.5
+    assert exc.limit_s == 300.0
+    # Message points user at /compact — the whole point of the 413 path
+    assert "/compact" in str(exc)
+
+
+def test_mlx_proxy_accepts_wall_clock_timeout_config():
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test", wall_clock_timeout_s=60.0)
+    assert proxy.wall_clock_timeout_s == 60.0
+
+
+def test_mlx_proxy_defaults_wall_clock_timeout_to_300s():
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test")
+    assert proxy.wall_clock_timeout_s == 300.0

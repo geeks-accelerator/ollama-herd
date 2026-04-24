@@ -998,6 +998,71 @@ class HealthEngine:
                         "count": len(mlx_models),
                     },
                 ))
+
+            # Multi-MLX: surface non-healthy individual servers regardless of
+            # whether the node has *any* healthy MLX.  Each server is a
+            # separate failure unit — a compactor-dedicated 30B can be down
+            # while the main Next-4bit is fine.
+            servers = getattr(node, "mlx_servers", None) or []
+            for srv in servers:
+                if srv.status == "memory_blocked":
+                    recs.append(Recommendation(
+                        check_id="mlx_memory_blocked",
+                        severity=Severity.WARNING,
+                        title=(
+                            f"MLX server {srv.model} skipped start "
+                            f"(memory gate) on {node.node_id}"
+                        ),
+                        description=(
+                            srv.status_reason
+                            or "Available RAM insufficient at start time."
+                        ),
+                        fix=(
+                            "Free RAM (stop an Ollama model or drop a "
+                            "pinned model) and restart the node, OR lower "
+                            "FLEET_NODE_MLX_MEMORY_HEADROOM_GB on this node, "
+                            "OR remove the entry from FLEET_NODE_MLX_SERVERS."
+                        ),
+                        node_id=node.node_id,
+                        data={
+                            "port": srv.port,
+                            "model": srv.model,
+                            "model_size_gb": srv.model_size_gb,
+                        },
+                    ))
+                elif srv.status in ("unhealthy", "stopped", "starting"):
+                    # "starting" at heartbeat time > 30s old implies wedged —
+                    # the start call would have completed or timed out.  We
+                    # treat it the same as unhealthy for surfacing purposes.
+                    severity = (
+                        Severity.WARNING if srv.status == "starting"
+                        else Severity.CRITICAL
+                    )
+                    recs.append(Recommendation(
+                        check_id="mlx_server_down",
+                        severity=severity,
+                        title=(
+                            f"MLX server {srv.model} on {node.node_id}:{srv.port} "
+                            f"is {srv.status}"
+                        ),
+                        description=(
+                            srv.status_reason
+                            or f"mlx_lm.server process status: {srv.status}"
+                        ),
+                        fix=(
+                            f"Check ~/.fleet-manager/logs/mlx-server-{srv.port}.log "
+                            f"on {node.node_id}.  Common causes: model weights "
+                            "missing from HF cache, --kv-bits patch wiped "
+                            "(re-run ./scripts/setup-mlx.sh), or port "
+                            "collision from a leftover subprocess."
+                        ),
+                        node_id=node.node_id,
+                        data={
+                            "port": srv.port,
+                            "model": srv.model,
+                            "status": srv.status,
+                        },
+                    ))
         return recs
 
     def _check_mapped_models_hot(self, nodes) -> list[Recommendation]:

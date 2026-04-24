@@ -50,6 +50,9 @@ async def fleet_status(request: Request):
         if node.vision_embedding:
             node_data["vision_embedding"] = node.vision_embedding.model_dump()
             node_data["vision_embedding_port"] = node.vision_embedding_port
+        if node.mlx_servers:
+            node_data["mlx_servers"] = [s.model_dump() for s in node.mlx_servers]
+            node_data["mlx_bind_host"] = node.mlx_bind_host
         nodes.append(node_data)
 
     online_count = sum(1 for n in registry.get_all_nodes() if n.status.value == "online")

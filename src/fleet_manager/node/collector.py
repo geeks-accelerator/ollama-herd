@@ -248,13 +248,19 @@ async def collect_heartbeat(
     ollama_host: str = "http://localhost:11434",
     capacity_learner=None,
     mlx=None,  # type: ignore[no-untyped-def]
+    mlx_supervisor_set=None,  # type: ignore[no-untyped-def]
+    mlx_bind_host: str = "127.0.0.1",
 ) -> HeartbeatPayload:
     """Assemble a complete heartbeat payload from local system state.
 
-    ``mlx`` is an optional :class:`fleet_manager.node.mlx_client.MlxClient`.
-    When provided, models it advertises are merged into ``models_available``
-    with an ``mlx:`` prefix so the router can route requests through the MLX
-    backend.  See ``docs/plans/mlx-backend-for-large-models.md``.
+    ``mlx`` is the legacy single-server :class:`MlxClient`.  Kept for
+    back-compat with deploys that haven't migrated to ``FLEET_NODE_MLX_SERVERS``.
+
+    ``mlx_supervisor_set`` is the new :class:`MlxSupervisorSet`.  When
+    provided, its per-child statuses drive the heartbeat's ``mlx_servers``
+    list, replacing the legacy polling path.  See
+    ``docs/plans/mlx-backend-for-large-models.md`` and
+    ``docs/issues/multi-mlx-server-support.md``.
     """
     cpu = get_cpu_metrics()
     memory = get_memory_metrics()
@@ -275,13 +281,47 @@ async def collect_heartbeat(
         models_available = []
         requests_active = 0
 
-    # MLX backend — if enabled, merge its advertised models into the heartbeat's
-    # `models_available` with an `mlx:` prefix.  The server-side Anthropic route
-    # detects that prefix and forwards to `MlxProxy` instead of Ollama.
-    if mlx is not None:
+    # MLX backend — two paths:
+    # (1) Supervisor set (new, multi-server) drives heartbeat.mlx_servers.
+    #     Healthy servers' models get added to models_available with mlx: prefix.
+    # (2) Legacy MlxClient (single-server, back-compat) polls /v1/models and
+    #     merges the running model into models_available.
+    mlx_server_infos: list = []
+    if mlx_supervisor_set is not None:
+        try:
+            from fleet_manager.models.node import MlxServerInfo
+            from fleet_manager.node.mlx_client import prefix_mlx
+
+            await mlx_supervisor_set.refresh_health()
+            statuses = mlx_supervisor_set.statuses()
+            for st in statuses:
+                mlx_server_infos.append(MlxServerInfo(
+                    port=st.port,
+                    model=st.model,
+                    status=st.status,
+                    status_reason=st.status_reason,
+                    kv_bits=st.kv_bits,
+                    model_size_gb=st.model_size_gb,
+                    last_ok_ts=st.last_ok_ts,
+                ))
+            healthy_models = [
+                prefix_mlx(st.model) for st in statuses if st.status == "healthy"
+            ]
+            models_available = list(models_available) + healthy_models
+            logger.debug(
+                f"MLX state: {len(healthy_models)} healthy server(s), "
+                f"{len(statuses)} total configured"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"MLX supervisor status collection failed: "
+                         f"{type(e).__name__}: {e}")
+    elif mlx is not None:
         try:
             mlx_models = await mlx.get_available_models()
             if mlx_models:
+                from urllib.parse import urlparse
+
+                from fleet_manager.models.node import MlxServerInfo
                 from fleet_manager.node.mlx_client import (
                     get_running_mlx_model,
                     prefix_mlx,
@@ -294,8 +334,6 @@ async def collect_heartbeat(
                 # discoverable.  Filter so the dashboard reports truth.
                 running = get_running_mlx_model()
                 if running:
-                    # Canonicalize so equivalent ids (full HF, snapshot path,
-                    # short id) all collapse to one entry.
                     def _canon(s: str) -> str:
                         if "/" in s and "models--" in s:
                             for p in Path(s).parts:
@@ -310,6 +348,16 @@ async def collect_heartbeat(
                     cleaned = []
                 prefixed = [prefix_mlx(m) for m in cleaned]
                 models_available = list(models_available) + prefixed
+                # Synthesize a single-entry mlx_servers list so the router
+                # can still aggregate URLs from legacy deploys.
+                if cleaned:
+                    legacy_url = getattr(mlx, "_base_url", "") or ""
+                    parsed = urlparse(legacy_url)
+                    mlx_server_infos.append(MlxServerInfo(
+                        port=parsed.port or 11440,
+                        model=cleaned[0],
+                        status="healthy",
+                    ))
                 logger.debug(
                     f"MLX state: +{len(prefixed)} loaded model(s) "
                     f"({', '.join(prefixed) if prefixed else 'none — server not running'})"
@@ -358,4 +406,6 @@ async def collect_heartbeat(
         vision_embedding=vision_embedding,
         chip=_detect_chip(),
         memory_bandwidth_gbps=_detect_memory_bandwidth_gbps(),
+        mlx_servers=mlx_server_infos,
+        mlx_bind_host=mlx_bind_host,
     )

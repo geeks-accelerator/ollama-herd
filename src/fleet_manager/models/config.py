@@ -131,6 +131,75 @@ class ServerSettings(BaseSettings):
     # which may or may not be vision-capable (qwen3-coder is not; gemma3:27b is).
     # Typical values: "gemma3:27b", "llava:13b".
     anthropic_vision_model: str = ""
+    # Tool-schema fixup — work around Qwen3-Coder's long-context tool-call bug
+    # (llama.cpp#20164) by promoting optional params with known defaults to
+    # required-with-default in the outbound schema.  See
+    # ``src/fleet_manager/server/tool_schema_fixup.py`` and the research doc
+    # ``docs/research/why-claude-code-degrades-at-30k.md`` for details.
+    #
+    # Modes:
+    #   "off"     — don't touch schemas (pre-fix behavior)
+    #   "promote" — only promote params that already have ``default`` fields
+    #               (no-op on current Claude Code, which doesn't emit defaults)
+    #   "inject"  — use the built-in Claude Code defaults table + promote
+    #               (the actual fix; default)
+    anthropic_tool_schema_fixup: str = "inject"
+
+    # ---- Context management (matches hosted Claude Code's behavior) -----
+    # Mechanical tool-result clearing: drop old tool_result bodies by age
+    # once the prompt crosses a threshold.  Replaces the body with a
+    # short placeholder but keeps the conversation structure intact.
+    # Closes the biggest gap vs hosted Claude Code, which does this
+    # aggressively via its Context Editing API.  See
+    # ``server/context_management.py`` and
+    # ``docs/research/why-claude-code-degrades-at-30k.md``.
+    #
+    # Set trigger to 0 to disable.
+    anthropic_auto_clear_tool_uses_trigger_tokens: int = 100_000
+    # Number of most-recent tool_result blocks to preserve verbatim.
+    # Older ones get the placeholder.  3 matches hosted Claude's
+    # observed behavior of keeping the last 3-5 exchanges intact.
+    anthropic_auto_clear_tool_uses_keep_recent: int = 3
+    # Server-side tool filtering.  Comma-separated tool names to strip
+    # from outbound Anthropic tool schemas before forwarding to the local
+    # model.  Mirrors the community-known ``permissions.deny`` trick in
+    # ``~/.claude/settings.json`` but applied at the router — lets
+    # operators trim tools their workflow doesn't use without requiring
+    # each Claude Code client to be reconfigured.  Typical savings:
+    # ~40% of the tools-section token budget.  Example:
+    #     FLEET_ANTHROPIC_TOOLS_DENY=NotebookEdit,TodoWrite
+    # Empty string disables filtering (default).
+    anthropic_tools_deny: str = ""
+    # Size-based routing escalation.  When the prompt (raw, before any
+    # context management) exceeds ``anthropic_size_escalation_tokens``,
+    # route to ``anthropic_size_escalation_model`` regardless of what
+    # the tier map resolved.  Useful for sending long-context runs to a
+    # different (larger-context, possibly hosted) model while short
+    # requests stay on the fast local default.  Matches the
+    # ``longContext`` routing pattern in musistudio/claude-code-router.
+    # Empty model disables; threshold = 0 disables.
+    anthropic_size_escalation_tokens: int = 0
+    anthropic_size_escalation_model: str = ""
+    # Session-level rescue: if the prompt is still larger than this after
+    # Layer 1 mechanical clearing, pass ``force_all=True`` to the LLM-based
+    # compactor so it summarises EVERY tool_result regardless of the
+    # per-strategy min_bloat gates.  Matches Anthropic's default
+    # compaction trigger of 150K input tokens.  Set to 0 to disable.
+    context_compaction_force_trigger_tokens: int = 150_000
+    # Hard pre-inference cap on prompt size.  If, after BOTH Layer 1
+    # clearing and Layer 2 compaction (including force-all), the prompt
+    # still exceeds this, the request is refused with HTTP 413 before
+    # it ever reaches the model.  Better to surface the error to the
+    # client (which can run /compact and resubmit) than to let the
+    # request wedge for 5+ minutes at the model layer.  Set to 0 to
+    # disable.  180K leaves headroom under Qwen3-Coder-Next's 256K
+    # native context while staying well inside effective-context bounds.
+    anthropic_max_prompt_tokens: int = 180_000
+    # Wall-clock timeout on MLX requests from admission → final byte.
+    # Catches the wedged-request case where mlx_lm.server emits tokens
+    # slowly but never hits a stop condition.  The slot is released and
+    # the route returns 413 with a ``try /compact`` hint.
+    mlx_wall_clock_timeout_s: float = 300.0
 
     # MLX backend — opt-in alternative serving path for large models that can't
     # coexist with Ollama's hardcoded 3-model concurrent-load cap on macOS.  Each
@@ -156,11 +225,25 @@ class ServerSettings(BaseSettings):
     # this cap, the proxy accepts at most 1 in-flight + N queued requests;
     # overflow returns HTTP 503 + Retry-After so clients back off cleanly.
     # Tune per device: faster hardware drains the queue faster so can tolerate
-    # a larger depth without excessive worst-case wait.  On a 512GB M3 Ultra
-    # at ~20s/request, depth=3 means max wait ≈ 60s.
-    mlx_max_queue_depth: int = 3
+    # a larger depth without excessive worst-case wait.
+    #
+    # Default bumped from 3 to 10 on 2026-04-24 after observing that real
+    # Claude Code sessions routinely generate bursts of 4+ concurrent
+    # requests (main turn + /compact trigger + tool_use expansions + any
+    # parallel production scripts sharing the router), and depth=3 produced
+    # false-positive 503s for legitimate traffic.  At the Mac Studio's
+    # ~5s/request on Qwen3-Coder-Next cached prompts, depth=10 means
+    # worst-case wait ≈ 50s.  Clients still get a clean 503 if overwhelmed.
+    mlx_max_queue_depth: int = 10
     # Seconds to advertise in the Retry-After header when shedding load.
     mlx_retry_after_seconds: int = 10
+    # HTTP read timeout (seconds) for requests to mlx_lm.server.  The proxy
+    # sets stream=True internally so the timeout applies per-byte-chunk, not
+    # end-to-end.  600s was tight for non-streaming calls to the 480B when
+    # other models were competing for memory bandwidth — a full prefill +
+    # generation could span 10+ min of silence.  1800s gives the big-model
+    # prefill plenty of headroom while still bounding a truly stuck server.
+    mlx_read_timeout_s: float = 1800.0
 
     # -- Context Hygiene Compactor ------------------------------------------
     # Server-side middleware that summarizes bloated tool_result blocks
@@ -187,6 +270,18 @@ class ServerSettings(BaseSettings):
     # Curator timeout per summary call.  Failures return None and the
     # original content passes through (fail-open).
     context_compaction_curator_timeout_s: float = 60.0
+    # Dynamic curator selection: prefer whatever capable model is already
+    # hot and idle over cold-loading the configured default.  A pinned
+    # model that's been idle for ``idle_window_s`` is the IDEAL candidate
+    # (user-preferred quality + guaranteed-hot + no contention).  A hot
+    # model with recent activity gets penalised so we don't steal slots
+    # from real user traffic.  Set to 0 to always use
+    # ``context_compaction_model``.
+    context_compaction_idle_window_s: int = 120
+    # Min params (in billions) for a model to be considered a viable
+    # curator.  Below this, summary quality is unreliable — we'd rather
+    # skip compaction than use a tiny model.
+    context_compaction_curator_min_params_b: float = 7.0
 
     # -- Model preloader + pinned models ------------------------------------
     # Ollama (as of 0.20.4 on macOS) has a HARDCODED 3-model hot cap that
@@ -248,17 +343,65 @@ class NodeSettings(BaseSettings):
     mlx_kv_bits: int = 0  # 0 disables; 4 or 8 for quantized KV (needs patched server)
     mlx_prompt_cache_size: int = 4
     mlx_prompt_cache_bytes: int = 17179869184  # 16 GiB
+    # Speculative decoding — draft model that proposes tokens the main
+    # model verifies.  Accepted tokens skip a main-model forward pass
+    # and yield 10-30% throughput on coding workloads.  Draft must share
+    # the main model's tokenizer (Qwen3 main → Qwen3-family draft).
+    # Empty string disables.  Example: "mlx-community/Qwen3-1.7B-4bit"
+    # alongside main="mlx-community/Qwen3-Coder-Next-4bit".
+    # See docs/plans/claude-code-performance-improvements.md §1.
+    mlx_draft_model: str = ""
+    # How many tokens the draft proposes per step.  3-4 is typical —
+    # higher increases acceptance opportunity but wastes more on rejections.
+    mlx_num_draft_tokens: int = 4
 
-    # Ollama watchdog — detects stuck runners and auto-kicks them.  Observed
-    # on Ollama 0.20.4 / macOS under concurrent stream=False + large body
-    # requests: /api/chat stops responding while /api/tags still works.
-    # The fix is pkill -9 on the runner subprocesses; ollama serve respawns
-    # them within 2-3s.  Defaults are tuned to be slow to kick (avoids
-    # thrashing on legitimate long-running requests).
-    ollama_watchdog_enabled: bool = True
-    ollama_watchdog_interval: float = 60.0
-    ollama_watchdog_probe_timeout: float = 15.0
-    ollama_watchdog_consecutive_failures_before_kick: int = 2
-    ollama_watchdog_cooldown: float = 120.0
+    # Multi-MLX-server support.  When non-empty, overrides the single-server
+    # fields above (mlx_auto_start_model / mlx_url / mlx_kv_bits are ignored —
+    # they're preserved only for back-compat with old deploys).  Each entry
+    # spawns one `mlx_lm.server` subprocess on its own port; the node
+    # aggregates them in the heartbeat and the router proxy looks up the
+    # right URL per request.
+    #
+    # JSON-encoded list.  Each entry accepts:
+    #   model       (str)   — HF repo id or local path (required)
+    #   port        (int)   — listen port (required, must be unique)
+    #   kv_bits     (int)   — 0 / 4 / 8 (optional, default 0)
+    #   prompt_cache_bytes (int) — optional, default matches single-server
+    #   draft_model (str)   — optional speculative-decoding draft
+    #
+    # Example:
+    #   FLEET_NODE_MLX_SERVERS='[
+    #     {"model":"mlx-community/Qwen3-Coder-Next-4bit","port":11440,"kv_bits":8},
+    #     {"model":"mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit","port":11441,"kv_bits":8}
+    #   ]'
+    # See docs/issues/multi-mlx-server-support.md for the full design.
+    mlx_servers: str = ""
+    # Bind host for mlx_lm.server subprocesses.  Default 127.0.0.1 keeps the
+    # servers local-only.  Set to "0.0.0.0" to expose them on the LAN so the
+    # router on a different machine can reach them directly.  The node's LAN
+    # IP gets reported in the heartbeat as the URL each MLX server is
+    # reachable at, so the router can route multi-node MLX traffic.
+    mlx_bind_host: str = "127.0.0.1"
+    # Memory-pressure startup gate.  Before spawning each mlx_lm.server, the
+    # supervisor estimates the model's weight size (from the HF cache on
+    # disk) and refuses to start if
+    #   (weight_gb + mlx_memory_headroom_gb) > psutil.virtual_memory().available_gb
+    # Prevents OOM crash-loops when operators configure more servers than the
+    # box can host.  Failed servers log WARNING once and get retried on a
+    # slower cadence in case memory frees up (e.g. an Ollama model evicts).
+    mlx_memory_headroom_gb: float = 10.0
+
+    # NOTE: an "Ollama watchdog" used to live here — auto-probe + pkill on
+    # stuck runners.  Removed 2026-04-23 after it caused more harm than
+    # good in production: the probe picked the smallest loaded model as
+    # its chat-probe target, which selected embedding-only models like
+    # ``nomic-embed-text``; ``/api/chat`` on an embed model returns 400,
+    # which the watchdog interpreted as a stuck runner.  Cascade: 13
+    # kicks in ~13 min, then escalation to a full ``ollama serve``
+    # restart that wiped all pinned models.  See ``docs/issues.md``.
+    # If real stuck-runner recovery is ever needed again, add it back
+    # with (a) explicit probe-model allowlisting, not size-based, and
+    # (b) per-cause cooldowns so a guaranteed-failing probe can't
+    # escalate.
 
     model_config = {"env_prefix": "FLEET_NODE_"}

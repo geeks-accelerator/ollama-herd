@@ -81,6 +81,11 @@ class NodeRegistry:
             node.vision_embedding_port = payload.vision_embedding_port
             node.connection_failures = payload.connection_failures
             node.connection_failures_total = payload.connection_failures_total
+            # Multi-MLX per-server state: mirror heartbeat into node state so
+            # routers and the dashboard have fresh per-server status without
+            # re-polling mlx_lm.server directly.
+            node.mlx_servers = list(payload.mlx_servers)
+            node.mlx_bind_host = payload.mlx_bind_host or "127.0.0.1"
             node.last_heartbeat = time.time()
             # Keep the hardware profile in sync — lets a node that starts
             # before its chip detection completes (rare) pick up the numbers
@@ -126,6 +131,61 @@ class NodeRegistry:
             if model in loaded_names or model in node.ollama.models_available:
                 result.append(node)
         return result
+
+    def resolve_mlx_url(self, mlx_model: str) -> str | None:
+        """Return a LAN-reachable URL for an ``mlx:`` model, or None.
+
+        Walks every online node's ``mlx_servers`` list and picks the first
+        healthy entry hosting the requested model.  The URL is constructed
+        from the node's ``lan_ip`` and the server's ``port`` — assumes the
+        node's MLX supervisor bound to 0.0.0.0 (set
+        ``FLEET_NODE_MLX_BIND_HOST=0.0.0.0`` for multi-node).
+
+        ``mlx_model`` may be prefixed with ``mlx:`` or bare — both accepted.
+
+        When the router and MLX are colocated (single-host fleet), the node's
+        LAN IP and 127.0.0.1 are both fine; we always prefer the LAN IP so
+        the same code path works locally and remotely.
+        """
+        bare = mlx_model.removeprefix("mlx:")
+        for node in self._nodes.values():
+            if node.status == NodeStatus.OFFLINE:
+                continue
+            for srv in node.mlx_servers:
+                if srv.status != "healthy":
+                    continue
+                if srv.model != bare:
+                    continue
+                # Prefer node's ollama_base_url hostname since we already
+                # resolved it LAN-reachably; fall back to hardware's
+                # ollama_host.  Both were built by _build_ollama_url().
+                from urllib.parse import urlparse
+                parsed = urlparse(node.ollama_base_url)
+                host = parsed.hostname or "127.0.0.1"
+                return f"http://{host}:{srv.port}"
+        return None
+
+    def all_mlx_urls(self) -> dict[str, str]:
+        """Return a ``{mlx:model: url}`` map for every healthy MLX server.
+
+        Used by the dashboard to render the full MLX fleet and by the proxy
+        client pool so it can pre-warm connections.  When multiple nodes
+        host the same model, a later node's URL wins (arbitrary but stable
+        within a heartbeat cycle).
+        """
+        from urllib.parse import urlparse
+
+        out: dict[str, str] = {}
+        for node in self._nodes.values():
+            if node.status == NodeStatus.OFFLINE:
+                continue
+            parsed = urlparse(node.ollama_base_url)
+            host = parsed.hostname or "127.0.0.1"
+            for srv in node.mlx_servers:
+                if srv.status != "healthy":
+                    continue
+                out[f"mlx:{srv.model}"] = f"http://{host}:{srv.port}"
+        return out
 
     async def monitor_heartbeats(self):
         """Background task: check for stale heartbeats."""

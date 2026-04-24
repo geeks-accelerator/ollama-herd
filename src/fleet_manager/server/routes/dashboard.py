@@ -154,6 +154,22 @@ async def dashboard_events(request: Request):
                     node_data["vision_embed_models"] = [
                         m.name for m in node.vision_embedding.models_available
                     ]
+                # Multi-MLX per-server status — empty for nodes without MLX
+                # or with an older agent that predates this field.
+                if node.mlx_servers:
+                    node_data["mlx_servers"] = [
+                        {
+                            "port": s.port,
+                            "model": s.model,
+                            "status": s.status,
+                            "status_reason": s.status_reason,
+                            "kv_bits": s.kv_bits,
+                            "model_size_gb": round(s.model_size_gb, 1),
+                            "last_ok_ts": s.last_ok_ts,
+                        }
+                        for s in node.mlx_servers
+                    ]
+                    node_data["mlx_bind_host"] = node.mlx_bind_host
                 if node.capacity:
                     node_data["capacity"] = {
                         "mode": node.capacity.mode,
@@ -1216,6 +1232,65 @@ async def dashboard_model_management(request: Request):
     return {"nodes": result}
 
 
+@router.get("/dashboard/api/pinned-models")
+async def dashboard_pinned_models_get(request: Request):
+    """Return env-level + per-node pinned models.
+
+    Shape:
+        {
+          "env_pins": ["gpt-oss:120b"],        # fleet-wide, read-only
+          "per_node": {"Neons-Mac-Studio": [...]},
+          "max_count": 3
+        }
+    """
+    from fleet_manager.server.model_preloader import _parse_pinned_models
+
+    settings = request.app.state.settings
+    store = request.app.state.pinned_store
+    return {
+        "env_pins": _parse_pinned_models(getattr(settings, "pinned_models", "")),
+        "per_node": store.load(),
+        "max_count": getattr(settings, "model_preload_max_count", 3),
+    }
+
+
+@router.post("/dashboard/api/pinned-models")
+async def dashboard_pinned_models_set(request: Request):
+    """Toggle a per-node pin.  Body: {node_id, model, pinned: bool}.
+
+    Pins only affect the Ollama preloader.  Vision embedding models
+    (DINOv2/SigLIP/CLIP) are managed by the embedding service and can't
+    be meaningfully pinned here — we reject those to keep the store
+    honest.  Unpin is always allowed so stale entries can be cleaned up.
+    """
+    from fleet_manager.server.model_knowledge import ModelCategory, classify_model
+
+    body = await request.json()
+    node_id = body.get("node_id", "").strip()
+    model = body.get("model", "").strip()
+    pinned = bool(body.get("pinned", False))
+    if not node_id or not model:
+        return JSONResponse(
+            {"ok": False, "error": "node_id and model required"},
+            status_code=400,
+        )
+    if pinned and classify_model(model) == ModelCategory.VISION_EMBEDDING:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    f"{model} is a vision embedding model managed by the "
+                    "embedding service — pinning only affects the Ollama "
+                    "preloader and would have no effect here."
+                ),
+            },
+            status_code=400,
+        )
+    store = request.app.state.pinned_store
+    state = store.set_pin(node_id, model, pinned)
+    return {"ok": True, "per_node": state}
+
+
 # ---------------------------------------------------------------------------
 # HTML pages
 # ---------------------------------------------------------------------------
@@ -1946,11 +2021,40 @@ function renderNodes(nodes) {
         </div>
         <div class="models-list">
           <div class="label" style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
-            Models: ${totalLoadedHere} loaded${mlxLoaded.length ? ' (' + models.length + ' ollama + ' + mlxLoaded.length + ' mlx)' : ''}, ${ollamaOnDisk} on disk${serviceCount ? ' | Services: ' + serviceCount + ' loaded' : ''}
+            Models: ${totalLoadedHere} loaded${mlxLoaded.length ? ' (' + models.length + ' ollama + ' + mlxLoaded.length + ' mlx)' : ''}, ${ollamaOnDisk} on disk${serviceCount ? ' | Services: ' + serviceCount + ' available' : ''}
           </div>
           ${modelsHtml}
         </div>
         ${(node.image_models && node.image_models.length) || (node.stt_models && node.stt_models.length) || (node.embed_models && node.embed_models.length) || (node.vision_embed_models && node.vision_embed_models.length) ? '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">' + ((node.image_models || []).map(m => '<span class="badge" style="background:rgba(249,115,22,0.15);color:var(--orange);font-size:10px">IMG ' + m + '</span>').join('')) + ((node.stt_models || []).map(m => '<span class="badge" style="background:rgba(59,130,246,0.15);color:var(--blue);font-size:10px">STT ' + m + '</span>').join('')) + ((node.embed_models || []).map(m => '<span class="badge" style="background:rgba(168,85,247,0.15);color:var(--purple,#a855f7);font-size:10px">EMBED ' + m + '</span>').join('')) + ((node.vision_embed_models || []).map(m => '<span class="badge" style="background:rgba(6,182,212,0.15);color:var(--cyan,#06b6d4);font-size:10px">VIS ' + m + '</span>').join('')) + '</div>' : ''}
+        ${(node.mlx_servers && node.mlx_servers.length) ? (function() {
+          // Per-URL MLX server status table — one row per configured server.
+          // Shows port/model/status/size so operators can see which URLs
+          // are healthy across multi-server deployments.
+          const statusColor = {
+            healthy: '#10b981',       // green
+            starting: '#f59e0b',      // amber
+            unhealthy: '#ef4444',     // red
+            memory_blocked: '#f59e0b',// amber
+            stopped: '#6b7280',       // grey
+          };
+          const rows = node.mlx_servers.map(s => {
+            const color = statusColor[s.status] || '#6b7280';
+            const short = (s.model || '').split('/').pop() || s.model;
+            const ageSec = s.last_ok_ts ? Math.round(Date.now()/1000 - s.last_ok_ts) : null;
+            const ageText = ageSec !== null ? (ageSec < 60 ? ageSec + 's ago' : Math.round(ageSec/60) + 'm ago') : 'never';
+            return '<tr>' +
+              '<td style="padding:2px 6px;font-family:monospace;color:var(--text-dim)">:' + s.port + '</td>' +
+              '<td style="padding:2px 6px">' + short + '</td>' +
+              '<td style="padding:2px 6px"><span style="color:' + color + ';font-weight:600">' + s.status + '</span></td>' +
+              '<td style="padding:2px 6px;color:var(--text-dim);text-align:right">' + (s.model_size_gb ? s.model_size_gb.toFixed(1) + ' GB' : '—') + '</td>' +
+              '<td style="padding:2px 6px;color:var(--text-dim);font-size:10px">' + ageText + '</td>' +
+              '</tr>';
+          }).join('');
+          return `<div style="margin-top:10px;padding:8px 10px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:6px">
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">MLX servers (${node.mlx_servers.length}) · bind ${node.mlx_bind_host || '127.0.0.1'}</div>
+            <table style="width:100%;border-collapse:collapse;font-size:12px"><tbody>${rows}</tbody></table>
+          </div>`;
+        })() : ''}
         ${capacityHtml}
       </div>`;
   }).join('');
@@ -3734,6 +3838,7 @@ _RECOMMENDATIONS_BODY = """
 .m-badge.medium { background:rgba(59,130,246,0.15); color:var(--blue); }
 .m-badge.low { background:rgba(108,99,255,0.1); color:var(--text-dim); }
 .m-badge.downloaded { background:rgba(34,197,94,0.12); color:var(--green); }
+.m-badge.auto-install { background:rgba(59,130,246,0.12); color:var(--blue); }
 .current-models { margin-top:12px; padding-top:12px; border-top:1px solid var(--border); }
 .current-models-label { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px; }
 .current-tags { display:flex; flex-wrap:wrap; gap:4px; }
@@ -3754,6 +3859,13 @@ _RECOMMENDATIONS_BODY = """
 .pull-progress { font-size:12px; color:var(--text-dim); }
 .model-check { flex-shrink:0; width:18px; height:18px; accent-color:var(--accent); cursor:pointer; }
 .model-check:disabled { opacity:.5; cursor:default; }
+.pin-btn { flex-shrink:0; display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text-dim); cursor:pointer; transition:all .15s; padding:0; }
+.pin-btn:hover { border-color:var(--accent); color:var(--accent); }
+.pin-btn.pinned { background:rgba(108,99,255,0.15); border-color:var(--accent); color:var(--accent); }
+.pin-btn.env-pinned { background:rgba(108,99,255,0.08); border-color:rgba(108,99,255,0.3); color:var(--accent); cursor:not-allowed; }
+.pin-btn.saving { opacity:.5; cursor:wait; }
+.pin-btn svg { width:14px; height:14px; }
+.m-badge.pinned { background:rgba(108,99,255,0.15); color:var(--accent); }
 .model-rec.pulling { border-color:rgba(108,99,255,0.4); }
 .model-rec.pulled { border-color:rgba(34,197,94,0.4); background:rgba(34,197,94,0.04); }
 .model-rec.pull-error { border-color:rgba(239,68,68,0.3); }
@@ -3973,9 +4085,15 @@ function renderRecommendations(data) {
         var cardId = 'card-' + node.node_id + '-' + rec.model.replace(/[^a-zA-Z0-9]/g, '-');
         html += '<div class="' + recClass + '" id="' + cardId + '">';
 
-        // Checkbox for non-downloaded models
+        // Checkbox for non-downloaded models.  Vision embeddings don't use
+        // `ollama pull` — the node's embedding service (:11438) fetches them
+        // from HuggingFace on the first /api/embed-image request, so we
+        // exclude them from the pull flow and label the card accordingly.
+        var isVisionEmbedding = rec.category === 'vision-embedding';
         if (rec.already_available) {
           html += '<input type="checkbox" class="model-check" checked disabled title="Already downloaded">';
+        } else if (isVisionEmbedding) {
+          html += '<input type="checkbox" class="model-check" checked disabled title="Auto-installs on first /api/embed-image request (not an Ollama model)">';
         } else {
           html += '<input type="checkbox" class="model-check" checked data-node="' + node.node_id + '" data-model="' + rec.model + '">';
         }
@@ -3994,13 +4112,35 @@ function renderRecommendations(data) {
         html += '<div class="model-badges">';
         html += '<span class="m-badge ' + rec.priority + '">' + rec.priority + '</span>';
         if (rec.already_available) { html += '<span class="m-badge downloaded">downloaded</span>'; }
+        else if (isVisionEmbedding) { html += '<span class="m-badge auto-install" title="Downloads from HuggingFace on first use — no manual pull needed">auto-install</span>'; }
+        var pinState = isPinned(node.node_id, rec.model);
+        if (pinState === 'env') { html += '<span class="m-badge pinned" title="Pinned via FLEET_PINNED_MODELS">env-pin</span>'; }
         html += '</div>';
+        // Pin button (env pins disabled — managed via env var)
+        var PIN_SVG_FILLED = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>';
+        var PIN_SVG_OUTLINE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>';
+        // Vision embeddings don't route through the Ollama preloader —
+        // the embedding service keeps them resident on its own, so a pin
+        // here would be a lie.  Skip the pin button for that category.
+        if (isVisionEmbedding) {
+          // no pin button — auto-managed by embedding service
+        } else if (pinState === 'env') {
+          html += '<button class="pin-btn env-pinned" disabled title="Pinned fleet-wide via FLEET_PINNED_MODELS">' + PIN_SVG_FILLED + '</button>';
+        } else if (rec.already_available) {
+          var pinned = pinState === 'node';
+          html += '<button class="pin-btn' + (pinned ? ' pinned' : '') + '" data-pin-node="' + node.node_id + '" data-pin-model="' + rec.model + '" title="' + (pinned ? 'Unpin from ' : 'Pin on ') + node.node_id + '">';
+          html += pinned ? PIN_SVG_FILLED : PIN_SVG_OUTLINE;
+          html += '</button>';
+        }
         html += '</div>';
       });
       html += '</div>';
 
-      // Pull section for models not yet downloaded
-      var toPull = node.recommendations.filter(function(r) { return !r.already_available; });
+      // Pull section for models not yet downloaded.  Vision embeddings
+      // auto-install on first use, so they're excluded from `ollama pull`.
+      var toPull = node.recommendations.filter(function(r) {
+        return !r.already_available && r.category !== 'vision-embedding';
+      });
       if (toPull.length > 0) {
         html += '<div class="pull-section" id="pull-section-' + node.node_id + '">';
         var cmds = toPull.map(function(r) { return 'ollama pull ' + r.model; }).join(' && ');
@@ -4122,12 +4262,59 @@ async function pullSelected(nodeId) {
   }
 }
 
+var _pinnedState = { env_pins: [], per_node: {}, max_count: 3 };
+
+async function loadPinnedState() {
+  try {
+    const resp = await fetch('/dashboard/api/pinned-models');
+    _pinnedState = await resp.json();
+  } catch (err) {
+    console.error('Pinned models load error:', err);
+  }
+}
+
+function isPinned(nodeId, model) {
+  if ((_pinnedState.env_pins || []).indexOf(model) !== -1) return 'env';
+  var nodePins = (_pinnedState.per_node || {})[nodeId] || [];
+  if (nodePins.indexOf(model) !== -1) return 'node';
+  return null;
+}
+
+async function togglePin(btn) {
+  if (btn.classList.contains('env-pinned') || btn.classList.contains('saving')) return;
+  var nodeId = btn.dataset.pinNode;
+  var model = btn.dataset.pinModel;
+  if (!nodeId || !model) return;
+  var currentlyPinned = btn.classList.contains('pinned');
+  btn.classList.add('saving');
+  try {
+    const resp = await fetch('/dashboard/api/pinned-models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ node_id: nodeId, model: model, pinned: !currentlyPinned }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      _pinnedState.per_node = data.per_node;
+      btn.classList.toggle('pinned', !currentlyPinned);
+      btn.title = !currentlyPinned ? 'Unpin from ' + nodeId : 'Pin on ' + nodeId;
+      btn.innerHTML = !currentlyPinned
+        ? '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>';
+    }
+  } catch (err) {
+    console.error('Pin toggle error:', err);
+  } finally {
+    btn.classList.remove('saving');
+  }
+}
+
 async function loadRecommendations(forceRefresh) {
   try {
     var url = '/dashboard/api/recommendations';
     if (forceRefresh) url += '?refresh=1';
-    const resp = await fetch(url);
-    const data = await resp.json();
+    const [recResp] = await Promise.all([fetch(url), loadPinnedState()]);
+    const data = await recResp.json();
     renderRecommendations(data);
   } catch (err) {
     console.error('Recommendations load error:', err);
@@ -4361,6 +4548,12 @@ document.addEventListener('click', function(e) {
   var btn = e.target.closest('.pull-btn');
   if (btn && btn.dataset.node) {
     pullSelected(btn.dataset.node);
+    return;
+  }
+  // Pin button
+  var pinBtn = e.target.closest('.pin-btn');
+  if (pinBtn && pinBtn.dataset.pinNode) {
+    togglePin(pinBtn);
     return;
   }
   // Delete button -> show confirmation

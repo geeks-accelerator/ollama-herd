@@ -15,6 +15,7 @@ from fleet_manager.common.logging_config import setup_logging
 from fleet_manager.models.config import ServerSettings
 from fleet_manager.server.latency_store import LatencyStore
 from fleet_manager.server.mlx_proxy import MlxProxy
+from fleet_manager.server.pinned_models import PinnedModelsStore
 from fleet_manager.server.queue_manager import QueueManager
 from fleet_manager.server.rebalancer import Rebalancer
 from fleet_manager.server.registry import NodeRegistry
@@ -46,17 +47,30 @@ async def lifespan(app: FastAPI):
 
     # MLX backend — opt-in alternative serving path for models that can't fit
     # alongside the Ollama 3-model cap.  See `docs/plans/mlx-backend-for-large-models.md`.
+    # The resolver lets the proxy dispatch to the right node+port per model
+    # when multiple MLX servers are running across the fleet (see
+    # ``docs/issues/multi-mlx-server-support.md``).  Legacy single-URL config
+    # still works via the ``base_url`` positional.
     mlx_proxy: MlxProxy | None = None
     if getattr(settings, "mlx_enabled", False):
+        def _mlx_url_resolver(model_key: str) -> str | None:
+            return registry.resolve_mlx_url(model_key)
+
         mlx_proxy = MlxProxy(
-            settings.mlx_url,
+            settings.mlx_url,  # legacy fallback when registry has no match
             trace_store=trace_store,
-            max_queue_depth=getattr(settings, "mlx_max_queue_depth", 3),
+            url_resolver=_mlx_url_resolver,
+            max_queue_depth=getattr(settings, "mlx_max_queue_depth", 10),
             retry_after_seconds=getattr(settings, "mlx_retry_after_seconds", 10),
+            read_timeout_s=getattr(settings, "mlx_read_timeout_s", 1800.0),
+            wall_clock_timeout_s=getattr(
+                settings, "mlx_wall_clock_timeout_s", 300.0,
+            ),
         )
         logger.info(
-            f"MLX backend enabled at {settings.mlx_url} "
-            f"(admission: 1 in-flight + {mlx_proxy.max_queue_depth} queued max)"
+            f"MLX backend enabled (fallback={settings.mlx_url}, "
+            f"resolver=registry; admission: 1 in-flight + "
+            f"{mlx_proxy.max_queue_depth} queued max)"
         )
 
     # Context Hygiene Compactor — shrinks bloated tool_result blocks before
@@ -67,9 +81,11 @@ async def lifespan(app: FastAPI):
         from fleet_manager.common.ollama_client import OllamaClient
         from fleet_manager.server.context_compactor import (
             ContextCompactor,
+            CuratorSelector,
             OllamaCurator,
             SummaryCache,
         )
+        from fleet_manager.server.model_preloader import _parse_pinned_models
 
         # Local Ollama on the router's machine hosts the curator model.
         # (Could extend to point at a specific node's Ollama later.)
@@ -80,14 +96,52 @@ async def lifespan(app: FastAPI):
         summary_cache = SummaryCache(
             Path(settings.data_dir).expanduser() / "context_summaries.sqlite",
         )
+
+        # Dynamic curator selection: prefer already-hot idle models
+        # (especially pinned-but-idle) over cold-loading the default.
+        # See CuratorSelector docstring for the full ranking policy.
+        curator_selector = None
+        resolve_curator_context = None
+        idle_window = getattr(settings, "context_compaction_idle_window_s", 120)
+        if idle_window > 0:
+            curator_selector = CuratorSelector(
+                default_model=settings.context_compaction_model,
+                idle_window_s=idle_window,
+                min_params_b=getattr(
+                    settings, "context_compaction_curator_min_params_b", 7.0,
+                ),
+            )
+
+            # Late-bind: resolved fresh each compaction so selector sees
+            # current fleet state (hot models, activity, pin toggles).
+            async def resolve_curator_context():
+                env_pins = _parse_pinned_models(
+                    getattr(settings, "pinned_models", ""),
+                )
+                per_node_pins = app.state.pinned_store.load()
+                activity = await trace_store.get_request_count_by_model(
+                    seconds=idle_window,
+                )
+                return {
+                    "nodes": registry.get_online_nodes(),
+                    "env_pins": env_pins,
+                    "per_node_pins": per_node_pins,
+                    "activity": activity,
+                }
+
         context_compactor = ContextCompactor(
             curator=curator,
             cache=summary_cache,
             budget_tokens=settings.context_compaction_budget_tokens,
             preserve_last_turns=settings.context_compaction_preserve_turns,
+            curator_selector=curator_selector,
+            resolve_curator_context=resolve_curator_context,
         )
         logger.info(
-            f"Context Compactor enabled (curator={settings.context_compaction_model}, "
+            f"Context Compactor enabled "
+            f"(default curator={settings.context_compaction_model}, "
+            f"dynamic selection={'on' if curator_selector else 'off'}, "
+            f"idle_window={idle_window}s, "
             f"budget={settings.context_compaction_budget_tokens} tokens, "
             f"preserve={settings.context_compaction_preserve_turns} turns)"
         )
@@ -99,6 +153,18 @@ async def lifespan(app: FastAPI):
     app.state.streaming_proxy = streaming_proxy
     app.state.mlx_proxy = mlx_proxy
     app.state.context_compactor = context_compactor
+    app.state.pinned_store = PinnedModelsStore(
+        Path(settings.data_dir).expanduser() / "pinned_models.json",
+    )
+    # Stable-cut Layer-1 clearing state.  Persistent set of tool_use_ids
+    # whose tool_results have been cleared — once in, stays in.  Preserves
+    # MLX prefix-cache stability across turns.  See
+    # ``server/clearing_store.py`` for the full rationale.
+    from fleet_manager.server.clearing_store import ClearingStore
+
+    app.state.clearing_store = ClearingStore(
+        Path(settings.data_dir).expanduser() / "cleared_tool_uses.sqlite",
+    )
     app.state.latency_store = latency_store
     app.state.trace_store = trace_store
     from fleet_manager.server.context_optimizer import ContextOptimizer
@@ -121,7 +187,10 @@ async def lifespan(app: FastAPI):
     from fleet_manager.server.model_preloader import preload_priority_models
 
     preload_task = asyncio.create_task(
-        preload_priority_models(registry, trace_store, streaming_proxy, settings)
+        preload_priority_models(
+            registry, trace_store, streaming_proxy, settings,
+            pinned_store=app.state.pinned_store,
+        )
     )
 
     logger.info(f"Ollama Herd ready on port {settings.port}")

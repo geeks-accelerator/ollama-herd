@@ -110,6 +110,29 @@ class VisionEmbeddingMetrics(BaseModel):
     processing: bool = False
 
 
+class MlxServerInfo(BaseModel):
+    """One mlx_lm.server subprocess on a node, reported in the heartbeat.
+
+    The router uses this to build a ``{model_id: node_url+port}`` map for
+    the MLX proxy so multi-server multi-node routing Just Works.
+
+    ``status`` values:
+      - "healthy"         — /v1/models returned 200 at the last check
+      - "starting"        — spawned, waiting for first healthy response
+      - "unhealthy"       — running but not responding (restart in progress)
+      - "memory_blocked"  — skipped at start due to psutil memory gate
+      - "stopped"         — terminated or never started
+    """
+
+    port: int
+    model: str
+    status: str
+    status_reason: str = ""
+    kv_bits: int = 0
+    model_size_gb: float = 0.0
+    last_ok_ts: float = 0.0
+
+
 class HeartbeatPayload(BaseModel):
     node_id: str
     arch: str = "apple_silicon"
@@ -140,6 +163,14 @@ class HeartbeatPayload(BaseModel):
     # to memory-tier heuristics.  See docs/plans/device-aware-scoring.md.
     chip: str = ""
     memory_bandwidth_gbps: float = 0.0
+    # Multi-MLX-server support.  Empty list ⇒ node has no MLX servers
+    # configured, or is running an older agent.  See
+    # ``docs/issues/multi-mlx-server-support.md``.  The bind host that the
+    # servers listen on is reported separately so the router can construct
+    # LAN-reachable URLs even when the node's local bind differs from its
+    # LAN IP.
+    mlx_servers: list[MlxServerInfo] = Field(default_factory=list)
+    mlx_bind_host: str = "127.0.0.1"
 
 
 class HardwareProfile(BaseModel):
@@ -187,3 +218,7 @@ class NodeState(BaseModel):
     # Connection health from node agent
     connection_failures: int = 0  # Failures since last successful heartbeat
     connection_failures_total: int = 0  # Total since agent start
+    # Multi-MLX-server state mirrored from heartbeat.  Empty list for nodes
+    # without MLX configured (or older agents that predate this field).
+    mlx_servers: list[MlxServerInfo] = Field(default_factory=list)
+    mlx_bind_host: str = "127.0.0.1"
