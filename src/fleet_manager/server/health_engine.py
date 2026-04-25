@@ -96,6 +96,7 @@ class HealthEngine:
         recommendations.extend(self._check_transcription(nodes))
         recommendations.extend(self._check_connection_failures(nodes))
         recommendations.extend(self._check_mlx_backend(nodes))
+        recommendations.extend(self._check_vision_backend_missing(nodes))
         recommendations.extend(self._check_mapped_models_hot(nodes))
 
         # Trace-based checks (async, queries SQLite)
@@ -1063,6 +1064,62 @@ class HealthEngine:
                             "status": srv.status,
                         },
                     ))
+        return recs
+
+    def _check_vision_backend_missing(self, nodes) -> list[Recommendation]:
+        """Vision-embedding weights cached but onnxruntime not installed.
+
+        Asymmetric state: the operator pre-downloaded DINOv2 / SigLIP / CLIP
+        weights (so they're sitting in ``~/.cache/huggingface/hub``) but the
+        node agent's venv doesn't have ``onnxruntime``, so the embedding
+        server can't actually serve them.  Without this check, the dashboard
+        would silently stop showing vision-embedding chips and the operator
+        would have no idea why — see the 2026-04-25 observation in
+        ``docs/observations.md`` for the original failure mode.
+
+        Read from ``node.vision_embedding_status`` (populated by the node
+        collector via ``_vision_backend_status``).  Older agents that
+        predate this field send an empty dict; we skip them gracefully.
+        """
+        recs: list[Recommendation] = []
+        for node in nodes:
+            if node.status.value != "online":
+                continue
+            status = getattr(node, "vision_embedding_status", None) or {}
+            if not status:
+                continue  # older agent, no signal — don't fire
+            backend_available = status.get("backend_available", True)
+            cached_count = int(status.get("cached_model_count", 0))
+            if backend_available:
+                continue  # working as intended
+            if cached_count == 0:
+                continue  # operator never wanted vision embedding — don't nag
+            recs.append(Recommendation(
+                check_id="vision_backend_missing",
+                severity=Severity.WARNING,
+                title=(
+                    f"Vision embedding backend not installed on "
+                    f"{node.node_id}"
+                ),
+                description=(
+                    f"{cached_count} vision embedding model(s) are cached "
+                    "on disk (DINOv2 / SigLIP / CLIP) but onnxruntime is "
+                    "not installed in the herd-node venv, so /embed calls "
+                    "will return HTTP 500.  Dashboard chips for these "
+                    "models are hidden until the backend is installed."
+                ),
+                fix=(
+                    "Run `uv sync --extra embedding` (or `uv sync "
+                    "--all-extras`) on the node, then restart `herd-node`. "
+                    "The next heartbeat will re-advertise the cached "
+                    "models and this warning will clear."
+                ),
+                node_id=node.node_id,
+                data={
+                    "cached_model_count": cached_count,
+                    "backend_available": False,
+                },
+            ))
         return recs
 
     def _check_mapped_models_hot(self, nodes) -> list[Recommendation]:

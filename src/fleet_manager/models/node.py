@@ -191,6 +191,11 @@ class HeartbeatPayload(BaseModel):
     # Vision embedding capabilities (CLIP, DINOv2, SigLIP)
     vision_embedding: VisionEmbeddingMetrics | None = None
     vision_embedding_port: int = 0
+    # Backend-availability split: separate "we can serve vision embeddings"
+    # from "we have weights cached on disk."  Lets the health engine fire
+    # ``vision_backend_missing`` when the operator has cached weights but
+    # forgot ``uv sync --extra embedding``.  Empty dict on older agents.
+    vision_embedding_status: dict = Field(default_factory=dict)
     # Connection health: failures since last successful heartbeat
     connection_failures: int = 0
     connection_failures_total: int = 0  # Total since agent start
@@ -254,6 +259,10 @@ class NodeState(BaseModel):
     vision_embedding: VisionEmbeddingMetrics | None = None
     # Port for vision embedding server on this node
     vision_embedding_port: int = 0
+    # Backend-availability split (mirrored from heartbeat) so the health
+    # engine can fire ``vision_backend_missing`` when weights are cached
+    # but onnxruntime isn't installed.
+    vision_embedding_status: dict = Field(default_factory=dict)
     # Connection health from node agent
     connection_failures: int = 0  # Failures since last successful heartbeat
     connection_failures_total: int = 0  # Total since agent start

@@ -98,9 +98,11 @@ uv run ruff format src/          # format
 
 ```bash
 pkill -f "bin/herd" && sleep 2
-uv sync && uv run herd &>/dev/null & disown
+uv sync --all-extras && uv run herd &>/dev/null & disown
 sleep 3 && uv run herd-node &>/dev/null & disown
 ```
+
+**`--all-extras` is non-negotiable here.** Plain `uv sync` is destructive — it removes any package not in core deps + currently-requested extras. The `embedding` extras (`onnxruntime`, `Pillow`, `numpy`, `huggingface-hub`) are optional in `pyproject.toml`, so a bare `uv sync` strips them every restart, and the next vision-embedding request 500s. A health check (`vision_backend_missing`) now catches this regression server-side, but `--all-extras` in the deploy snippet is the actual fix — it makes the local fleet keep every optional capability resident across restarts. Total cost: ~250 MB of additional packages in `.venv/`. See `docs/observations.md` (entry: 2026-04-25 — "uv sync without --extra embedding strips vision embedding deps").
 
 Both entry points auto-load `~/.fleet-manager/env` at startup (see `src/fleet_manager/common/env_file.py`), so `FLEET_*` vars work even when launched from non-interactive shells (Bash subshells, nohup, launchd). Shell env still wins if set. Template: `docs/examples/fleet-env.example` — copy to `~/.fleet-manager/env` on a fresh machine.
 

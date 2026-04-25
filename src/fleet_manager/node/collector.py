@@ -220,11 +220,39 @@ def _detect_transcription_models() -> TranscriptionMetrics | None:
 
 
 def _detect_vision_embedding_models() -> VisionEmbeddingMetrics | None:
-    """Detect available vision embedding models (DINOv2, SigLIP, CLIP)."""
+    """Detect available vision embedding models (DINOv2, SigLIP, CLIP).
+
+    Two-stage truthfulness check:
+
+    1. Are the model weights cached on disk?  ``is_model_downloaded`` checks
+       the HuggingFace cache.
+    2. Can the backend ONNX runtime actually load them?  We probe by
+       importing ``onnxruntime`` — if it's not installed (i.e. the operator
+       didn't run ``uv sync --extra embedding``) we DO NOT advertise the
+       models, even if the weights exist on disk.  Reporting "available"
+       for a model the embedding server can't actually serve produces
+       silent-failure dashboards: chips render, requests 500, no upstream
+       signal that anything is wrong.  See the 2026-04-25 observation in
+       ``docs/observations.md``.
+
+    The asymmetric case — weights cached but backend missing — is surfaced
+    as a separate ``vision_backend_missing`` health check so operators see
+    "the backend isn't installed" rather than "the models silently
+    disappeared from the dashboard."
+    """
     from fleet_manager.node.embedding_models import (
         VISION_EMBEDDING_MODELS,
         is_model_downloaded,
     )
+
+    # Backend probe: can we actually instantiate ONNX sessions?  If not,
+    # don't advertise models we can't serve.  Re-checked on every heartbeat
+    # so a mid-session ``uv sync --extra embedding`` is picked up without
+    # an agent restart.
+    try:
+        import onnxruntime  # noqa: F401  — import is the test
+    except ImportError:
+        return None
 
     models: list[VisionEmbeddingModel] = []
     for name, spec in VISION_EMBEDDING_MODELS.items():
@@ -241,6 +269,41 @@ def _detect_vision_embedding_models() -> VisionEmbeddingMetrics | None:
     if not models:
         return None
     return VisionEmbeddingMetrics(models_available=models, processing=False)
+
+
+def _vision_backend_status() -> dict:
+    """Return whether the vision-embedding backend is loadable, separately
+    from whether any models are cached.  Used by the health engine to
+    fire the ``vision_backend_missing`` recommendation when weights exist
+    but the backend can't load them — distinguishing "I never wanted vision
+    embedding" from "I wanted it and it's silently broken."
+
+    Returns a dict so it round-trips cleanly through the heartbeat JSON
+    without requiring a new pydantic model for a single boolean.
+
+    Keys:
+      backend_available:  bool  — onnxruntime importable in this venv
+      cached_model_count: int   — number of vision embedding models with
+                                  weights present on disk
+    """
+    from fleet_manager.node.embedding_models import (
+        VISION_EMBEDDING_MODELS,
+        is_model_downloaded,
+    )
+
+    try:
+        import onnxruntime  # noqa: F401
+        backend_available = True
+    except ImportError:
+        backend_available = False
+
+    cached = sum(
+        1 for name in VISION_EMBEDDING_MODELS if is_model_downloaded(name)
+    )
+    return {
+        "backend_available": backend_available,
+        "cached_model_count": cached,
+    }
 
 
 async def collect_heartbeat(
@@ -388,6 +451,7 @@ async def collect_heartbeat(
     image = _detect_image_models()
     transcription = _detect_transcription_models()
     vision_embedding = _detect_vision_embedding_models()
+    vision_embedding_status = _vision_backend_status()
 
     return HeartbeatPayload(
         node_id=node_id,
@@ -407,6 +471,7 @@ async def collect_heartbeat(
         image=image,
         transcription=transcription,
         vision_embedding=vision_embedding,
+        vision_embedding_status=vision_embedding_status,
         chip=_detect_chip(),
         memory_bandwidth_gbps=_detect_memory_bandwidth_gbps(),
         mlx_servers=mlx_server_infos,

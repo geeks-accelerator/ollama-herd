@@ -50,6 +50,11 @@ async def fleet_status(request: Request):
         if node.vision_embedding:
             node_data["vision_embedding"] = node.vision_embedding.model_dump()
             node_data["vision_embedding_port"] = node.vision_embedding_port
+        # Always expose backend status (even when no models cached) so
+        # operators can tell "I never installed embedding" from "I did
+        # but it's silently broken."  Empty dict for older agents.
+        if node.vision_embedding_status:
+            node_data["vision_embedding_status"] = dict(node.vision_embedding_status)
         if node.mlx_servers:
             node_data["mlx_servers"] = [s.model_dump() for s in node.mlx_servers]
             node_data["mlx_bind_host"] = node.mlx_bind_host

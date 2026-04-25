@@ -80,6 +80,7 @@ class NodeRegistry:
             node.transcription_port = payload.transcription_port
             node.vision_embedding = payload.vision_embedding
             node.vision_embedding_port = payload.vision_embedding_port
+            node.vision_embedding_status = dict(payload.vision_embedding_status or {})
             node.connection_failures = payload.connection_failures
             node.connection_failures_total = payload.connection_failures_total
             # Multi-MLX per-server state: mirror heartbeat into node state so
