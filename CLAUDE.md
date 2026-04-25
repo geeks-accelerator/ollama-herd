@@ -10,13 +10,13 @@ uv run herd-node                 # start node agent (auto-discovers router via m
 uv run herd-node --router-url http://localhost:11435  # explicit router URL
 ```
 
-Without `--extra embedding`, the vision embedding server starts but every `/embed` call fails with an `ImportError` pointing at the fix. The dashboard will still show DINOv2/SigLIP/CLIP as "available" (files on disk) — that's honest because the weights ARE cached, but nothing can actually serve them until `onnxruntime` is installed.
+Without `--extra embedding`, the vision embedding server starts but `onnxruntime` isn't importable, so the collector probes for it on every heartbeat and refuses to advertise the models — DINOv2/SigLIP/CLIP chips disappear from the node card entirely. A `vision_backend_missing` health check fires WARNING with the exact `uv sync --extra embedding` fix command. (The previous behavior was to advertise the chips and 500 every `/embed` call, which produced silent failures in agentic dedup loops — see commit `9ff8a54` and the 2026-04-25 observation in `docs/observations.md`.)
 
 ## Test
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 929 tests (~40s)
+uv run pytest                    # run all 948 tests (~40s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -232,7 +232,7 @@ Silent failures are dishonest. Fail fast, fail loud.
 - **Version:** 0.6.0 published on PyPI + Homebrew tap (live since 2026-04-24). Dashboard color semantics + thermal signal + `/dashboard/color-states` route are in `[Unreleased]` on `main` (post-0.6.0 commits) — will ship in 0.6.1.
 - **Fleet:** Neons-Mac-Studio (512GB M3 Ultra) + Lucass-MacBook-Pro-2 (128GB M4 Max). Mac Studio runs two MLX servers: `mlx:Qwen3-Coder-Next-4bit` on :11440 for coding + `mlx:Qwen3-Coder-30B-A3B-Instruct-4bit` on :11441 as dedicated compactor, both via `FLEET_NODE_MLX_SERVERS`. Plus `gpt-oss:120b` + `nomic-embed-text` via Ollama.
 - **Ollama settings:** `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=-1` (in `~/.zshrc`)
-- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "929 tests\|18 checks" skills/`
+- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "948 tests\|18 checks" skills/`
 - **Health:** 18 checks, zero errors. Monitor: `curl http://localhost:11435/dashboard/api/health`
 
 ## Conventions

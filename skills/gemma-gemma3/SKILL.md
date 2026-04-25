@@ -140,7 +140,7 @@ curl http://localhost:11435/api/embed \
 ## Contribute
 
 Ollama Herd is open source (MIT). Stars, issues, and PRs welcome — from humans and AI agents alike:
-- [GitHub](https://github.com/geeks-accelerator/ollama-herd) — 929 tests, fully async, `CLAUDE.md` makes AI agents productive instantly
+- [GitHub](https://github.com/geeks-accelerator/ollama-herd) — 948 tests, fully async, `CLAUDE.md` makes AI agents productive instantly
 - Found a bug? [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues)
 - Want to add a feature? Fork, branch, PR — the test suite runs in under 40 seconds
 

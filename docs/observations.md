@@ -339,6 +339,23 @@ Until upstream lands [PR #1073](https://github.com/ml-explore/mlx-lm/pull/1073) 
 
 ---
 
+## 2026-04-25 — Profile before optimizing: the cost was where I least expected it
+
+**Evidence**: User asked whether dashboard polling needed caching to reduce model-perf impact. My first instinct said yes for `_detect_image_models()` and `_detect_transcription_models()` — they ran every 5s on the heartbeat and "felt" like binary-scanning could be slow. Profiled the static binary detection: **0.03 ms**. Already fast, would have been wasted effort to cache. Re-profiled with the static-vs-live parts split: the actual 16-17ms cost was `psutil.process_iter()` scanning ~500 processes for `mflux`/`diffusionkit`/`qwen3-asr` names (the live "currently generating?" check), NOT the binary detection.
+
+Even bigger: `/dashboard/api/health` clocked **450 ms per call**. At the dashboard's 15s poll cadence, that's ~3% continuous CPU per active dashboard tab. Most of it is trace DB aggregation over 24h windows for the 18 health checks. This was nowhere on my radar before profiling because the endpoint "doesn't feel expensive" — it's just JSON.
+
+End result: cached three things at 30s TTL, saving ~370 ms/min of agent CPU and ~1.4 sec/min of router CPU per active dashboard tab. The thing I would have cached on instinct (binary detection) wouldn't have helped. The thing I never would have looked at (the health endpoint) was the biggest win by 25×.
+
+**Insight**: "feels slow" is a useless heuristic; "measurable" is the only one that pays. Two operating rules captured by this experience:
+
+1. **Always split a function before benchmarking it.** The 16ms `_detect_image_models()` cost was mis-attributed for ~30 minutes because I profiled the function as a whole. As soon as I split static-vs-live, the answer was obvious. If a hot function does multiple things, time each one separately even if they look like they belong together — your hypothesis about which part is slow is going to be wrong about half the time.
+2. **Profile endpoints by request, not just by call.** Anything the dashboard polls at a fixed interval becomes a continuous load proportional to `(per-call cost / poll interval)`. A 450ms endpoint at 15s polling is 3% CPU; the same endpoint at 60s polling is 0.75%. Either the endpoint OR the polling cadence is a knob — both are valid optimizations and both should be considered before assuming the implementation needs caching.
+
+Generalizable beyond this incident: the dashboard polling cadence (15s for `/dashboard/api/health`) interacts multiplicatively with cache TTL choice. A 15s TTL with a 15s polling interval gives effectively 0% hit rate due to timing alignment — was actually the user's first instinct ("cache for 15 seconds") and would have been a no-op savings. 30s TTL gives a guaranteed 50% hit rate. Caching configuration must be calibrated against the consumer's polling rhythm or it's purely cosmetic. See `_HEALTH_CACHE_TTL_S` in `dashboard.py` and `_ttl_cache` in `collector.py` for how these chose their values.
+
+---
+
 ## 2026-04-25 — A bumped Homebrew tap is *described*, not *tested*
 
 **Evidence**: 0.6.0 shipped to PyPI + Homebrew on 2026-04-24. The Homebrew tap had been live for three releases (0.5.0 → 0.5.1 → 0.5.2 → 0.6.0), each release bumped via `url` + `sha256` edits to `Formula/ollama-herd.rb`. 24 hours after 0.6.0 went live, ran the *first ever* end-to-end install: `brew install ollama-herd` failed at the first Rust-extension dep (`pydantic-core`) with `error: can't find Rust compiler`. Inspection showed the same failure mode would have occurred in 0.5.x — neither the maintainer nor any user had ever actually executed the install path that the marketing site advertised.

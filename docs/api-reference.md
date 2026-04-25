@@ -631,7 +631,11 @@ Full fleet state — nodes, queues, hardware metrics, and health summary.
           "last_ok_ts": 1714000000.0
         }
       ],
-      "mlx_bind_host": "0.0.0.0"
+      "mlx_bind_host": "0.0.0.0",
+      "vision_embedding_status": {
+        "backend_available": true,
+        "cached_model_count": 3
+      }
     }
   ],
   "queues": {
@@ -667,6 +671,33 @@ downstream tooling see per-URL health without polling each port individually.
 `mlx_bind_host` at the node top level is what the servers bind to (`127.0.0.1`
 local-only; `0.0.0.0` LAN-reachable).  Nodes running older agents that predate
 multi-MLX return an empty `mlx_servers` list and omit `mlx_bind_host`.
+
+**`vision_embedding_status` field** (optional — present on node agents 0.6.1+):
+
+Carries the asymmetry between "weights cached on disk" and "backend can serve them"
+so the dashboard can stop falsely advertising chips when `onnxruntime` isn't
+installed in the herd-node venv.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `backend_available` | bool | True iff `onnxruntime` is importable in the herd-node venv at the moment of the last heartbeat |
+| `cached_model_count` | int | Number of vision embedding models (DINOv2 / SigLIP / CLIP) with weights present in `~/.cache/huggingface/hub/` |
+
+The `vision_backend_missing` health check fires WARNING when
+`backend_available=false` AND `cached_model_count>0` — i.e., the operator
+intended to use vision embedding (downloaded the weights) but the runtime
+isn't installed.  Fix: `uv sync --extra embedding` (or `uv sync --all-extras`)
+on the node, then restart `herd-node`.
+
+---
+
+**Caching note**: `/dashboard/api/health` responses are cached server-side for
+30 seconds (configurable in `dashboard.py::_HEALTH_CACHE_TTL_S`).  At the
+dashboard's 15-second poll cadence this gives a guaranteed cache hit on
+alternate polls — about a 50% reduction in trace-DB-aggregation work per
+active dashboard tab.  Recommendations are derived from windows of
+minutes-to-hours, so 30-second staleness is invisible to operators.  This
+endpoint is the only cached one; everything else is computed live.
 
 ---
 
