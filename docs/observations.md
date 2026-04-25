@@ -339,6 +339,24 @@ Until upstream lands [PR #1073](https://github.com/ml-explore/mlx-lm/pull/1073) 
 
 ---
 
+## 2026-04-25 — A bumped Homebrew tap is *described*, not *tested*
+
+**Evidence**: 0.6.0 shipped to PyPI + Homebrew on 2026-04-24. The Homebrew tap had been live for three releases (0.5.0 → 0.5.1 → 0.5.2 → 0.6.0), each release bumped via `url` + `sha256` edits to `Formula/ollama-herd.rb`. 24 hours after 0.6.0 went live, ran the *first ever* end-to-end install: `brew install ollama-herd` failed at the first Rust-extension dep (`pydantic-core`) with `error: can't find Rust compiler`. Inspection showed the same failure mode would have occurred in 0.5.x — neither the maintainer nor any user had ever actually executed the install path that the marketing site advertised.
+
+Two bugs were lurking in the formula that no version-bump workflow would have caught:
+
+1. **Missing `depends_on "rust" => :build`.** Homebrew runs `pip install --no-binary :all:` for source-build reproducibility. `pydantic-core`, `cryptography`, and `tiktoken` are Rust-extension Python packages — they need `maturin` to build, which itself needs Rust. Without a Rust toolchain available at build time, every install fails before producing a working venv.
+
+2. **Six `pyproject.toml` deps with no matching `resource` block** (`cryptography`, `cffi`, `pycparser`, `tiktoken`, `regex`, `websockets`). Homebrew's `virtualenv_install_with_resources` doesn't transparently pull missing deps from PyPI — they have to be declared as resources or the install errors out. The formula listed pure-Python deps but skipped the Rust-extension chain entirely, presumably because someone generated the resource list when those deps were not yet in `pyproject.toml`.
+
+There was also a latent third bug: pydantic-core was pinned to 2.45.0 while the formula's pydantic was 2.12.5, which requires `pydantic-core==2.41.5` exactly. Pydantic raises `SystemError` at import time when the versions disagree. So even if the Rust + missing-resources problems were fixed, the install would have produced a broken venv that crashes on first import.
+
+**Insight**: A formula update workflow that touches only `url` + `sha256` carries no signal about whether the install actually works. The maintainer's confidence in the tap was a complete artifact of "the file looks plausible." The fix is procedural: **the release checklist now includes a non-negotiable step that runs `brew uninstall && brew untap && brew tap && brew install ollama-herd` against a fresh-clone of the published formula, plus an import-sanity check inside the produced venv.** Documented in `CLAUDE.md` → "Release checklist" step 13 and as a Gotcha entry. Generalizable principle: any distribution surface that touches transitive dependency resolution (Homebrew formulae, Conda recipes, Docker base-image Pythons, AUR PKGBUILDs) needs to be installed end-to-end on a clean environment as a release gate, not just version-bumped. "Bumped successfully" and "installs successfully" are independent claims; treating them as the same thing is how you get tap-shaped silence in support channels for months.
+
+Bonus operational note: PyPI exposes no uninstall metric, and neither does Homebrew. The closest signals available for catching a botched release are (1) abrupt download dropoff vs the prior baseline and (2) GitHub issue volume. Both are soft and lagging — they will not catch a "the install just doesn't work" problem until someone files an issue, which most users won't bother to do (they'll just leave). The end-to-end install test is the *only* reliable signal.
+
+---
+
 ## 2026-04-24 — Long Claude Code sessions on Next-4bit cluster at ~240s; `FLEET_MLX_WALL_CLOCK_TIMEOUT_S=300` is right at the edge
 
 **Evidence**: Post-deploy traffic sample on `mlx:mlx-community/Qwen3-Coder-Next-4bit` with a 2167-message Claude Code CLI session, after Layer 1 clearing reduced the prompt from 103K → 62K tokens:

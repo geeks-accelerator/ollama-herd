@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`brew install ollama-herd` now actually works.** The Homebrew formula at `geeks-accelerator/homebrew-ollama-herd` had been broken throughout 0.5.x — Homebrew's `pip install --no-binary :all:` policy forced source builds for `pydantic-core`, which required Rust to bootstrap `maturin`, which the formula didn't depend on; six `pyproject.toml` deps (`cryptography`, `cffi`, `pycparser`, `tiktoken`, `regex`, `websockets`) were also missing from the formula's `resource` blocks; and `pydantic-core` was version-mismatched against the bundled `pydantic` (2.45.0 vs the required 2.41.5). Fix shipped to the tap as `geeks-accelerator/homebrew-ollama-herd@71856f3` (no PyPI republish needed). Verified end-to-end on macOS Apple Silicon: clean fresh-user install in ~5 minutes, all critical imports clean, both `herd` and `herd-node` CLIs functional. The release checklist in `CLAUDE.md` was updated to make the brew end-to-end install test a non-negotiable gate so this class of failure can't recur. Background and post-mortem in `docs/observations.md` (entry: 2026-04-25).
+
 ### Added
 
 - **Platform-aware thermal signal** — new `ThermalMetrics` on the heartbeat with `state` (`nominal` / `warning` / `unknown`), `temperature_c`, and `source` fields. Linux nodes now report real peak temps from `psutil.sensors_temperatures()` (scanning `coretemp` / `k10temp` / `zenpower` / `cpu_thermal` drivers) and flag `warning` above 85°C. macOS and Windows honestly report `unknown` — Apple Silicon's `machdep.xcpm` is Intel-only, `powermetrics` requires sudo, and `pmset -g therm` only reports past events; `psutil.sensors_temperatures()` isn't implemented on macOS at all. The dashboard's `.bar-thermal` overlay now uses the reported signal when available and falls back to the CPU≥95% proxy only when state is `unknown`, so Linux operators get first-class thermal detection and macOS operators keep the existing behavior with a clean seam for future upgrades. See `src/fleet_manager/common/system_metrics.py::get_thermal_metrics`.

@@ -29,16 +29,70 @@ uv run ruff format src/          # format
 
 ### Release checklist
 
+**Pre-publish (locally):**
 1. Bump version in `pyproject.toml`
-2. Update `CHANGELOG.md` (Keep a Changelog format)
+2. Update `CHANGELOG.md` (Keep a Changelog format) — rename `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, leave a fresh empty `[Unreleased]` stub above it
 3. `uv run pytest` — 0 failures
 4. `uv run ruff check src/` — clean
-5. Commit and push
+5. Commit + push the version bump
 6. Deploy locally — restart `herd` + `herd-node`, verify: `/fleet/status`, `/api/embed`, `/dashboard/api/health`, `/fleet/queue`
-7. Soak several hours — check logs: `grep '"level":"ERROR"' ~/.fleet-manager/logs/herd.jsonl`
-8. Only then: `uv build && uv publish --username __token__ --password "$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('$HOME/.pypirc'); print(c['pypi']['password'])")"`
+7. Soak several hours on the local fleet — `grep '"level":"ERROR"' ~/.fleet-manager/logs/herd.jsonl` should stay clean
+
+**Publish:**
+
+8. `rm -rf dist/ && uv build` — produces wheel + sdist
+9. Capture the sdist sha256 (needed for the Homebrew bump): `shasum -a 256 dist/ollama_herd-X.Y.Z.tar.gz`
+10. `uv publish --username __token__ --password "$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('$HOME/.pypirc'); print(c['pypi']['password'])")"`
+11. Wait for PyPI cache to update (~1 min) — verify: `curl -s https://pypi.org/pypi/ollama-herd/json | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['version'])"` returns the new version
+
+**Bump Homebrew tap (separate repo):**
+
+12. Edit `geeks-accelerator/homebrew-ollama-herd/Formula/ollama-herd.rb`:
+    - Update main `url` + `sha256` (use the values from step 9, plus the new sdist URL from `https://pypi.org/pypi/ollama-herd/X.Y.Z/json`)
+    - For each new dep added in this release: add a `resource "<name>" do ... end` block (alphabetically). Get URL/sha from `https://pypi.org/pypi/<dep>/json`
+    - For any dep that bumped in this release: update its existing resource block
+    - **If the new release adds a Rust-extension dep** (cryptography, pydantic-core, tiktoken, etc.): ensure `depends_on "rust" => :build` is present
+13. **End-to-end install test (this step is non-negotiable — see "Brew tap testing" gotcha below):**
+    ```bash
+    brew uninstall ollama-herd  # if previously installed
+    brew untap geeks-accelerator/ollama-herd  # forces a fresh tap clone
+    brew tap geeks-accelerator/ollama-herd
+    brew install ollama-herd  # ~5 min for a Python-virtualenv formula
+    /opt/homebrew/Cellar/ollama-herd/X.Y.Z/libexec/bin/python -c "import fleet_manager; from fleet_manager.server.app import create_app; print('ok')"
+    /opt/homebrew/bin/herd --help
+    ```
+    All must succeed. If pip fails on a Rust-extension dep with "can't find Rust compiler" → add `depends_on "rust" => :build`. If pydantic complains about pydantic-core version → bump both together.
+14. Commit + push the formula
+15. One more `brew uninstall && brew untap && brew tap && brew install ollama-herd` against the pushed-to-GitHub formula to confirm a real fresh-user install works
+
+**Post-publish soak verification:**
+
+16. **Day-after check** (24h after `uv publish`):
+    ```bash
+    # PyPI download + version sanity
+    curl -s https://pypistats.org/api/packages/ollama-herd/recent | python3 -m json.tool
+    curl -s https://pypi.org/pypi/ollama-herd/json | python3 -c "import json,sys; print('latest:', json.load(sys.stdin)['info']['version'])"
+    # No new GitHub issues from real users?
+    gh issue list --repo geeks-accelerator/ollama-herd --state open --limit 20
+    # Local fleet still healthy?
+    grep '"level":"ERROR"' ~/.fleet-manager/logs/herd.jsonl | tail
+    sqlite3 ~/.fleet-manager/latency.db \
+      "SELECT status, COUNT(*) FROM request_traces WHERE timestamp > (strftime('%s','now') - 86400) GROUP BY status"
+    ```
+    Healthy: downloads >0, no new issues, ERROR count flat, success rate >99%.
+
+17. **Week-after check** (7 days after `uv publish`):
+    ```bash
+    curl -s https://pypistats.org/api/packages/ollama-herd/recent | python3 -m json.tool
+    gh issue list --repo geeks-accelerator/ollama-herd --state open --limit 20
+    gh issue list --repo geeks-accelerator/homebrew-ollama-herd --state open --limit 10
+    ```
+    Bad signals (act on these): sudden download dropoff to ~0 (might mean PyPI yanked the release or the page is broken); spike of new issues mentioning the version; tap repo issue about install failure.
+
+**There is no "uninstalls" metric** — neither PyPI nor Homebrew tracks them. The closest signals are (1) a download trend that drops faster than usual after the spike, and (2) GitHub issue volume. Treat both as soft signals, not alarms.
 
 **Package:** `ollama-herd` on [PyPI](https://pypi.org/project/ollama-herd/) | **Build:** hatchling | **Version:** `pyproject.toml`
+**Homebrew tap:** `geeks-accelerator/homebrew-ollama-herd` (separate repo — formula bump is its own commit, no PyPI republish needed for tap-only fixes)
 
 ### Local deployment
 
@@ -60,6 +114,7 @@ Both entry points auto-load `~/.fleet-manager/env` at startup (see `src/fleet_ma
 - **Ollama 0.20.4 macOS has a hardcoded 3-model hot cap** — no env configuration we've found will raise it. When a mapped model gets evicted, silent VRAM fallback fires and Claude Code tool use breaks. Surfaced via `x-fleet-fallback` response header and fallback_rate in trace DB. See `docs/issues.md` and `docs/plans/hot-fleet-health-checks.md`.
 - **Use `mlx:` prefix in `FLEET_ANTHROPIC_MODEL_MAP` to bypass the 3-model cap** — any mapped value starting with `mlx:` routes through an independent `mlx_lm.server` subprocess instead of Ollama. Setup: run `./scripts/setup-mlx.sh` (installs pinned mlx-lm 0.31.3 + applies the `--kv-bits` patch the supervisor requires), then set `FLEET_MLX_ENABLED=true` on the router and `FLEET_NODE_MLX_ENABLED=true` + `FLEET_NODE_MLX_AUTO_START=true` on the node. **Re-run the script after any `uv tool upgrade mlx-lm`** — upgrades wipe the patch and supervisor auto-start fails with `unrecognized arguments: --kv-bits 8`. See `docs/guides/mlx-setup.md`.
 - **Run multiple MLX models concurrently via `FLEET_NODE_MLX_SERVERS`** — JSON list of `{model, port, kv_bits}` entries, one `mlx_lm.server` subprocess per entry. Memory-pressure gate (`FLEET_NODE_MLX_MEMORY_HEADROOM_GB`) refuses to start a server that wouldn't fit; surfaces skip reason in heartbeat as `memory_blocked` status. Set `FLEET_NODE_MLX_BIND_HOST=0.0.0.0` for multi-node LAN aggregation. Dashboard renders per-server health table inside each node card. Canonical use case: dedicate a smaller MLX model (e.g. `Qwen3-Coder-30B-A3B-Instruct-4bit`) to context compaction via `FLEET_CONTEXT_COMPACTION_MODEL=mlx:...` so summarization has its own prompt cache and doesn't compete for the main model's slot. See `docs/guides/mlx-setup.md` § "Multi-server setup".
+- **Brew tap testing — a tap that's only ever been bumped (version + sha256) has been *described*, not *tested*.** Homebrew runs `pip install --no-binary :all:` which forces source builds for every resource. Any Rust-extension Python dep (`pydantic-core`, `cryptography`, `tiktoken`) needs `depends_on "rust" => :build` in the formula or the install fails at "can't find Rust compiler" while bootstrapping `maturin`. Any `pyproject.toml` dep that isn't listed as a `resource` block also breaks the install (Homebrew's `virtualenv_install_with_resources` doesn't transparently pull from PyPI for missing deps). The 0.5.x formula was broken throughout for both reasons; nobody noticed because nobody actually ran `brew install`. **Step 13 of the release checklist is non-negotiable** — uninstall + untap + retap + install + import sanity check, every time, before considering a release done. See the 0.6.0-formula-fix observation in `docs/observations.md`.
 
 ## Architecture
 
@@ -172,7 +227,7 @@ Silent failures are dishonest. Fail fast, fail loud.
 
 ## Current State (as of 2026-04-16)
 
-- **Version:** 0.5.2 (soaking locally, 0.4.1 published on PyPI)
+- **Version:** 0.6.0 published on PyPI + Homebrew tap (live since 2026-04-24). Dashboard color semantics + thermal signal + `/dashboard/color-states` route are in `[Unreleased]` on `main` (post-0.6.0 commits) — will ship in 0.6.1.
 - **Fleet:** Neons-Mac-Studio (512GB M3 Ultra) + Lucass-MacBook-Pro-2 (128GB M4 Max). Mac Studio runs two MLX servers: `mlx:Qwen3-Coder-Next-4bit` on :11440 for coding + `mlx:Qwen3-Coder-30B-A3B-Instruct-4bit` on :11441 as dedicated compactor, both via `FLEET_NODE_MLX_SERVERS`. Plus `gpt-oss:120b` + `nomic-embed-text` via Ollama.
 - **Ollama settings:** `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=-1` (in `~/.zshrc`)
 - **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "929 tests\|18 checks" skills/`
