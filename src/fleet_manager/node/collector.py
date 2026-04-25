@@ -8,7 +8,10 @@ import os
 import platform
 import shutil
 import subprocess
+import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 from urllib.parse import urlparse
 
 from fleet_manager import __version__
@@ -33,6 +36,54 @@ from fleet_manager.models.node import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_T = TypeVar("_T")
+
+
+def _ttl_cache(ttl_seconds: float) -> Callable[[Callable[..., _T]], Callable[..., _T]]:
+    """Tiny zero-arg TTL cache used by the per-heartbeat detection helpers.
+
+    Pattern: the wrapped function is called every 5s by ``collect_heartbeat``,
+    but its result (whether mflux is running, whether qwen3-asr is busy, etc.)
+    only changes on the order of tens of seconds.  Re-running each beat
+    burns ~16 ms of agent CPU on ``psutil.process_iter`` for a fact that
+    didn't change.  This decorator stores the last result + timestamp and
+    re-uses it within ``ttl_seconds``.
+
+    Single-slot only (no per-arguments cache) — all the call sites this
+    decorates take no arguments.  Re-running a function for the first time
+    after the TTL expires is unconditional, so the dashboard never lags
+    by more than ``ttl_seconds`` on the indicator that drives it.
+
+    See ``docs/observations.md`` 2026-04-25 entry on profile-driven
+    caching: cache only what's measurably expensive AND tolerates
+    staleness; never cache CPU/memory/queue depth.
+    """
+    def decorator(fn: Callable[..., _T]) -> Callable[..., _T]:
+        last_value: list = [None]
+        last_time: list = [0.0]
+        miss_marker = object()
+        last_value[0] = miss_marker
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs) -> _T:
+            now = time.monotonic()
+            if last_value[0] is not miss_marker and now - last_time[0] < ttl_seconds:
+                return last_value[0]
+            result = fn(*args, **kwargs)
+            last_value[0] = result
+            last_time[0] = now
+            return result
+
+        def cache_clear() -> None:
+            last_value[0] = miss_marker
+            last_time[0] = 0.0
+
+        wrapper.cache_clear = cache_clear  # type: ignore[attr-defined]
+        return wrapper
+
+    return decorator
 
 
 def _make_lan_reachable_url(ollama_host: str, lan_ip: str) -> str:
@@ -160,8 +211,15 @@ def _which_extended(binary: str) -> str | None:
     return None
 
 
+@_ttl_cache(ttl_seconds=30.0)
 def _detect_image_models() -> ImageMetrics | None:
-    """Detect available image generation models on this system (mflux + DiffusionKit)."""
+    """Detect available image generation models on this system (mflux + DiffusionKit).
+
+    TTL-cached: scanning ~500 processes for ``mflux``/``diffusionkit`` names
+    via ``psutil.process_iter`` costs ~17 ms per call, ~200 ms/min at the
+    5 s heartbeat cadence. Generation jobs run 30+ s, so 30 s indicator
+    staleness is invisible to operators. See ``_ttl_cache`` docstring.
+    """
     models: list[ImageModel] = []
 
     # Detect mflux models
@@ -195,8 +253,14 @@ def _detect_image_models() -> ImageMetrics | None:
     return ImageMetrics(models_available=models, generating=generating)
 
 
+@_ttl_cache(ttl_seconds=30.0)
 def _detect_transcription_models() -> TranscriptionMetrics | None:
-    """Detect available speech-to-text models on this system."""
+    """Detect available speech-to-text models on this system.
+
+    TTL-cached for the same reason as ``_detect_image_models``: the cost
+    is the ``psutil.process_iter`` scan, not the ``shutil.which`` lookup.
+    Transcription jobs run 5–30 s; 30 s indicator lag is acceptable.
+    """
     models: list[TranscriptionModel] = []
     if shutil.which("mlx-qwen3-asr"):
         models.append(TranscriptionModel(name="qwen3-asr", binary="mlx-qwen3-asr"))

@@ -24,6 +24,32 @@ from fleet_manager.models.request import InferenceRequest, RequestFormat
 from fleet_manager.server.registry import NodeRegistry
 
 
+@pytest.fixture(autouse=True)
+def _clear_collector_ttl_caches():
+    """Reset the per-heartbeat TTL caches between every test.
+
+    ``_detect_image_models`` and ``_detect_transcription_models`` are
+    decorated with a 30 s TTL cache (see ``_ttl_cache`` in collector.py).
+    Without resetting between tests, a test that monkey-patches
+    ``shutil.which`` to simulate "no mflux installed" would still see the
+    cached "mflux installed" result from a previous test, producing
+    confusing assertion failures.
+
+    Same reasoning for the ``/dashboard/api/health`` response cache —
+    state from one test must not bleed into the next.
+    """
+    from fleet_manager.node import collector
+    from fleet_manager.server.routes import dashboard
+
+    if hasattr(collector._detect_image_models, "cache_clear"):
+        collector._detect_image_models.cache_clear()
+    if hasattr(collector._detect_transcription_models, "cache_clear"):
+        collector._detect_transcription_models.cache_clear()
+    dashboard._HEALTH_CACHE["payload"] = None
+    dashboard._HEALTH_CACHE["ts"] = 0.0
+    yield
+
+
 @pytest.fixture
 def settings():
     return ServerSettings()

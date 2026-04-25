@@ -405,17 +405,49 @@ async def get_benchmark_detail(request: Request, run_id: str):
     return {"data": data}
 
 
+# 30 s response cache for /dashboard/api/health.  The endpoint runs all
+# 18 health checks, several of which aggregate the trace DB over 24 h
+# windows — measured at ~450 ms per call.  At the dashboard's 15 s poll
+# cadence, that's ~3 % continuous CPU per active dashboard tab.
+#
+# 30 s TTL is the sweet spot: at the 15 s poll cadence, dashboard ALWAYS
+# hits cache on alternate polls (50 % reduction = 2× fewer expensive
+# computations).  Underlying signals are aggregated over windows of
+# minutes-to-hours, so 30 s of staleness is invisible to operators.
+# 15 s TTL would coincide with the poll interval and give effectively 0 %
+# cache hit due to timing alignment — see the analysis in the commit
+# message for ``9ff8a54`` follow-up.
+_HEALTH_CACHE: dict = {"ts": 0.0, "payload": None}
+_HEALTH_CACHE_TTL_S = 30.0
+
+
 @router.get("/dashboard/api/health")
 async def dashboard_health_data(request: Request):
-    """Fleet health analysis with actionable recommendations."""
+    """Fleet health analysis with actionable recommendations.
+
+    Response is cached for ``_HEALTH_CACHE_TTL_S`` seconds — see the
+    cache definition above for rationale.  Cache slot is shared across
+    all callers; no per-request keying because the endpoint doesn't read
+    any request-specific input.
+    """
+    import time as _time
+
     from fleet_manager.server.health_engine import HealthEngine
+
+    now = _time.monotonic()
+    cached_payload = _HEALTH_CACHE["payload"]
+    if cached_payload is not None and now - _HEALTH_CACHE["ts"] < _HEALTH_CACHE_TTL_S:
+        return cached_payload
 
     registry = request.app.state.registry
     trace_store = getattr(request.app.state, "trace_store", None)
 
     engine = HealthEngine()
     report = await engine.analyze(registry, trace_store)
-    return report.model_dump()
+    payload = report.model_dump()
+    _HEALTH_CACHE["payload"] = payload
+    _HEALTH_CACHE["ts"] = now
+    return payload
 
 
 @router.get("/dashboard/api/context-usage")
