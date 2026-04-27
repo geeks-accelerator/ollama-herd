@@ -339,6 +339,25 @@ Until upstream lands [PR #1073](https://github.com/ml-explore/mlx-lm/pull/1073) 
 
 ---
 
+## 2026-04-26 — A crashing supervisor with no upper bound is its own outage
+
+**Evidence**: Local fleet ran the multi-MLX setup for 28 hours uninterrupted. Around 17:00 PDT on 2026-04-26 something — most likely a Claude Code session resuming with a 100K+ token prompt — pushed `mlx_lm.server v0.31.3` into a state where every chat-completion request crashed the process with `RuntimeError: cannot schedule new futures after interpreter shutdown` from inside `huggingface_hub.snapshot_download`'s `thread_map`. The supervisor's `_monitor` task did exactly what it was designed to do — restart the process after each crash with exponential backoff up to 60 s — and proceeded to do that **420 times over 2.5 hours** before I noticed. Each cycle:
+
+- Spawned a fresh `mlx_lm.server` (~3-5 GB RAM allocation across the 42 GB model + tokenizer + cache structures)
+- Loaded the model successfully (visible in `mlx-server-11440.log` as a few seconds of startup)
+- Accepted exactly one HTTP POST `/v1/chat/completions` (logged as 200 in mlx-lm's access log)
+- Crashed during `_generate → load_default → snapshot_download → thread_map → ThreadPoolExecutor.submit` with the threadpool shutdown error
+- Was restarted by the supervisor 60 s later
+- Repeat
+
+Zero successful traces in the trace DB during the entire window — every request that came in saw the process die before its response stream completed, so the router's wall-clock timeout fired and the trace was never finalized as completed-or-failed. The dashboard kept showing "MLX server healthy" because the supervisor's `poll_health` saw GET `/v1/models` returning 200 between crashes — and it was, because there's a brief window after each restart where the server is alive but no chat-completion has been attempted yet.
+
+**Insight**: A supervisor that never gives up on restarting is correct for transient failures and catastrophic for persistent upstream bugs. The same code that makes "transient crash → automatic recovery" graceful makes "persistent code path that crashes on every request → 2.5 hours of wasted CPU and log noise." The fix is a quarantine guard: track crash timestamps in a rolling window; if more than `_QUARANTINE_FAILURE_COUNT` happen within `_QUARANTINE_WINDOW_S`, switch to a much slower restart cadence (10 min) and emit a CRITICAL health-check recommendation. Quarantine clears automatically when a restart stays up for the full window — so genuinely transient bursts still recover automatically; only persistent failures get throttled. This is now in `mlx_supervisor.py::_record_crash_and_check_quarantine`. The dashboard surfaces it via the new `mlx_server_quarantined` health check.
+
+Generalizable: any auto-restart loop needs a quarantine state. "Restart on failure" is not a complete strategy without a "stop trying so hard" partner. A health check that says "yeah we know this is broken, we're not going to keep slamming it" is more useful than continuing to flap with no signal that the operator should intervene. Filed upstream issue draft in `docs/upstream-issues/mlx-lm-load-default-crashloop.md` for someone to send when ready.
+
+---
+
 ## 2026-04-25 — Profile before optimizing: the cost was where I least expected it
 
 **Evidence**: User asked whether dashboard polling needed caching to reduce model-perf impact. My first instinct said yes for `_detect_image_models()` and `_detect_transcription_models()` — they ran every 5s on the heartbeat and "felt" like binary-scanning could be slow. Profiled the static binary detection: **0.03 ms**. Already fast, would have been wasted effort to cache. Re-profiled with the static-vs-live parts split: the actual 16-17ms cost was `psutil.process_iter()` scanning ~500 processes for `mflux`/`diffusionkit`/`qwen3-asr` names (the live "currently generating?" check), NOT the binary detection.

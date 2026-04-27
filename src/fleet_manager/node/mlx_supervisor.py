@@ -41,6 +41,16 @@ _HEALTH_POLL_TIMEOUT = 120.0  # 2 min — big MLX models can take a while to mma
 _BACKOFF_INITIAL = 1.0
 _BACKOFF_MAX = 60.0
 
+# Quarantine threshold — if mlx_lm.server crashes this many times within
+# a short window, we stop trying to restart at the normal cadence and
+# back off to the quarantine interval below.  Without this, a persistent
+# upstream bug (e.g. mlx-lm v0.31.3's load_default + tqdm threadpool
+# race that caused 420 crash-restarts over 2.5 hours on 2026-04-26) burns
+# CPU forever and floods the log.  See ``docs/observations.md`` 2026-04-26.
+_QUARANTINE_FAILURE_COUNT = 5    # 5 crashes within the window
+_QUARANTINE_WINDOW_S = 300.0     # = 5 minutes
+_QUARANTINE_RESTART_INTERVAL = 600.0  # back off to "try once every 10 min"
+
 
 @dataclass
 class MlxServerSpec:
@@ -227,10 +237,21 @@ class MlxSupervisor:
         #   "healthy"         — /v1/models returned 200 at last check
         #   "unhealthy"       — running but /v1/models failing
         #   "memory_blocked"  — start() refused due to memory gate
+        #   "quarantined"     — too many crashes in a short window;
+        #                       restarting at the slow quarantine cadence
+        #                       (see _QUARANTINE_* constants) so we don't
+        #                       burn CPU forever on a persistent upstream bug
         #   "stopped"         — gracefully terminated or never started
         self._status: str = "stopped"
         self._status_reason: str = ""
         self._last_ok_ts: float = 0.0
+        # Crash-rate tracking for quarantine.  Append the timestamp of every
+        # unexpected exit and prune entries older than _QUARANTINE_WINDOW_S
+        # before each check.  When the count exceeds threshold, the monitor
+        # switches to the slow restart interval and stays there until at
+        # least one restart succeeds (process stays up for the full window).
+        self._recent_crash_ts: list[float] = []
+        self._quarantined: bool = False
 
     @property
     def base_url(self) -> str:
@@ -462,8 +483,53 @@ class MlxSupervisor:
                 "— real traffic will pay the first cold prefill instead",
             )
 
+    def _record_crash_and_check_quarantine(self) -> None:
+        """Append the current crash time and decide whether to enter quarantine.
+
+        Quarantine triggers when more than ``_QUARANTINE_FAILURE_COUNT`` crashes
+        happen within a rolling ``_QUARANTINE_WINDOW_S`` window.  Once
+        quarantined, the monitor switches to ``_QUARANTINE_RESTART_INTERVAL``
+        between restart attempts (vs the normal exponential backoff capped at
+        ``_BACKOFF_MAX``).  A single successful restart that stays up past the
+        window clears quarantine.
+
+        Why this exists: 2026-04-26, mlx-lm v0.31.3's ``load_default``+
+        ``snapshot_download``+``thread_map`` chain entered a state where
+        every chat-completion request crashed the process.  The supervisor
+        restarted 420 times over 2.5 hours at 60 s intervals — burning agent
+        CPU, flooding logs, and never escaping.  See observation in
+        ``docs/observations.md``.
+        """
+        now = time.monotonic()
+        self._recent_crash_ts.append(now)
+        # Prune anything older than the window
+        cutoff = now - _QUARANTINE_WINDOW_S
+        self._recent_crash_ts = [t for t in self._recent_crash_ts if t >= cutoff]
+        if len(self._recent_crash_ts) >= _QUARANTINE_FAILURE_COUNT:
+            if not self._quarantined:
+                logger.error(
+                    "mlx_lm.server(port=%d, model=%r) entered QUARANTINE "
+                    "after %d crashes within %.0fs.  Backing off restart "
+                    "cadence to once every %.0fs.  An upstream bug or "
+                    "model corruption is likely; check "
+                    "~/.fleet-manager/logs/mlx-server-%d.log for stack "
+                    "traces.  Quarantine clears once a restart stays up "
+                    "for the full window.",
+                    self.port, self.model,
+                    len(self._recent_crash_ts), _QUARANTINE_WINDOW_S,
+                    _QUARANTINE_RESTART_INTERVAL, self.port,
+                )
+            self._quarantined = True
+
     async def _monitor(self) -> None:
-        """Watch the subprocess and restart it on unexpected exit."""
+        """Watch the subprocess and restart it on unexpected exit.
+
+        Restart cadence:
+          - Normal: exponential backoff 1 s → 2 s → 4 s → ... → 60 s cap.
+          - Quarantine (after ``_QUARANTINE_FAILURE_COUNT`` crashes within
+            ``_QUARANTINE_WINDOW_S``): fixed ``_QUARANTINE_RESTART_INTERVAL``
+            so a persistent upstream bug doesn't burn CPU forever.
+        """
         backoff = _BACKOFF_INITIAL
         while not self._stop.is_set():
             await asyncio.sleep(1.0)
@@ -471,18 +537,48 @@ class MlxSupervisor:
                 return
             rc = self._proc.poll()
             if rc is None:
-                # Still running — reset backoff once we've been up for a while
+                # Still running — reset backoff once we've been up for a while.
+                # Also opportunistically clear quarantine if we've been up
+                # for the full quarantine window without crashing.
                 backoff = _BACKOFF_INITIAL
+                if self._quarantined and self._last_ok_ts > 0 and (
+                    time.time() - self._last_ok_ts > _QUARANTINE_WINDOW_S
+                ):
+                    logger.info(
+                        "mlx_lm.server(port=%d) recovered: stayed up %.0fs "
+                        "without crashing, exiting QUARANTINE.",
+                        self.port, time.time() - self._last_ok_ts,
+                    )
+                    self._quarantined = False
+                    self._recent_crash_ts.clear()
                 continue
             if self._stop.is_set():
                 return
-            logger.warning(
-                f"mlx_lm.server(port={self.port}) exited unexpectedly "
-                f"(rc={rc}); restarting in {backoff:.1f}s"
-            )
-            self._status = "unhealthy"
-            self._status_reason = f"subprocess exited rc={rc}"
-            await asyncio.sleep(backoff)
+
+            # Process crashed.  Record it and decide cadence.
+            self._record_crash_and_check_quarantine()
+            if self._quarantined:
+                wait_s = _QUARANTINE_RESTART_INTERVAL
+                self._status = "quarantined"
+                self._status_reason = (
+                    f"{len(self._recent_crash_ts)} crashes within "
+                    f"{_QUARANTINE_WINDOW_S:.0f}s; next restart in "
+                    f"{wait_s:.0f}s"
+                )
+                logger.warning(
+                    f"mlx_lm.server(port={self.port}) exited unexpectedly "
+                    f"(rc={rc}); QUARANTINED — restarting in {wait_s:.0f}s"
+                )
+            else:
+                wait_s = backoff
+                self._status = "unhealthy"
+                self._status_reason = f"subprocess exited rc={rc}"
+                logger.warning(
+                    f"mlx_lm.server(port={self.port}) exited unexpectedly "
+                    f"(rc={rc}); restarting in {wait_s:.1f}s"
+                )
+
+            await asyncio.sleep(wait_s)
             backoff = min(backoff * 2, _BACKOFF_MAX)
             binary = find_mlx_lm_binary()
             if binary is None:

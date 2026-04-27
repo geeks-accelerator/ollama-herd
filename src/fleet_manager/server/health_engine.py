@@ -1031,6 +1031,44 @@ class HealthEngine:
                             "model_size_gb": srv.model_size_gb,
                         },
                     ))
+                elif srv.status == "quarantined":
+                    # Supervisor backed off to slow restart cadence after
+                    # too many crashes in a short window — a persistent
+                    # upstream bug or model corruption is the likely cause.
+                    # Distinct from mlx_server_down so operators can tell
+                    # "transient failure being retried" from "supervisor
+                    # gave up trying fast restarts."
+                    recs.append(Recommendation(
+                        check_id="mlx_server_quarantined",
+                        severity=Severity.CRITICAL,
+                        title=(
+                            f"MLX server {srv.model} on "
+                            f"{node.node_id}:{srv.port} is QUARANTINED"
+                        ),
+                        description=(
+                            srv.status_reason
+                            or "Supervisor saw repeated crashes in a short "
+                            "window and backed off to slow-restart cadence "
+                            "to stop burning CPU."
+                        ),
+                        fix=(
+                            f"Inspect ~/.fleet-manager/logs/mlx-server-"
+                            f"{srv.port}.log on {node.node_id} for the "
+                            "stack trace.  Common upstream causes: mlx-lm "
+                            "version regression (try `uv tool upgrade "
+                            "mlx-lm` then re-run `./scripts/setup-mlx.sh`), "
+                            "model weights corrupted (delete + re-download "
+                            "the HF cache dir), or a request payload "
+                            "tickling an mlx_lm bug.  After fixing, "
+                            "restart `herd-node` to clear quarantine."
+                        ),
+                        node_id=node.node_id,
+                        data={
+                            "port": srv.port,
+                            "model": srv.model,
+                            "status": srv.status,
+                        },
+                    ))
                 elif srv.status in ("unhealthy", "stopped", "starting"):
                     # "starting" at heartbeat time > 30s old implies wedged —
                     # the start call would have completed or timed out.  We
