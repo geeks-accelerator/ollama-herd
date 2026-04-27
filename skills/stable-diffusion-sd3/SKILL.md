@@ -147,7 +147,7 @@ curl http://localhost:11435/api/embed \
 
 Ollama Herd is open source (MIT). We welcome contributions from both humans and AI agents:
 - [GitHub](https://github.com/geeks-accelerator/ollama-herd) — star the repo, open issues, submit PRs
-- 956 tests, fully async Python, Pydantic v2 models
+- 964 tests, fully async Python, Pydantic v2 models
 - `CLAUDE.md` provides full context for AI agents
 
 ## Stable Diffusion Guardrails

@@ -143,7 +143,7 @@ Example Mac Studio fleet status response:
 Ollama Herd is open source (MIT). Built by Mac Studio owners for Mac Studio owners:
 - [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — help other Mac Studio users find us
 - [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — share your Mac Studio AI setup
-- **PRs welcome** — `CLAUDE.md` gives AI agents full context. 956 tests, async Python.
+- **PRs welcome** — `CLAUDE.md` gives AI agents full context. 964 tests, async Python.
 
 ## Guardrails
 

@@ -339,6 +339,27 @@ Until upstream lands [PR #1073](https://github.com/ml-explore/mlx-lm/pull/1073) 
 
 ---
 
+## 2026-04-27 — Orphan mlx_lm.server processes survive their parent's death and pretend the supervisor is broken
+
+**Evidence**: Audited the local fleet after 17 hours of "stable" operation post the quarantine guard ship. The supervisor logged 204 `mlx_lm.server(port=N) exited unexpectedly (rc=1); QUARANTINED — restarting in 600s` warnings, one every 10 minutes per port for 17 hours straight. Looked like the upstream mlx-lm bug had recurred and quarantine was steadily containing it. Drilled in:
+
+- The mlx-server log on port 11440 had **zero crashes** in 17 hours — only `GET /v1/models 200` health-check responses.
+- `ps aux | grep mlx_lm.server` showed PIDs 91773 (port 11440) and 91778 (port 11441) **both alive 17 hours, parent PID = 1 (launchd)**.
+- `lsof -i :11440 -i :11441` confirmed those orphan processes were holding the ports.
+- Yet the supervisor's herd.jsonl had 668 "restarted successfully" log lines — meaning it WAS spawning new processes successfully (they got past the initial health check).
+
+The reconciliation: my supervisor uses `subprocess.Popen(start_new_session=True)`, which `setsid()`s in the child. When the child's parent (herd-node) dies, the child stays alive and gets reparented to launchd — it does NOT receive SIGHUP. Earlier in the previous session, I'd run `pkill -9 -f "bin/herd-node"` to restart the node without touching mlx_lm.server. The original mlx_lm.server children were orphaned. The new herd-node started its own supervisor, which spawned its own mlx_lm.server processes — but those failed to bind because the orphans held the ports, exited rc=1 in ~2 seconds, and the supervisor's quarantine logic kicked in. **For 17 hours, our supervisor was crash-looping against itself while the orphan it didn't know about did the actual serving.**
+
+The dashboard showed `mlx_server_quarantined` (CRITICAL), the supervisor's view said "broken," and reality said "fine, just not under our supervision." 3 chat completions completed successfully during the window — all served by the orphans, never by our supervisor's failed spawns. The "successful restart" log lines were the orphan returning 200 on /v1/models during the brief health-check window before the doomed bind attempt.
+
+**Insight**: `start_new_session=True` is correct for "child should survive a transient parent restart" but creates a recovery footgun for "parent restart that should also wipe children." A supervisor that owns a port-bound subprocess **must check for orphans on its port before spawning** — both because it can't bind otherwise AND because the orphan's behavior diverges from what the supervisor thinks is happening. Implemented `find_orphan_mlx_pids_on_port` (psutil-based, identity-strict — only kills processes whose cmdline mentions `mlx_lm.server` AND whose net_connections show binding to our port; an unrelated process on the same port is left alone). `MlxSupervisor.start()` now SIGKILLs those orphans before its own `Popen` and logs a loud WARNING explaining what was found.
+
+Generalizable beyond this incident: any "supervisor manages a subprocess that binds a known port" pattern needs the orphan-check at spawn time, not just trust in the subprocess module's reaping. The contract `Popen` advertises ("when this object goes away, so does the child") is a lie under `start_new_session=True`. Document the limitation if you use it; better, scan for orphans at startup so a botched previous teardown can't silently break the next session.
+
+Also: the operator restart recipe in `CLAUDE.md` was the tertiary cause — `pkill -f "bin/herd"` doesn't catch `mlx_lm.server`. Updated to `pkill -9 -f "bin/herd|mlx_lm.server"` so the manual path doesn't reproduce the same trap. Both fixes shipped together — the supervisor self-heals if a future operator forgets the right pkill, and the right pkill is now in the docs anyway.
+
+---
+
 ## 2026-04-26 — A crashing supervisor with no upper bound is its own outage
 
 **Evidence**: Local fleet ran the multi-MLX setup for 28 hours uninterrupted. Around 17:00 PDT on 2026-04-26 something — most likely a Claude Code session resuming with a 100K+ token prompt — pushed `mlx_lm.server v0.31.3` into a state where every chat-completion request crashed the process with `RuntimeError: cannot schedule new futures after interpreter shutdown` from inside `huggingface_hub.snapshot_download`'s `thread_map`. The supervisor's `_monitor` task did exactly what it was designed to do — restart the process after each crash with exponential backoff up to 60 s — and proceeded to do that **420 times over 2.5 hours** before I noticed. Each cycle:

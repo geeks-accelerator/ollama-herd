@@ -136,7 +136,7 @@ Dashboard at `http://localhost:11435/dashboard`.
 Ollama Herd is open source (MIT):
 - [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — help others run Qwen locally
 - [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — share your Qwen setup, report bugs
-- **PRs welcome** — `CLAUDE.md` gives AI agents full context. 956 tests, async Python.
+- **PRs welcome** — `CLAUDE.md` gives AI agents full context. 964 tests, async Python.
 
 ## Guardrails
 

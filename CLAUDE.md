@@ -16,7 +16,7 @@ Without `--extra embedding`, the vision embedding server starts but `onnxruntime
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 956 tests (~40s)
+uv run pytest                    # run all 964 tests (~40s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -97,10 +97,14 @@ uv run ruff format src/          # format
 ### Local deployment
 
 ```bash
-pkill -f "bin/herd" && sleep 2
+# Kill EVERYTHING herd-related, including any mlx_lm.server children that
+# would otherwise survive the parent's death and orphan onto launchd.
+pkill -9 -f "bin/herd|mlx_lm.server" && sleep 3
 uv sync --all-extras && uv run herd &>/dev/null & disown
 sleep 3 && uv run herd-node &>/dev/null & disown
 ```
+
+**`pkill -9 -f "bin/herd|mlx_lm.server"` matters as much as `--all-extras`.** `MlxSupervisor` spawns mlx_lm.server with `start_new_session=True` so the children survive a parent crash. If you only `pkill bin/herd`, the mlx_lm.server processes get reparented to launchd and keep holding ports 11440 + 11441. The next supervisor startup tries to bind, fails, and logs "QUARANTINED" forever against an orphan that's actually fine (see `docs/observations.md` 2026-04-27). The supervisor now detects + SIGKILLs orphans automatically at start time, but the cleaner restart recipe avoids the warning entirely. (`-9` because some MLX shutdown paths hang on SIGTERM — see commit `9ff8a54`.)
 
 **`--all-extras` is non-negotiable here.** Plain `uv sync` is destructive — it removes any package not in core deps + currently-requested extras. The `embedding` extras (`onnxruntime`, `Pillow`, `numpy`, `huggingface-hub`) are optional in `pyproject.toml`, so a bare `uv sync` strips them every restart, and the next vision-embedding request 500s. A health check (`vision_backend_missing`) now catches this regression server-side, but `--all-extras` in the deploy snippet is the actual fix — it makes the local fleet keep every optional capability resident across restarts. Total cost: ~250 MB of additional packages in `.venv/`. See `docs/observations.md` (entry: 2026-04-25 — "uv sync without --extra embedding strips vision embedding deps").
 
@@ -232,7 +236,7 @@ Silent failures are dishonest. Fail fast, fail loud.
 - **Version:** 0.6.0 published on PyPI + Homebrew tap (live since 2026-04-24). Dashboard color semantics + thermal signal + `/dashboard/color-states` route are in `[Unreleased]` on `main` (post-0.6.0 commits) — will ship in 0.6.1.
 - **Fleet:** Neons-Mac-Studio (512GB M3 Ultra) + Lucass-MacBook-Pro-2 (128GB M4 Max). Mac Studio runs two MLX servers: `mlx:Qwen3-Coder-Next-4bit` on :11440 for coding + `mlx:Qwen3-Coder-30B-A3B-Instruct-4bit` on :11441 as dedicated compactor, both via `FLEET_NODE_MLX_SERVERS`. Plus `gpt-oss:120b` + `nomic-embed-text` via Ollama.
 - **Ollama settings:** `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=-1` (in `~/.zshrc`)
-- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "956 tests\|31 checks" skills/`
+- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "964 tests\|31 checks" skills/`
 - **Health:** 31 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
 
 ## Conventions

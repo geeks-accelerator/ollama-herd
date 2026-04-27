@@ -132,7 +132,7 @@ Ollama Herd is open source (MIT) and built on the MLX ecosystem. We welcome cont
 - [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — helps others discover the project
 - [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — bug reports, feature requests, questions
 - **AI agents welcome** — `CLAUDE.md` provides full architectural context. Fork, branch, PR.
-- 956 tests, async Python, runs in under 40 seconds. Hard to break things.
+- 964 tests, async Python, runs in under 40 seconds. Hard to break things.
 
 ## Guardrails
 

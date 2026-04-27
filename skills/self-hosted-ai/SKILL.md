@@ -146,7 +146,7 @@ Self-hosted dashboard at `http://localhost:11435/dashboard` for visual monitorin
 Ollama Herd is open source (MIT). Self-hosted AI for everyone:
 - [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — help others discover self-hosted AI
 - [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — share your self-hosted setup
-- **PRs welcome** from humans and AI agents. `CLAUDE.md` gives full self-hosted context. 956 tests.
+- **PRs welcome** from humans and AI agents. `CLAUDE.md` gives full self-hosted context. 964 tests.
 
 ## Self-Hosted Guardrails
 

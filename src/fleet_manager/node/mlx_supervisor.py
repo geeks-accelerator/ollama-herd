@@ -197,6 +197,58 @@ def find_mlx_lm_binary() -> str | None:
     return None
 
 
+def find_orphan_mlx_pids_on_port(port: int) -> list[int]:
+    """Return PIDs of mlx_lm.server processes already bound to ``port``.
+
+    Used by ``MlxSupervisor.start()`` to detect orphans left behind by a
+    previous herd-node session — see the 2026-04-27 observation in
+    ``docs/observations.md``.  Background: ``Popen(start_new_session=True)``
+    makes spawned processes survive their parent's death (they get
+    reparented to launchd).  If herd-node was killed without first killing
+    its mlx_lm.server children, the originals stay alive holding the port.
+    The next herd-node startup tries to spawn its own mlx_lm.server, fails
+    to bind because the port's taken, exits rc=1 — and the supervisor's
+    crash-loop logic kicks in against a process that doesn't exist while
+    the orphan is doing the actual serving.
+
+    Filter via psutil rather than parsing ``lsof`` output: psutil is
+    already a hard dependency, returns structured data, and matches the
+    process identity (mlx_lm.server) which an arbitrary "owns this port"
+    check wouldn't (e.g., a user's manual `mlx_lm.server` invocation
+    should still get killed; an unrelated service on the same port
+    should NOT).
+    """
+    try:
+        import psutil
+    except ImportError:
+        # psutil should always be present (core dep), but be defensive.
+        logger.debug("psutil not available; skipping orphan check")
+        return []
+
+    matching: list[int] = []
+    for proc in psutil.process_iter(attrs=["pid", "name", "cmdline"]):
+        try:
+            cmdline = proc.info.get("cmdline") or []
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        # Identify mlx_lm.server processes specifically — filter by both
+        # binary name and command-line args so we don't kill any random
+        # process that happens to mention "mlx_lm" in its name.
+        if not any("mlx_lm.server" in str(c) for c in cmdline):
+            continue
+        # Confirm the process is actually bound to OUR port via its connections.
+        try:
+            conns = proc.net_connections(kind="inet")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        for c in conns:
+            laddr = getattr(c, "laddr", None)
+            if laddr and getattr(laddr, "port", None) == port:
+                matching.append(proc.info["pid"])
+                break
+    return matching
+
+
 class MlxSupervisor:
     """Owns the lifecycle of a local ``mlx_lm.server`` subprocess."""
 
@@ -374,6 +426,46 @@ class MlxSupervisor:
                 self._status = "memory_blocked"
                 self._status_reason = reason
                 return False
+
+        # Orphan detection: if a previous herd-node session was killed
+        # without also killing its mlx_lm.server children, those orphans
+        # are still bound to our configured port.  Our Popen would fail
+        # to bind, exit rc=1, and the crash-loop logic would log
+        # "QUARANTINED" forever against a process that's actually fine
+        # (the orphan keeps serving).  See ``docs/observations.md``
+        # 2026-04-27.  Detect via psutil and SIGKILL before spawning.
+        orphan_pids = find_orphan_mlx_pids_on_port(self.port)
+        if orphan_pids:
+            logger.warning(
+                "mlx_lm.server orphan(s) found on port %d: PIDs %s. "
+                "Killing them before spawning a fresh process — these "
+                "are leftover from a previous herd-node session that "
+                "didn't tear down its MLX children.  If you intended "
+                "those to keep running, stop herd-node before "
+                "restarting them manually.",
+                self.port, orphan_pids,
+            )
+            for pid in orphan_pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    logger.error(
+                        "Cannot kill orphan mlx_lm.server PID %d (permission "
+                        "denied).  Either kill it manually or restart from a "
+                        "shell that owns the process.",
+                        pid,
+                    )
+                    self._status = "stopped"
+                    self._status_reason = (
+                        f"orphan mlx_lm.server on port {self.port} "
+                        f"(PID {pid}) blocks bind and we lack permission "
+                        "to kill it"
+                    )
+                    return False
+            # Give the OS a moment to release the port after SIGKILL
+            await asyncio.sleep(1.0)
 
         # Preflight: if the user asked for KV quantization but the installed
         # mlx_lm.server doesn't expose --kv-bits, fail fast with actionable
