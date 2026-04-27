@@ -358,8 +358,9 @@ export FLEET_ANTHROPIC_MODEL_MAP='{"default":"qwen3-coder:30b","claude-haiku-4-5
 # Persist for future shells
 echo "export FLEET_ANTHROPIC_MODEL_MAP='$FLEET_ANTHROPIC_MODEL_MAP'" >> ~/.zshrc
 
-# Restart herd to pick up the env var
-pkill -f "bin/herd" && sleep 2
+# Restart herd to pick up the env var (canonical recipe — see CLAUDE.md
+# § Local deployment for why mlx_lm.server has to be in the pkill list)
+pkill -9 -f "bin/herd|mlx_lm.server" && sleep 3
 uv run herd &>/dev/null & disown
 sleep 3
 uv run herd-node &>/dev/null & disown

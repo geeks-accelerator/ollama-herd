@@ -151,7 +151,7 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `node/platform_client.py` | Shared httpx wrapper with retry — used by heartbeat + telemetry |
 | `node/platform_heartbeat.py` | Signed heartbeat POST every 60s (CPU, memory, VRAM, queues, loaded models) |
 | `node/mlx_client.py` | Node-side client for polling `mlx_lm.server` `/v1/models`; results merged into heartbeat with `mlx:` prefix |
-| `node/mlx_supervisor.py` | Subprocess lifecycle for N `mlx_lm.server` processes — spawn, health-check, auto-restart on crash, memory-pressure gate (via `MlxSupervisorSet`, one child per `FLEET_NODE_MLX_SERVERS` entry) |
+| `node/mlx_supervisor.py` | Subprocess lifecycle for N `mlx_lm.server` processes — spawn, health-check, auto-restart on crash, memory-pressure gate, orphan reap on startup (kills any pre-existing `mlx_lm.server` bound to our port — see 2026-04-27 observation), crash-rate quarantine (5+ crashes in 5 min → 10-min restart cadence — see 2026-04-26 observation). One child per `FLEET_NODE_MLX_SERVERS` entry via `MlxSupervisorSet`. |
 | `server/mlx_proxy.py` | Server-side proxy forwarding `mlx:` prefixed models to the right mlx_lm.server (OpenAI → Anthropic SSE translation, per-URL client pool, registry-driven URL resolution) |
 | `node/telemetry_scheduler.py` | Daily usage rollup POST at 00:05 UTC + jitter (opt-in via env) |
 | `node/daily_rollup.py` | Builds telemetry payload with structural privacy whitelist |
