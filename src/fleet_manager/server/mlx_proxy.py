@@ -377,6 +377,7 @@ class MlxProxy:
         retry_after_seconds: int = 10,
         read_timeout_s: float = 1800.0,
         wall_clock_timeout_s: float = 300.0,
+        max_inflight_per_model: int = 1,
     ):
         # Back-compat: positional ``base_url`` or keyword ``url_resolver``.
         # Exactly one must produce a URL for a given request.
@@ -395,7 +396,13 @@ class MlxProxy:
         # Catches wedged-request syndrome where mlx_lm.server emits tokens
         # slowly but never stops.  See MlxWallClockTimeoutError.
         self.wall_clock_timeout_s = wall_clock_timeout_s
-        # Per-model asyncio.Semaphore(1) enforces mlx_lm.server's real
+        # Per-model in-flight cap.  1 = strict serialization (default,
+        # matches historical behavior).  2-3 lets mlx_lm.server's
+        # BatchGenerator parallelize when batchable.  See
+        # ``docs/research/mlx-lm-stability-and-concurrency.md`` for the
+        # source-read + live test that validated this is safe.
+        self.max_inflight_per_model = max(1, int(max_inflight_per_model))
+        # Per-model asyncio.Semaphore enforces mlx_lm.server's effective
         # concurrency limit at the herd boundary.  Lazily created so we
         # don't depend on an event loop existing at __init__ time (tests).
         self._semaphores: dict[str, asyncio.Semaphore] = {}
@@ -651,10 +658,17 @@ class MlxProxy:
         }
 
     def _get_semaphore(self, model_key: str) -> asyncio.Semaphore:
-        """Return (creating if needed) the per-model admission semaphore."""
+        """Return (creating if needed) the per-model admission semaphore.
+
+        Sized at construction time from ``max_inflight_per_model``.  Once
+        created, the semaphore for a given model_key is fixed for the
+        lifetime of the proxy — changing the env var requires a router
+        restart.  This is fine because the value is a tuning knob, not a
+        runtime control.
+        """
         sem = self._semaphores.get(model_key)
         if sem is None:
-            sem = asyncio.Semaphore(1)
+            sem = asyncio.Semaphore(self.max_inflight_per_model)
             self._semaphores[model_key] = sem
         return sem
 

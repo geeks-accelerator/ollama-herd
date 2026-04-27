@@ -235,6 +235,20 @@ class ServerSettings(BaseSettings):
     # ~5s/request on Qwen3-Coder-Next cached prompts, depth=10 means
     # worst-case wait ≈ 50s.  Clients still get a clean 503 if overwhelmed.
     mlx_max_queue_depth: int = 10
+    # Maximum concurrent in-flight requests per MLX model (per port).  Default
+    # 1 = strict serialization, matching what the proxy has always done.
+    # Set to 2-3 to let mlx_lm.server's BatchGenerator process multiple
+    # requests in one inference pass — empirically validated 2026-04-27 to
+    # produce wall-time ≈ max(individual) instead of wall ≈ sum (i.e. real
+    # parallelism, not just overlap).  Higher values trade reliability for
+    # throughput: each in-flight request carries its own KV cache state, so
+    # running 2 × 100K-token prefills concurrently doubles the prompt-cache
+    # memory footprint.  Concurrent-request paths in mlx_lm.server have
+    # historically been bug magnets (e.g. #1166 fixed in v0.31.3), so the
+    # conservative default is 1.  Bump to 2 if your workload bursts (multiple
+    # Claude Code sessions, parallel tool calls) and you've measured headroom.
+    # See ``docs/research/mlx-lm-stability-and-concurrency.md``.
+    mlx_max_inflight_per_model: int = 1
     # Seconds to advertise in the Retry-After header when shedding load.
     mlx_retry_after_seconds: int = 10
     # HTTP read timeout (seconds) for requests to mlx_lm.server.  The proxy

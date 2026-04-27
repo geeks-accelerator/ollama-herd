@@ -66,6 +66,9 @@ async def lifespan(app: FastAPI):
             wall_clock_timeout_s=getattr(
                 settings, "mlx_wall_clock_timeout_s", 300.0,
             ),
+            max_inflight_per_model=getattr(
+                settings, "mlx_max_inflight_per_model", 1,
+            ),
         )
         logger.info(
             f"MLX backend enabled (fallback={settings.mlx_url}, "

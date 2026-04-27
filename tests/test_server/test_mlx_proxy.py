@@ -565,6 +565,7 @@ async def test_acquire_slot_first_request_goes_through():
 async def test_acquire_slot_blocks_second_until_first_releases():
     """Second concurrent request waits on the semaphore."""
     import asyncio as aio
+
     from fleet_manager.server.mlx_proxy import MlxProxy
     proxy = MlxProxy("http://test", max_queue_depth=3)
 
@@ -591,6 +592,7 @@ async def test_acquire_slot_blocks_second_until_first_releases():
 async def test_queue_full_raises_when_exceeding_depth():
     """Nth+1 concurrent request (1 in-flight + N queued) → MlxQueueFullError."""
     import asyncio as aio
+
     from fleet_manager.server.mlx_proxy import MlxProxy, MlxQueueFullError
     proxy = MlxProxy("http://test", max_queue_depth=2, retry_after_seconds=5)
 
@@ -638,8 +640,9 @@ async def test_per_model_semaphores_are_independent():
 @pytest.mark.asyncio
 async def test_queue_full_does_not_affect_inflight_counter():
     """A rejected request must not leak into the queued or inflight counts."""
-    from fleet_manager.server.mlx_proxy import MlxProxy, MlxQueueFullError
     import asyncio as aio
+
+    from fleet_manager.server.mlx_proxy import MlxProxy, MlxQueueFullError
     proxy = MlxProxy("http://test", max_queue_depth=1)
     await proxy._acquire_slot("model-a")
     t1 = aio.create_task(proxy._acquire_slot("model-a"))
@@ -1035,3 +1038,87 @@ def test_mlx_proxy_defaults_wall_clock_timeout_to_300s():
     from fleet_manager.server.mlx_proxy import MlxProxy
     proxy = MlxProxy("http://test")
     assert proxy.wall_clock_timeout_s == 300.0
+
+
+# ---------------------------------------------------------------------------
+# Configurable per-model in-flight cap (FLEET_MLX_MAX_INFLIGHT_PER_MODEL)
+# ---------------------------------------------------------------------------
+
+
+def test_mlx_proxy_defaults_max_inflight_per_model_to_1():
+    """Conservative default — preserves historical behavior."""
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test")
+    assert proxy.max_inflight_per_model == 1
+
+
+def test_mlx_proxy_accepts_max_inflight_per_model_config():
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test", max_inflight_per_model=3)
+    assert proxy.max_inflight_per_model == 3
+
+
+def test_mlx_proxy_clamps_max_inflight_to_at_least_1():
+    """Operator typo (e.g., 0 or negative) gets clamped, not silently broken."""
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy_zero = MlxProxy("http://test", max_inflight_per_model=0)
+    assert proxy_zero.max_inflight_per_model == 1
+    proxy_neg = MlxProxy("http://test", max_inflight_per_model=-5)
+    assert proxy_neg.max_inflight_per_model == 1
+
+
+@pytest.mark.asyncio
+async def test_max_inflight_2_allows_two_concurrent_acquires():
+    """With max_inflight_per_model=2, two acquires complete without blocking
+    while a third blocks until one of the first two releases.
+
+    Validates that mlx_lm.server's BatchGenerator can be exposed at the
+    proxy level — see ``docs/research/mlx-lm-stability-and-concurrency.md``.
+    """
+    import asyncio as aio
+
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test", max_queue_depth=5, max_inflight_per_model=2)
+
+    # First two go through without blocking
+    await proxy._acquire_slot("model-a")
+    await proxy._acquire_slot("model-a")
+    assert proxy._inflight["model-a"] == 2
+    assert proxy._queued.get("model-a", 0) == 0
+
+    # Third one blocks — semaphore is at capacity
+    task = aio.create_task(proxy._acquire_slot("model-a"))
+    await aio.sleep(0.05)
+    assert proxy._queued["model-a"] == 1
+    assert proxy._inflight["model-a"] == 2
+    assert not task.done()
+
+    # Release one — third proceeds
+    proxy._release_slot("model-a")
+    await aio.wait_for(task, timeout=1.0)
+    assert proxy._inflight["model-a"] == 2
+    assert proxy._queued["model-a"] == 0
+
+    # Cleanup
+    proxy._release_slot("model-a")
+    proxy._release_slot("model-a")
+
+
+@pytest.mark.asyncio
+async def test_per_model_inflight_caps_are_independent():
+    """Two different model_keys each get their own semaphore at the
+    configured cap — model-a saturating doesn't block model-b."""
+    import asyncio as aio
+
+    from fleet_manager.server.mlx_proxy import MlxProxy
+    proxy = MlxProxy("http://test", max_inflight_per_model=1)
+
+    # Saturate model-a
+    await proxy._acquire_slot("model-a")
+    # model-b still has its own slot
+    await aio.wait_for(proxy._acquire_slot("model-b"), timeout=0.5)
+    assert proxy._inflight["model-a"] == 1
+    assert proxy._inflight["model-b"] == 1
+
+    proxy._release_slot("model-a")
+    proxy._release_slot("model-b")
