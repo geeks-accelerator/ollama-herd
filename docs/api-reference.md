@@ -662,8 +662,8 @@ downstream tooling see per-URL health without polling each port individually.
 |-------|------|-------------|
 | `port` | int | Port the server listens on (unique per-node) |
 | `model` | string | HF repo id or local path (without `mlx:` prefix) |
-| `status` | string | `healthy` / `starting` / `unhealthy` / `memory_blocked` / `stopped` |
-| `status_reason` | string | Human-readable detail (empty when healthy) — e.g. `"memory gate: 42.0 GB needed, 16 GB available"` or `"subprocess exited rc=1"` |
+| `status` | string | `healthy` / `starting` / `unhealthy` / `memory_blocked` / `quarantined` / `stopped` |
+| `status_reason` | string | Human-readable detail (empty when healthy) — e.g. `"memory gate: 42.0 GB needed, 16 GB available"`, `"subprocess exited rc=1"`, or `"5 crashes within 300s; next restart in 600s"` |
 | `kv_bits` | int | 0 / 4 / 8 — KV quantization level (requires `setup-mlx.sh` patch) |
 | `model_size_gb` | float | Estimated weight size from HF cache on disk |
 | `last_ok_ts` | float | Epoch seconds of last successful `/v1/models` poll |

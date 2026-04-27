@@ -16,7 +16,7 @@ Without `--extra embedding`, the vision embedding server starts but `onnxruntime
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 948 tests (~40s)
+uv run pytest                    # run all 956 tests (~40s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -232,8 +232,8 @@ Silent failures are dishonest. Fail fast, fail loud.
 - **Version:** 0.6.0 published on PyPI + Homebrew tap (live since 2026-04-24). Dashboard color semantics + thermal signal + `/dashboard/color-states` route are in `[Unreleased]` on `main` (post-0.6.0 commits) — will ship in 0.6.1.
 - **Fleet:** Neons-Mac-Studio (512GB M3 Ultra) + Lucass-MacBook-Pro-2 (128GB M4 Max). Mac Studio runs two MLX servers: `mlx:Qwen3-Coder-Next-4bit` on :11440 for coding + `mlx:Qwen3-Coder-30B-A3B-Instruct-4bit` on :11441 as dedicated compactor, both via `FLEET_NODE_MLX_SERVERS`. Plus `gpt-oss:120b` + `nomic-embed-text` via Ollama.
 - **Ollama settings:** `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=-1` (in `~/.zshrc`)
-- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "948 tests\|18 checks" skills/`
-- **Health:** 18 checks, zero errors. Monitor: `curl http://localhost:11435/dashboard/api/health`
+- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "956 tests\|31 checks" skills/`
+- **Health:** 31 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
 
 ## Conventions
 

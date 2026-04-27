@@ -234,7 +234,7 @@ Update `https://ollamaherd.com` landing-page screenshots to use the new palette.
 ## Non-goals
 
 - **This is not a wholesale dashboard redesign.** Layout, typography, and information density stay as-is. Only the color semantics for utilization bars change.
-- **We are not removing the health check system.** The Recommendations panel, the 18 checks, and severity-based sorting all stay. The new bar overlay is in *addition* to those surfaces, not a replacement.
+- **We are not removing the health check system.** The Recommendations panel, the 31+ checks, and severity-based sorting all stay. The new bar overlay is in *addition* to those surfaces, not a replacement.
 - **We are not adding new operator actions.** No "dismiss" / "acknowledge" / "mute" UI. Those can come later if warning states prove noisy in practice.
 - **We are not modifying charts or categorical palettes.** `/dashboard/trends` and `/dashboard/models` use Chart.js with a categorical color array (`modelColors` on dashboard.py:3141). Those differentiate N time series visually — they're not a utilization scale and stay as-is.
 - **We are not modifying the disk usage bar.** Disk at 95% is a hard-ceiling warning (model downloads will fail, trace DB writes will stop). `barColor` stays on the disk bar; the change applies only to product-value utilization metrics (CPU, memory, model RAM).
