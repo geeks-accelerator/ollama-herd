@@ -1,22 +1,18 @@
-# Upstream issue draft: mlx-lm v0.31.3 — `load_default` → `snapshot_download` → thread_map crash
+# Upstream issue: mlx-lm v0.31.3 — `load_default` → `snapshot_download` → thread_map crash
 
 **Repo:** [`ml-explore/mlx-lm`](https://github.com/ml-explore/mlx-lm)
 **Affects:** v0.31.3 (latest as of 2026-04-26), Python 3.14.3 on macOS arm64
-**Status:** Not yet filed. This file is a paste-ready draft.
+**Status:** ✅ Filed 2026-04-26 as [ml-explore/mlx-lm#1208](https://github.com/ml-explore/mlx-lm/issues/1208) — currently OPEN, awaiting upstream triage.
 
-To file:
+This file is the local copy of the body that was posted, kept in-repo so future maintainers have the full context if the upstream issue gets closed/locked/redacted. To check upstream status:
+
 ```bash
-gh issue create --repo ml-explore/mlx-lm \
-  --title "v0.31.3: load_default → snapshot_download → thread_map crashes mlx_lm.server in a tight loop" \
-  --body-file docs/upstream-issues/mlx-lm-load-default-crashloop.md
+gh issue view 1208 --repo ml-explore/mlx-lm
 ```
 
 ---
 
-# Title
-v0.31.3: `load_default` → `snapshot_download` → `thread_map` crashes `mlx_lm.server` in a tight loop ("cannot schedule new futures after interpreter shutdown")
-
-# Description
+# Original body posted to upstream
 
 Running `mlx_lm.server v0.31.3` with `--model mlx-community/Qwen3-Coder-Next-4bit` (a 80B MoE quantized to 4-bit, ~42 GB on disk) on macOS Apple Silicon, after some hours of normal serving the process enters a state where every chat-completion request kills it with this stack trace:
 
