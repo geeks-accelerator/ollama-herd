@@ -19,6 +19,7 @@ Protocol:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from typing import Any
@@ -69,10 +70,8 @@ class CloudConnector:
             finally:
                 self._ws = None
 
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), timeout=backoff)
-            except asyncio.TimeoutError:
-                pass
             backoff = min(backoff * 2, 60.0)
 
     async def stop(self) -> None:
@@ -98,7 +97,7 @@ class CloudConnector:
         url = f"{self.local_herd_url}{path}"
 
         if not req_id:
-            logger.warning(f"[cloud] Missing request_id in message")
+            logger.warning("[cloud] Missing request_id in message")
             return
 
         try:
@@ -119,56 +118,62 @@ class CloudConnector:
         body_copy = dict(body)
         body_copy["stream"] = True
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-            async with client.stream("POST", url, json=body_copy) as response:
-                if response.status_code >= 400:
-                    err = await response.aread()
-                    await self._safe_send(ws, {
-                        "type": "error",
-                        "request_id": req_id,
-                        "error": f"Local herd returned {response.status_code}: {err[:500].decode(errors='replace')}",
-                    })
-                    return
+        async with (
+            httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client,
+            client.stream("POST", url, json=body_copy) as response,
+        ):
+            if response.status_code >= 400:
+                err = await response.aread()
+                err_text = err[:500].decode(errors='replace')
+                await self._safe_send(ws, {
+                    "type": "error",
+                    "request_id": req_id,
+                    "error": (
+                        f"Local herd returned {response.status_code}: "
+                        f"{err_text}"
+                    ),
+                })
+                return
 
-                tokens_in = None
-                tokens_out = None
+            tokens_in = None
+            tokens_out = None
 
-                async for line in response.aiter_lines():
-                    line = line.strip()
-                    if not line:
+            async for line in response.aiter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Handle both SSE (data: {...}) and NDJSON formats
+                if line.startswith("data: "):
+                    payload = line[6:].strip()
+                    if payload == "[DONE]":
                         continue
+                else:
+                    payload = line
 
-                    # Handle both SSE (data: {...}) and NDJSON formats
-                    if line.startswith("data: "):
-                        payload = line[6:].strip()
-                        if payload == "[DONE]":
-                            continue
-                    else:
-                        payload = line
+                try:
+                    chunk = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
 
-                    try:
-                        chunk = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
-
-                    # Capture usage if present
-                    usage = chunk.get("usage") if isinstance(chunk, dict) else None
-                    if usage:
-                        tokens_in = usage.get("prompt_tokens")
-                        tokens_out = usage.get("completion_tokens")
-
-                    await self._safe_send(ws, {
-                        "type": "chunk",
-                        "request_id": req_id,
-                        "data": chunk,
-                    })
+                # Capture usage if present
+                usage = chunk.get("usage") if isinstance(chunk, dict) else None
+                if usage:
+                    tokens_in = usage.get("prompt_tokens")
+                    tokens_out = usage.get("completion_tokens")
 
                 await self._safe_send(ws, {
-                    "type": "done",
+                    "type": "chunk",
                     "request_id": req_id,
-                    "tokens_in": tokens_in,
-                    "tokens_out": tokens_out,
+                    "data": chunk,
                 })
+
+            await self._safe_send(ws, {
+                "type": "done",
+                "request_id": req_id,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+            })
 
     async def _json_request(self, ws, req_id: str, url: str, body: dict) -> None:
         """Forward a non-streaming request and return full JSON response."""
