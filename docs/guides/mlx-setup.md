@@ -84,17 +84,26 @@ Canonical recipe on a 512 GB Mac Studio — Qwen3-Coder-Next-4bit (≈42 GB)
 for coding + Qwen3-Coder-30B-A3B-Instruct-4bit (≈16 GB) for compaction:
 
 ```bash
-# Multi-server MLX: main + compactor on dedicated ports
+# Multi-server MLX: main + compactor on dedicated ports.
+# Note: speculative decoding (draft_model) is enabled ONLY on 11441.
+# The main coding model on 11440 (Qwen3-Coder-Next-4bit) is a hybrid
+# linear-attn architecture that builds a non-trimmable ArraysCache, so
+# spec decoding still hits mlx-lm#1081 there.  The 30B-A3B-Instruct
+# compactor uses standard transformer attention and works fine.
+# See docs/issues/mlx-speculative-decoding-blocked.md for the full
+# per-architecture compatibility matrix.
 export FLEET_NODE_MLX_SERVERS='[
   {"model":"mlx-community/Qwen3-Coder-Next-4bit","port":11440,"kv_bits":8},
-  {"model":"mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit","port":11441,"kv_bits":8}
+  {"model":"mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit","port":11441,"kv_bits":8,"draft_model":"mlx-community/Qwen3-1.7B-4bit","num_draft_tokens":4}
 ]'
 # 0.0.0.0 = LAN-reachable (required for multi-node); 127.0.0.1 = local-only
 export FLEET_NODE_MLX_BIND_HOST=0.0.0.0
 # Startup gate: refuse to spawn a server if (estimated_weights + headroom) > available RAM
 export FLEET_NODE_MLX_MEMORY_HEADROOM_GB=10.0
 
-# Route context compaction to the smaller 30B instead of the default gpt-oss:120b
+# Route context compaction to the smaller 30B instead of the default gpt-oss:120b.
+# This is also the model with spec decoding live, so every Claude Code
+# summarization pass benefits — verified 2026-04-27 at ~94 tok/s on M3 Ultra.
 export FLEET_CONTEXT_COMPACTION_ENABLED=true
 export FLEET_CONTEXT_COMPACTION_MODEL=mlx:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
 ```
@@ -103,6 +112,17 @@ When `FLEET_NODE_MLX_SERVERS` is set, the legacy single-server fields
 (`FLEET_NODE_MLX_AUTO_START_MODEL`, `FLEET_NODE_MLX_URL`,
 `FLEET_NODE_MLX_KV_BITS`) are ignored.  Keep them defined so reverting
 to a single-server config only requires unsetting `FLEET_NODE_MLX_SERVERS`.
+
+**Speculative decoding** uses two same-tokenizer-family models — a
+small "draft" model proposes tokens that the main model verifies and
+either accepts or rejects.  Acceptance gives a multi-token speedup per
+forward pass; rejection costs the draft's compute but doesn't break
+correctness.  The draft must share the main's tokenizer family (both
+Qwen3 here, so `mlx-community/Qwen3-1.7B-4bit` works as draft for
+either Qwen3-Coder variant).  **Architecture compatibility matters more
+than family**: standard transformer MoEs (`Qwen3-Coder-30B-A3B-Instruct`)
+work; hybrid linear-attn MoEs (`Qwen3-Coder-Next`) don't, because their
+state cache can't be rolled back when a draft token is rejected.
 
 **Why this layout wins on a 3-model-capped Ollama host**: the Ollama
 0.20.4 macOS build has a hardcoded 3-model hot cap.  If the compactor
