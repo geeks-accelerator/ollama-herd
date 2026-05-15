@@ -125,6 +125,26 @@ SD3.5 Large (11.6GB peak memory) occasionally triggers a "Python quit unexpected
 
 ## Performance (Will Bite at Scale)
 
+### `TraceStore` write-storm under WAL contention `FIXED` (0.6.2)
+
+**Files:** `src/fleet_manager/server/trace_store.py`, `src/fleet_manager/server/latency_store.py`, `src/fleet_manager/server/health_engine.py`
+**Severity:** High (observability outage, not request outage)
+**Observed:** 2026-05-10 14:21 PDT → 2026-05-15 00:58 PDT (4.5 days)
+
+A long-running read held off SQLite WAL checkpoints on `latency.db`. The WAL grew to 2.5 GB and writers couldn't acquire the lock within the 5-second `busy_timeout`. Result: ~40,000 background `record_trace` tasks failed with `database is locked` across May 10–15 (peak ~9,650/day). Requests themselves succeeded end-to-end (trace writes are fire-and-forget) but the dashboard's `reqs_24h` quietly dropped to 0 because it queries the same DB. The failure was missed by four consecutive soak checks because the grep pattern used to scan logs was wrong (no space after the JSON colon — see `docs/observations.md` 2026-05-15 for the full process post-mortem).
+
+**Fix shipped in 0.6.2:**
+- `PRAGMA busy_timeout` 5s → 30s in both `TraceStore` and `LatencyStore`.
+- `TraceStore.record_trace` retries on locked errors (200ms → 800ms → 2s, 3 attempts) before declaring the trace lost.
+- `PRAGMA wal_autocheckpoint=100` in both stores bounds WAL growth even when a reader is slow.
+- New `trace_store_write_failures` health check (WARNING at 1+, CRITICAL at 50+ failures in last 5 min) — makes the failure mode dashboard-visible instead of requiring operators to grep logs.
+- Per-process JSONL log files (`herd.jsonl` + `herd-node.jsonl`) eliminate a cross-process daily-rotation race that left one log day growing to 131 MB while peers stayed at 6 MB.
+- `CLAUDE.md` "Gotchas" entry documenting the correct JSONL grep pattern (`'"level": "ERROR"'` with space) so future scanners don't repeat the false-clean miss.
+
+Operator runbook for "database is locked" recovery: `docs/troubleshooting.md` § "Trace DB write failures."
+
+---
+
 ### 1. `LatencyStore.get_percentile()` — Unbounded Memory Growth `FIXED`
 
 **File:** `src/fleet_manager/server/latency_store.py`

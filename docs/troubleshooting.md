@@ -339,6 +339,76 @@ If the client genuinely needs a larger context than any loaded model provides, y
 
 ---
 
+## Trace DB write failures / "database is locked" / dashboard shows reqs_24h=0
+
+**Symptom:** Health endpoint emits `trace_store_write_failures` (WARNING at 1+, CRITICAL at 50+ failures in the last 5 min). The dashboard's `reqs_24h` shows 0 despite the router clearly serving traffic. `~/.fleet-manager/logs/herd.jsonl` has lines like:
+
+```
+{"level": "ERROR", "logger": "fleet_manager.server.streaming",
+ "msg": "Background task 'trace-record-abc12345' failed: database is locked", ...}
+```
+
+**What's happening:** SQLite WAL mode allows concurrent readers and one writer. When a long-running reader holds an old WAL snapshot open, the WAL can't checkpoint and grows unboundedly. Eventually the 30-second `busy_timeout` + 3-retry backoff in `TraceStore.record_trace` (≈90s cumulative patience) is exhausted, and the background trace task gives up. Requests themselves still succeed (trace writes are fire-and-forget) but observability evaporates because the dashboard queries the same DB that's not getting writes. Full incident post-mortem: 2026-05-15 entry in `docs/observations.md`.
+
+**Diagnosis:**
+
+```bash
+# 1. WAL size — should be <100 MB under normal operation
+ls -lh ~/.fleet-manager/latency.db*
+
+# 2. Last successful trace write — should be within the last minute under load
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT datetime(timestamp,'unixepoch','localtime'), model, status \
+   FROM request_traces ORDER BY timestamp DESC LIMIT 1"
+
+# 3. Disk space on the data dir
+df -h ~/.fleet-manager
+
+# 4. Failure count surfaced by health check (immediate signal)
+curl -s http://localhost:11435/dashboard/api/health | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); \
+  print([r for r in d['recommendations'] if r['check_id']=='trace_store_write_failures'])"
+```
+
+**Resolution:**
+
+```bash
+# 1. Stop all writers (also kills MLX children — start_new_session=True orphans them otherwise)
+pkill -9 -f "bin/herd|mlx_lm.server"
+sleep 3
+
+# 2. Drain the WAL back into the main DB.  Returns "0|0|0" on success;
+#    non-zero means another process is still holding the lock.
+sqlite3 ~/.fleet-manager/latency.db "PRAGMA wal_checkpoint(TRUNCATE);"
+
+# 3. Verify WAL is now empty (latency.db-wal should be 0 bytes)
+ls -lh ~/.fleet-manager/latency.db*
+
+# 4. Restart
+uv run herd &>/dev/null & disown
+sleep 4
+uv run herd-node &>/dev/null & disown
+
+# 5. Confirm traces resume — send a probe, then look in the DB
+curl -X POST http://localhost:11435/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<a-loaded-model>","messages":[{"role":"user","content":"hi"}],"max_tokens":5}'
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT datetime(timestamp,'unixepoch','localtime'), model, status \
+   FROM request_traces ORDER BY timestamp DESC LIMIT 1"
+```
+
+**Prevention** (already in 0.6.2+):
+
+- `PRAGMA busy_timeout=30000` — writers wait up to 30s for the lock before failing
+- `record_trace` retries 3 times on locked errors with exponential backoff (200ms → 800ms → 2s)
+- `PRAGMA wal_autocheckpoint=100` — checkpoints every 100 pages so the WAL stays bounded even when a reader is slow
+- `trace_store_write_failures` health check — makes the failure mode dashboard-visible instead of requiring operators to grep logs
+
+**If it recurs**: there's likely a slow query path in the codebase that needs an index, or a reader that holds a transaction open across an `await`. Capture `EXPLAIN QUERY PLAN` for recently-added queries and check trace_store / latency_store for long-running read transactions that span an `await`.
+
+---
+
 ## Quick debugging checklist
 
 When something isn't working:

@@ -6,7 +6,9 @@ How to run, monitor, debug, and tune Ollama Herd in production.
 
 ## Structured Logging (JSONL)
 
-Every log event is written as a single-line JSON object to `~/.fleet-manager/logs/herd.jsonl`. The file rotates daily at midnight UTC with 30-day retention.
+Every log event is written as a single-line JSON object to `~/.fleet-manager/logs/`. Each process gets its own file — the router writes to `herd.jsonl`, the node writes to `herd-node.jsonl`. Both files rotate daily at midnight UTC with 30-day retention.
+
+**Why per-process files?** Pre-0.6.2 both processes wrote to the same `herd.jsonl` with two separate `TimedRotatingFileHandler` instances. At UTC midnight they raced — one would rename the file and the other would keep writing to the renamed inode via its still-open file descriptor for the rest of the file's life. The 2026-05-15 observation in `docs/observations.md` covers a real incident where this produced a 131 MB log on one day while peers stayed at 6 MB. Per-process files eliminate the race entirely; cross-process audits still work via glob (`~/.fleet-manager/logs/herd*.jsonl*`).
 
 ### Log format
 
@@ -44,21 +46,29 @@ Set `FLEET_LOG_LEVEL=INFO` in production to reduce JSONL file size. Set `FLEET_C
 ### Reading logs
 
 ```bash
-# Tail the live log
-tail -f ~/.fleet-manager/logs/herd.jsonl | python3 -m json.tool
+# Tail both live logs
+tail -f ~/.fleet-manager/logs/herd.jsonl ~/.fleet-manager/logs/herd-node.jsonl
 
-# Find all warnings and errors
-grep -E '"level": "(WARNING|ERROR)"' ~/.fleet-manager/logs/herd.jsonl
+# Find all warnings and errors across both processes + rotated history
+grep -E '"level": "(WARNING|ERROR)"' ~/.fleet-manager/logs/herd*.jsonl*
 
 # Find all events for a specific model
-grep '"model": "llama3.3:70b"' ~/.fleet-manager/logs/herd.jsonl
+grep '"model": "llama3.3:70b"' ~/.fleet-manager/logs/herd*.jsonl*
 
-# Count errors by logger
-grep '"level": "ERROR"' ~/.fleet-manager/logs/herd.jsonl | \
+# Count errors by logger across both processes
+grep '"level": "ERROR"' ~/.fleet-manager/logs/herd*.jsonl* | \
   python3 -c "import sys,json; from collections import Counter; \
-  c=Counter(json.loads(l)['logger'] for l in sys.stdin); \
+  c=Counter(json.loads(l.split(':',1)[1] if l.startswith('/') else l)['logger'] for l in sys.stdin); \
   print('\n'.join(f'{v:4d} {k}' for k,v in c.most_common()))"
+
+# Daily ERROR + WARNING counts across the retention window (audit recipe)
+for f in ~/.fleet-manager/logs/herd*.jsonl*; do
+  e=$(grep -c '"level": "ERROR"' "$f"); w=$(grep -c '"level": "WARNING"' "$f")
+  printf "%-50s ERROR=%-6s WARNING=%s\n" "$(basename $f)" "$e" "$w"
+done
 ```
+
+> **Watch the colon spacing.** The JSON formatter writes `"level": "ERROR"` with a space after the colon (default `json.dumps` behavior). A grep for `'"level":"ERROR"'` without the space silently matches **zero** lines — the 2026-05-15 incident sat undetected for ~4.5 days because every soak check used the no-space variant. Always use `'"level": "ERROR"'` (with space) or parse with Python.
 
 ### What gets logged
 

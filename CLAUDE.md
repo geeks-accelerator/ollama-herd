@@ -233,9 +233,9 @@ Silent failures are dishonest. Fail fast, fail loud.
 - `docs/observations.md` — patterns from operating the fleet. Add with date, evidence, insight. Never deleted.
 - After significant changes: check if work produced a new observation or revealed a new issue. Append to the right file.
 
-## Current State (as of 2026-04-29)
+## Current State (as of 2026-05-15)
 
-- **Version:** 0.6.1 published on PyPI + Homebrew tap (live since 2026-04-28). Day-after soak (44h on local fleet, 116 PyPI downloads day-one, 0 GitHub issues open on either repo) clean.
+- **Version:** 0.6.2 committed on `main` (not yet published).  0.6.1 is what's live on PyPI + Homebrew tap. 0.6.2 ships trace_store SQLite resilience (busy_timeout 5s→30s, retry-on-locked, wal_autocheckpoint=100), a new `trace_store_write_failures` health check, and per-process JSONL log files — all in response to a 4.5-day write-storm incident on the local fleet that hid behind a wrong-grep-pattern false-clean signal. Full post-mortem: `docs/observations.md` 2026-05-15. Operator runbook: `docs/troubleshooting.md` § "Trace DB write failures."
 - **Fleet:** Neons-Mac-Studio (512GB M3 Ultra) + Lucass-MacBook-Pro-2 (128GB M4 Max). Mac Studio runs two MLX servers: `mlx:Qwen3-Coder-Next-4bit` on :11440 for coding (no draft — Qwen3-Next's hybrid linear-attn architecture builds a non-trimmable `ArraysCache` and still hits mlx-lm#1081) + `mlx:Qwen3-Coder-30B-A3B-Instruct-4bit` on :11441 as dedicated compactor with `--draft-model mlx-community/Qwen3-1.7B-4bit --num-draft-tokens 4` for speculative decoding (~94 tok/s on M3 Ultra). Plus `gpt-oss:120b` + `nomic-embed-text` via Ollama.
 - **Ollama settings:** `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=-1` (in `~/.zshrc`)
 - **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "977 tests\|32 checks" skills/`
