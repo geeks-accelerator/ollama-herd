@@ -81,7 +81,10 @@ def start(
     from fleet_manager.models.config import NodeSettings
     from fleet_manager.node.agent import NodeAgent
 
-    setup_logging()
+    # Use a per-process log name so the node and the router don't race at
+    # midnight rotation when both run on the same machine (see the
+    # logging_config.py docstring for the full failure mode).
+    setup_logging(log_name="herd-node")
 
     settings_kwargs = {
         "node_id": node_id,

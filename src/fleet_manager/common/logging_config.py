@@ -38,6 +38,7 @@ def setup_logging(
     data_dir: str = "~/.fleet-manager",
     log_level: str | None = None,
     console_level: str | None = None,
+    log_name: str = "herd",
 ):
     """Configure root logger with JSONL file handler + console handler.
 
@@ -45,6 +46,15 @@ def setup_logging(
         data_dir: Base directory for logs (logs/ subdirectory is created).
         log_level: Level for JSONL file output (default: DEBUG).
         console_level: Level for console output (default: INFO).
+        log_name: Base filename (without extension).  Router uses ``"herd"``
+            and node uses ``"herd-node"`` so each process owns its rotation.
+            When both processes shared ``herd.jsonl`` (pre-2026-05-15), the
+            two ``TimedRotatingFileHandler`` instances raced at UTC midnight:
+            one would rename ``herd.jsonl`` → ``herd.jsonl.YYYY-MM-DD`` and
+            the other would keep writing to the renamed file via its still-
+            open file descriptor, so one day's file kept growing for days
+            (observed: 131 MB on a day where peers were 6 MB).  Splitting
+            the files eliminates the cross-process rotation race entirely.
     """
     log_dir = Path(data_dir).expanduser() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -62,7 +72,7 @@ def setup_logging(
     root.setLevel(min(file_level, con_level))
 
     # --- JSONL file handler (daily rotation, keep 30 days) ---
-    log_file = log_dir / "herd.jsonl"
+    log_file = log_dir / f"{log_name}.jsonl"
     file_handler = TimedRotatingFileHandler(
         str(log_file),
         when="midnight",

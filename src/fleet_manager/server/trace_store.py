@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
+from collections import deque
 from pathlib import Path
 
 import aiosqlite
 
 logger = logging.getLogger(__name__)
+
+# Retry policy for "database is locked" — three attempts with exponential
+# backoff covers the typical case (a long-running query holding the write
+# lock during WAL checkpoint) without blocking the caller for more than ~3s.
+# Past failures we observed (2026-05-10 incident): unbounded WAL growth during
+# a sustained read held off writes until busy_timeout expired.  Combined with
+# the now-30s busy_timeout (PRAGMA), this gives writes ~90s of cumulative
+# patience before we declare the trace lost.
+_RETRY_BACKOFFS_S = (0.2, 0.8, 2.0)
 
 
 class TraceStore:
@@ -18,6 +29,10 @@ class TraceStore:
     def __init__(self, data_dir: str = "~/.fleet-manager"):
         self._db_path = Path(data_dir).expanduser() / "latency.db"
         self._db: aiosqlite.Connection | None = None
+        # Rolling write-failure timestamps for the trace_store_write_failures
+        # health check.  Bounded deque keeps memory flat; the health engine
+        # filters by age.
+        self._write_failure_times: deque[float] = deque(maxlen=1000)
 
     async def initialize(self):
         """Create connection and request_traces table if it doesn't exist."""
@@ -25,8 +40,18 @@ class TraceStore:
         self._db = await aiosqlite.connect(str(self._db_path))
         # Enable WAL mode for concurrent readers/writers
         await self._db.execute("PRAGMA journal_mode=WAL")
-        # Wait up to 5s for lock instead of failing immediately
-        await self._db.execute("PRAGMA busy_timeout=5000")
+        # Wait up to 30s for lock instead of failing immediately.  The previous
+        # 5s threshold was hit during a sustained-read scenario on 2026-05-10
+        # that produced ~40K failed background trace-record tasks over ~4 days
+        # (see docs/observations.md).  30s tolerates a checkpoint stall without
+        # losing the trace; combined with retry-on-locked below this gives us
+        # ~90s of cumulative patience before declaring the trace lost.
+        await self._db.execute("PRAGMA busy_timeout=30000")
+        # Bound WAL growth so a long-running reader can't let the WAL grow
+        # unboundedly and starve writers — auto-checkpoint after this many
+        # pages.  Default is 1000; 100 is more aggressive but keeps writer
+        # latency predictable.
+        await self._db.execute("PRAGMA wal_autocheckpoint=100")
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS request_traces (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,39 +162,74 @@ class TraceStore:
         error_message: str | None = None,
         tags: list[str] | None = None,
     ):
-        """Insert a single trace record."""
+        """Insert a single trace record.
+
+        Retries up to three times on ``database is locked`` errors before
+        giving up — see ``_RETRY_BACKOFFS_S`` for the backoff schedule and
+        the 2026-05-10 observation entry for the failure mode this guards.
+        Failures (after all retries) are counted in ``_write_failure_times``
+        so the ``trace_store_write_failures`` health check can surface them
+        without operators having to grep the log.
+        """
         if not self._db:
             return
-        await self._db.execute(
+        params = (
+            request_id,
+            model,
+            original_model,
+            node_id,
+            score,
+            json.dumps(scores_breakdown) if scores_breakdown else None,
+            status,
+            latency_ms,
+            time_to_first_token_ms,
+            prompt_tokens,
+            completion_tokens,
+            retry_count,
+            int(fallback_used),
+            json.dumps(excluded_nodes) if excluded_nodes else None,
+            client_ip,
+            original_format,
+            error_message,
+            json.dumps(tags) if tags else None,
+            time.time(),
+        )
+        sql = (
             "INSERT INTO request_traces "
             "(request_id, model, original_model, node_id, score, scores_breakdown, "
             "status, latency_ms, time_to_first_token_ms, prompt_tokens, completion_tokens, "
             "retry_count, fallback_used, excluded_nodes, client_ip, original_format, "
             "error_message, tags, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                request_id,
-                model,
-                original_model,
-                node_id,
-                score,
-                json.dumps(scores_breakdown) if scores_breakdown else None,
-                status,
-                latency_ms,
-                time_to_first_token_ms,
-                prompt_tokens,
-                completion_tokens,
-                retry_count,
-                int(fallback_used),
-                json.dumps(excluded_nodes) if excluded_nodes else None,
-                client_ip,
-                original_format,
-                error_message,
-                json.dumps(tags) if tags else None,
-                time.time(),
-            ),
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
-        await self._db.commit()
+        # Retry-on-locked: the busy_timeout PRAGMA above absorbs short
+        # contention, but a stuck-reader scenario can still expire it.
+        # We try up to ``len(_RETRY_BACKOFFS_S) + 1`` times total before
+        # incrementing the failure counter and re-raising — the caller's
+        # _create_logged_task done-callback will then log it once.
+        for backoff in (*_RETRY_BACKOFFS_S, None):
+            try:
+                await self._db.execute(sql, params)
+                await self._db.commit()
+                return
+            except aiosqlite.OperationalError as exc:
+                if "locked" not in str(exc).lower() or backoff is None:
+                    self._write_failure_times.append(time.time())
+                    raise
+                await asyncio.sleep(backoff)
+
+    def get_write_failure_count(self, window_s: float = 300.0) -> int:
+        """Return number of unrecoverable write failures in the last ``window_s`` seconds.
+
+        Used by the ``trace_store_write_failures`` health check to flag
+        ongoing DB-lock incidents without operators having to scan logs.
+        """
+        cutoff = time.time() - window_s
+        # Right-side prune so subsequent calls are cheap — deque trim from
+        # the left while head is older than cutoff.
+        while self._write_failure_times and self._write_failure_times[0] < cutoff:
+            self._write_failure_times.popleft()
+        return len(self._write_failure_times)
 
     async def get_recent_traces(self, limit: int = 100) -> list[dict]:
         """Return the most recent traces, newest first."""

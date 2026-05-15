@@ -22,7 +22,11 @@ class LatencyStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(str(self._db_path))
         await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.execute("PRAGMA busy_timeout=5000")
+        # Bumped from 5s on 2026-05-15 after the trace_store lock-storm
+        # incident — latency.db is shared with TraceStore so the same WAL
+        # contention applies.  See trace_store.py for the full rationale.
+        await self._db.execute("PRAGMA busy_timeout=30000")
+        await self._db.execute("PRAGMA wal_autocheckpoint=100")
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS latency_observations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

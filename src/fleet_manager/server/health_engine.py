@@ -98,6 +98,7 @@ class HealthEngine:
         recommendations.extend(self._check_mlx_backend(nodes))
         recommendations.extend(self._check_vision_backend_missing(nodes))
         recommendations.extend(self._check_mapped_models_hot(nodes))
+        recommendations.extend(self._check_trace_store_write_failures(trace_store))
 
         # Trace-based checks (async, queries SQLite)
         if trace_store:
@@ -1158,6 +1159,74 @@ class HealthEngine:
                     "backend_available": False,
                 },
             ))
+        return recs
+
+    def _check_trace_store_write_failures(
+        self, trace_store,
+    ) -> list[Recommendation]:
+        """Detect ongoing SQLite write failures in the trace store.
+
+        Surfaces the 2026-05-10 incident pattern: WAL-mode SQLite under a
+        sustained read can starve writers past the busy_timeout, causing
+        background trace-record tasks to fail with ``database is locked``.
+        Requests still succeed end-to-end (the trace write is fire-and-
+        forget), but observability vanishes — the dashboard starts showing
+        ``reqs_24h=0`` because nothing is being recorded.  Without this
+        check the only signal an operator gets is the absence of dashboard
+        traffic and a growing ERROR rate in herd.jsonl, both easily missed.
+
+        Threshold rationale: under healthy operation the retry loop in
+        ``TraceStore.record_trace`` absorbs transient contention silently,
+        so a non-zero failure count over 5 minutes means the retry budget
+        is being exhausted — that's the warning trigger.  >50 in 5 min is
+        a sustained incident worth a critical.
+        """
+        recs: list[Recommendation] = []
+        if trace_store is None:
+            return recs
+        get_count = getattr(trace_store, "get_write_failure_count", None)
+        if get_count is None:
+            return recs  # older trace_store (pre-0.6.2) — no signal available
+        try:
+            failures_5m = int(get_count(window_s=300.0))
+        except Exception:  # noqa: BLE001 — defensive; never let a health check crash the analyzer
+            return recs
+        if failures_5m == 0:
+            return recs
+        severity = Severity.CRITICAL if failures_5m >= 50 else Severity.WARNING
+        recs.append(Recommendation(
+            check_id="trace_store_write_failures",
+            severity=severity,
+            title=(
+                f"{failures_5m} trace-record failures in the last 5 minutes"
+            ),
+            description=(
+                "Background trace_record tasks are failing after the 30s "
+                "busy_timeout + 3 retries.  Requests are likely still "
+                "succeeding (trace writes are fire-and-forget) but "
+                "observability is degraded — `reqs_24h`, latency stats, "
+                "and per-model error rates on the dashboard will look "
+                "stale or zeroed until writes resume.  Common causes: a "
+                "long-running read transaction holding the WAL checkpoint "
+                "open, an out-of-disk-space condition on the data dir, or "
+                "a stale file lock from a crashed previous process."
+            ),
+            fix=(
+                "1) Check disk space on the data dir: `df -h ~/.fleet-manager`. "
+                "2) Check for a stale `latency.db-shm`/`-wal` from a crashed "
+                "process: `ls -lh ~/.fleet-manager/latency.db*`.  "
+                "3) Restart `herd` to release any held lock: "
+                "`pkill -9 -f 'bin/herd|mlx_lm.server' && uv run herd & disown`.  "
+                "4) If it recurs, file an issue with `~/.fleet-manager/logs/` "
+                "attached — there may be a slow query path that needs an "
+                "index."
+            ),
+            data={
+                "failures_5m": failures_5m,
+                "threshold_warning": 1,
+                "threshold_critical": 50,
+            },
+        ))
         return recs
 
     def _check_mapped_models_hot(self, nodes) -> list[Recommendation]:
