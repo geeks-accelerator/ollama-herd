@@ -133,13 +133,20 @@ SD3.5 Large (11.6GB peak memory) occasionally triggers a "Python quit unexpected
 
 A long-running read held off SQLite WAL checkpoints on `latency.db`. The WAL grew to 2.5 GB and writers couldn't acquire the lock within the 5-second `busy_timeout`. Result: ~40,000 background `record_trace` tasks failed with `database is locked` across May 10–15 (peak ~9,650/day). Requests themselves succeeded end-to-end (trace writes are fire-and-forget) but the dashboard's `reqs_24h` quietly dropped to 0 because it queries the same DB. The failure was missed by four consecutive soak checks because the grep pattern used to scan logs was wrong (no space after the JSON colon — see `docs/observations.md` 2026-05-15 for the full process post-mortem).
 
-**Fix shipped in 0.6.2:**
+**Fix shipped in 0.6.2 — two rounds:**
+
+Round 1 (2026-05-15, "longer timeout + retry"):
 - `PRAGMA busy_timeout` 5s → 30s in both `TraceStore` and `LatencyStore`.
 - `TraceStore.record_trace` retries on locked errors (200ms → 800ms → 2s, 3 attempts) before declaring the trace lost.
 - `PRAGMA wal_autocheckpoint=100` in both stores bounds WAL growth even when a reader is slow.
 - New `trace_store_write_failures` health check (WARNING at 1+, CRITICAL at 50+ failures in last 5 min) — makes the failure mode dashboard-visible instead of requiring operators to grep logs.
 - Per-process JSONL log files (`herd.jsonl` + `herd-node.jsonl`) eliminate a cross-process daily-rotation race that left one log day growing to 131 MB while peers stayed at 6 MB.
 - `CLAUDE.md` "Gotchas" entry documenting the correct JSONL grep pattern (`'"level": "ERROR"'` with space) so future scanners don't repeat the false-clean miss.
+
+Round 2 (2026-05-16, "structural fix" — round 1 reduced amplitude but didn't eliminate the failure under sustained traffic; ~4,470 errors recurred in 12 hours of soak):
+- **Dedicated `_read_db` connection per store** (`PRAGMA query_only=1` for defense-in-depth). aiosqlite serializes operations per-connection through a single background thread; with one connection serving both reads and writes, a slow dashboard read blocked queued writes for the read's duration. Worse, reader snapshots pinned the WAL checkpoint barrier on the writer's view of the same connection. Two connections = two threads, independent snapshots, no serialization.
+- **Periodic `PRAGMA wal_checkpoint(PASSIVE)`** every 10s from a background task in `app.py` lifespan. Wall-clock-triggered checkpoints fire in the gaps between dashboard read snapshots; autocheckpoint alone is volume-triggered and can sit at 99 pages while readers accumulate snapshots that block the eventual checkpoint when the 100th write lands.
+- Plan: `docs/plans/trace-store-read-connection-and-checkpoint.md`. Verified on the local fleet 2026-05-16 — a 30-concurrent-write + 120-dashboard-poll burst held the WAL at 410 KB peak vs 103 MB on the same workload pre-round-2.
 
 Operator runbook for "database is locked" recovery: `docs/troubleshooting.md` § "Trace DB write failures."
 

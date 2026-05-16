@@ -398,12 +398,16 @@ sqlite3 ~/.fleet-manager/latency.db \
    FROM request_traces ORDER BY timestamp DESC LIMIT 1"
 ```
 
-**Prevention** (already in 0.6.2+):
+**Prevention** (already in 0.6.2+, listed innermost to outermost):
 
-- `PRAGMA busy_timeout=30000` — writers wait up to 30s for the lock before failing
+- `PRAGMA busy_timeout=30000` on every connection — writers wait up to 30s for the lock before failing
 - `record_trace` retries 3 times on locked errors with exponential backoff (200ms → 800ms → 2s)
-- `PRAGMA wal_autocheckpoint=100` — checkpoints every 100 pages so the WAL stays bounded even when a reader is slow
-- `trace_store_write_failures` health check — makes the failure mode dashboard-visible instead of requiring operators to grep logs
+- `PRAGMA wal_autocheckpoint=100` — autocheckpoints when 100 WAL pages have been written (volume-triggered)
+- **Dedicated `_read_db` connection per store** with `PRAGMA query_only=1` — dashboard reads run on a separate aiosqlite thread so they don't serialize behind writes; reader snapshots don't pin the writer's view of the WAL barrier
+- **Periodic `PRAGMA wal_checkpoint(PASSIVE)`** every 10 seconds from a background task in `app.py` lifespan — wall-clock-triggered, fires in the gaps between dashboard read snapshots so the WAL drains even under bursty traffic
+- `trace_store_write_failures` health check (WARNING at 1+ failures in 5 min, CRITICAL at 50+) — makes the failure mode dashboard-visible instead of requiring operators to grep logs
+
+The two structural layers (`_read_db` connection + periodic checkpoint) were added 2026-05-16 after the first round of fixes (busy_timeout + retry + autocheckpoint, shipped 2026-05-15) didn't fully eliminate the failure under sustained traffic. See `docs/plans/trace-store-read-connection-and-checkpoint.md` for the analysis and `docs/observations.md` 2026-05-16 for the lesson on why "longer timeout + retry" doesn't fix structural contention.
 
 **If it recurs**: there's likely a slow query path in the codebase that needs an index, or a reader that holds a transaction open across an `await`. Capture `EXPLAIN QUERY PLAN` for recently-added queries and check trace_store / latency_store for long-running read transactions that span an `await`.
 

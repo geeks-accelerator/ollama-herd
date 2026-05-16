@@ -339,6 +339,43 @@ Until upstream lands [PR #1073](https://github.com/ml-explore/mlx-lm/pull/1073) 
 
 ---
 
+## 2026-05-16 — "Longer timeout + retry" doesn't fix structural contention
+
+**Evidence**: After shipping the 2026-05-15 trace_store fixes (busy_timeout 5s → 30s, retry-on-locked with exponential backoff, `wal_autocheckpoint=100`, new health check) and verifying the post-restart 30-minute soak was clean, the local fleet ran fine for ~11 hours.  Then between 06:48 → 19:00 UTC on 2026-05-16, **~4,470 background `record_trace` tasks failed with `database is locked` again** — same error message, same logger, same code path.  The new health check fired exactly as designed (WARNING, 38 failures in last 5 min), so this time we saw it inside an hour instead of four days.  But seeing it doesn't fix it.
+
+Failure pattern was identical to the original incident, just lower amplitude:
+
+| Metric | Original (2026-05-10) | Round 1 fix (2026-05-16) |
+|---|---|---|
+| Errors/day | ~9,650 | ~9,000 (peak in single hour: 440) |
+| WAL peak | 2.5 GB over 4.5 days | 103 MB over 12 hours |
+| Visibility | None (4 days hidden) | Health check WARNING within minutes |
+| Symptom | Dashboard `reqs_24h=0` for days | Dashboard `reqs_24h` stuck at yesterday's count |
+
+The retry layer + 30s busy_timeout was absorbing roughly two-thirds of the contention, but every transient stall longer than ~90s (busy_timeout × retry budget) still leaked through as a permanent failure.  The WAL was growing, just more slowly.
+
+**Root cause analysis showed the contention was structural, not transient.** `TraceStore` opened a single `aiosqlite.Connection` shared between `record_trace` (write) and every dashboard analytics method (`get_recent_traces`, `get_overall_stats_24h`, etc.).  Two consequences:
+
+1. aiosqlite serializes operations per-connection through a single background thread.  A 200ms dashboard query blocked all queued writes on that connection for 200ms.
+2. Even with WAL mode (where readers don't *block* writers in the usual sense), the reader's transaction held a snapshot point — the checkpointer could only advance to the oldest reader's snapshot.  With dashboard polling every 15-30s across multiple endpoints, snapshots were continuously open, and checkpoints never caught up.
+
+The first round of fixes treated symptoms — "wait longer for the lock," "retry the locked write," "shrink the autocheckpoint threshold."  All useful, none addressed the actual mechanism: a single connection being shared between two access patterns that should never have been sharing.
+
+**The structural fix** (round 2, same day):
+
+- Open `_db` and `_read_db` as separate `aiosqlite.Connection` instances per store.  Route every analytics/scoring read through `_read_db`; keep writes on `_db`.  `_read_db` gets `PRAGMA query_only=1` as defense-in-depth.  Two connections = two threads = no serialization between read and write, and independent snapshots that don't pin each other's WAL view.
+- Add a periodic `PRAGMA wal_checkpoint(PASSIVE)` task in `app.py`'s lifespan, firing every 10s on each store's writer.  Wall-clock-triggered rather than volume-triggered, so it fires in the gaps between dashboard read snapshots regardless of write volume.
+
+Verified the same day under live load: a 30-concurrent-chat + 120-dashboard-poll burst held the WAL at 410 KB peak vs 103 MB on the same workload before the change.  Health check stayed silent.
+
+**Insight**: When a fix that hardens the safety net ("wait longer, retry more") reduces incident amplitude without eliminating it, the contention is structural — you're sharing something you shouldn't be sharing.  The fix isn't a bigger hammer, it's separating the shared thing.
+
+This generalizes: a "wait + retry" pattern is the right tool for transient stochastic contention (network hiccups, brief lock collisions between independent writers).  It's the wrong tool for sustained structural contention (the same two access patterns competing for the same resource on every request).  When the metrics show your retry budget being exhausted at a steady rate rather than only on spikes, the access pattern is broken, not the load.
+
+Plan: `docs/plans/trace-store-read-connection-and-checkpoint.md`.  Note in the plan that Part B (split `trace_store` onto its own `traces.db`) was intentionally deferred — the C+A combination addresses the actual mechanism, and shipping with smaller scope + real verification beats shipping a bigger change on speculation.  If a future workload shows the failure mode return despite C+A, B is the next step.
+
+---
+
 ## 2026-05-15 — A wrong grep pattern hid a 4-day production incident from every soak check
 
 **Evidence**: A "spotless 44h soak" report on Apr 29 said the local fleet had 0 ERROR and 0 WARNING in `herd.jsonl` since the latest restart.  Same conclusion at the day-after check (also Apr 29) and the week-after check (May 4) — all reported the fleet as clean.  On May 15, while doing a routine log review, parsing the file with Python instead of grep revealed: **39,792 ERROR lines on May 10 alone**, and 1,196 WARNING.  Spotted because the May 10 log file was 131 MB while every other day's file was ~6 MB — a 22× outlier I'd somehow not noticed before because I was only looking at error counts, not file sizes.
