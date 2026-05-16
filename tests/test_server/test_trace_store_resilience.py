@@ -213,3 +213,131 @@ def test_check_trace_store_write_failures_handles_pre_062_store():
     eng = _make_engine()
     legacy = object()  # no methods at all
     assert eng._check_trace_store_write_failures(legacy) == []
+
+
+# -- Part C: dedicated read connection (TraceStore) --
+#
+# Adding a second aiosqlite connection lets dashboard analytics run
+# concurrently with writes and prevents read snapshots from pinning the
+# WAL checkpoint barrier on the writer's view.  See
+# docs/plans/trace-store-read-connection-and-checkpoint.md.
+
+
+@pytest.mark.asyncio
+async def test_initialize_opens_separate_read_connection(tmp_path):
+    """initialize() should set up both _db and _read_db as distinct connections."""
+    s = TraceStore(data_dir=str(tmp_path))
+    await s.initialize()
+    try:
+        assert s._db is not None
+        assert s._read_db is not None
+        assert s._db is not s._read_db
+    finally:
+        await s.close()
+
+
+@pytest.mark.asyncio
+async def test_read_methods_use_read_connection(store: TraceStore, monkeypatch):
+    """get_recent_traces() and friends should query the read connection only."""
+    read_calls = {"n": 0}
+    write_calls = {"n": 0}
+    real_read_execute = store._read_db.execute
+    real_write_execute = store._db.execute
+
+    async def counted_read(sql, *args, **kwargs):
+        if sql.strip().upper().startswith("SELECT"):
+            read_calls["n"] += 1
+        return await real_read_execute(sql, *args, **kwargs)
+
+    async def counted_write(sql, *args, **kwargs):
+        if sql.strip().upper().startswith("SELECT"):
+            write_calls["n"] += 1
+        return await real_write_execute(sql, *args, **kwargs)
+
+    monkeypatch.setattr(store._read_db, "execute", counted_read)
+    monkeypatch.setattr(store._db, "execute", counted_write)
+
+    await store.get_recent_traces(limit=10)
+    await store.get_overall_stats_24h()
+
+    assert read_calls["n"] >= 2  # at least one SELECT per method
+    assert write_calls["n"] == 0  # writer connection saw no SELECTs
+
+
+@pytest.mark.asyncio
+async def test_write_methods_use_write_connection(store: TraceStore, monkeypatch):
+    """record_trace() should hit the writer connection only."""
+    read_calls = {"n": 0}
+    write_calls = {"n": 0}
+    real_read_execute = store._read_db.execute
+    real_write_execute = store._db.execute
+
+    async def counted_read(sql, *args, **kwargs):
+        if sql.strip().upper().startswith("INSERT"):
+            read_calls["n"] += 1
+        return await real_read_execute(sql, *args, **kwargs)
+
+    async def counted_write(sql, *args, **kwargs):
+        if sql.strip().upper().startswith("INSERT"):
+            write_calls["n"] += 1
+        return await real_write_execute(sql, *args, **kwargs)
+
+    monkeypatch.setattr(store._read_db, "execute", counted_read)
+    monkeypatch.setattr(store._db, "execute", counted_write)
+
+    await store.record_trace(
+        request_id="r", model="m", original_model="m", node_id="n",
+    )
+
+    assert write_calls["n"] == 1  # one INSERT on the writer
+    assert read_calls["n"] == 0  # read connection saw no INSERTs
+
+
+@pytest.mark.asyncio
+async def test_read_connection_is_query_only(store: TraceStore):
+    """PRAGMA query_only=1 should reject writes through the read connection."""
+    with pytest.raises(aiosqlite.OperationalError):
+        await store._read_db.execute(
+            "INSERT INTO request_traces "
+            "(request_id, model, original_model, node_id, status, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("x", "m", "m", "n", "completed", time.time()),
+        )
+        await store._read_db.commit()
+
+
+# -- Part A: periodic wal_checkpoint(PASSIVE) --
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_passive_returns_tuple(store: TraceStore):
+    """checkpoint_passive() returns the SQLite (busy, log_pages, checkpointed) tuple."""
+    # Drive a write so there's something to checkpoint
+    await store.record_trace(
+        request_id="r", model="m", original_model="m", node_id="n",
+    )
+    result = await store.checkpoint_passive()
+    assert result is not None
+    busy, log_pages, checkpointed = result
+    assert isinstance(busy, int)
+    assert isinstance(log_pages, int)
+    assert isinstance(checkpointed, int)
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_passive_none_when_closed(tmp_path):
+    """checkpoint_passive() returns None when the writer connection is closed."""
+    s = TraceStore(data_dir=str(tmp_path))
+    await s.initialize()
+    await s.close()
+    assert await s.checkpoint_passive() is None
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_passive_swallows_errors(store: TraceStore, monkeypatch):
+    """A failure in PRAGMA wal_checkpoint must never raise — background-task safety."""
+    async def boom(sql, *args, **kwargs):
+        raise aiosqlite.OperationalError("simulated checkpoint failure")
+    monkeypatch.setattr(store._db, "execute", boom)
+    # Should return None, not raise.
+    assert await store.checkpoint_passive() is None

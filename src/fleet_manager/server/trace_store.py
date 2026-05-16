@@ -28,7 +28,23 @@ class TraceStore:
 
     def __init__(self, data_dir: str = "~/.fleet-manager"):
         self._db_path = Path(data_dir).expanduser() / "latency.db"
+        # Writer connection — used by record_trace, save_benchmark_run,
+        # save_briefing, and the periodic wal_checkpoint(PASSIVE) task.
         self._db: aiosqlite.Connection | None = None
+        # Dedicated read connection — used by every analytics/dashboard
+        # query method.  Splitting reads onto a separate aiosqlite connection
+        # serves two purposes (see docs/plans/trace-store-read-connection-and-checkpoint.md):
+        # 1) aiosqlite serializes operations per-connection through a single
+        #    background thread; a slow read on the shared connection blocks
+        #    queued writes for the read's duration.  Two connections = two
+        #    threads, no per-connection serialization between read and write.
+        # 2) Read snapshots pin the WAL checkpoint barrier.  When reads live
+        #    on a separate connection, the writer connection's view of the
+        #    WAL can advance and checkpoints fire between read snapshots.
+        # Configured with PRAGMA query_only=1 so an accidental INSERT through
+        # this connection errors out immediately instead of silently working
+        # against the writer's expectations.
+        self._read_db: aiosqlite.Connection | None = None
         # Rolling write-failure timestamps for the trace_store_write_failures
         # health check.  Bounded deque keeps memory flat; the health engine
         # filters by age.
@@ -139,7 +155,64 @@ class TraceStore:
         )
 
         await self._db.commit()
+
+        # Open the dedicated read connection.  Must come AFTER the writer's
+        # commit so the read connection's first snapshot sees the schema we
+        # just created (otherwise PRAGMA query_only=1 below would prevent
+        # this connection from doing its own CREATE TABLE IF NOT EXISTS
+        # passes — and we don't want it to).
+        try:
+            self._read_db = await aiosqlite.connect(str(self._db_path))
+            await self._read_db.execute("PRAGMA journal_mode=WAL")
+            await self._read_db.execute("PRAGMA busy_timeout=30000")
+            # Defense-in-depth: any accidental write through this connection
+            # raises ``OperationalError: attempt to write a readonly database``
+            # rather than silently competing with the writer.
+            await self._read_db.execute("PRAGMA query_only=1")
+        except Exception:
+            # If the read connection fails to open, close the writer to
+            # avoid leaking it and re-raise — the caller's __aenter__ will
+            # propagate the error and we won't run in a half-initialized
+            # state.
+            await self._db.close()
+            self._db = None
+            raise
         logger.info(f"Trace store initialized at {self._db_path}")
+
+    async def checkpoint_passive(self) -> tuple[int, int, int] | None:
+        """Run ``PRAGMA wal_checkpoint(PASSIVE)`` on the writer connection.
+
+        Returns ``(busy, log_pages, checkpointed_pages)`` per SQLite's
+        documented return shape, or ``None`` if the connection isn't open.
+
+        Designed to be called on a fixed cadence (every ~10s) from a
+        background task in ``server/app.py``'s lifespan.  ``PASSIVE`` is
+        non-blocking — it advances whatever WAL pages it can past the
+        current set of reader snapshots and returns immediately without
+        waiting for readers to finish.  Safe to run frequently.
+
+        Why this matters even with ``wal_autocheckpoint=100`` already set:
+        autocheckpoint is tied to write *volume* (fires after N WAL page
+        writes); under bursty traffic the WAL can sit at 99 pages for an
+        hour while readers accumulate snapshots, and by the time the 100th
+        page write triggers autocheckpoint, those snapshots have pinned
+        the checkpoint barrier so far back that very little can advance.
+        Tying checkpoints to *wall-clock* via this method makes them fire
+        in the gaps between reader snapshots rather than only when a write
+        happens to land on the threshold.
+        """
+        if self._db is None:
+            return None
+        try:
+            cursor = await self._db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row is None:
+                return None
+            return (int(row[0]), int(row[1]), int(row[2]))
+        except Exception as exc:  # noqa: BLE001 — never crash a background task
+            logger.debug(f"trace_store checkpoint_passive failed: {exc}")
+            return None
 
     async def record_trace(
         self,
@@ -235,7 +308,7 @@ class TraceStore:
         """Return the most recent traces, newest first."""
         if not self._db:
             return []
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             "SELECT request_id, model, original_model, node_id, score, "
             "scores_breakdown, status, latency_ms, time_to_first_token_ms, "
             "prompt_tokens, completion_tokens, retry_count, fallback_used, "
@@ -250,7 +323,7 @@ class TraceStore:
         """Look up all trace entries for a given request (may have retries)."""
         if not self._db:
             return []
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             "SELECT request_id, model, original_model, node_id, score, "
             "scores_breakdown, status, latency_ms, time_to_first_token_ms, "
             "prompt_tokens, completion_tokens, retry_count, fallback_used, "
@@ -268,7 +341,7 @@ class TraceStore:
         if not self._db:
             return []
         cutoff = time.time() - (days * 86400)
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 node_id,
@@ -313,7 +386,7 @@ class TraceStore:
         """Per-node, per-model last-used timestamp and total request count."""
         if not self._db:
             return []
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 node_id,
@@ -340,7 +413,7 @@ class TraceStore:
         """Per-node all-time aggregate stats."""
         if not self._db:
             return []
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 node_id,
@@ -388,7 +461,7 @@ class TraceStore:
                 "total_retries": 0,
                 "total_fallbacks": 0,
             }
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 COUNT(*) AS total_requests,
@@ -433,7 +506,7 @@ class TraceStore:
         if not self._db:
             return []
         cutoff = start_ts if start_ts and end_ts else time.time() - days * 86400
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 j.value AS tag,
@@ -473,7 +546,7 @@ class TraceStore:
         if not self._db:
             return []
         cutoff = start_ts if start_ts and end_ts else time.time() - days * 86400
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 j.value AS tag,
@@ -504,7 +577,7 @@ class TraceStore:
         """All-time per-tag aggregates."""
         if not self._db:
             return []
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 j.value AS tag,
@@ -547,7 +620,7 @@ class TraceStore:
         if not self._db:
             return {"total_count": 0, "by_node": {}}
         cutoff = time.time() - lookback_s
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT node_id, COUNT(*) AS cold_count
             FROM request_traces
@@ -568,7 +641,7 @@ class TraceStore:
         if not self._db:
             return []
         cutoff = time.time() - lookback_s
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 node_id,
@@ -597,7 +670,7 @@ class TraceStore:
         if not self._db:
             return {"total_requests": 0, "total_retries": 0}
         cutoff = time.time() - 86400
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT COUNT(*) AS total, SUM(retry_count) AS retries
             FROM request_traces
@@ -621,7 +694,7 @@ class TraceStore:
                 "total_retries": 0,
             }
         cutoff = time.time() - 86400
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 COUNT(*) AS total,
@@ -663,7 +736,7 @@ class TraceStore:
         if not self._db:
             return {}
         cutoff = time.time() - seconds
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT model, COUNT(*) as n
             FROM request_traces
@@ -685,7 +758,7 @@ class TraceStore:
         if not self._db:
             return set()
         cutoff = time.time() - seconds
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT DISTINCT model
             FROM request_traces
@@ -712,7 +785,7 @@ class TraceStore:
         if not self._db:
             return []
         cutoff = time.time() - lookback_s
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT original_model, model, COUNT(*) as count,
                    MIN(timestamp) as first_ts, MAX(timestamp) as last_ts
@@ -753,7 +826,7 @@ class TraceStore:
         cutoff_24h = now - 86400
         cutoff_7d = now - 7 * 86400
 
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 model,
@@ -793,7 +866,7 @@ class TraceStore:
                 "by_model": {},
             }
         cutoff = time.time() - lookback_s
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 status,
@@ -819,7 +892,7 @@ class TraceStore:
             by_model[model][status] = cnt
 
         # Get total requests for rate calculation
-        cursor2 = await self._db.execute(
+        cursor2 = await self._read_db.execute(
             "SELECT COUNT(*) FROM request_traces WHERE timestamp >= ?",
             (cutoff,),
         )
@@ -845,7 +918,7 @@ class TraceStore:
         if not self._db:
             return {"total_count": 0, "by_node": {}, "by_model": {}}
         cutoff = time.time() - lookback_s
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT node_id, model, COUNT(*) AS timeout_count
             FROM request_traces
@@ -920,7 +993,7 @@ class TraceStore:
             return []
         cutoff = time.time() - days * 86400
         cutoff_24h = time.time() - 86400
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             WITH base AS (
                 SELECT model, prompt_tokens, completion_tokens,
@@ -1016,7 +1089,7 @@ class TraceStore:
         """Return recent fleet briefings, newest first."""
         if not self._db:
             return []
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             "SELECT timestamp, briefing, model, fleet_data "
             "FROM fleet_briefings ORDER BY timestamp DESC LIMIT ?",
             (limit,),
@@ -1038,7 +1111,7 @@ class TraceStore:
         """Return benchmark runs, newest first."""
         if not self._db:
             return []
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             "SELECT run_id, timestamp, duration_s, total_requests, total_failures, "
             "total_prompt_tokens, total_completion_tokens, requests_per_sec, "
             "tokens_per_sec, latency_p50_ms, latency_p95_ms, latency_p99_ms, "
@@ -1054,7 +1127,7 @@ class TraceStore:
         """Return a single benchmark run by run_id."""
         if not self._db:
             return None
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             "SELECT run_id, timestamp, duration_s, total_requests, total_failures, "
             "total_prompt_tokens, total_completion_tokens, requests_per_sec, "
             "tokens_per_sec, latency_p50_ms, latency_p95_ms, latency_p99_ms, "
@@ -1147,6 +1220,14 @@ class TraceStore:
         }
 
     async def close(self):
+        # Close the read connection first so any in-flight read finishes
+        # against a still-open writer (otherwise readers can race the
+        # writer's closure and emit "connection closed" tracebacks during
+        # shutdown).
+        if self._read_db:
+            await self._read_db.close()
+            self._read_db = None
         if self._db:
             await self._db.close()
-            logger.debug("Trace store closed")
+            self._db = None
+        logger.debug("Trace store closed")

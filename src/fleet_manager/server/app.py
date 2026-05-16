@@ -196,6 +196,49 @@ async def lifespan(app: FastAPI):
         )
     )
 
+    # Periodic WAL checkpoint task — fires ``PRAGMA wal_checkpoint(PASSIVE)``
+    # on both store writer connections every 10s.  Defense-in-depth against
+    # ``wal_autocheckpoint=100`` only firing on write-page volume; the
+    # explicit cadence ensures the WAL gets drained between dashboard read
+    # snapshots even under low write traffic.  See
+    # ``docs/plans/trace-store-read-connection-and-checkpoint.md`` and the
+    # 2026-05-16 follow-up to the 2026-05-15 observation.
+    async def _wal_checkpoint_loop():
+        interval_s = 10.0
+        while True:
+            try:
+                await asyncio.sleep(interval_s)
+                # PASSIVE is non-blocking — advances what it can and returns.
+                # Each call returns ``(busy, log_pages, checkpointed)``.  A
+                # ``busy`` value > 0 means at least one reader's snapshot
+                # held back the checkpoint; that's normal under load and
+                # the autocheckpoint or the next tick will catch up.
+                ts = await trace_store.checkpoint_passive()
+                ls = await latency_store.checkpoint_passive()
+                # Only INFO-log when a checkpoint was contested AND a
+                # non-trivial number of pages remain unwritten — keeps
+                # the log quiet under healthy operation.
+                for store_name, result in (("trace", ts), ("latency", ls)):
+                    if result is None:
+                        continue
+                    busy, log_pages, checkpointed = result
+                    if busy and log_pages > 100:
+                        logger.info(
+                            f"wal_checkpoint({store_name}): busy=1 "
+                            f"log_pages={log_pages} checkpointed={checkpointed}"
+                        )
+                    else:
+                        logger.debug(
+                            f"wal_checkpoint({store_name}): busy={busy} "
+                            f"log_pages={log_pages} checkpointed={checkpointed}"
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — never let this task die
+                logger.warning(f"wal_checkpoint_loop tick failed: {exc}")
+
+    checkpoint_task = asyncio.create_task(_wal_checkpoint_loop())
+
     logger.info(f"Ollama Herd ready on port {settings.port}")
 
     yield
@@ -205,12 +248,15 @@ async def lifespan(app: FastAPI):
     rebalancer_task.cancel()
     optimizer_task.cancel()
     preload_task.cancel()
+    checkpoint_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await monitor_task
     with contextlib.suppress(asyncio.CancelledError):
         await rebalancer_task
     with contextlib.suppress(asyncio.CancelledError):
         await optimizer_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await checkpoint_task
     await queue_mgr.shutdown()
     await streaming_proxy.close()
     if mlx_proxy is not None:

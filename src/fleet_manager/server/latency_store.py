@@ -14,7 +14,16 @@ logger = logging.getLogger(__name__)
 class LatencyStore:
     def __init__(self, data_dir: str = "~/.fleet-manager"):
         self._db_path = Path(data_dir).expanduser() / "latency.db"
+        # Writer connection — record(), _refresh_cache's write paths, init.
         self._db: aiosqlite.Connection | None = None
+        # Dedicated read connection — every dashboard analytics + percentile
+        # lookup uses this.  Same rationale as TraceStore._read_db (see
+        # docs/plans/trace-store-read-connection-and-checkpoint.md): splitting
+        # reads onto a separate aiosqlite connection avoids serializing
+        # reads behind writes on a single connection's thread, and keeps
+        # read snapshots from pinning the WAL checkpoint barrier on the
+        # writer's view.
+        self._read_db: aiosqlite.Connection | None = None
         # Synchronous cache for scorer lookups
         self._percentile_cache: dict[str, float] = {}
 
@@ -60,9 +69,43 @@ class LatencyStore:
             ON latency_observations(model_name, timestamp)
         """)
         await self._db.commit()
+        # Open the dedicated read connection AFTER the writer commits the
+        # schema migrations above, so this connection's first snapshot sees
+        # them.  query_only=1 prevents any accidental writes through it.
+        try:
+            self._read_db = await aiosqlite.connect(str(self._db_path))
+            await self._read_db.execute("PRAGMA journal_mode=WAL")
+            await self._read_db.execute("PRAGMA busy_timeout=30000")
+            await self._read_db.execute("PRAGMA query_only=1")
+        except Exception:
+            await self._db.close()
+            self._db = None
+            raise
         # Pre-populate cache from existing data
         await self._refresh_cache()
         logger.info(f"Latency store initialized at {self._db_path}")
+
+    async def checkpoint_passive(self) -> tuple[int, int, int] | None:
+        """Run ``PRAGMA wal_checkpoint(PASSIVE)`` on the writer connection.
+
+        Called every ~10s from a background task in ``server/app.py``'s
+        lifespan; defense-in-depth against ``wal_autocheckpoint=100`` only
+        firing on write volume.  Non-blocking; returns ``(busy, log_pages,
+        checkpointed_pages)`` or ``None`` if the connection is closed.
+        See ``trace_store.checkpoint_passive`` for the full rationale.
+        """
+        if self._db is None:
+            return None
+        try:
+            cursor = await self._read_db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row is None:
+                return None
+            return (int(row[0]), int(row[1]), int(row[2]))
+        except Exception as exc:  # noqa: BLE001 — never crash a background task
+            logger.debug(f"latency_store checkpoint_passive failed: {exc}")
+            return None
 
     async def record(
         self,
@@ -103,7 +146,7 @@ class LatencyStore:
             return None
         # Cap to the most recent 500 observations to bound memory usage.
         # Uses a subquery to get the latest rows, then sorts for percentile calc.
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             "SELECT latency_ms FROM ("
             "  SELECT latency_ms FROM latency_observations "
             "  WHERE node_id = ? AND model_name = ? "
@@ -131,7 +174,7 @@ class LatencyStore:
         if not self._db:
             return []
         cutoff = start_ts if start_ts and end_ts else time.time() - hours * 3600
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 CAST(timestamp / 3600 AS INTEGER) * 3600 AS hour_bucket,
@@ -165,7 +208,7 @@ class LatencyStore:
         if not self._db:
             return []
         cutoff = start_ts if start_ts and end_ts else time.time() - days * 86400
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 model_name,
@@ -198,7 +241,7 @@ class LatencyStore:
         """All-time per-model aggregate stats."""
         if not self._db:
             return []
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 model_name,
@@ -236,7 +279,7 @@ class LatencyStore:
         if not self._db:
             return []
         cutoff = time.time() - (days * 86400)
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             SELECT
                 node_id,
@@ -278,7 +321,7 @@ class LatencyStore:
             return
         # Single query: rank observations within each (node, model) group by
         # recency, keep only the latest 500, then compute p75 via percent_rank.
-        cursor = await self._db.execute(
+        cursor = await self._read_db.execute(
             """
             WITH recent AS (
                 SELECT node_id, model_name, latency_ms,
@@ -310,6 +353,12 @@ class LatencyStore:
         logger.info(f"Loaded p75 latency cache for {len(self._percentile_cache)} node:model pairs")
 
     async def close(self):
+        # Close the read connection first so in-flight reads finish against
+        # a still-open writer (mirrors TraceStore.close — see that comment).
+        if self._read_db:
+            await self._read_db.close()
+            self._read_db = None
         if self._db:
             await self._db.close()
-            logger.debug("Latency store closed")
+            self._db = None
+        logger.debug("Latency store closed")
