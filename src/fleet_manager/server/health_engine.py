@@ -100,6 +100,8 @@ class HealthEngine:
         recommendations.extend(self._check_mapped_models_hot(nodes))
         recommendations.extend(self._check_trace_store_write_failures(trace_store))
         recommendations.extend(self._check_text_embedding_backend_missing(nodes))
+        recommendations.extend(self._check_text_embedding_ollama_bypass(nodes))
+        recommendations.extend(self._check_nomic_loaded_in_ollama(nodes))
 
         # Trace-based checks (async, queries SQLite)
         if trace_store:
@@ -1212,6 +1214,130 @@ class HealthEngine:
                 data={
                     "cached_model_count": cached_count,
                     "backend_available": False,
+                },
+            ))
+        return recs
+
+    # Text embedding model names that have a native fastembed equivalent
+    _NATIVE_TEXT_EMBED_MODELS = frozenset({
+        "nomic-embed-text",
+        "nomic-embed-text:latest",
+    })
+
+    def _check_text_embedding_ollama_bypass(self, nodes) -> list[Recommendation]:
+        """Warn when nomic-embed-text is in Ollama but the native server isn't running.
+
+        The native fastembed server (port 11439) routes embed requests completely
+        outside Ollama, eliminating contention with LLM inference slots.  When
+        it isn't running, every embed request competes for OLLAMA_NUM_PARALLEL
+        capacity — a 120B model can hold a slot for minutes while embeds queue
+        and time out (the June 1 2026 incident: 202 ReadTimeout errors over 1.5h
+        on a machine at 14% CPU).
+
+        Fires per node when:
+          - nomic-embed-text (or :latest) is in ollama.models_available, AND
+          - text_embedding_port == 0  (native server not running)
+
+        Does NOT fire when the native server is already up — operators who've
+        installed --extra embedding are already on the better path.
+        """
+        recs: list[Recommendation] = []
+        for node in nodes:
+            if node.status.value != "online":
+                continue
+            if node.text_embedding_port > 0:
+                continue  # native server is running — no action needed
+            if not node.ollama:
+                continue
+            ollama_models = set(node.ollama.models_available or [])
+            matched = ollama_models & self._NATIVE_TEXT_EMBED_MODELS
+            if not matched:
+                continue  # nomic-embed-text not present on this node
+
+            arch = getattr(node, "arch", "") or ""
+            platform_note = (
+                " On Apple Silicon this is especially harmful — OLLAMA_NUM_PARALLEL "
+                "limits concurrent slots, so a 120B inference run can block embeds "
+                "for minutes."
+                if "apple" in arch.lower()
+                else " Under concurrent LLM load, embed requests can queue and time out."
+            )
+
+            recs.append(Recommendation(
+                check_id="text_embedding_ollama_bypass",
+                severity=Severity.WARNING,
+                title=(
+                    f"nomic-embed-text on {node.node_id} is routing through Ollama "
+                    f"— native backend not running"
+                ),
+                description=(
+                    f"{node.node_id} has {', '.join(sorted(matched))} available in Ollama "
+                    f"but the native fastembed text embedding server (port 11439) is not "
+                    f"running. Embed requests consume the same OLLAMA_NUM_PARALLEL slots "
+                    f"as LLM inference.{platform_note}"
+                ),
+                fix=(
+                    "Install the embedding extra to enable the native fastembed backend: "
+                    "`uv sync --extra embedding` (or `uv sync --all-extras`) on the node, "
+                    "then restart `herd-node`. nomic-embed-text requests will be routed "
+                    "to port 11439 and will never touch Ollama's inference queue again. "
+                    "The 130 MB model weights download automatically on the first request."
+                ),
+                node_id=node.node_id,
+                data={
+                    "ollama_embed_models": sorted(matched),
+                    "native_server_running": False,
+                    "arch": arch,
+                },
+            ))
+        return recs
+
+    def _check_nomic_loaded_in_ollama(self, nodes) -> list[Recommendation]:
+        """Inform when nomic-embed-text is loaded in Ollama while the native server is up.
+
+        Once the fastembed server is running, Ollama's copy of nomic-embed-text is
+        never used — it just occupies VRAM (~275 MB) and an Ollama model slot.
+        This is cosmetic, not critical, so severity is INFO.  The model will
+        self-evict once KEEP_ALIVE expires; this check nudges operators who want
+        to free the slot immediately.
+        """
+        recs: list[Recommendation] = []
+        for node in nodes:
+            if node.status.value != "online":
+                continue
+            if node.text_embedding_port == 0:
+                continue  # native server not running — covered by bypass check instead
+            if not node.ollama:
+                continue
+            loaded_names = {m.name for m in (node.ollama.models_loaded or [])}
+            matched = loaded_names & self._NATIVE_TEXT_EMBED_MODELS
+            if not matched:
+                continue
+
+            recs.append(Recommendation(
+                check_id="nomic_loaded_in_ollama",
+                severity=Severity.INFO,
+                title=(
+                    f"nomic-embed-text is loaded in Ollama on {node.node_id} "
+                    f"but the native backend is handling all embed requests"
+                ),
+                description=(
+                    f"The native fastembed server (port {node.text_embedding_port}) is "
+                    f"running and intercepting all nomic-embed-text requests before they "
+                    f"reach Ollama. However, {', '.join(sorted(matched))} is still loaded "
+                    f"in Ollama, consuming ~275 MB of VRAM and an inference slot for no "
+                    f"benefit. It will self-evict when OLLAMA_KEEP_ALIVE expires."
+                ),
+                fix=(
+                    "To free the slot immediately: `ollama stop nomic-embed-text` on the "
+                    "node. Or set `OLLAMA_KEEP_ALIVE=5m` (instead of -1) for embed models "
+                    "so they evict after a period of disuse. No action required — it "
+                    "resolves on its own."
+                ),
+                node_id=node.node_id,
+                data={
+                    "loaded_embed_models": sorted(matched),
+                    "native_port": node.text_embedding_port,
                 },
             ))
         return recs
