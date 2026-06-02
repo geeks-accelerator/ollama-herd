@@ -31,6 +31,12 @@ from fleet_manager.node.text_embedding_models import (
 
 logger = logging.getLogger(__name__)
 
+# Suppress filelock DEBUG chatter from fastembed's model-download path.
+# filelock emits one DEBUG line per file lock acquired/released during the
+# HuggingFace snapshot download, which floods herd-node.jsonl with hundreds
+# of lines on first-run.  WARNING keeps "couldn't acquire lock" errors visible.
+logging.getLogger("filelock").setLevel(logging.WARNING)
+
 router = APIRouter()
 
 # Module-level backend — loaded lazily on first request, swapped on model change.

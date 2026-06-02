@@ -15,7 +15,10 @@ The public API surface is:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+import uuid
 from urllib.parse import urlparse
 
 import httpx
@@ -112,16 +115,30 @@ async def embed_text(request: Request):
         f"({te_url})"
     )
 
+    trace_store = request.app.state.trace_store
+    client_ip = request.client.host if request.client else ""
+    request_id = str(uuid.uuid4())
+    start_ms = time.time() * 1000
+
     # Forward the request body as-is to the node's text embedding server
     timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
     async with httpx.AsyncClient(base_url=te_url, timeout=timeout) as client:
         try:
             resp = await client.post("/embed", json=body)
         except httpx.ReadTimeout:
-            logger.error(
-                f"Text embedding timeout on {best.node_id} — "
-                f"model may still be downloading (130 MB on first request)"
-            )
+            elapsed_ms = time.time() * 1000 - start_ms
+            err_msg = "ReadTimeout — model may still be downloading (130 MB on first request)"
+            logger.error(f"Text embedding timeout on {best.node_id} — {err_msg}")
+            if trace_store:
+                asyncio.ensure_future(trace_store.record_trace(
+                    request_id=request_id,
+                    model=model, original_model=model,
+                    node_id=best.node_id, score=None,
+                    status="failed", latency_ms=elapsed_ms,
+                    client_ip=client_ip, original_format="embed",
+                    error_message=err_msg,
+                    tags=["embed", "text-embed"],
+                ))
             return JSONResponse(
                 status_code=504,
                 content={
@@ -134,7 +151,19 @@ async def embed_text(request: Request):
                 },
             )
         except Exception as exc:
+            elapsed_ms = time.time() * 1000 - start_ms
+            err_msg = f"{type(exc).__name__}: {exc}"
             logger.error(f"Text embedding transport error on {best.node_id}: {exc}")
+            if trace_store:
+                asyncio.ensure_future(trace_store.record_trace(
+                    request_id=request_id,
+                    model=model, original_model=model,
+                    node_id=best.node_id, score=None,
+                    status="failed", latency_ms=elapsed_ms,
+                    client_ip=client_ip, original_format="embed",
+                    error_message=err_msg,
+                    tags=["embed", "text-embed"],
+                ))
             return JSONResponse(
                 status_code=502,
                 content={
@@ -143,15 +172,38 @@ async def embed_text(request: Request):
                 },
             )
 
+    elapsed_ms = time.time() * 1000 - start_ms
+
     if not resp.is_success:
         try:
             downstream_body = resp.json()
         except Exception:
             downstream_body = {"error": resp.text[:500]}
         downstream_body.setdefault("node", best.node_id)
+        err_msg = f"HTTP {resp.status_code}: {resp.text[:200]}"
+        if trace_store:
+            asyncio.ensure_future(trace_store.record_trace(
+                request_id=request_id,
+                model=model, original_model=model,
+                node_id=best.node_id, score=None,
+                status="failed", latency_ms=elapsed_ms,
+                client_ip=client_ip, original_format="embed",
+                error_message=err_msg,
+                tags=["embed", "text-embed"],
+            ))
         return JSONResponse(status_code=resp.status_code, content=downstream_body)
 
     result = resp.json()
+    if trace_store:
+        asyncio.ensure_future(trace_store.record_trace(
+            request_id=request_id,
+            model=model, original_model=model,
+            node_id=best.node_id, score=None,
+            status="completed", latency_ms=elapsed_ms,
+            client_ip=client_ip, original_format="embed",
+            tags=["embed", "text-embed"],
+        ))
+
     result["node"] = best.node_id
     return JSONResponse(
         content=result,
