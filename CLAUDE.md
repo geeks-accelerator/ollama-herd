@@ -151,6 +151,8 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `node/capacity_learner.py` | 168-slot weekly behavioral model, availability score, dynamic memory ceiling |
 | `node/embedding_models.py` | Vision embedding model registry, download, ONNX inference (DINOv2, SigLIP, CLIP) |
 | `node/embedding_server.py` | FastAPI server for vision embeddings on :11438 |
+| `node/text_embedding_models.py` | Text embedding model registry (nomic-embed-text → fastembed name + dims) |
+| `node/text_embedding_server.py` | FastAPI server for native text embeddings on :11439 (fastembed/ONNX, no Ollama) |
 | `node/platform_connection.py` | Opt-in gotomy.ai integration: Ed25519 keypair, token, register, persist |
 | `node/platform_client.py` | Shared httpx wrapper with retry — used by heartbeat + telemetry |
 | `node/platform_heartbeat.py` | Signed heartbeat POST every 60s (CPU, memory, VRAM, queues, loaded models) |
@@ -163,7 +165,7 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `node/benchmark_estimate.py` | Tokens/sec from trace data or hardware heuristic |
 | `server/model_preloader.py` | Priority model loading after restart — weighted 24h/7d usage scoring |
 
-Routes: `server/routes/` — `openai_compat.py` (v1/), `ollama_compat.py` (api/), `fleet.py`, `heartbeat.py`, `dashboard.py`, `image_compat.py`, `transcription_compat.py`, `embedding_compat.py`, `platform.py` (Connect/Disconnect)
+Routes: `server/routes/` — `openai_compat.py` (v1/), `ollama_compat.py` (api/), `fleet.py`, `heartbeat.py`, `dashboard.py`, `image_compat.py`, `transcription_compat.py`, `embedding_compat.py`, `text_embedding_compat.py`, `platform.py` (Connect/Disconnect)
 
 ### Request flow
 
@@ -238,10 +240,10 @@ Silent failures are dishonest. Fail fast, fail loud.
 ## Current State (as of 2026-05-17)
 
 - **Version:** 0.6.2 published on PyPI + Homebrew tap (live since 2026-05-17, day-after soak pending). 0.6.2 ships trace_store SQLite resilience in two waves: first the safety net (`busy_timeout` 5s→30s, retry-on-locked in `record_trace`, `wal_autocheckpoint=100`, new `trace_store_write_failures` health check, per-process JSONL log files), then the structural fix when the first wave proved insufficient under sustained traffic (dedicated `_read_db` connection per store with `PRAGMA query_only=1`, periodic explicit `PRAGMA wal_checkpoint(PASSIVE)` every 10s from a background task in `app.py`). Verified on the local fleet 2026-05-16: 11-hour soak with sustained real traffic held the WAL at 410 KB peak vs 103 MB on the same workload before the structural fix, with 0 post-restart trace write failures. Plan: `docs/plans/trace-store-read-connection-and-checkpoint.md`. Post-mortems: `docs/observations.md` 2026-05-15 (original incident) and 2026-05-16 (why longer-timeout-plus-retry wasn't enough — structural contention needs structural fix). Operator runbook: `docs/troubleshooting.md` § "Trace DB write failures."
-- **Fleet:** Neons-Mac-Studio (512GB M3 Ultra) + Lucass-MacBook-Pro-2 (128GB M4 Max). Mac Studio runs two MLX servers: `mlx:Qwen3-Coder-Next-4bit` on :11440 for coding (no draft — Qwen3-Next's hybrid linear-attn architecture builds a non-trimmable `ArraysCache` and still hits mlx-lm#1081) + `mlx:Qwen3-Coder-30B-A3B-Instruct-4bit` on :11441 as dedicated compactor with `--draft-model mlx-community/Qwen3-1.7B-4bit --num-draft-tokens 4` for speculative decoding (~94 tok/s on M3 Ultra). Plus `gpt-oss:120b` + `nomic-embed-text` via Ollama.
+- **Fleet:** Neons-Mac-Studio (512GB M3 Ultra) + Lucass-MacBook-Pro-2 (128GB M4 Max). Mac Studio runs two MLX servers: `mlx:Qwen3-Coder-Next-4bit` on :11440 for coding (no draft — Qwen3-Next's hybrid linear-attn architecture builds a non-trimmable `ArraysCache` and still hits mlx-lm#1081) + `mlx:Qwen3-Coder-30B-A3B-Instruct-4bit` on :11441 as dedicated compactor with `--draft-model mlx-community/Qwen3-1.7B-4bit --num-draft-tokens 4` for speculative decoding (~94 tok/s on M3 Ultra). Plus `gpt-oss:120b` via Ollama + `nomic-embed-text` via native fastembed server (:11439).
 - **Ollama settings:** `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=-1` (in `~/.zshrc`)
-- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "1006 tests\|33 checks" skills/`
-- **Health:** 33 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
+- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "1006 tests\|36 checks" skills/`
+- **Health:** 36 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
 
 ## Conventions
 

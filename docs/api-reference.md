@@ -323,7 +323,15 @@ List all currently loaded (hot) models across the fleet.
 ### `POST /api/embed`
 ### `POST /api/embeddings`
 
-Ollama-compatible embeddings endpoints. Routes to the best node with the requested embedding model. Both endpoints accept the same body — `/api/embed` uses `input` field, `/api/embeddings` uses `prompt` field (both are accepted on either endpoint).
+Ollama-compatible embeddings endpoint. The router dispatches to the right backend based on model name — clients need no changes:
+
+| Model type | Backend | Port |
+|---|---|---|
+| `dinov2-vit-s14`, `clip`, `siglip` | Native vision embedding (ONNX) | :11438 |
+| `nomic-embed-text`, `nomic-embed-text:latest` | **Native text embedding (fastembed)** | :11439 |
+| All other models | Ollama on the selected node | :11434 |
+
+The native text embedding backend (fastembed / ONNX Runtime) runs entirely outside Ollama's inference queue — `nomic-embed-text` requests never consume `OLLAMA_NUM_PARALLEL` slots and can never be stalled by concurrent LLM inference.
 
 **Request body:**
 
@@ -337,19 +345,31 @@ Ollama-compatible embeddings endpoints. Routes to the best node with the request
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `model` | string | *required* | Embedding model name |
-| `input` | string/array | — | Text(s) to embed (preferred for `/api/embed`) |
-| `prompt` | string | — | Text to embed (preferred for `/api/embeddings`) |
+| `input` | string/array | — | Text(s) to embed (string or `["text1", "text2"]`) |
+| `prompt` | string | — | Alias for `input` (legacy compat) |
 | `metadata.tags` | array | `[]` | Tags for per-app analytics |
 
-The raw body is proxied to Ollama's embedding endpoint on the selected node. Response format matches Ollama's native response.
+**Task prefixes for nomic-embed-text:** the model supports `"search_query: ..."` and `"search_document: ..."` prefixes for asymmetric retrieval quality. These are the caller's responsibility — neither herd nor Ollama adds them automatically.
+
+**Response** (Ollama-compatible for all backends):
+```json
+{
+  "model": "nomic-embed-text",
+  "embeddings": [[0.0101, -0.0018, ...]],
+  "total_duration": 4500000,
+  "load_duration": 0,
+  "prompt_eval_count": 9
+}
+```
 
 **Error responses:**
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Missing `model` field |
+| 400 | Missing `model` or `input` field |
 | 404 | Model not found on any node |
-| 503 | Model exists but no node can serve it |
+| 503 | Model exists but no node can serve it (native server not running) |
+| 504 | Text embedding timed out — first request may trigger 130 MB model download; retry after 30s |
 
 ---
 
@@ -635,6 +655,17 @@ Full fleet state — nodes, queues, hardware metrics, and health summary.
       "vision_embedding_status": {
         "backend_available": true,
         "cached_model_count": 3
+      },
+      "text_embedding": {
+        "models_available": [
+          {"name": "nomic-embed-text", "dimensions": 768, "cached": true}
+        ],
+        "processing": false
+      },
+      "text_embedding_port": 11439,
+      "text_embedding_status": {
+        "backend_available": true,
+        "cached_model_count": 1
       }
     }
   ],
@@ -688,6 +719,25 @@ The `vision_backend_missing` health check fires WARNING when
 intended to use vision embedding (downloaded the weights) but the runtime
 isn't installed.  Fix: `uv sync --extra embedding` (or `uv sync --all-extras`)
 on the node, then restart `herd-node`.
+
+**`text_embedding` / `text_embedding_port` / `text_embedding_status` fields** (optional — present on node agents 0.6.3+):
+
+The native fastembed text embedding server. When running, `nomic-embed-text` requests are routed to port `text_embedding_port` (default 11439) instead of Ollama, so embed requests never consume `OLLAMA_NUM_PARALLEL` inference slots.
+
+`text_embedding.models_available` lists registered models with `name`, `dimensions`, and `cached` (whether the ONNX weights are on disk). `cached=false` means the server is running but the model hasn't been requested yet — it will auto-download (130 MB) on the first request.
+
+`text_embedding_status` carries the same asymmetry signal as `vision_embedding_status`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `backend_available` | bool | True iff `fastembed` is importable in the herd-node venv |
+| `cached_model_count` | int | Number of text embedding models with weights on disk in `~/.fleet-manager/models/text-embedding/` |
+
+Health checks related to text embedding:
+- `text_embedding_backend_missing` — WARNING: weights cached but fastembed not installed
+- `text_embedding_ollama_bypass` — WARNING: nomic-embed-text in Ollama but native server not running (embed requests will compete with LLM inference)
+- `nomic_loaded_in_ollama` — INFO: native server is running but nomic-embed-text still occupies an Ollama slot (cosmetic; self-resolves on KEEP_ALIVE expiry)
+- `embed_error_rate` — WARNING/CRITICAL: embed failures in the last hour (regardless of backend)
 
 ---
 

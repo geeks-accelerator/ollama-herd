@@ -150,6 +150,23 @@ Per-model overrides are set at runtime via `POST /dashboard/api/settings` with `
 | `FLEET_TRANSCRIPTION` | `false` | Enable `/api/transcribe` endpoint for Qwen3-ASR routing |
 | `FLEET_TRANSCRIPTION_TIMEOUT` | `300.0` | Max seconds to wait for transcription |
 
+### Native Text Embeddings (fastembed / nomic-embed-text)
+
+Serves text embeddings via a FastAPI server on `:11439` using [fastembed](https://github.com/qdrant/fastembed) (ONNX Runtime, no PyTorch). Intercepts `nomic-embed-text` and `nomic-embed-text:latest` requests in `/api/embed` before they reach Ollama — embed requests never consume `OLLAMA_NUM_PARALLEL` inference slots and cannot be queued behind LLM inference.
+
+**Setup:** `uv sync --extra embedding` (fastembed is included in the `embedding` extra alongside onnxruntime). Restart `herd-node` — the server starts automatically. The 130 MB model weights (`nomic-ai/nomic-embed-text-v1.5-Q`, int8 ONNX) download on the first request and cache to `~/.fleet-manager/models/text-embedding/`.
+
+No environment variables needed — the server starts whenever fastembed is importable. Performance: ~4ms inference (model hot), 768-dimensional embeddings, 8192-token context.
+
+**Port:** `ollama_port + 5` (default **11439**). Confirmed unused by any other herd service.
+
+**Health checks:**
+- `text_embedding_ollama_bypass` (WARNING) — nomic-embed-text in Ollama but native server not running
+- `text_embedding_backend_missing` (WARNING) — model weights cached but fastembed not installed
+- `nomic_loaded_in_ollama` (INFO) — native server running but nomic still occupies an Ollama slot
+
+**Adding more models:** add an entry to `src/fleet_manager/node/text_embedding_models.py` with the fastembed model name and dimensions. No other code changes needed.
+
 ### Vision Embeddings (DINOv2, SigLIP2, CLIP)
 
 Serves image embeddings via `/api/embed-image` on `:11438` internally (proxied through the router on `:11435`).  Used for frame deduplication, image similarity, and visual search.
