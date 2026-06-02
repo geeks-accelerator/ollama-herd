@@ -99,6 +99,7 @@ class HealthEngine:
         recommendations.extend(self._check_vision_backend_missing(nodes))
         recommendations.extend(self._check_mapped_models_hot(nodes))
         recommendations.extend(self._check_trace_store_write_failures(trace_store))
+        recommendations.extend(self._check_text_embedding_backend_missing(nodes))
 
         # Trace-based checks (async, queries SQLite)
         if trace_store:
@@ -1153,6 +1154,59 @@ class HealthEngine:
                     "--all-extras`) on the node, then restart `herd-node`. "
                     "The next heartbeat will re-advertise the cached "
                     "models and this warning will clear."
+                ),
+                node_id=node.node_id,
+                data={
+                    "cached_model_count": cached_count,
+                    "backend_available": False,
+                },
+            ))
+        return recs
+
+    def _check_text_embedding_backend_missing(self, nodes) -> list[Recommendation]:
+        """Text embedding weights cached but fastembed not installed.
+
+        Mirrors ``_check_vision_backend_missing`` exactly.  Fires when the
+        operator has pre-downloaded nomic-embed-text (so weights exist in
+        ~/.fleet-manager/models/text-embedding/) but fastembed isn't installed
+        in the herd-node venv, meaning the text embedding server can't start
+        and /api/embed calls for nomic-embed-text will fall back to Ollama.
+
+        Read from ``node.text_embedding_status`` (populated by the node
+        collector via ``_text_embedding_backend_status``).  Older agents that
+        predate this field send an empty dict; we skip them gracefully.
+        """
+        recs: list[Recommendation] = []
+        for node in nodes:
+            if node.status.value != "online":
+                continue
+            status = getattr(node, "text_embedding_status", None) or {}
+            if not status:
+                continue  # older agent, no signal — don't fire
+            backend_available = status.get("backend_available", True)
+            cached_count = int(status.get("cached_model_count", 0))
+            if backend_available:
+                continue  # working as intended
+            if cached_count == 0:
+                continue  # operator never wanted text embedding — don't nag
+            recs.append(Recommendation(
+                check_id="text_embedding_backend_missing",
+                severity=Severity.WARNING,
+                title=(
+                    f"Text embedding backend not installed on {node.node_id}"
+                ),
+                description=(
+                    f"{cached_count} text embedding model(s) are cached on disk "
+                    "(nomic-embed-text-v1.5) but fastembed is not installed in "
+                    "the herd-node venv, so the native text embedding server "
+                    "cannot start. Embed requests for nomic-embed-text will fall "
+                    "back to Ollama and may queue behind LLM inference slots."
+                ),
+                fix=(
+                    "Run `uv sync --extra embedding` (or `uv sync --all-extras`) "
+                    "on the node — fastembed is now included in the embedding extra. "
+                    "Then restart `herd-node`. The text embedding server will start "
+                    "automatically and this warning will clear."
                 ),
                 node_id=node.node_id,
                 data={

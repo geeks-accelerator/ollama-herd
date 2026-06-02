@@ -12,11 +12,13 @@ uv run herd-node --router-url http://localhost:11435  # explicit router URL
 
 Without `--extra embedding`, the vision embedding server starts but `onnxruntime` isn't importable, so the collector probes for it on every heartbeat and refuses to advertise the models — DINOv2/SigLIP/CLIP chips disappear from the node card entirely. A `vision_backend_missing` health check fires WARNING with the exact `uv sync --extra embedding` fix command. (The previous behavior was to advertise the chips and 500 every `/embed` call, which produced silent failures in agentic dedup loops — see commit `9ff8a54` and the 2026-04-25 observation in `docs/observations.md`.)
 
+The `--extra embedding` now also installs `fastembed` for the **native text embedding server** (port 11439). When fastembed is installed, `nomic-embed-text` requests are routed to the native server instead of Ollama — zero contention with LLM inference slots. Model weights (130 MB) download automatically on the first request. A `text_embedding_backend_missing` health check fires WARNING if weights are cached but fastembed isn't installed.
+
 ## Test
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 986 tests (~40s)
+uv run pytest                    # run all 1006 tests (~40s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -106,7 +108,7 @@ sleep 3 && uv run herd-node &>/dev/null & disown
 
 **`pkill -9 -f "bin/herd|mlx_lm.server"` matters as much as `--all-extras`.** `MlxSupervisor` spawns mlx_lm.server with `start_new_session=True` so the children survive a parent crash. If you only `pkill bin/herd`, the mlx_lm.server processes get reparented to launchd and keep holding ports 11440 + 11441. The next supervisor startup tries to bind, fails, and logs "QUARANTINED" forever against an orphan that's actually fine (see `docs/observations.md` 2026-04-27). The supervisor now detects + SIGKILLs orphans automatically at start time, but the cleaner restart recipe avoids the warning entirely. (`-9` because some MLX shutdown paths hang on SIGTERM — see commit `9ff8a54`.)
 
-**`--all-extras` is non-negotiable here.** Plain `uv sync` is destructive — it removes any package not in core deps + currently-requested extras. The `embedding` extras (`onnxruntime`, `Pillow`, `numpy`, `huggingface-hub`) are optional in `pyproject.toml`, so a bare `uv sync` strips them every restart, and the next vision-embedding request 500s. A health check (`vision_backend_missing`) now catches this regression server-side, but `--all-extras` in the deploy snippet is the actual fix — it makes the local fleet keep every optional capability resident across restarts. Total cost: ~250 MB of additional packages in `.venv/`. See `docs/observations.md` (entry: 2026-04-25 — "uv sync without --extra embedding strips vision embedding deps").
+**`--all-extras` is non-negotiable here.** Plain `uv sync` is destructive — it removes any package not in core deps + currently-requested extras. The `embedding` extras (`onnxruntime`, `Pillow`, `numpy`, `huggingface-hub`, `fastembed`) are optional in `pyproject.toml`, so a bare `uv sync` strips them every restart, and the next vision-embedding or nomic-embed-text request 500s. Health checks (`vision_backend_missing`, `text_embedding_backend_missing`) now catch these regressions server-side, but `--all-extras` in the deploy snippet is the actual fix — it makes the local fleet keep every optional capability resident across restarts. Total cost: ~300 MB of additional packages in `.venv/`. See `docs/observations.md` (entry: 2026-04-25 — "uv sync without --extra embedding strips vision embedding deps").
 
 Both entry points auto-load `~/.fleet-manager/env` at startup (see `src/fleet_manager/common/env_file.py`), so `FLEET_*` vars work even when launched from non-interactive shells (Bash subshells, nohup, launchd). Shell env still wins if set. Template: `docs/examples/fleet-env.example` — copy to `~/.fleet-manager/env` on a fresh machine.
 
@@ -238,8 +240,8 @@ Silent failures are dishonest. Fail fast, fail loud.
 - **Version:** 0.6.2 published on PyPI + Homebrew tap (live since 2026-05-17, day-after soak pending). 0.6.2 ships trace_store SQLite resilience in two waves: first the safety net (`busy_timeout` 5s→30s, retry-on-locked in `record_trace`, `wal_autocheckpoint=100`, new `trace_store_write_failures` health check, per-process JSONL log files), then the structural fix when the first wave proved insufficient under sustained traffic (dedicated `_read_db` connection per store with `PRAGMA query_only=1`, periodic explicit `PRAGMA wal_checkpoint(PASSIVE)` every 10s from a background task in `app.py`). Verified on the local fleet 2026-05-16: 11-hour soak with sustained real traffic held the WAL at 410 KB peak vs 103 MB on the same workload before the structural fix, with 0 post-restart trace write failures. Plan: `docs/plans/trace-store-read-connection-and-checkpoint.md`. Post-mortems: `docs/observations.md` 2026-05-15 (original incident) and 2026-05-16 (why longer-timeout-plus-retry wasn't enough — structural contention needs structural fix). Operator runbook: `docs/troubleshooting.md` § "Trace DB write failures."
 - **Fleet:** Neons-Mac-Studio (512GB M3 Ultra) + Lucass-MacBook-Pro-2 (128GB M4 Max). Mac Studio runs two MLX servers: `mlx:Qwen3-Coder-Next-4bit` on :11440 for coding (no draft — Qwen3-Next's hybrid linear-attn architecture builds a non-trimmable `ArraysCache` and still hits mlx-lm#1081) + `mlx:Qwen3-Coder-30B-A3B-Instruct-4bit` on :11441 as dedicated compactor with `--draft-model mlx-community/Qwen3-1.7B-4bit --num-draft-tokens 4` for speculative decoding (~94 tok/s on M3 Ultra). Plus `gpt-oss:120b` + `nomic-embed-text` via Ollama.
 - **Ollama settings:** `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=-1` (in `~/.zshrc`)
-- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "986 tests\|32 checks" skills/`
-- **Health:** 32 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
+- **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "1006 tests\|33 checks" skills/`
+- **Health:** 33 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
 
 ## Conventions
 

@@ -55,6 +55,11 @@ async def fleet_status(request: Request):
         # but it's silently broken."  Empty dict for older agents.
         if node.vision_embedding_status:
             node_data["vision_embedding_status"] = dict(node.vision_embedding_status)
+        if node.text_embedding:
+            node_data["text_embedding"] = node.text_embedding.model_dump()
+            node_data["text_embedding_port"] = node.text_embedding_port
+        if node.text_embedding_status:
+            node_data["text_embedding_status"] = dict(node.text_embedding_status)
         if node.mlx_servers:
             node_data["mlx_servers"] = [s.model_dump() for s in node.mlx_servers]
             node_data["mlx_bind_host"] = node.mlx_bind_host

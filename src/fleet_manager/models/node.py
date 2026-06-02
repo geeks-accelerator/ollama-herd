@@ -144,6 +144,21 @@ class VisionEmbeddingMetrics(BaseModel):
     processing: bool = False
 
 
+class TextEmbeddingModel(BaseModel):
+    """A text embedding model available on a node via the native fastembed backend."""
+
+    name: str        # e.g. "nomic-embed-text"
+    dimensions: int  # e.g. 768
+    cached: bool     # model weights present on disk
+
+
+class TextEmbeddingMetrics(BaseModel):
+    """Text embedding capabilities reported by a node."""
+
+    models_available: list[TextEmbeddingModel] = Field(default_factory=list)
+    processing: bool = False
+
+
 class MlxServerInfo(BaseModel):
     """One mlx_lm.server subprocess on a node, reported in the heartbeat.
 
@@ -196,6 +211,12 @@ class HeartbeatPayload(BaseModel):
     # ``vision_backend_missing`` when the operator has cached weights but
     # forgot ``uv sync --extra embedding``.  Empty dict on older agents.
     vision_embedding_status: dict = Field(default_factory=dict)
+    # Native text embedding backend (fastembed, port ollama_port+5 = 11439).
+    # Runs independently of Ollama — embed requests never consume LLM slots.
+    # Same two-field status pattern as vision_embedding_status.
+    text_embedding: TextEmbeddingMetrics | None = None
+    text_embedding_port: int = 0
+    text_embedding_status: dict = Field(default_factory=dict)
     # Connection health: failures since last successful heartbeat
     connection_failures: int = 0
     connection_failures_total: int = 0  # Total since agent start
@@ -263,6 +284,10 @@ class NodeState(BaseModel):
     # engine can fire ``vision_backend_missing`` when weights are cached
     # but onnxruntime isn't installed.
     vision_embedding_status: dict = Field(default_factory=dict)
+    # Native text embedding backend (fastembed, port ollama_port+5 = 11439)
+    text_embedding: TextEmbeddingMetrics | None = None
+    text_embedding_port: int = 0
+    text_embedding_status: dict = Field(default_factory=dict)
     # Connection health from node agent
     connection_failures: int = 0  # Failures since last successful heartbeat
     connection_failures_total: int = 0  # Total since agent start

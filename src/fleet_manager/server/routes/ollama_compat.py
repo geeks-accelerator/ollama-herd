@@ -425,6 +425,17 @@ async def ollama_embed(request: Request):
         request.state._parsed_body = body
         return await embed_image(request)
 
+    # Route text embedding models (nomic-embed-text, etc.) to the native
+    # fastembed server on port 11439 — completely bypasses Ollama so embed
+    # requests never queue behind LLM inference slots.
+    from fleet_manager.server.routes.text_embedding_compat import (
+        embed_text,
+        is_text_embedding_model,
+    )
+    if is_text_embedding_model(model):
+        request.state._parsed_body = body
+        return await embed_text(request)
+
     tags = extract_tags(body, request.headers)
     inference_req = InferenceRequest(
         model=model,

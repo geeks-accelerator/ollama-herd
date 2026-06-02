@@ -370,6 +370,80 @@ def _vision_backend_status() -> dict:
     }
 
 
+def _detect_text_embedding_models():
+    """Detect available native text embedding models (fastembed backend).
+
+    Mirrors _detect_vision_embedding_models() exactly:
+
+    1. Can the backend be imported?  If fastembed is not installed (operator
+       didn't run ``uv sync --extra embedding``), return None — don't advertise
+       models we can't serve.
+    2. Which models are cached on disk?
+
+    The asymmetric case — weights cached but fastembed missing — is surfaced
+    separately via ``_text_embedding_backend_status()`` and the health engine's
+    ``text_embedding_backend_missing`` check, so the operator sees the fix
+    command rather than silently missing chips on the dashboard.
+    """
+    try:
+        import fastembed  # noqa: F401  — import is the test
+    except ImportError:
+        return None
+
+    from fleet_manager.models.node import TextEmbeddingMetrics, TextEmbeddingModel
+    from fleet_manager.node.text_embedding_models import (
+        canonical_model_names,
+        get_model_spec,
+        is_model_cached,
+    )
+
+    models: list[TextEmbeddingModel] = []
+    for name in canonical_model_names():
+        spec = get_model_spec(name)
+        models.append(
+            TextEmbeddingModel(
+                name=name,
+                dimensions=spec["dimensions"],
+                cached=is_model_cached(name),
+            )
+        )
+
+    # Return metrics even if no models are cached yet — server starts eagerly
+    # when fastembed is installed so the first request triggers a lazy download.
+    # This means the node advertises text_embedding_port immediately after
+    # installing the extra, without needing a model pre-pull step.
+    if not models:
+        return None
+    return TextEmbeddingMetrics(models_available=models, processing=False)
+
+
+def _text_embedding_backend_status() -> dict:
+    """Return whether the text-embedding backend is loadable, separately
+    from whether any models are cached on disk.  Same shape as
+    ``_vision_backend_status()``.
+
+    Keys:
+      backend_available:  bool  — fastembed importable in this venv
+      cached_model_count: int   — number of canonical models with weights on disk
+    """
+    from fleet_manager.node.text_embedding_models import (
+        canonical_model_names,
+        is_model_cached,
+    )
+
+    try:
+        import fastembed  # noqa: F401
+        backend_available = True
+    except ImportError:
+        backend_available = False
+
+    cached = sum(1 for name in canonical_model_names() if is_model_cached(name))
+    return {
+        "backend_available": backend_available,
+        "cached_model_count": cached,
+    }
+
+
 async def collect_heartbeat(
     node_id: str,
     ollama: OllamaClient,
@@ -516,6 +590,8 @@ async def collect_heartbeat(
     transcription = _detect_transcription_models()
     vision_embedding = _detect_vision_embedding_models()
     vision_embedding_status = _vision_backend_status()
+    text_embedding = _detect_text_embedding_models()
+    text_embedding_status = _text_embedding_backend_status()
 
     return HeartbeatPayload(
         node_id=node_id,
@@ -536,6 +612,8 @@ async def collect_heartbeat(
         transcription=transcription,
         vision_embedding=vision_embedding,
         vision_embedding_status=vision_embedding_status,
+        text_embedding=text_embedding,
+        text_embedding_status=text_embedding_status,
         chip=_detect_chip(),
         memory_bandwidth_gbps=_detect_memory_bandwidth_gbps(),
         mlx_servers=mlx_server_infos,

@@ -63,6 +63,8 @@ embedding = [
     "Pillow>=10.0",
     "onnxruntime>=1.17",
     "huggingface-hub>=0.20",
+    # Text embedding (nomic-embed-text-v1.5 via ONNX, no torch dependency)
+    "fastembed>=0.4.0",
 ]
 dev = [
     "pytest>=8.0",

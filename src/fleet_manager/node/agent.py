@@ -45,6 +45,8 @@ class NodeAgent:
         self._transcription_port: int = 0
         self._embedding_server_task: asyncio.Task | None = None
         self._embedding_port: int = 0
+        self._text_embedding_server_task: asyncio.Task | None = None
+        self._text_embedding_port: int = 0
         self._telemetry_task: asyncio.Task | None = None
         self._platform_heartbeat_task: asyncio.Task | None = None
 
@@ -173,6 +175,9 @@ class NodeAgent:
         # Start vision embedding server if models are downloaded
         await self._ensure_embedding_server()
 
+        # Start native text embedding server if fastembed is installed
+        await self._ensure_text_embedding_server()
+
         # Phase 3: MLX subprocess auto-start (docs/plans/mlx-backend-for-large-models.md)
         await self._ensure_mlx_server()
 
@@ -224,6 +229,8 @@ class NodeAgent:
                     payload.transcription_port = self._transcription_port
                 if self._embedding_port:
                     payload.vision_embedding_port = self._embedding_port
+                if self._text_embedding_port:
+                    payload.text_embedding_port = self._text_embedding_port
                 payload.connection_failures = self._connection_failures
                 payload.connection_failures_total = self._connection_failures_total
                 await self._send_heartbeat(payload)
@@ -446,6 +453,53 @@ class NodeAgent:
         except Exception as e:
             logger.warning(f"Failed to start embedding server: {repr(e)}")
             self._embedding_port = 0
+
+    async def _ensure_text_embedding_server(self):
+        """Start a native text embedding server if fastembed is installed.
+
+        Mirrors ``_ensure_embedding_server()`` for vision embeddings.  The
+        server starts whenever fastembed is importable — models are downloaded
+        lazily on the first request, so no pre-pull step is required.  Port is
+        ``ollama_port + 5`` (11439 when Ollama is on 11434).
+        """
+        try:
+            import fastembed  # noqa: F401  — availability probe
+        except ImportError:
+            logger.debug(
+                "fastembed not installed — text embedding server skipped. "
+                "Run `uv sync --extra embedding` to enable."
+            )
+            return
+
+        from urllib.parse import urlparse
+
+        parsed = urlparse(self.settings.ollama_host)
+        ollama_port = parsed.port or 11434
+        text_embedding_port = ollama_port + 5  # 11434 → 11439
+
+        try:
+            import uvicorn
+            from fastapi import FastAPI
+
+            from fleet_manager.node.text_embedding_server import router as te_router
+
+            app = FastAPI(title="Herd Text Embedding Server")
+            app.include_router(te_router)
+
+            config = uvicorn.Config(
+                app, host="0.0.0.0", port=text_embedding_port, log_level="warning"
+            )
+            server = uvicorn.Server(config)
+            self._text_embedding_server_task = asyncio.create_task(server.serve())
+            self._text_embedding_port = text_embedding_port
+
+            logger.info(
+                f"Text embedding server started on 0.0.0.0:{text_embedding_port} "
+                f"(fastembed, nomic-embed-text-v1.5-Q on first request)"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to start text embedding server: {repr(e)}")
+            self._text_embedding_port = 0
 
     async def _ensure_mlx_server(self):
         """Spawn mlx_lm.server process(es) if auto-start is configured.
@@ -767,6 +821,10 @@ class NodeAgent:
             self._image_server_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._image_server_task
+        if self._text_embedding_server_task:
+            self._text_embedding_server_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._text_embedding_server_task
         if self._telemetry_task:
             self._telemetry_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
