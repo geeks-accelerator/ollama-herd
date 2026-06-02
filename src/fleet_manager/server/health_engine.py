@@ -102,6 +102,7 @@ class HealthEngine:
 
         # Trace-based checks (async, queries SQLite)
         if trace_store:
+            recommendations.extend(await self._check_embed_error_rate(trace_store))
             cold_loads = await trace_store.get_cold_loads_24h()
             error_rates = await trace_store.get_error_rates_24h()
             retry_stats = await trace_store.get_retry_stats_24h()
@@ -1225,6 +1226,80 @@ class HealthEngine:
                 "failures_5m": failures_5m,
                 "threshold_warning": 1,
                 "threshold_critical": 50,
+            },
+        ))
+        return recs
+
+    async def _check_embed_error_rate(self, trace_store) -> list[Recommendation]:
+        """Detect elevated embed failure rates (ReadTimeout / HTTP errors).
+
+        Embed failures were previously untraced — they surfaced only as ERROR
+        lines in herd.jsonl and were invisible to the dashboard (see 2026-06-01
+        observation).  Now that embed traces are recorded, this check surfaces
+        sustained timeouts so operators can tune OLLAMA_NUM_PARALLEL or identify
+        the congested workload.
+
+        Root cause pattern: OLLAMA_NUM_PARALLEL limits Ollama's concurrent
+        inference slots.  When large LLM requests occupy all slots, embed
+        requests queue inside Ollama.  Long-running 120B inference can stall
+        embeds for minutes, causing clients to time out.  The machine may be
+        lightly loaded overall — this is software queue saturation, not hardware
+        pressure.
+
+        Thresholds: ≥5 failures/hour → WARNING, ≥25/hour → CRITICAL.
+        """
+        recs: list[Recommendation] = []
+        if trace_store is None:
+            return recs
+        get_stats = getattr(trace_store, "get_embed_error_stats", None)
+        if get_stats is None:
+            return recs  # pre-0.6.3 trace_store — no embed stats available
+        try:
+            stats = await get_stats(lookback_s=3600)
+        except Exception:  # noqa: BLE001
+            return recs
+        failed = stats.get("failed", 0)
+        total = stats.get("total", 0)
+        if failed == 0:
+            return recs
+        severity = Severity.CRITICAL if failed >= 25 else Severity.WARNING
+        error_pct = round((failed / total) * 100, 1) if total > 0 else 100.0
+        by_model = stats.get("by_model", {})
+        model_summary = ", ".join(
+            f"{m}: {v['failed']}/{v['total']} failed"
+            for m, v in by_model.items()
+        )
+        recs.append(Recommendation(
+            check_id="embed_error_rate",
+            severity=severity,
+            title=f"{failed} embed failure(s) in the last hour ({error_pct}% error rate)",
+            description=(
+                f"Embedding requests are failing with ReadTimeout or HTTP errors — "
+                f"the embed model is likely queued behind concurrent LLM inference "
+                f"inside Ollama. {model_summary}. "
+                f"Note: the machine hardware may be lightly loaded; this is "
+                f"Ollama's software concurrency limit (OLLAMA_NUM_PARALLEL), not "
+                f"CPU/RAM pressure."
+            ),
+            fix=(
+                "1) Increase OLLAMA_NUM_PARALLEL to allow embed requests to run "
+                "alongside LLM inference: set OLLAMA_NUM_PARALLEL=4 (or higher) in "
+                "~/.zshrc and run `launchctl setenv OLLAMA_NUM_PARALLEL 4`, then "
+                "restart Ollama. "
+                "2) Enable FLEET_DYNAMIC_NUM_CTX=true in ~/.fleet-manager/env to "
+                "reduce per-model KV cache footprint (counteracts the memory growth "
+                "from higher parallelism). "
+                "3) If the embed workload is large and sustained (e.g. VOD frame "
+                "processing), consider routing it to off-peak hours or a dedicated "
+                "node."
+            ),
+            data={
+                "failed_1h": failed,
+                "total_1h": total,
+                "error_pct": error_pct,
+                "by_model": by_model,
+                "threshold_warning": 5,
+                "threshold_critical": 25,
             },
         ))
         return recs

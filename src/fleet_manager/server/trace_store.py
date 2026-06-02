@@ -636,6 +636,43 @@ class TraceStore:
         total = sum(by_node.values())
         return {"total_count": total, "by_node": by_node}
 
+    async def get_embed_error_stats(self, lookback_s: int = 3600) -> dict:
+        """Embed-specific failure stats for the given window (default 1h).
+
+        Filters on models whose name contains 'embed' (e.g. nomic-embed-text).
+        Does NOT filter on tags — client pipelines may tag LLM requests with
+        'embed' too, which would produce false positives.
+        Returns total requests, failed count, and per-model breakdown so the
+        health check can surface ReadTimeout storms that bypass LLM error-rate
+        checks (embed failures were previously untraced — see 2026-06-01
+        observation).
+        """
+        if not self._read_db:
+            return {"total": 0, "failed": 0, "by_model": {}}
+        cutoff = time.time() - lookback_s
+        cursor = await self._read_db.execute(
+            """
+            SELECT
+                model,
+                COUNT(*) AS total,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+            FROM request_traces
+            WHERE timestamp >= ?
+              AND model LIKE '%embed%'
+            GROUP BY model
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        by_model = {}
+        total = 0
+        failed = 0
+        for row in rows:
+            by_model[row[0]] = {"total": row[1], "failed": row[2]}
+            total += row[1]
+            failed += row[2]
+        return {"total": total, "failed": failed, "by_model": by_model}
+
     async def get_error_rates_24h(self, lookback_s: int = 86400) -> list[dict]:
         """Per-node error rates for the given window (default 24h)."""
         if not self._db:

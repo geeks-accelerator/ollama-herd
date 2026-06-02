@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -466,51 +467,154 @@ async def ollama_embed(request: Request):
     if not node:
         return JSONResponse(status_code=503, content={"error": "Selected node unavailable"})
 
+    trace_store = request.app.state.trace_store
+    client_ip = request.client.host if request.client else ""
+
     # Proxy directly to Ollama's /api/embed endpoint using the proxy's
     # managed HTTP client (handles LAN IP rewriting, connection pooling).
     embed_body = dict(body)
     embed_body.pop("metadata", None)
     embed_body.setdefault("keep_alive", -1)
 
-    try:
-        client = proxy._get_client(winner.node_id)
-        start = time.time()
-        resp = await client.post(
-            "/api/embed", json=embed_body,
-            timeout=httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0),
-        )
-        elapsed_ms = (time.time() - start) * 1000
+    _EMBED_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0)
+    # Retry on ReadTimeout: Ollama queues embed requests behind concurrent LLM
+    # inference. Under load a brief backoff often clears the slot.
+    _EMBED_RETRY_BACKOFFS_S = (1.0, 3.0)
 
-        resp.raise_for_status()
-        result = resp.json()
+    start = time.time()
+    last_exc: Exception | None = None
+    retry_count = 0
 
-        logger.info(
-            f"Embed {inference_req.request_id[:8]} completed on {winner.node_id} "
-            f"in {elapsed_ms:.0f}ms model={actual_model}"
-        )
+    for backoff in (*_EMBED_RETRY_BACKOFFS_S, None):
+        try:
+            client = proxy._get_client(winner.node_id)
+            resp = await client.post(
+                "/api/embed", json=embed_body, timeout=_EMBED_TIMEOUT,
+            )
+            resp.raise_for_status()
+            elapsed_ms = (time.time() - start) * 1000
 
-        return JSONResponse(
-            content=result,
-            headers={
-                "X-Fleet-Node": winner.node_id,
-                "X-Fleet-Score": str(int(winner.score)),
-            },
-        )
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Embed failed on {winner.node_id}: HTTP {e.response.status_code}")
-        return JSONResponse(
-            status_code=e.response.status_code,
-            content={"error": f"Ollama returned {e.response.status_code}: "
-                     f"{e.response.text[:200]}"},
-        )
-    except Exception as e:
-        error_detail = str(e) or repr(e)
-        logger.error(f"Embed failed on {winner.node_id}: {type(e).__name__}: {error_detail}")
-        return JSONResponse(
-            status_code=502,
-            content={"error": f"Failed to reach Ollama on {winner.node_id}: "
-                     f"{type(e).__name__}: {error_detail}"},
-        )
+            result = resp.json()
+            logger.info(
+                f"Embed {inference_req.request_id[:8]} completed on {winner.node_id} "
+                f"in {elapsed_ms:.0f}ms model={actual_model}"
+                + (f" (retry #{retry_count})" if retry_count else "")
+            )
+
+            if trace_store:
+                asyncio.ensure_future(trace_store.record_trace(
+                    request_id=inference_req.request_id,
+                    model=actual_model,
+                    original_model=model,
+                    node_id=winner.node_id,
+                    score=winner.score,
+                    scores_breakdown=(
+                        winner.scores_breakdown
+                        if hasattr(winner, "scores_breakdown") else None
+                    ),
+                    status="completed",
+                    latency_ms=elapsed_ms,
+                    retry_count=retry_count,
+                    client_ip=client_ip,
+                    original_format=RequestFormat.OLLAMA.value,
+                    tags=["embed"] + (tags or []),
+                ))
+
+            return JSONResponse(
+                content=result,
+                headers={
+                    "X-Fleet-Node": winner.node_id,
+                    "X-Fleet-Score": str(int(winner.score)),
+                },
+            )
+
+        except httpx.HTTPStatusError as e:
+            elapsed_ms = (time.time() - start) * 1000
+            err_msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+            logger.error(f"Embed failed on {winner.node_id}: {err_msg}")
+            if trace_store:
+                asyncio.ensure_future(trace_store.record_trace(
+                    request_id=inference_req.request_id,
+                    model=actual_model,
+                    original_model=model,
+                    node_id=winner.node_id,
+                    score=winner.score,
+                    status="failed",
+                    latency_ms=elapsed_ms,
+                    retry_count=retry_count,
+                    client_ip=client_ip,
+                    original_format=RequestFormat.OLLAMA.value,
+                    error_message=err_msg,
+                    tags=["embed"] + (tags or []),
+                ))
+            return JSONResponse(
+                status_code=e.response.status_code,
+                content={"error": f"Ollama returned {err_msg}"},
+            )
+
+        except httpx.ReadTimeout as e:
+            retry_count += 1
+            last_exc = e
+            if backoff is None:
+                break  # exhausted retries — fall through to failure path
+            logger.warning(
+                f"Embed ReadTimeout on {winner.node_id} (attempt {retry_count}), "
+                f"retrying in {backoff}s — Ollama queue likely full"
+            )
+            await asyncio.sleep(backoff)
+
+        except Exception as e:
+            elapsed_ms = (time.time() - start) * 1000
+            error_detail = str(e) or repr(e)
+            logger.error(f"Embed failed on {winner.node_id}: {type(e).__name__}: {error_detail}")
+            if trace_store:
+                asyncio.ensure_future(trace_store.record_trace(
+                    request_id=inference_req.request_id,
+                    model=actual_model,
+                    original_model=model,
+                    node_id=winner.node_id,
+                    score=winner.score,
+                    status="failed",
+                    latency_ms=elapsed_ms,
+                    retry_count=retry_count,
+                    client_ip=client_ip,
+                    original_format=RequestFormat.OLLAMA.value,
+                    error_message=f"{type(e).__name__}: {error_detail}",
+                    tags=["embed"] + (tags or []),
+                ))
+            return JSONResponse(
+                status_code=502,
+                content={"error": f"Failed to reach Ollama on {winner.node_id}: "
+                         f"{type(e).__name__}: {error_detail}"},
+            )
+
+    # ReadTimeout exhausted all retries
+    elapsed_ms = (time.time() - start) * 1000
+    error_detail = str(last_exc) or repr(last_exc)
+    logger.error(
+        f"Embed ReadTimeout on {winner.node_id} after {retry_count} attempt(s) "
+        f"({elapsed_ms:.0f}ms total) — Ollama queue saturated"
+    )
+    if trace_store:
+        asyncio.ensure_future(trace_store.record_trace(
+            request_id=inference_req.request_id,
+            model=actual_model,
+            original_model=model,
+            node_id=winner.node_id,
+            score=winner.score,
+            status="failed",
+            latency_ms=elapsed_ms,
+            retry_count=retry_count,
+            client_ip=client_ip,
+            original_format=RequestFormat.OLLAMA.value,
+            error_message=f"ReadTimeout after {retry_count} attempt(s): {error_detail}",
+            tags=["embed"] + (tags or []),
+        ))
+    return JSONResponse(
+        status_code=504,
+        content={"error": f"Embed timed out on {winner.node_id} after {retry_count} attempt(s). "
+                 f"Ollama may be saturated with concurrent inference. Try again shortly."},
+    )
 
 
 async def _route_and_stream(request: Request, inference_req: InferenceRequest):
