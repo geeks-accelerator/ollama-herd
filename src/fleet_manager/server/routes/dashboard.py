@@ -13,6 +13,61 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 router = APIRouter(tags=["dashboard"])
 
 # ---------------------------------------------------------------------------
+# Instant-backend model stats cache
+# ---------------------------------------------------------------------------
+# Text embedding (fastembed) and vision embedding route outside queue_mgr, so
+# they have no live pending/in-flight counts.  We synthesise queue cards for
+# them using trace DB stats (completed, failed, avg_latency) refreshed every
+# 60s — cheap enough to compute but not worth hammering on every 2s SSE tick.
+
+_instant_stats_cache: dict[str, dict] = {}
+_instant_stats_ts: float = 0.0
+_INSTANT_STATS_TTL_S: float = 60.0
+
+
+async def _get_instant_model_stats(trace_store) -> dict[str, dict]:
+    """Return per-model stats for instant (non-queued) backends from trace DB.
+
+    Keys are model names; values are {total, completed, failed, avg_latency_ms}.
+    Refreshed at most every 60s; returns stale cache on error.
+    """
+    global _instant_stats_cache, _instant_stats_ts
+    now = time.time()
+    if now - _instant_stats_ts < _INSTANT_STATS_TTL_S and _instant_stats_cache:
+        return _instant_stats_cache
+    try:
+        cutoff = now - 86400  # last 24h
+        cursor = await trace_store._read_db.execute(
+            """
+            SELECT model,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+                   SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed,
+                   AVG(CASE WHEN status = 'completed' THEN latency_ms END) AS avg_ms
+            FROM request_traces
+            WHERE timestamp >= ?
+              AND (model LIKE '%embed%'
+                   OR (tags IS NOT NULL AND tags LIKE '%"embed"%'))
+            GROUP BY model
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        result: dict[str, dict] = {}
+        for row in rows:
+            result[row[0]] = {
+                "total":          row[1] or 0,
+                "completed":      row[2] or 0,
+                "failed":         row[3] or 0,
+                "avg_latency_ms": round(row[4], 1) if row[4] else 0.0,
+            }
+        _instant_stats_cache = result
+        _instant_stats_ts = now
+        return result
+    except Exception:
+        return _instant_stats_cache  # return stale on error rather than crash
+
+# ---------------------------------------------------------------------------
 # Favicon — FontAwesome horse-saddle (sharp duotone) in brand accent purple
 # ---------------------------------------------------------------------------
 
@@ -194,6 +249,60 @@ async def dashboard_events(request: Request):
             if mlx_proxy is not None:
                 with contextlib.suppress(Exception):
                     queues = {**queues, **mlx_proxy.get_queue_info()}
+
+            # Merge synthetic cards for instant backends (fastembed text
+            # embedding + vision embedding).  These never go through queue_mgr
+            # so they have no live pending/in-flight counts, but we show them
+            # so the "Node Models" section covers every model receiving traffic.
+            trace_store = getattr(request.app.state, "trace_store", None)
+            if trace_store:
+                with contextlib.suppress(Exception):
+                    instant_stats = await _get_instant_model_stats(trace_store)
+                    for node in registry.get_all_nodes():
+                        if node.status.value != "online":
+                            continue
+                        # Native text embedding (fastembed, port 11439)
+                        if node.text_embedding and node.text_embedding_port > 0:
+                            for m in node.text_embedding.models_available:
+                                key = f"{node.node_id}:{m.name}"
+                                st = instant_stats.get(m.name, {})
+                                queues[key] = {
+                                    "node_id":        node.node_id,
+                                    "model":          m.name,
+                                    "backend":        "native",
+                                    "request_type":   "embed",
+                                    "instant":        True,
+                                    "pending":        0,
+                                    "in_flight":      0,
+                                    "concurrency":    0,
+                                    "completed":      st.get("completed", 0),
+                                    "failed":         st.get("failed", 0),
+                                    "avg_latency_ms": st.get("avg_latency_ms", 0.0),
+                                    "stats_samples":  st.get("total", 0),
+                                    "dimensions":     m.dimensions,
+                                    "cached":         m.cached,
+                                }
+                        # Vision embedding (DINOv2, SigLIP, CLIP — port 11438)
+                        if node.vision_embedding and node.vision_embedding_port > 0:
+                            for m in node.vision_embedding.models_available:
+                                key = f"{node.node_id}:{m.name}"
+                                st = instant_stats.get(m.name, {})
+                                queues[key] = {
+                                    "node_id":        node.node_id,
+                                    "model":          m.name,
+                                    "backend":        "vision",
+                                    "request_type":   "embed",
+                                    "instant":        True,
+                                    "pending":        0,
+                                    "in_flight":      0,
+                                    "concurrency":    0,
+                                    "completed":      st.get("completed", 0),
+                                    "failed":         st.get("failed", 0),
+                                    "avg_latency_ms": st.get("avg_latency_ms", 0.0),
+                                    "stats_samples":  st.get("total", 0),
+                                    "dimensions":     m.dimensions,
+                                }
+
             data = {
                 "nodes": nodes,
                 "queues": queues,
@@ -1948,9 +2057,9 @@ _OVERVIEW_BODY = """
     </div>
   </div>
   <div>
-    <div class="section-title">Request Queues</div>
+    <div class="section-title">Node Models</div>
     <div class="queues-grid" id="queues-container">
-      <div class="empty-state">No active queues</div>
+      <div class="empty-state">No models active</div>
     </div>
   </div>
 </div>
@@ -2194,10 +2303,17 @@ function renderQueues(queues) {
     const typeLabels = {text:'TEXT',image:'IMAGE',stt:'STT',embed:'EMBED'};
     const rt = q.request_type || 'text';
     const backend = q.backend || 'ollama';
-    // Distinct color for MLX so users can tell at a glance which backend
-    // handled the request — purple for MLX, default theme for ollama.
-    const backendColor = backend === 'mlx' ? 'rgba(168,85,247,0.85)' : 'rgba(148,163,184,0.65)';
-    const backendBg = backend === 'mlx' ? 'rgba(168,85,247,0.18)' : 'rgba(148,163,184,0.12)';
+    const isInstant = q.instant === true;
+    // Backend badge colours:
+    //   ollama → grey   mlx → purple   native (fastembed) → green   vision → cyan
+    const backendColor = backend === 'mlx'    ? 'rgba(168,85,247,0.85)'
+                       : backend === 'native' ? 'rgba(34,197,94,0.85)'
+                       : backend === 'vision' ? 'rgba(6,182,212,0.85)'
+                       : 'rgba(148,163,184,0.65)';
+    const backendBg    = backend === 'mlx'    ? 'rgba(168,85,247,0.18)'
+                       : backend === 'native' ? 'rgba(34,197,94,0.12)'
+                       : backend === 'vision' ? 'rgba(6,182,212,0.12)'
+                       : 'rgba(148,163,184,0.12)';
     const backendBadge = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${backendBg};color:${backendColor};text-transform:uppercase">${backend}</span>`;
     // MLX-only: prompt-cache stats.  Prefer the warm/cold split when available
     // (more honest than the simple averaged hit rate), fall back to the rate.
@@ -2217,30 +2333,52 @@ function renderQueues(queues) {
       const color = pct >= 80 ? 'var(--green)' : pct >= 40 ? 'var(--yellow)' : 'var(--red)';
       cacheChip = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-left:6px;background:${color}22;color:${color}" title="Rolling prompt-cache hit rate (last 50 requests)">CACHE ${pct}%</span>`;
     }
-    // Per-queue running averages — same lifecycle as completed/failed
-    // counts (reset on restart).  Hidden when there are no samples yet
-    // so a fresh queue doesn't show a row of zeros.
+    // Stats rows — two layouts:
+    //   Queued (Ollama / MLX): pending, in-flight, done, failed + avg time/in/out/samples
+    //   Instant (native/vision embed): done, failed, avg time, dims — no queue depth noise
     const samples = q.stats_samples || 0;
     const avgLat = q.avg_latency_ms || 0;
-    const avgIn = q.avg_prompt_tokens || 0;
-    const avgOut = q.avg_completion_tokens || 0;
-    const latDisplay = avgLat >= 1000 ? (avgLat / 1000).toFixed(1) + 's' : Math.round(avgLat) + 'ms';
-    const avgRow = samples > 0 ? `
+    const latDisplay = avgLat >= 1000 ? (avgLat / 1000).toFixed(1) + 's'
+                     : avgLat > 0     ? Math.round(avgLat) + 'ms' : '—';
+    let mainStats, secondRow;
+    if (isInstant) {
+      // Instant backends have no meaningful queue depth — show 24h trace stats.
+      const dimsBadge = q.dimensions
+        ? `<span style="display:inline-block;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:600;background:${backendBg};color:${backendColor};margin-left:6px">${q.dimensions}d</span>`
+        : '';
+      const cachedDot = q.cached === false
+        ? `<span style="display:inline-block;padding:1px 5px;border-radius:3px;font-size:10px;background:rgba(234,179,8,0.12);color:var(--yellow);margin-left:4px" title="Model weights not yet downloaded — will fetch on first request">DL ON DEMAND</span>`
+        : '';
+      mainStats = `
+        <div class="queue-stats">
+          <div class="queue-stat"><div class="num" style="color:var(--green)">${q.completed || 0}</div><div class="lbl">Done (24h)</div></div>
+          <div class="queue-stat"><div class="num" style="color:var(--red)">${q.failed || 0}</div><div class="lbl">Failed</div></div>
+          <div class="queue-stat"><div class="num" style="color:var(--text-dim);font-size:13px">${latDisplay}</div><div class="lbl">Avg Time</div></div>
+          <div class="queue-stat"><div class="num" style="color:var(--text-dim);font-size:13px">${q.dimensions || '—'}</div><div class="lbl">Dims</div></div>
+        </div>`;
+      secondRow = (cachedDot || dimsBadge) ? `<div style="margin-top:5px">${cachedDot}</div>` : '';
+    } else {
+      const avgIn = q.avg_prompt_tokens || 0;
+      const avgOut = q.avg_completion_tokens || 0;
+      mainStats = `
+        <div class="queue-stats">
+          <div class="queue-stat"><div class="num" style="color:${pendingColor}">${q.pending}</div><div class="lbl">Pending</div></div>
+          <div class="queue-stat"><div class="num" style="color:${inflightColor}">${q.in_flight}/${q.concurrency || 1}</div><div class="lbl">In-Flight</div></div>
+          <div class="queue-stat"><div class="num" style="color:var(--green)">${q.completed}</div><div class="lbl">Done</div></div>
+          <div class="queue-stat"><div class="num" style="color:var(--red)">${q.failed || 0}</div><div class="lbl">Failed</div></div>
+        </div>`;
+      secondRow = samples > 0 ? `
         <div class="queue-stats" style="margin-top:6px;opacity:0.75">
           <div class="queue-stat"><div class="num" style="color:var(--text-dim);font-size:13px">${latDisplay}</div><div class="lbl">Avg Time</div></div>
           <div class="queue-stat"><div class="num" style="color:var(--text-dim);font-size:13px">${Math.round(avgIn)}</div><div class="lbl">Avg In</div></div>
           <div class="queue-stat"><div class="num" style="color:var(--text-dim);font-size:13px">${Math.round(avgOut)}</div><div class="lbl">Avg Out</div></div>
           <div class="queue-stat"><div class="num" style="color:var(--text-dim);font-size:13px">${samples}</div><div class="lbl">Samples</div></div>
         </div>` : '';
+    }
     return `
       <div class="queue-card">
         <div class="queue-name"><span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${typeColors[rt]}22;color:${typeColors[rt]}">${typeLabels[rt]}</span>${backendBadge}${key}${cacheChip}</div>
-        <div class="queue-stats">
-          <div class="queue-stat"><div class="num" style="color:${pendingColor}">${q.pending}</div><div class="lbl">Pending</div></div>
-          <div class="queue-stat"><div class="num" style="color:${inflightColor}">${q.in_flight}/${q.concurrency || 1}</div><div class="lbl">In-Flight</div></div>
-          <div class="queue-stat"><div class="num" style="color:var(--green)">${q.completed}</div><div class="lbl">Done</div></div>
-          <div class="queue-stat"><div class="num" style="color:var(--red)">${q.failed || 0}</div><div class="lbl">Failed</div></div>
-        </div>${avgRow}
+        ${mainStats}${secondRow}
       </div>`;
   }).join('');
   var sq = document.getElementById('stat-queued');
