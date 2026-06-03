@@ -877,6 +877,8 @@ curl http://localhost:11435/api/transcribe -F "audio=@recording.wav"
 
 Lightweight queue status for client-side backoff decisions. Designed for high-frequency polling.
 
+**Note:** returns Ollama and MLX queue entries only — these are the backends with real queue depth. Native text embedding (fastembed, port 11439) and vision embedding (port 11438) are instant backends with no queue depth; they appear in the dashboard's **Node Models** section but not here, since their `pending=0` / `in_flight=0` entries carry no backoff signal.
+
 **Response:**
 
 ```json

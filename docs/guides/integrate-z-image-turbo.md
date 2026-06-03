@@ -349,7 +349,7 @@ Returns completed/failed counts, average generation time, breakdown by node and 
 
 ### Check queue status
 
-Image requests show up alongside LLM queues in the dashboard at `http://localhost:11435/dashboard`. Look for `Neons-Mac-Studio:z-image-turbo:latest` in the Request Queues section.
+Image requests show up alongside LLM queues in the dashboard at `http://localhost:11435/dashboard`. Look for `Neons-Mac-Studio:z-image-turbo:latest` in the **Node Models** section.
 
 ### Health checks
 
