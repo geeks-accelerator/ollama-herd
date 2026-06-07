@@ -720,7 +720,7 @@ intended to use vision embedding (downloaded the weights) but the runtime
 isn't installed.  Fix: `uv sync --extra embedding` (or `uv sync --all-extras`)
 on the node, then restart `herd-node`.
 
-**`text_embedding` / `text_embedding_port` / `text_embedding_status` fields** (optional — present on node agents 0.6.3+):
+**`text_embedding` / `text_embedding_port` / `text_embedding_status` fields** (optional — present on node agents 0.7.0+):
 
 The native fastembed text embedding server. When running, `nomic-embed-text` requests are routed to port `text_embedding_port` (default 11439) instead of Ollama, so embed requests never consume `OLLAMA_NUM_PARALLEL` inference slots.
 
