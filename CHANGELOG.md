@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-07
+
+Native text embedding backend and full-fleet Node Models dashboard. The embed timeout incident from June 1 exposed a fundamental contention problem: `OLLAMA_NUM_PARALLEL=2` means a running gpt-oss:120b inference holds both Ollama slots, so nomic-embed-text requests queue indefinitely inside Ollama regardless of available hardware (14% CPU, 291 GB free RAM). The structural fix routes text embedding out of Ollama entirely — a dedicated fastembed server on port 11439 handles nomic-embed-text via ONNX Runtime with zero inference slot contention. Verified on the local fleet: 573 embed requests over 24h, avg 792ms, 0.0% error rate, no timeouts. Dashboard now shows cards for every model backend (Ollama, MLX, native fastembed, vision embedding) with live per-model stats, renamed from "Request Queues" to "Node Models" to reflect the expanded scope.
+
+### Added
+
+- **Native text embedding server (fastembed, port 11439).** A dedicated FastAPI server runs `nomic-ai/nomic-embed-text-v1.5-Q` (130 MB int8, 768 dims, 8192 token context) via ONNX Runtime — no PyTorch, no Ollama. The router intercepts `/api/embed` calls for `nomic-embed-text` before they reach Ollama and proxies them to the best available node's text embedding server. `fastembed>=0.4.0` added to the existing `--extra embedding` group (same `uv sync --extra embedding` command as vision embeddings — one command enables both). Model weights download automatically on first request (~130 MB from HuggingFace) and are cached in `~/.fleet-manager/models/text-embedding/`. Zero contention with LLM inference slots. See `src/fleet_manager/node/text_embedding_server.py`, `src/fleet_manager/node/text_embedding_models.py`, `src/fleet_manager/server/routes/text_embedding_compat.py`.
+
+- **4 new health checks (32 → 36 total):**
+  - `embed_error_rate` — WARNING at ≥5 embed errors/hour, CRITICAL at ≥25/hour. Closes the observability gap that let 202 embed timeouts accumulate undetected for 1.5h on June 1.
+  - `text_embedding_backend_missing` — WARNING when nomic-embed-text weights are cached on disk but `fastembed` isn't installed. Fix: `uv sync --extra embedding`.
+  - `text_embedding_ollama_bypass` — WARNING when nomic-embed-text is available in Ollama but the native server isn't running, meaning embed requests still contend for LLM inference slots. Includes Apple Silicon platform note.
+  - `nomic_loaded_in_ollama` — INFO when the native server is running and handling all embed traffic but nomic-embed-text remains loaded in Ollama's hot set, consuming VRAM and a model slot unnecessarily.
+
+- **`TextEmbeddingModel` and `TextEmbeddingMetrics` heartbeat fields.** Node heartbeats now report `text_embedding` (available models + cached status), `text_embedding_port`, and `text_embedding_status` (`backend_available`, `cached_model_count`). The router registry copies these fields to `NodeInfo` and `/fleet/status` includes them in node serialization.
+
+- **Dashboard "Node Models" — cards for all backends.** Renamed from "Request Queues". Now shows a card for every model receiving traffic, not just Ollama-queued models: Ollama (grey badge), MLX (purple), native fastembed (green), and vision embedding (cyan). Cards for instant backends (fastembed, vision) show 24h completed/failed counts and avg latency from a 60s-TTL trace DB cache rather than live queue depth. "DL ON DEMAND" amber chip appears when model weights are not yet cached. Stats counter in the header includes all backends, not just Ollama queues.
+
+### Fixed
+
+- **Embed timeout visibility and resilience.** The `/api/embed` handler previously had no `record_trace()` calls — all embed outcomes (success and failure) were invisible to the dashboard and health checks. Added trace recording for all paths. Added a retry loop (1s then 3s backoff) on `ReadTimeout` before returning 504, matching the retry behavior of the LLM streaming path. The 504 response includes a human-readable hint when the timeout is likely caused by a model download in progress.
+
+- **`embed_error_rate` SQL uses `model LIKE '%embed%'` (not `tags LIKE '%embed%'`).** Using the `tags` column caused false positives — the local VOD processing pipeline tags its LLM requests with "embed" as a pipeline stage label. Restricting to `model` column matches only actual embedding models.
+
+- **`filelock` DEBUG log suppression in fastembed download path.** fastembed's HuggingFace download emits ~20 DEBUG lines per file lock during the initial model download. Suppressed with `logging.getLogger("filelock").setLevel(logging.WARNING)` in the text embedding server.
+
+### Changed
+
+- **`CLAUDE.md` updated:** architecture table + routes updated for new text embedding modules; current state reflects nomic-embed-text → native fastembed; health count 32→36; test count 986→1006; `--extra embedding` description updated to mention fastembed; `skills/` grep updated.
+
 ## [0.6.2] - 2026-05-16
 
 Reliability hardening for the trace_store SQLite layer and structured logging — both addressing a real production incident on the local fleet that ran undetected for ~4 days. The headline finding: a long-running read transaction held off WAL checkpoints, the WAL grew to 2.5 GB, and the 5-second `busy_timeout` couldn't absorb the resulting writer contention. ~40,000 background `record_trace` tasks failed with `database is locked` over May 10-15 while requests themselves still succeeded — observability was the only visible casualty (dashboard `reqs_24h` quietly dropped to 0). Adjacent: the daily log rotation handler raced between `herd` and `herd-node` writing to the same file, leaving one day's log growing for the entire incident window. Both are fixed; both now have health checks or architectural separation to prevent silent recurrence. Initial fix (busy_timeout + retry + autocheckpoint, committed 2026-05-15) reduced failure amplitude but didn't eliminate it — see the follow-up Part C + A fix below, which addresses the structural cause and was verified clean under live load on 2026-05-16.
