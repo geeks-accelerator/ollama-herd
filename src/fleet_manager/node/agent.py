@@ -414,6 +414,38 @@ class NodeAgent:
             logger.warning(f"Failed to start transcription server: {repr(e)}")
             self._transcription_port = 0
 
+    def _bind_sidecar_socket(
+        self, host: str, port: int, label: str
+    ) -> socket.socket | None:
+        """Eagerly bind a listening socket for an in-process uvicorn sidecar.
+
+        Returns the bound socket, or ``None`` if the port is unavailable.
+
+        Binding here — rather than letting uvicorn bind lazily inside its
+        ``asyncio`` task — is deliberate: a port conflict surfaces as a
+        catchable ``OSError`` during setup instead of uvicorn's ``sys.exit(1)``
+        (``SystemExit``) escaping a fire-and-forget task and taking down the
+        whole node.  An optional embedding sidecar failing to grab its port
+        must degrade only itself, not core inference routing.
+
+        Mirrors uvicorn's own ``Config.bind_socket()`` (bind + ``SO_REUSEADDR``
+        + inheritable); asyncio's ``create_server`` performs the ``listen()``
+        when the pre-bound socket is handed to ``Server.serve(sockets=[...])``.
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError as e:
+            sock.close()
+            logger.warning(
+                f"{label} port {port} unavailable ({e.strerror or e}) — "
+                f"{label} disabled; node continues serving"
+            )
+            return None
+        sock.set_inheritable(True)
+        return sock
+
     async def _ensure_embedding_server(self):
         """Start a vision embedding server if models are downloaded."""
         from fleet_manager.node.collector import _detect_vision_embedding_models
@@ -429,6 +461,13 @@ class NodeAgent:
         ollama_port = parsed.port or 11434
         embedding_port = ollama_port + 4  # 11434 → 11438
 
+        # Bind eagerly so a port conflict fails soft (this method returns) rather
+        # than crashing the node via SystemExit from inside the uvicorn task.
+        sock = self._bind_sidecar_socket("0.0.0.0", embedding_port, "vision embedding server")
+        if sock is None:
+            self._embedding_port = 0
+            return
+
         try:
             import uvicorn
             from fastapi import FastAPI
@@ -442,7 +481,7 @@ class NodeAgent:
                 app, host="0.0.0.0", port=embedding_port, log_level="warning"
             )
             server = uvicorn.Server(config)
-            self._embedding_server_task = asyncio.create_task(server.serve())
+            self._embedding_server_task = asyncio.create_task(server.serve(sockets=[sock]))
             self._embedding_port = embedding_port
 
             models = ", ".join(m.name for m in embedding_metrics.models_available)
@@ -451,6 +490,7 @@ class NodeAgent:
                 f"(models: {models})"
             )
         except Exception as e:
+            sock.close()
             logger.warning(f"Failed to start embedding server: {repr(e)}")
             self._embedding_port = 0
 
@@ -477,6 +517,15 @@ class NodeAgent:
         ollama_port = parsed.port or 11434
         text_embedding_port = ollama_port + 5  # 11434 → 11439
 
+        # Bind eagerly so a port conflict fails soft (this method returns) rather
+        # than crashing the node via SystemExit from inside the uvicorn task.
+        sock = self._bind_sidecar_socket(
+            "0.0.0.0", text_embedding_port, "text embedding server"
+        )
+        if sock is None:
+            self._text_embedding_port = 0
+            return
+
         try:
             import uvicorn
             from fastapi import FastAPI
@@ -490,7 +539,9 @@ class NodeAgent:
                 app, host="0.0.0.0", port=text_embedding_port, log_level="warning"
             )
             server = uvicorn.Server(config)
-            self._text_embedding_server_task = asyncio.create_task(server.serve())
+            self._text_embedding_server_task = asyncio.create_task(
+                server.serve(sockets=[sock])
+            )
             self._text_embedding_port = text_embedding_port
 
             logger.info(
@@ -498,6 +549,7 @@ class NodeAgent:
                 f"(fastembed, nomic-embed-text-v1.5-Q on first request)"
             )
         except Exception as e:
+            sock.close()
             logger.warning(f"Failed to start text embedding server: {repr(e)}")
             self._text_embedding_port = 0
 

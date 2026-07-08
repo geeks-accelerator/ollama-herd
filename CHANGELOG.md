@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Embedding sidecar bind failure no longer crashes the whole node.** When the native text (port 11439) or vision (port 11438) embedding server couldn't bind its port — e.g. a restart race where the previous `herd-node` hadn't released the port yet — uvicorn's `sys.exit(1)` raised a `SystemExit` that escaped the fire-and-forget `asyncio.create_task(server.serve())` and propagated out of the event loop, exiting the entire node process (heartbeats, LAN proxy, and LLM routing all died with it). The sidecars now bind their socket eagerly during setup via a shared `_bind_sidecar_socket()` helper: a port conflict surfaces as a catchable `OSError`, the node logs `… embedding server port … unavailable — … disabled; node continues serving`, sets the port to `0`, and keeps running. The pre-bound socket is handed to `Server.serve(sockets=[sock])`, and the "started" log now fires only after a confirmed bind (previously it logged success before the async bind actually happened). An optional embedding capability failing to grab its port must degrade only itself, not core inference routing. See `docs/issues/embedding-sidecar-bind-failure-crashes-node.md`.
+
 ## [0.7.0] - 2026-06-07
 
 Native text embedding backend and full-fleet Node Models dashboard. The embed timeout incident from June 1 exposed a fundamental contention problem: `OLLAMA_NUM_PARALLEL=2` means a running gpt-oss:120b inference holds both Ollama slots, so nomic-embed-text requests queue indefinitely inside Ollama regardless of available hardware (14% CPU, 291 GB free RAM). The structural fix routes text embedding out of Ollama entirely — a dedicated fastembed server on port 11439 handles nomic-embed-text via ONNX Runtime with zero inference slot contention. Verified on the local fleet: 573 embed requests over 24h, avg 792ms, 0.0% error rate, no timeouts. Dashboard now shows cards for every model backend (Ollama, MLX, native fastembed, vision embedding) with live per-model stats, renamed from "Request Queues" to "Node Models" to reflect the expanded scope.
