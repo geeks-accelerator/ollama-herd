@@ -46,6 +46,21 @@ uv run ruff format src/          # format
 9. Capture the sdist sha256 (needed for the Homebrew bump): `shasum -a 256 dist/ollama_herd-X.Y.Z.tar.gz`
 10. `uv publish --username __token__ --password "$(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('$HOME/.pypirc'); print(c['pypi']['password'])")"`
 11. Wait for PyPI cache to update (~1 min) — verify: `curl -s https://pypi.org/pypi/ollama-herd/json | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['version'])"` returns the new version
+12. **Tag the release and create a GitHub release** (this is what makes the GitHub page show the new version):
+    ```bash
+    git tag -a vX.Y.Z HEAD -m "Release vX.Y.Z"
+    git push origin vX.Y.Z
+    gh release create vX.Y.Z \
+      --title "vX.Y.Z — <one-line summary>" \
+      --notes "$(python3 - <<'EOF'
+import re, sys
+content = open('CHANGELOG.md').read()
+m = re.search(r'## \[X\.Y\.Z\][^\n]*\n(.+?)(?=\n## \[)', content, re.DOTALL)
+print(m.group(1).strip() if m else "See CHANGELOG.md")
+EOF
+)"
+    ```
+    Without this step, GitHub shows the previous release as latest and the repo looks abandoned to anyone discovering it.
 
 **Bump Homebrew tap (separate repo):**
 
