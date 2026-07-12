@@ -562,3 +562,15 @@ freedom from Ollama's 3-model cap indefinitely.
 5. **Health checks**: `text_embedding_ollama_bypass` (WARNING) fires when nomic-embed-text is in Ollama without a native server; `nomic_loaded_in_ollama` (INFO) fires when the native server is up but nomic is still occupying an Ollama slot.
 
 **Insight**: "no failed requests" and "invisible failed requests" look identical on the dashboard. Software queue starvation is orthogonal to hardware utilization — a machine at 14% CPU with 291 GB free can still starve requests through application-layer concurrency limits. The grep pattern `'"level": "ERROR"'` (with space) is required; `'"level":"ERROR"'` (no space) matches zero lines in our JSONLFormatter output and produces a falsely clean result.
+
+---
+
+## 2026-07-11 — GitHub page looked abandoned for 3 months despite active PyPI publishing
+
+**Evidence**: Routine adoption review found the GitHub releases page showing v0.5.2 (April 14, 2026) as the latest release. PyPI had 0.6.0, 0.6.1, 0.6.2, and 0.7.0 — all with full CHANGELOG entries, proper version bumps, and Homebrew tap updates. The gap was 13 weeks. GitHub traffic data confirmed the downstream effect: 17 total page views in the last 14 days, 14 unique visitors. No external forks, no external issues, no community discussion found on Reddit, HN, or similar venues. Any new visitor discovering the project on GitHub would see a repo that apparently hadn't shipped anything since April and has 3 fewer starred versions than PyPI.
+
+**Root cause**: The release checklist covered every distribution surface (PyPI, Homebrew formula, local deploy verification) but never included `git tag` or `gh release create`. This wasn't caught for 13 weeks because all the quality gates were green — tests passed, PyPI accepted the build, Homebrew installed successfully — and none of those gates touch the GitHub releases page. The CLAUDE.md checklist is the only instruction set all agents (human and AI) follow when releasing; anything missing from the checklist simply doesn't happen.
+
+**Fix**: Backfilled v0.6.0–v0.7.0 as GitHub releases (2026-07-11) with full CHANGELOG bodies as release notes. Added step 12 to the release checklist: `git tag -a vX.Y.Z HEAD`, `git push origin vX.Y.Z`, `gh release create` with notes extracted from CHANGELOG. The step is placed between PyPI verification and the Homebrew tap bump, with a note explaining why it matters for discoverability.
+
+**Insight**: The GitHub releases page is the public face of the project's activity — it's what a prospective user, contributor, or integration partner sees when evaluating whether a project is alive. A project can be shipping high-quality work continuously while appearing completely dormant to the outside world if that work isn't surfaced through the release mechanism the platform provides. Checklist-driven release processes have a blind spot: they only enforce what's listed. Any distribution surface not represented by a numbered step will eventually fall behind when someone follows the checklist under time pressure. The fix is to represent every surface explicitly — not to rely on the releaser remembering.
