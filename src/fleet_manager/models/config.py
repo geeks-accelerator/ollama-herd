@@ -210,15 +210,10 @@ class ServerSettings(BaseSettings):
     # Model names prefixed with `mlx:` route to this backend instead of Ollama.
     # Example: FLEET_ANTHROPIC_MODEL_MAP='{"claude-opus-4-7":"mlx:Qwen3-Coder-480B-A35B-4bit", ...}'
     mlx_enabled: bool = False
+    # Fallback base URL for the MLX proxy when the registry has no live match
+    # (single-host colocated fleet).  Server-side auto-start / kv-bits config
+    # lives on the node (FLEET_NODE_MLX_SERVERS), not here.
     mlx_url: str = "http://localhost:11440"
-    # When auto-start is on, herd-node will spawn `mlx_lm.server` as a subprocess.
-    # Requires `mlx-lm` installed and a valid `mlx_auto_start_model` path.
-    mlx_auto_start: bool = False
-    mlx_auto_start_model: str = ""  # path or HF repo id for --model
-    # KV cache quantization (matches Ollama's OLLAMA_KV_CACHE_TYPE=q8_0).  Requires
-    # upstream PR #1073 merged or our local patch applied to mlx_lm.server.  Set
-    # to 0 to skip the flag (f16 KV, works on stock mlx_lm).
-    mlx_kv_bits: int = 0  # 0 disables; 4 or 8 for quantized KV (needs patched server)
     # Queue admission control for the MLX backend.  mlx_lm.server is
     # single-threaded per process — without a bound, Claude Code retry storms
     # stack up inside mlx's HTTP queue and wedge the whole backend.  With
@@ -343,44 +338,25 @@ class NodeSettings(BaseSettings):
     telemetry_local_summary: bool = False
     telemetry_include_tags: bool = False
 
-    # MLX backend — when enabled, the node agent polls mlx_lm.server and merges
-    # its models into the heartbeat alongside Ollama's.  Each MLX model shows
+    # MLX backend — when enabled, the node agent spawns + supervises one
+    # `mlx_lm.server` subprocess per FLEET_NODE_MLX_SERVERS entry and merges
+    # their models into the heartbeat alongside Ollama's.  Each MLX model shows
     # up in the fleet with an `mlx:` prefix so routers / Anthropic routes can
     # direct requests to it.  See `docs/plans/mlx-backend-for-large-models.md`.
     mlx_enabled: bool = False
-    mlx_url: str = "http://localhost:11440"
-    # Subprocess lifecycle (Phase 3): when auto_start is true, the node agent
-    # launches `mlx_lm.server` with the configured model + KV bits, monitors
-    # its health, and restarts it on crash.
-    mlx_auto_start: bool = False
-    mlx_auto_start_model: str = ""  # local path or HF repo id for --model
-    mlx_kv_bits: int = 0  # 0 disables; 4 or 8 for quantized KV (needs patched server)
-    mlx_prompt_cache_size: int = 4
-    mlx_prompt_cache_bytes: int = 17179869184  # 16 GiB
-    # Speculative decoding — draft model that proposes tokens the main
-    # model verifies.  Accepted tokens skip a main-model forward pass
-    # and yield 10-30% throughput on coding workloads.  Draft must share
-    # the main model's tokenizer (Qwen3 main → Qwen3-family draft).
-    # Empty string disables.  Example: "mlx-community/Qwen3-1.7B-4bit"
-    # alongside main="mlx-community/Qwen3-Coder-Next-4bit".
-    # See docs/plans/claude-code-performance-improvements.md §1.
-    mlx_draft_model: str = ""
-    # How many tokens the draft proposes per step.  3-4 is typical —
-    # higher increases acceptance opportunity but wastes more on rejections.
-    mlx_num_draft_tokens: int = 4
 
-    # Multi-MLX-server support.  When non-empty, overrides the single-server
-    # fields above (mlx_auto_start_model / mlx_url / mlx_kv_bits are ignored —
-    # they're preserved only for back-compat with old deploys).  Each entry
-    # spawns one `mlx_lm.server` subprocess on its own port; the node
-    # aggregates them in the heartbeat and the router proxy looks up the
-    # right URL per request.
+    # MLX server configuration — the single config surface for the node.
+    # JSON-encoded array; each entry spawns one `mlx_lm.server` subprocess on
+    # its own port.  The node aggregates them in the heartbeat and the router
+    # proxy looks up the right URL per request.  A single-model deploy is just
+    # a one-entry array.
     #
-    # JSON-encoded list.  Each entry accepts:
+    # Each entry accepts:
     #   model       (str)   — HF repo id or local path (required)
     #   port        (int)   — listen port (required, must be unique)
     #   kv_bits     (int)   — 0 / 4 / 8 (optional, default 0)
-    #   prompt_cache_bytes (int) — optional, default matches single-server
+    #   prompt_cache_size  (int) — optional, default 4
+    #   prompt_cache_bytes (int) — optional, default 16 GiB
     #   draft_model (str)   — optional speculative-decoding draft
     #
     # Example:

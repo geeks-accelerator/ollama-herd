@@ -1,8 +1,9 @@
 """Subprocess lifecycle manager for a local `mlx_lm.server`.
 
 Phase 3 of ``docs/plans/mlx-backend-for-large-models.md``.  Spawned by the
-node agent when ``FLEET_NODE_MLX_AUTO_START`` is true so users can bring up
-the whole fleet (Ollama + herd-node + MLX) with a single ``uv run herd-node``.
+node agent for each ``FLEET_NODE_MLX_SERVERS`` entry (when
+``FLEET_NODE_MLX_ENABLED`` is true) so users can bring up the whole fleet
+(Ollama + herd-node + MLX) with a single ``uv run herd-node``.
 
 What this module does:
   - Spawn ``mlx_lm.server`` as a child process with the configured flags
@@ -23,7 +24,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
 import signal
 import subprocess
 import time
@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+
+from fleet_manager.common.binaries import which_extended
 
 logger = logging.getLogger(__name__)
 
@@ -68,13 +70,26 @@ class MlxServerSpec:
     prompt_cache_bytes: int = 17_179_869_184  # 16 GiB
     draft_model: str = ""
     num_draft_tokens: int = 4
+    # --- distributed (multi-node via mlx.launch) ---
+    # backend == "" ⇒ standalone single-process (current behavior).  Set to
+    # "ring" (TCP/LAN, no special hardware) / "jaccl" (RDMA over Thunderbolt 5,
+    # macOS 26.2+) / "mpi" to run the server across multiple hosts.  See
+    # docs/plans/distributed-mlx-inference.md.
+    backend: str = ""
+    # comma-separated PEER IPs — ring backend (node prepends its own IP)
+    hosts: str = ""
+    hostfile: str = ""                  # path to JSON hostfile — jaccl / mpi backend
+    pipeline: bool = False              # True = pipeline parallelism; False = tensor (default)
+
+    _VALID_BACKENDS = ("", "ring", "jaccl", "mpi")
 
     @classmethod
     def from_dict(cls, data: dict) -> MlxServerSpec:
         """Build a spec from a JSON-dict, tolerating missing optional keys.
 
         Raises ``ValueError`` if the required ``model`` / ``port`` keys are
-        missing or empty — we fail loudly here so a typo'd
+        missing or empty, or if a distributed ``backend`` is set without the
+        host specification it needs — we fail loudly here so a typo'd
         ``FLEET_NODE_MLX_SERVERS`` doesn't silently swallow a server.
         """
         model = (data.get("model") or "").strip()
@@ -86,6 +101,35 @@ class MlxServerSpec:
                 f"MlxServerSpec: missing or invalid 'port' in {data!r} — "
                 f"must be a positive integer"
             )
+        backend = str(data.get("backend", "")).strip().lower()
+        if backend not in cls._VALID_BACKENDS:
+            raise ValueError(
+                f"MlxServerSpec: invalid backend {backend!r} in {data!r} — "
+                f"must be one of ring / jaccl / mpi (or omitted for standalone)"
+            )
+        hosts = str(data.get("hosts", "")).strip()
+        hostfile = str(data.get("hostfile", "")).strip()
+        pipeline = bool(data.get("pipeline", False))
+        if backend == "ring" and not hosts:
+            raise ValueError(
+                f"MlxServerSpec: backend 'ring' requires 'hosts' (comma-separated "
+                f"peer IPs) in {data!r}"
+            )
+        if backend in ("jaccl", "mpi") and not hostfile:
+            raise ValueError(
+                f"MlxServerSpec: backend {backend!r} requires 'hostfile' (path to "
+                f"a JSON hostfile) in {data!r}"
+            )
+        if backend == "ring" and not pipeline:
+            # Ring is TCP (~1ms hop); tensor parallelism's per-layer all-reduce
+            # is too chatty over it.  Pipeline is the practical mode.  Warn but
+            # don't block — a tiny model on a fast LAN might still be fine.
+            logger.warning(
+                "MlxServerSpec(model=%r): backend 'ring' without pipeline=true — "
+                "tensor parallelism over TCP is very slow; set \"pipeline\": true "
+                "unless you know the model is small enough to tolerate it.",
+                model,
+            )
         return cls(
             model=model,
             port=port,
@@ -94,6 +138,10 @@ class MlxServerSpec:
             prompt_cache_bytes=int(data.get("prompt_cache_bytes", 17_179_869_184)),
             draft_model=str(data.get("draft_model", "")),
             num_draft_tokens=int(data.get("num_draft_tokens", 4)),
+            backend=backend,
+            hosts=hosts,
+            hostfile=hostfile,
+            pipeline=pipeline,
         )
 
 
@@ -179,22 +227,22 @@ def memory_gate_ok(
 def find_mlx_lm_binary() -> str | None:
     """Locate ``mlx_lm.server`` — returns an absolute path or None.
 
-    Checks ``$PATH`` first, then falls back to common install locations
-    (uv tool, pipx, Homebrew, user-local bin).  Returns ``None`` if mlx-lm
-    isn't installed — the supervisor will log a clear error in that case.
+    Thin wrapper over the shared :func:`which_extended` resolver (checks
+    ``$PATH`` then uv tool / pipx / Homebrew / user-local locations).  Returns
+    ``None`` if mlx-lm isn't installed — the supervisor logs a clear error.
     """
-    found = shutil.which("mlx_lm.server")
-    if found:
-        return found
-    # Common install locations — keep in sync with collector._which_extended
-    for candidate in [
-        Path.home() / ".local" / "bin" / "mlx_lm.server",
-        Path("/opt/homebrew/bin/mlx_lm.server"),
-        Path("/usr/local/bin/mlx_lm.server"),
-    ]:
-        if candidate.exists() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return None
+    return which_extended("mlx_lm.server")
+
+
+def find_mlx_launch_binary() -> str | None:
+    """Locate ``mlx.launch`` — returns an absolute path or None.
+
+    ``mlx.launch`` orchestrates distributed runs across multiple hosts; it
+    installs from the same ``mlx`` package as ``mlx_lm.server`` and resolves
+    via the same shared path logic.  Returns ``None`` when mlx isn't installed
+    or is too old to ship the launcher.
+    """
+    return which_extended("mlx.launch")
 
 
 def find_orphan_mlx_pids_on_port(port: int) -> list[int]:
@@ -263,6 +311,10 @@ class MlxSupervisor:
         prompt_cache_bytes: int = 17_179_869_184,
         draft_model: str = "",
         num_draft_tokens: int = 4,
+        backend: str = "",
+        hosts: str = "",
+        hostfile: str = "",
+        pipeline: bool = False,
         memory_headroom_gb: float = 0.0,
         log_dir: Path | None = None,
     ):
@@ -276,6 +328,13 @@ class MlxSupervisor:
         # Empty draft_model disables.  Must share the main's tokenizer.
         self.draft_model = draft_model
         self.num_draft_tokens = num_draft_tokens
+        # Distributed execution — backend "" ⇒ standalone (one local process).
+        # Otherwise the inner mlx_lm.server is wrapped in mlx.launch to run one
+        # rank per host.  See docs/plans/distributed-mlx-inference.md.
+        self.backend = backend
+        self.hosts = hosts
+        self.hostfile = hostfile
+        self.pipeline = pipeline
         # Memory-pressure startup gate.  0.0 disables the check (back-compat).
         # The supervisor set passes the node-wide configured headroom.
         self.memory_headroom_gb = memory_headroom_gb
@@ -305,9 +364,32 @@ class MlxSupervisor:
         self._recent_crash_ts: list[float] = []
         self._quarantined: bool = False
 
+    # Wildcard / unspecified bind addresses that are NOT valid to *connect* to.
+    # ``mlx_lm.server`` binds these to accept LAN traffic (required for
+    # multi-node aggregation and distributed rank-0), but a health probe must
+    # dial a concrete loopback address — connecting to 0.0.0.0 / :: is
+    # unreliable across platforms and plain wrong as a client target.
+    _WILDCARD_BIND_HOSTS = frozenset({"", "0.0.0.0", "::", "[::]", "*"})
+
+    @property
+    def health_host(self) -> str:
+        """Loopback host to probe, decoupled from the bind (``--host``) address.
+
+        ``self.host`` is the address ``mlx_lm.server`` *binds*; operators set it
+        to ``0.0.0.0`` for LAN exposure (``FLEET_NODE_MLX_BIND_HOST=0.0.0.0``)
+        and distributed mode requires it so rank-0 is reachable.  But rank-0 is
+        always local to this node, so health polling / warmup must dial
+        ``127.0.0.1`` — never the wildcard bind.  Prior to this split, setting a
+        ``0.0.0.0`` bind silently made the supervisor poll ``http://0.0.0.0``,
+        which is not a valid connect target.  See
+        ``docs/plans/distributed-mlx-inference.md`` (latent-bug fix).
+        """
+        return "127.0.0.1" if self.host in self._WILDCARD_BIND_HOSTS else self.host
+
     @property
     def base_url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        """Local URL used for health checks and warmup (always loopback-safe)."""
+        return f"http://{self.health_host}:{self.port}"
 
     @staticmethod
     def _binary_supports_kv_bits(binary: str) -> bool:
@@ -329,8 +411,41 @@ class MlxSupervisor:
             return True
         return "--kv-bits" in (result.stdout or "") + (result.stderr or "")
 
-    def _build_cmd(self, binary: str) -> list[str]:
-        """Build the mlx_lm.server command line from configured flags."""
+    @property
+    def is_distributed(self) -> bool:
+        """True when this server runs across multiple hosts via mlx.launch."""
+        return bool(self.backend)
+
+    @property
+    def node_count(self) -> int:
+        """How many hosts this server spans — 1 when standalone.
+
+        Computed from config (no network I/O — called per heartbeat):
+          - ring: distinct configured peers + this node (self).
+          - jaccl / mpi: number of entries in the hostfile JSON array.
+          - unreadable / unparseable hostfile: 0 (unknown), so the dashboard
+            can show "distributed" without asserting a wrong count.
+        """
+        if not self.is_distributed:
+            return 1
+        if self.hostfile:
+            try:
+                import json
+                with open(self.hostfile) as f:
+                    data = json.load(f)
+                return len(data) if isinstance(data, list) else 0
+            except (OSError, ValueError):
+                return 0
+        peers = {h.strip() for h in self.hosts.split(",") if h.strip()}
+        return len(peers) + 1  # peers + self
+
+    def _inner_server_cmd(self, binary: str) -> list[str]:
+        """Build the ``mlx_lm.server`` invocation (rank command in distributed).
+
+        This is the standalone command verbatim — kept byte-identical so
+        non-distributed deploys and their tests are unaffected.  ``--pipeline``
+        is appended only in distributed mode (it's meaningless standalone).
+        """
         cmd = [
             binary,
             "--model", self.model,
@@ -352,7 +467,68 @@ class MlxSupervisor:
                 "--draft-model", self.draft_model,
                 "--num-draft-tokens", str(self.num_draft_tokens),
             ]
+        if self.is_distributed and self.pipeline:
+            cmd += ["--pipeline"]
         return cmd
+
+    def _resolved_hosts(self) -> str:
+        """Comma-separated host list for ``mlx.launch --hosts`` (ring backend).
+
+        The operator configures PEER IPs; we prepend this node's own LAN IP so
+        the head node (where mlx.launch runs) is rank 0.  Deduplicated, self
+        first.  See docs/plans/distributed-mlx-inference.md (audit: reuse
+        get_local_ip, don't make operators hand-type their own address).
+        """
+        from fleet_manager.common.system_metrics import get_local_ip
+
+        ordered: list[str] = []
+        local = get_local_ip()
+        if local:
+            ordered.append(local)
+        for peer in (h.strip() for h in self.hosts.split(",")):
+            if peer and peer not in ordered:
+                ordered.append(peer)
+        return ",".join(ordered)
+
+    def _launch_prefix(self) -> list[str]:
+        """The ``mlx.launch … --`` prefix that wraps the inner server command.
+
+        Raises ``RuntimeError`` if ``mlx.launch`` isn't installed — callers
+        (``start`` preflights it; ``_monitor`` catches it) surface a clear
+        status.  ``MLX_METAL_FAST_SYNCH=1`` is passed via ``--env`` (never the
+        subprocess env) so it reaches every remote rank; without it inference
+        runs 5–6× slower.
+        """
+        launch = find_mlx_launch_binary()
+        if launch is None:
+            raise RuntimeError(
+                "mlx.launch not found — distributed MLX needs the mlx package's "
+                "launcher on PATH (install/upgrade `mlx`). "
+                "Install with `uv tool install mlx` or `pip install mlx`."
+            )
+        prefix = [launch, "--backend", self.backend]
+        if self.hostfile:
+            prefix += ["--hostfile", self.hostfile]
+        elif self.hosts:
+            prefix += ["--hosts", self._resolved_hosts()]
+        prefix += [
+            "--env", "MLX_METAL_FAST_SYNCH=1",
+            "--no-verify-script",
+            "--",
+        ]
+        return prefix
+
+    def _build_cmd(self, binary: str) -> list[str]:
+        """Build the process command line.
+
+        ``binary`` is the resolved ``mlx_lm.server`` path.  Standalone: that
+        invocation verbatim.  Distributed: the same invocation wrapped in an
+        ``mlx.launch`` prefix that runs it as one rank per host.
+        """
+        inner = self._inner_server_cmd(binary)
+        if not self.is_distributed:
+            return inner
+        return self._launch_prefix() + inner
 
     async def _wait_healthy(self, timeout: float = _HEALTH_POLL_TIMEOUT) -> bool:
         """Poll ``GET /v1/models`` until it returns 200 or timeout expires."""
@@ -401,9 +577,9 @@ class MlxSupervisor:
 
         if not self.model:
             logger.error(
-                "FLEET_NODE_MLX_AUTO_START_MODEL is empty — set it to a "
-                "local model path or Hugging Face repo id (e.g. "
-                "'mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit'). "
+                "MLX server spec has an empty 'model' — set it in a "
+                "FLEET_NODE_MLX_SERVERS entry to a local model path or Hugging "
+                "Face repo id (e.g. 'mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit'). "
                 "Skipping MLX auto-start."
             )
             self._status = "stopped"
@@ -415,7 +591,13 @@ class MlxSupervisor:
         # policy.  When it blocks, we DO NOT crash-loop — just stay in
         # "memory_blocked" state and let an outer retry (or manual op)
         # bring us up later.
-        if self.memory_headroom_gb > 0.0:
+        #
+        # Skipped for distributed servers: this node holds only a *shard* of
+        # the model (that's the whole point — the model is bigger than one
+        # node), so gating on the full weight size would wrongly refuse valid
+        # clusters.  mlx.launch / the OS surface real OOM if the shard doesn't
+        # fit.
+        if self.memory_headroom_gb > 0.0 and not self.is_distributed:
             ok, reason = memory_gate_ok(self.model, self.memory_headroom_gb)
             if not ok:
                 logger.warning(
@@ -471,8 +653,11 @@ class MlxSupervisor:
         # mlx_lm.server doesn't expose --kv-bits, fail fast with actionable
         # guidance instead of letting Popen surface as a 120s health-check
         # timeout.  Upstream mlx-lm drops this flag; we depend on a local
-        # patch (see ``docs/experiments/mlx-lm-server-kv-bits.patch``).
-        if self.kv_bits is not None and not self._binary_supports_kv_bits(binary):
+        # patch (see ``docs/experiments/mlx-lm-server-kv-bits.patch``).  Only
+        # gate when quantization is actually requested (4/8) — stock mlx-lm
+        # without the patch must still serve f16 (kv_bits=0), which matters for
+        # distributed nodes that don't run the patch.
+        if self.kv_bits in (4, 8) and not self._binary_supports_kv_bits(binary):
             logger.error(
                 "mlx_lm.server at %s does not support --kv-bits — the "
                 "ollama-herd KV-quant patch is missing (likely wiped by a "
@@ -485,12 +670,30 @@ class MlxSupervisor:
             self._status_reason = "mlx_lm.server missing --kv-bits patch"
             return False
 
+        # Preflight: distributed mode needs the mlx.launch launcher on PATH.
+        # Fail fast with a clear status rather than raising inside _build_cmd.
+        if self.is_distributed and find_mlx_launch_binary() is None:
+            logger.error(
+                "mlx_lm.server(port=%d) configured for distributed backend %r "
+                "but `mlx.launch` was not found on PATH. Install/upgrade the "
+                "mlx package (`uv tool install mlx`). Skipping MLX start.",
+                self.port, self.backend,
+            )
+            self._status = "stopped"
+            self._status_reason = "mlx.launch not found (distributed backend)"
+            return False
+
         cmd = self._build_cmd(binary)
         self._log_fp = self._open_log()
         self._status = "starting"
         self._status_reason = ""
+        _bind_note = (
+            f" (bind {self.host}, health-poll {self.health_host})"
+            if self.host in self._WILDCARD_BIND_HOSTS
+            else ""
+        )
         logger.info(
-            f"Starting mlx_lm.server on {self.host}:{self.port} "
+            f"Starting mlx_lm.server on {self.host}:{self.port}{_bind_note} "
             f"(model={self.model}, kv_bits={self.kv_bits or 'f16'})"
         )
         logger.debug(f"mlx cmd: {' '.join(cmd)}")
@@ -809,6 +1012,11 @@ class MlxSupervisorStatus:
     kv_bits: int = 0
     model_size_gb: float = 0.0           # estimated from HF cache on disk
     last_ok_ts: float = 0.0              # epoch seconds
+    # Distributed execution (multi-node via mlx.launch).  backend == "" ⇒
+    # standalone; node_count is 1 in that case.
+    distributed: bool = False
+    backend: str = ""                    # ring / jaccl / mpi (empty = standalone)
+    node_count: int = 1                  # hosts this server spans (0 = unknown)
 
 
 class MlxSupervisorSet:
@@ -851,6 +1059,10 @@ class MlxSupervisorSet:
             prompt_cache_bytes=spec.prompt_cache_bytes,
             draft_model=spec.draft_model,
             num_draft_tokens=spec.num_draft_tokens,
+            backend=spec.backend,
+            hosts=spec.hosts,
+            hostfile=spec.hostfile,
+            pipeline=spec.pipeline,
             memory_headroom_gb=self.memory_headroom_gb,
             log_dir=self.log_dir,
         )
@@ -940,6 +1152,8 @@ class MlxSupervisorSet:
                     status="stopped",
                     kv_bits=spec.kv_bits,
                     model_size_gb=estimate_model_size_gb(spec.model),
+                    distributed=bool(spec.backend),
+                    backend=spec.backend,
                 ))
                 continue
             out.append(MlxSupervisorStatus(
@@ -950,6 +1164,9 @@ class MlxSupervisorSet:
                 kv_bits=child.kv_bits,
                 model_size_gb=estimate_model_size_gb(child.model),
                 last_ok_ts=child.last_ok_ts(),
+                distributed=child.is_distributed,
+                backend=child.backend,
+                node_count=child.node_count,
             ))
         return out
 

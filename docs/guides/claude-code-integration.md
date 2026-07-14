@@ -119,7 +119,7 @@ To keep a 4th model (typically an opus-tier giant like `qwen3-coder:480b`) hot,
 route it through the MLX backend — an independent `mlx_lm.server` process
 that has its own memory budget, separate from Ollama's.
 
-Setup on the node (single-command everything-auto-starts path):
+Setup on the node (the supervisor spawns and manages mlx_lm.server for you):
 
 ```bash
 # 1. Install mlx-lm
@@ -128,11 +128,12 @@ uv tool install mlx-lm  # or: pip install mlx-lm
 # 2. Pull an MLX-quantized model (helper command)
 herd mlx pull mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
 
-# 3. Tell herd-node to auto-start and supervise mlx_lm.server
+# 3. Tell herd-node to start and supervise mlx_lm.server.
+#    FLEET_NODE_MLX_SERVERS is a JSON array; one entry = one supervised
+#    server. Per-entry keys: model, port (required); kv_bits,
+#    prompt_cache_size/bytes, draft_model, num_draft_tokens (optional).
 export FLEET_NODE_MLX_ENABLED=true
-export FLEET_NODE_MLX_AUTO_START=true
-export FLEET_NODE_MLX_AUTO_START_MODEL=mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
-export FLEET_NODE_MLX_KV_BITS=8  # optional — requires patched mlx_lm.server
+export FLEET_NODE_MLX_SERVERS='[{"model":"mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit","port":11440,"kv_bits":8}]'
 
 # 4. Tell the router it can forward to MLX
 export FLEET_MLX_ENABLED=true

@@ -227,6 +227,9 @@ async def dashboard_events(request: Request):
                             "kv_bits": s.kv_bits,
                             "model_size_gb": round(s.model_size_gb, 1),
                             "last_ok_ts": s.last_ok_ts,
+                            "distributed": s.distributed,
+                            "backend": s.backend,
+                            "node_count": s.node_count,
                         }
                         for s in node.mlx_servers
                     ]
@@ -2255,9 +2258,15 @@ function renderNodes(nodes) {
             const short = (s.model || '').split('/').pop() || s.model;
             const ageSec = s.last_ok_ts ? Math.round(Date.now()/1000 - s.last_ok_ts) : null;
             const ageText = ageSec !== null ? (ageSec < 60 ? ageSec + 's ago' : Math.round(ageSec/60) + 'm ago') : 'never';
+            // Distributed servers span multiple Macs via mlx.launch — show a
+            // "backend · N nodes" chip so operators can see the cluster shape.
+            const nodeTxt = s.node_count ? (' · ' + s.node_count + ' node' + (s.node_count === 1 ? '' : 's')) : '';
+            const distChip = s.distributed
+              ? ' <span title="Distributed across ' + (s.node_count || '?') + ' host(s) via mlx.launch (' + (s.backend || 'distributed') + ')" style="display:inline-block;padding:0 5px;border-radius:3px;font-size:9px;font-weight:700;letter-spacing:0.4px;background:rgba(168,85,247,0.18);color:rgba(168,85,247,0.95);text-transform:uppercase;vertical-align:middle">' + (s.backend || 'dist') + nodeTxt + '</span>'
+              : '';
             return '<tr>' +
               '<td style="padding:2px 6px;font-family:monospace;color:var(--text-dim)">:' + s.port + '</td>' +
-              '<td style="padding:2px 6px">' + short + '</td>' +
+              '<td style="padding:2px 6px">' + short + distChip + '</td>' +
               '<td style="padding:2px 6px"><span style="color:' + color + ';font-weight:600">' + s.status + '</span></td>' +
               '<td style="padding:2px 6px;color:var(--text-dim);text-align:right">' + (s.model_size_gb ? s.model_size_gb.toFixed(1) + ' GB' : '—') + '</td>' +
               '<td style="padding:2px 6px;color:var(--text-dim);font-size:10px">' + ageText + '</td>' +

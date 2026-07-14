@@ -2,7 +2,7 @@
 """Benchmark Claude-Code-shaped performance: before/after knob changes.
 
 Use this to measure the impact of:
-  - Speculative decoding (``FLEET_NODE_MLX_DRAFT_MODEL``)
+  - Speculative decoding (per-entry ``draft_model`` in ``FLEET_NODE_MLX_SERVERS``)
   - Tool-schema fixup (``FLEET_ANTHROPIC_TOOL_SCHEMA_FIXUP``)
   - Per-tier routing (``FLEET_ANTHROPIC_MODEL_MAP``)
   - Context-management layers (anything in the cc-compat pipeline)

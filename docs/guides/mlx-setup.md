@@ -57,13 +57,17 @@ export FLEET_MLX_URL=http://127.0.0.1:11440   # where mlx_lm.server listens on t
 
 ### Node (``herd-node``) — the machine that hosts mlx_lm.server
 
+The node has a single MLX config surface: `FLEET_NODE_MLX_SERVERS`, a
+JSON array where each entry spawns one supervised `mlx_lm.server`.  A
+single-model deploy is just a one-entry array.  Per-entry keys: `model`
+(required), `port` (required), and optional `kv_bits` (0/4/8),
+`prompt_cache_size`, `prompt_cache_bytes`, `draft_model`,
+`num_draft_tokens`.
+
 ```bash
 export FLEET_NODE_MLX_ENABLED=true
-export FLEET_NODE_MLX_URL=http://127.0.0.1:11440
-export FLEET_NODE_MLX_AUTO_START=true
-export FLEET_NODE_MLX_AUTO_START_MODEL=mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit
-export FLEET_NODE_MLX_KV_BITS=8                     # matches Ollama's q8_0
-export FLEET_NODE_MLX_PROMPT_CACHE_BYTES=17179869184  # 16 GB
+export FLEET_NODE_MLX_SERVERS='[{"model":"mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit","port":11440,"kv_bits":8,"prompt_cache_bytes":17179869184}]'
+# kv_bits 8 matches Ollama's q8_0; prompt_cache_bytes 17179869184 = 16 GB
 ```
 
 ### Optional: route Anthropic requests to the MLX model
@@ -108,10 +112,10 @@ export FLEET_CONTEXT_COMPACTION_ENABLED=true
 export FLEET_CONTEXT_COMPACTION_MODEL=mlx:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
 ```
 
-When `FLEET_NODE_MLX_SERVERS` is set, the legacy single-server fields
-(`FLEET_NODE_MLX_AUTO_START_MODEL`, `FLEET_NODE_MLX_URL`,
-`FLEET_NODE_MLX_KV_BITS`) are ignored.  Keep them defined so reverting
-to a single-server config only requires unsetting `FLEET_NODE_MLX_SERVERS`.
+`FLEET_NODE_MLX_SERVERS` is the only node MLX config surface — both the
+single-server example above and this multi-server recipe use it.  To go
+from one model to two, add a second entry to the array; to revert, drop
+back to a one-entry array.
 
 **Speculative decoding** uses two same-tokenizer-family models — a
 small "draft" model proposes tokens that the main model verifies and
@@ -158,7 +162,7 @@ After `source ~/.zshrc` and restarting `herd-node`:
 # 1. mlx_lm.server process is running
 ps aux | grep mlx_lm.server | grep -v grep
 
-# 2. mlx_lm.server /v1/models lists your auto-start model
+# 2. mlx_lm.server /v1/models lists your configured model
 curl -sS http://127.0.0.1:11440/v1/models | jq .
 
 # 3. The node collector reports MLX state

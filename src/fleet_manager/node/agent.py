@@ -53,17 +53,13 @@ class NodeAgent:
         # MLX backend (Phase 2 of docs/plans/mlx-backend-for-large-models.md).
         # When FLEET_NODE_MLX_ENABLED is true the node agent advertises models
         # from mlx_lm.server alongside Ollama's in each heartbeat.  Phase 3
-        # will add auto-start subprocess lifecycle; for now we assume the
-        # user has started mlx_lm.server manually at FLEET_NODE_MLX_URL.
-        self.mlx = None
+        # MLX backend: the node manages `mlx_lm.server` subprocess(es) via the
+        # supervisor set, configured entirely through FLEET_NODE_MLX_SERVERS.
+        # Health, models, and per-server status are collected from the set at
+        # heartbeat time — there is no separate poll-only client path.
         if getattr(settings, "mlx_enabled", False):
-            from fleet_manager.node.mlx_client import MlxClient
-
-            self.mlx = MlxClient(settings.mlx_url)
-            logger.info(f"MLX backend enabled on node — polling {settings.mlx_url}")
-        self._mlx_process: subprocess.Popen | None = None
-        self._mlx_supervisor = None  # Legacy single-server; kept for back-compat
-        self._mlx_supervisor_set = None  # MlxSupervisorSet | None; new multi-server path
+            logger.info("MLX backend enabled on node — managing servers via FLEET_NODE_MLX_SERVERS")
+        self._mlx_supervisor_set = None  # MlxSupervisorSet | None
 
     async def _ensure_ollama(self) -> bool:
         """Check if Ollama is running; if not, try to start it.
@@ -217,7 +213,6 @@ class NodeAgent:
                     self.ollama,
                     self.settings.ollama_host,
                     capacity_learner=self._capacity_learner,
-                    mlx=self.mlx,
                     mlx_supervisor_set=self._mlx_supervisor_set,
                     mlx_bind_host=getattr(
                         self.settings, "mlx_bind_host", "127.0.0.1",
@@ -554,13 +549,10 @@ class NodeAgent:
             self._text_embedding_port = 0
 
     async def _ensure_mlx_server(self):
-        """Spawn mlx_lm.server process(es) if auto-start is configured.
+        """Spawn one ``mlx_lm.server`` subprocess per FLEET_NODE_MLX_SERVERS entry.
 
-        Supports two config paths:
-          1. Multi-server (new): FLEET_NODE_MLX_SERVERS='[{...},{...}]'
-             → spawns one subprocess per entry via MlxSupervisorSet
-          2. Single-server (legacy): FLEET_NODE_MLX_AUTO_START_MODEL=...
-             → synthesized as a single-entry list, same path
+        FLEET_NODE_MLX_SERVERS='[{...},{...}]' is the single config surface;
+        each entry becomes one subprocess managed by ``MlxSupervisorSet``.
 
         No-op when MLX isn't enabled or no servers are configured.
         One failing subprocess doesn't block the others — the set
@@ -572,15 +564,11 @@ class NodeAgent:
 
         specs = self._parse_mlx_specs()
         if not specs:
-            # Honor the old warning for folks with MLX_AUTO_START=true but
-            # no configured model — they hit this path via the empty
-            # synthesized list.
-            if getattr(self.settings, "mlx_auto_start", False):
-                logger.warning(
-                    "FLEET_NODE_MLX_AUTO_START=true but no MLX servers "
-                    "configured (neither FLEET_NODE_MLX_SERVERS nor "
-                    "FLEET_NODE_MLX_AUTO_START_MODEL set).  Skipping MLX."
-                )
+            logger.warning(
+                "FLEET_NODE_MLX_ENABLED=true but FLEET_NODE_MLX_SERVERS is "
+                "empty or invalid — no MLX servers to start.  Set it to a JSON "
+                'array, e.g. [{"model":"mlx-community/...","port":11440}].'
+            )
             return
 
         from fleet_manager.node.mlx_supervisor import MlxSupervisorSet
@@ -614,61 +602,46 @@ class NodeAgent:
             logger.info(f"All {ok_count} MLX servers healthy")
 
     def _parse_mlx_specs(self):
-        """Translate settings into list[MlxServerSpec].
+        """Translate ``FLEET_NODE_MLX_SERVERS`` into ``list[MlxServerSpec]``.
 
-        Priority: FLEET_NODE_MLX_SERVERS (JSON list) wins; falls back to
-        the legacy single-server fields.  Both empty ⇒ empty list.
+        This JSON array is the single MLX config surface. Empty / invalid ⇒
+        empty list (MLX stays off). A single-model deploy is just a one-entry
+        array: ``[{"model": "...", "port": 11440}]``.
         """
         import json as _json
 
         from fleet_manager.node.mlx_supervisor import MlxServerSpec
 
         raw = (getattr(self.settings, "mlx_servers", "") or "").strip()
-        if raw:
+        if not raw:
+            return []
+        try:
+            data = _json.loads(raw)
+        except _json.JSONDecodeError as exc:
+            logger.error(
+                f"FLEET_NODE_MLX_SERVERS is not valid JSON ({exc}); "
+                "ignoring.  Check for trailing commas or mismatched quotes."
+            )
+            return []
+        if not isinstance(data, list):
+            logger.error(
+                f"FLEET_NODE_MLX_SERVERS must be a JSON array, got "
+                f"{type(data).__name__}; ignoring."
+            )
+            return []
+        specs = []
+        for entry in data:
+            if not isinstance(entry, dict):
+                logger.error(
+                    f"FLEET_NODE_MLX_SERVERS entry must be a JSON "
+                    f"object, got {type(entry).__name__}; skipping: {entry!r}"
+                )
+                continue
             try:
-                data = _json.loads(raw)
-            except _json.JSONDecodeError as exc:
-                logger.error(
-                    f"FLEET_NODE_MLX_SERVERS is not valid JSON ({exc}); "
-                    "ignoring.  Check for trailing commas or mismatched quotes."
-                )
-                return []
-            if not isinstance(data, list):
-                logger.error(
-                    f"FLEET_NODE_MLX_SERVERS must be a JSON array, got "
-                    f"{type(data).__name__}; ignoring."
-                )
-                return []
-            specs = []
-            for entry in data:
-                if not isinstance(entry, dict):
-                    logger.error(
-                        f"FLEET_NODE_MLX_SERVERS entry must be a JSON "
-                        f"object, got {type(entry).__name__}; skipping: {entry!r}"
-                    )
-                    continue
-                try:
-                    specs.append(MlxServerSpec.from_dict(entry))
-                except ValueError as exc:
-                    logger.error(f"FLEET_NODE_MLX_SERVERS bad entry: {exc}")
-            return specs
-
-        # Legacy single-server fallback
-        if (getattr(self.settings, "mlx_auto_start", False)
-                and getattr(self.settings, "mlx_auto_start_model", "")):
-            from urllib.parse import urlparse
-            parsed = urlparse(self.settings.mlx_url)
-            port = parsed.port or 11440
-            return [MlxServerSpec(
-                model=self.settings.mlx_auto_start_model,
-                port=port,
-                kv_bits=self.settings.mlx_kv_bits,
-                prompt_cache_size=self.settings.mlx_prompt_cache_size,
-                prompt_cache_bytes=self.settings.mlx_prompt_cache_bytes,
-                draft_model=getattr(self.settings, "mlx_draft_model", ""),
-                num_draft_tokens=getattr(self.settings, "mlx_num_draft_tokens", 4),
-            )]
-        return []
+                specs.append(MlxServerSpec.from_dict(entry))
+            except ValueError as exc:
+                logger.error(f"FLEET_NODE_MLX_SERVERS bad entry: {exc}")
+        return specs
 
     async def _ensure_platform_connection(self):
         """Auto-connect to the platform if a token is configured.
@@ -892,21 +865,9 @@ class NodeAgent:
         if self._ollama_proxy:
             await self._ollama_proxy.stop()
         await self.ollama.close()
-        if self.mlx is not None:
-            await self.mlx.close()
-        # MLX subprocess(es) — graceful shutdown if we spawned them.
-        # Supervisor set is the new multi-server path; the single-supervisor
-        # path is kept for back-compat with any direct constructors.
+        # MLX subprocess(es) — graceful shutdown of everything we spawned.
         if self._mlx_supervisor_set is not None:
             with contextlib.suppress(Exception):
                 await self._mlx_supervisor_set.stop_all()
-        if self._mlx_supervisor is not None:
-            with contextlib.suppress(Exception):
-                await self._mlx_supervisor.stop()
-        # Legacy fallback path (no supervisor, raw Popen) — defensive
-        if self._mlx_process is not None:
-            with contextlib.suppress(Exception):
-                self._mlx_process.terminate()
-                self._mlx_process.wait(timeout=5)
         if self._http:
             await self._http.aclose()

@@ -180,6 +180,11 @@ class MlxServerInfo(BaseModel):
     kv_bits: int = 0
     model_size_gb: float = 0.0
     last_ok_ts: float = 0.0
+    # Distributed execution (multi-node via mlx.launch).  Defaults keep the
+    # model back-compatible with heartbeats from agents that predate these.
+    distributed: bool = False
+    backend: str = ""                    # ring / jaccl / mpi (empty = standalone)
+    node_count: int = 1                  # hosts this server spans (0 = unknown)
 
 
 class HeartbeatPayload(BaseModel):

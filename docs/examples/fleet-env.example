@@ -15,14 +15,17 @@
 
 # ---- MLX backend (Apple Silicon) ---------------------------------------
 # Run ./scripts/setup-mlx.sh first to install + patch mlx_lm.
+# Router side:
 # FLEET_MLX_ENABLED=true
-# FLEET_MLX_URL=http://127.0.0.1:11440
+# FLEET_MLX_URL=http://127.0.0.1:11440   # proxy fallback only; router normally resolves from heartbeats
+# Node side — FLEET_NODE_MLX_SERVERS is the single config surface. Each entry
+# spawns one supervised mlx_lm.server. A single-model deploy is a one-entry array.
 # FLEET_NODE_MLX_ENABLED=true
-# FLEET_NODE_MLX_URL=http://127.0.0.1:11440
-# FLEET_NODE_MLX_AUTO_START=true
-# FLEET_NODE_MLX_AUTO_START_MODEL=mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit
-# FLEET_NODE_MLX_KV_BITS=8
-# FLEET_NODE_MLX_PROMPT_CACHE_BYTES=17179869184
+# FLEET_NODE_MLX_SERVERS=[{"model":"mlx-community/Qwen3-Coder-Next-4bit","port":11440,"kv_bits":8}]
+# Multi-server example (main + dedicated compactor with speculative decoding):
+# FLEET_NODE_MLX_SERVERS=[{"model":"mlx-community/Qwen3-Coder-Next-4bit","port":11440,"kv_bits":8},{"model":"mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit","port":11441,"kv_bits":8,"draft_model":"mlx-community/Qwen3-1.7B-4bit","num_draft_tokens":4}]
+# Expose MLX to the LAN for multi-node aggregation (health checks still dial loopback):
+# FLEET_NODE_MLX_BIND_HOST=0.0.0.0
 
 # ---- Anthropic compatibility → which local model serves each tier ------
 # Route Claude Code / Anthropic SDK requests to a local model via the

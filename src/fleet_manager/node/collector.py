@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import functools
 import logging
-import os
 import platform
 import shutil
 import subprocess
 import time
 from collections.abc import Callable
-from pathlib import Path
 from typing import TypeVar
 from urllib.parse import urlparse
 
 from fleet_manager import __version__
+from fleet_manager.common.binaries import which_extended
 from fleet_manager.common.ollama_client import OllamaClient
 from fleet_manager.common.system_metrics import (
     get_cpu_metrics,
@@ -177,38 +176,11 @@ _DIFFUSIONKIT_MODELS = [
 ]
 
 
-def _which_extended(binary: str) -> str | None:
-    """Find a binary, checking common tool install paths beyond $PATH.
-
-    uv tool, pipx, and Homebrew install binaries in locations that may not
-    be in PATH when the node agent starts (e.g., via launchd, cron, or
-    Windows services).
-    """
-    found = shutil.which(binary)
-    if found:
-        return found
-    # Check common tool binary locations (platform-aware)
-    import sys
-
-    extra_dirs = [
-        Path.home() / ".local" / "bin",           # uv tool, pipx (Unix/Linux/macOS)
-    ]
-    if sys.platform == "win32":
-        local = os.environ.get("LOCALAPPDATA", "")
-        appdata = os.environ.get("APPDATA", "")
-        if local:
-            extra_dirs.append(Path(local) / "Programs" / "Python" / "Scripts")
-        if appdata:
-            extra_dirs.append(Path(appdata) / "Python" / "Scripts")
-        extra_dirs.append(Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Links")
-    else:
-        extra_dirs.append(Path("/opt/homebrew/bin"))   # Homebrew (Apple Silicon)
-        extra_dirs.append(Path("/usr/local/bin"))      # Homebrew (Intel), system
-    for d in extra_dirs:
-        candidate = d / binary
-        if candidate.exists() and candidate.is_file():
-            return str(candidate)
-    return None
+# Binary discovery lives in ``common/binaries.py`` so the collector, image
+# server, and MLX supervisor share one platform-aware resolver.  Re-exported
+# under the historical private name to keep existing callers + monkeypatch
+# targets (`fleet_manager.node.collector._which_extended`) working.
+_which_extended = which_extended
 
 
 @_ttl_cache(ttl_seconds=30.0)
@@ -449,19 +421,15 @@ async def collect_heartbeat(
     ollama: OllamaClient,
     ollama_host: str = "http://localhost:11434",
     capacity_learner=None,
-    mlx=None,  # type: ignore[no-untyped-def]
     mlx_supervisor_set=None,  # type: ignore[no-untyped-def]
     mlx_bind_host: str = "127.0.0.1",
 ) -> HeartbeatPayload:
     """Assemble a complete heartbeat payload from local system state.
 
-    ``mlx`` is the legacy single-server :class:`MlxClient`.  Kept for
-    back-compat with deploys that haven't migrated to ``FLEET_NODE_MLX_SERVERS``.
-
-    ``mlx_supervisor_set`` is the new :class:`MlxSupervisorSet`.  When
-    provided, its per-child statuses drive the heartbeat's ``mlx_servers``
-    list, replacing the legacy polling path.  See
-    ``docs/plans/mlx-backend-for-large-models.md`` and
+    ``mlx_supervisor_set`` is the :class:`MlxSupervisorSet`.  When provided,
+    its per-child statuses drive the heartbeat's ``mlx_servers`` list and each
+    healthy server's model is merged into ``models_available`` with an ``mlx:``
+    prefix.  See ``docs/plans/mlx-backend-for-large-models.md`` and
     ``docs/issues/multi-mlx-server-support.md``.
     """
     cpu = get_cpu_metrics()
@@ -484,11 +452,8 @@ async def collect_heartbeat(
         models_available = []
         requests_active = 0
 
-    # MLX backend — two paths:
-    # (1) Supervisor set (new, multi-server) drives heartbeat.mlx_servers.
-    #     Healthy servers' models get added to models_available with mlx: prefix.
-    # (2) Legacy MlxClient (single-server, back-compat) polls /v1/models and
-    #     merges the running model into models_available.
+    # MLX backend — the supervisor set drives heartbeat.mlx_servers; each
+    # healthy server's model is added to models_available with an mlx: prefix.
     mlx_server_infos: list = []
     if mlx_supervisor_set is not None:
         try:
@@ -506,6 +471,9 @@ async def collect_heartbeat(
                     kv_bits=st.kv_bits,
                     model_size_gb=st.model_size_gb,
                     last_ok_ts=st.last_ok_ts,
+                    distributed=st.distributed,
+                    backend=st.backend,
+                    node_count=st.node_count,
                 ))
             healthy_models = [
                 prefix_mlx(st.model) for st in statuses if st.status == "healthy"
@@ -518,55 +486,6 @@ async def collect_heartbeat(
         except Exception as e:  # noqa: BLE001
             logger.debug(f"MLX supervisor status collection failed: "
                          f"{type(e).__name__}: {e}")
-    elif mlx is not None:
-        try:
-            mlx_models = await mlx.get_available_models()
-            if mlx_models:
-                from urllib.parse import urlparse
-
-                from fleet_manager.models.node import MlxServerInfo
-                from fleet_manager.node.mlx_client import (
-                    get_running_mlx_model,
-                    prefix_mlx,
-                )
-
-                # CRITICAL: mlx_lm.server's /v1/models returns every model it
-                # can *find* on disk (HF cache scan), not what's actually
-                # loaded into memory.  Only the model passed as ``--model`` to
-                # the running process is resident; everything else is just
-                # discoverable.  Filter so the dashboard reports truth.
-                running = get_running_mlx_model()
-                if running:
-                    def _canon(s: str) -> str:
-                        if "/" in s and "models--" in s:
-                            for p in Path(s).parts:
-                                if p.startswith("models--"):
-                                    return p.removeprefix("models--").replace("--", "/", 1)
-                        return s
-
-                    canon_running = _canon(running)
-                    found_running = any(_canon(m) == canon_running for m in mlx_models)
-                    cleaned = [running] if found_running else []
-                else:
-                    cleaned = []
-                prefixed = [prefix_mlx(m) for m in cleaned]
-                models_available = list(models_available) + prefixed
-                # Synthesize a single-entry mlx_servers list so the router
-                # can still aggregate URLs from legacy deploys.
-                if cleaned:
-                    legacy_url = getattr(mlx, "_base_url", "") or ""
-                    parsed = urlparse(legacy_url)
-                    mlx_server_infos.append(MlxServerInfo(
-                        port=parsed.port or 11440,
-                        model=cleaned[0],
-                        status="healthy",
-                    ))
-                logger.debug(
-                    f"MLX state: +{len(prefixed)} loaded model(s) "
-                    f"({', '.join(prefixed) if prefixed else 'none — server not running'})"
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"MLX polling failed: {type(e).__name__}: {e}")
 
     # Run capacity learner observation if enabled
     capacity = None

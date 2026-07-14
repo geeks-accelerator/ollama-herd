@@ -574,3 +574,36 @@ freedom from Ollama's 3-model cap indefinitely.
 **Fix**: Backfilled v0.6.0–v0.7.0 as GitHub releases (2026-07-11) with full CHANGELOG bodies as release notes. Added step 12 to the release checklist: `git tag -a vX.Y.Z HEAD`, `git push origin vX.Y.Z`, `gh release create` with notes extracted from CHANGELOG. The step is placed between PyPI verification and the Homebrew tap bump, with a note explaining why it matters for discoverability.
 
 **Insight**: The GitHub releases page is the public face of the project's activity — it's what a prospective user, contributor, or integration partner sees when evaluating whether a project is alive. A project can be shipping high-quality work continuously while appearing completely dormant to the outside world if that work isn't surfaced through the release mechanism the platform provides. Checklist-driven release processes have a blind spot: they only enforce what's listed. Any distribution surface not represented by a numbered step will eventually fall behind when someone follows the checklist under time pressure. The fix is to represent every surface explicitly — not to rely on the releaser remembering.
+
+---
+
+## 2026-07-13 — Apple JACCL distributed MLX: asymmetric fleet (512GB + 128GB) has limited tensor-parallel benefit
+
+**Evidence**: WWDC26 session 233 ("Explore distributed inference and training with MLX") + community benchmarks. Apple demonstrated 3× inference speedup on 4× M3 Ultra (512GB each) running Kimi K2.6 (1T param) via JACCL tensor parallelism. Setup: RDMA over Thunderbolt 5, macOS 26.2+, MLX 0.32.0, `MLX_METAL_FAST_SYNCH=1`.
+
+**Key technical constraint**: Tensor parallelism splits model layers evenly across all nodes. The bottleneck is the **smallest node** — with 512GB + 128GB nodes, the effective tensor-parallel capacity is `2 × 128GB = 256GB`, smaller than the Mac Studio alone. Memory savings only come from pipeline parallelism (no inference speedup) or from adding a second identically-sized node.
+
+**Fleet-specific takeaways**:
+1. **Immediate value**: The Mac Studio alone already runs all current flagship models at Q4 (Kimi K2.6 ~500GB, Qwen3.5 ~214GB, etc.). The 128GB MacBook Pro adds asymmetric memory that tensor-parallelism can't efficiently use.
+2. **EXO over LAN (pipeline)**: For loading models in the 512–640GB range that exceed Mac Studio capacity, EXO's pipeline parallelism over Ethernet works without Recovery mode or cables. The trade-off: zero inference speedup, just memory expansion.
+3. **JACCL becomes compelling** with a second M3 Ultra (512+512=1TB): Kimi K2.6 INT8 (~1TB) runs at 28+ tok/s with tensor parallelism and 1 TB5 cable.
+4. **RDMA setup gotcha**: enabling RDMA requires physical access (macOS Recovery, `rdma_ctl enable`). Cannot be done remotely. Must be done at each machine independently before the first cluster launch.
+5. **`MLX_METAL_FAST_SYNCH=1` is mandatory**: without it, inference is 5–6× slower on JACCL clusters. Set in `mlx.launch` environment, not just the shell.
+
+**Integration path with herd**: Transparent. Run `mlx_lm.server` behind `mlx.launch --hostfile cluster.json` and expose it on the normal port. The herd `MlxSupervisor` registers it as any other MLX server. Distributed cluster management is external to the herd.
+
+**Insight**: Distributed ML inference speedup (vs memory pooling) requires symmetric node memory for tensor parallelism. Asymmetric pairs are better served by pipeline parallelism for memory expansion, or by EXO which handles asymmetry more naturally. The 3× WWDC number applies to 4× identical-capacity nodes — the real-world number for a 2-node asymmetric pair via tensor parallelism is closer to 1.5–1.8× on models small enough to fit the smaller node's shard.
+
+Full research doc: `docs/research/apple-distributed-mlx-jaccl-2026.md`
+
+---
+
+## 2026-07-13 — MLX supervisor polled `http://0.0.0.0` for health when bind host was `0.0.0.0`
+
+**Evidence**: While auditing the codebase ahead of the distributed-MLX work, found that `MlxSupervisor.base_url` was built as `f"http://{self.host}:{self.port}"` and used for *both* the `mlx_lm.server --host` bind flag and every local health poll / warmup request. `self.host` comes from `FLEET_NODE_MLX_BIND_HOST` — and `registry.resolve_mlx_url`'s own docstring instructs operators to set `FLEET_NODE_MLX_BIND_HOST=0.0.0.0` for multi-node MLX aggregation. So any multi-node deploy was polling `http://0.0.0.0:<port>/v1/models` for health. On macOS a client connect to `0.0.0.0` often falls through to loopback, so it "worked" by accident — but it's not a valid connect target and is unreliable/wrong across platforms. A latent bug hiding behind platform leniency, never surfaced because the local fleet historically bound loopback.
+
+**Root cause**: One field (`self.host`) served two distinct roles — the address to *bind* (must be `0.0.0.0` for LAN/distributed) and the address to *dial for health* (must be a concrete loopback). They only coincide when binding loopback.
+
+**Fix**: Added `MlxSupervisor.health_host` — returns `127.0.0.1` when `self.host` is a wildcard bind (`""`, `0.0.0.0`, `::`, `*`), else the concrete host. `base_url` now uses `health_host`; the `--host` flag still carries the real bind. Rank-0 is always local to the node, so loopback is always correct for polling. Startup log now shows `(bind 0.0.0.0, health-poll 127.0.0.1)` when they differ, so operators can see the distinction. Regression tests lock both the wildcard-fallback and concrete-host cases. Fixed as groundwork for `docs/plans/distributed-mlx-inference.md` (distributed mode *requires* a `0.0.0.0` bind, which would have made this bug mandatory).
+
+**Insight**: When one variable encodes two roles that usually have the same value, the divergent case is a latent bug that waits for the configuration that splits them. "Bind address" and "health-probe address" look identical until you expose a service on the LAN. Grep for fields used in both a server's bind path and a client's connect path — they should almost always be separate. Adjacent cleanup shipped the same day: node MLX config consolidated to the single `FLEET_NODE_MLX_SERVERS` surface (legacy `mlx_auto_start_model` / poll-only `MlxClient` paths removed), and binary discovery unified into `common/binaries.py::which_extended` (was three near-duplicate copies across collector, image server, and the MLX supervisor).
