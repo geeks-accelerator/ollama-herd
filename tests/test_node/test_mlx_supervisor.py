@@ -8,6 +8,7 @@ handling, and graceful-stop behavior with mocked subprocesses.
 
 from __future__ import annotations
 
+import socket
 import subprocess
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ from fleet_manager.node.mlx_supervisor import (
     MlxSupervisor,
     find_mlx_launch_binary,
     find_mlx_lm_binary,
+    port_is_bindable,
 )
 
 # ---------------------------------------------------------------------------
@@ -106,6 +108,63 @@ def test_base_url_falls_back_to_loopback_for_wildcard_bind():
     assert "--host" in sup._build_cmd("mlx_lm.server")
     cmd = sup._build_cmd("mlx_lm.server")
     assert cmd[cmd.index("--host") + 1] == "0.0.0.0"
+
+
+# ---------------------------------------------------------------------------
+# Port-release wait — avoids the EADDRINUSE restart churn after a SIGKILL
+# ---------------------------------------------------------------------------
+
+
+def test_port_is_bindable_false_while_held_true_when_free():
+    # Hold an OS-assigned port with our own socket (no SO_REUSEADDR).
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.bind(("127.0.0.1", 0))
+    port = holder.getsockname()[1]
+    try:
+        assert port_is_bindable("127.0.0.1", port) is False
+    finally:
+        holder.close()
+    # Freed now.
+    assert port_is_bindable("127.0.0.1", port) is True
+
+
+def test_port_is_bindable_maps_wildcard_hosts():
+    # Wildcard bind hosts probe 0.0.0.0 without raising.
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.bind(("0.0.0.0", 0))
+    port = holder.getsockname()[1]
+    try:
+        for wildcard in ("0.0.0.0", "", "*"):
+            assert port_is_bindable(wildcard, port) is False, wildcard
+    finally:
+        holder.close()
+
+
+_PORT_BINDABLE = "fleet_manager.node.mlx_supervisor.port_is_bindable"
+
+
+@pytest.mark.asyncio
+async def test_wait_port_free_returns_true_when_free():
+    sup = MlxSupervisor(model="m", port=11440)
+    with patch(_PORT_BINDABLE, return_value=True):
+        assert await sup._wait_port_free(timeout=1.0) is True
+
+
+@pytest.mark.asyncio
+async def test_wait_port_free_times_out_when_occupied():
+    sup = MlxSupervisor(model="m", port=11440)
+    # Never bindable → returns False after the (short) timeout, doesn't hang.
+    with patch(_PORT_BINDABLE, return_value=False):
+        assert await sup._wait_port_free(timeout=0.5) is False
+
+
+@pytest.mark.asyncio
+async def test_wait_port_free_honors_stop_event():
+    sup = MlxSupervisor(model="m", port=11440)
+    sup._stop.set()
+    with patch(_PORT_BINDABLE, return_value=False):
+        # Stop already set → bail immediately regardless of port state.
+        assert await sup._wait_port_free(timeout=5.0) is False
 
 
 # ---------------------------------------------------------------------------

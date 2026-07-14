@@ -43,6 +43,16 @@ _HEALTH_POLL_TIMEOUT = 120.0  # 2 min — big MLX models can take a while to mma
 _BACKOFF_INITIAL = 1.0
 _BACKOFF_MAX = 60.0
 
+# After a crash (esp. SIGKILL), the port isn't always immediately re-bindable:
+# lingering TIME_WAIT entries from the 5s health-check connections can hold it
+# for a moment, so the next mlx_lm.server bind hits EADDRINUSE, fails, and the
+# supervisor churns through an extra restart cycle.  Before re-spawning we poll
+# until the port is actually bindable (or this timeout elapses, after which we
+# spawn anyway and let the health check surface the real state).  See the
+# 2026-07-13 observation on port-release-wait hardening.
+_PORT_FREE_POLL_INTERVAL = 0.25
+_PORT_FREE_TIMEOUT = 10.0
+
 # Quarantine threshold — if mlx_lm.server crashes this many times within
 # a short window, we stop trying to restart at the normal cadence and
 # back off to the quarantine interval below.  Without this, a persistent
@@ -190,6 +200,33 @@ def available_memory_gb() -> float:
     except Exception as exc:  # noqa: BLE001
         logger.debug(f"available_memory_gb failed: {type(exc).__name__}: {exc}")
         return 0.0
+
+
+def port_is_bindable(host: str, port: int) -> bool:
+    """Return True if a fresh TCP socket can bind ``(host, port)`` right now.
+
+    Mirrors the bind ``mlx_lm.server`` itself will attempt — a plain ``bind()``
+    with **no** ``SO_REUSEADDR`` — so a True result means the child's bind will
+    succeed too.  After a SIGKILL, TIME_WAIT entries left by the health-check
+    connections can briefly hold the port; probing lets the supervisor wait the
+    kernel out instead of eating an EADDRINUSE restart cycle.
+
+    Never raises — any unexpected error returns ``True`` (don't block a spawn on
+    a probe failure; let the real bind surface it).
+    """
+    import socket
+
+    bind_host = "0.0.0.0" if host in ("", "0.0.0.0", "*") else host
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((bind_host, port))
+        return True
+    except OSError:
+        return False
+    except Exception:  # noqa: BLE001 — probe must never block the spawn path
+        return True
+    finally:
+        s.close()
 
 
 def memory_gate_ok(
@@ -529,6 +566,27 @@ class MlxSupervisor:
         if not self.is_distributed:
             return inner
         return self._launch_prefix() + inner
+
+    async def _wait_port_free(self, timeout: float = _PORT_FREE_TIMEOUT) -> bool:
+        """Poll until the configured port is bindable, or ``timeout`` elapses.
+
+        Called before a (re)spawn so the child's bind doesn't race a port the
+        kernel hasn't released yet after a crash/SIGKILL.  Returns True if the
+        port came free, False on timeout (caller spawns anyway — the health
+        check will surface a genuine bind failure).  Honors the stop event.
+        """
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if self._stop.is_set():
+                return False
+            if port_is_bindable(self.host, self.port):
+                return True
+            await asyncio.sleep(_PORT_FREE_POLL_INTERVAL)
+        logger.warning(
+            "mlx_lm.server(port=%d) port still occupied after %.0fs wait; "
+            "spawning anyway.", self.port, timeout,
+        )
+        return False
 
     async def _wait_healthy(self, timeout: float = _HEALTH_POLL_TIMEOUT) -> bool:
         """Poll ``GET /v1/models`` until it returns 200 or timeout expires."""
@@ -880,6 +938,12 @@ class MlxSupervisor:
                 logger.error("mlx_lm.server binary disappeared; giving up on restart")
                 self._status = "stopped"
                 self._status_reason = "binary disappeared"
+                return
+            # Wait out any lingering hold on the port from the just-crashed
+            # process (TIME_WAIT after SIGKILL) so the child's bind doesn't
+            # eat an EADDRINUSE and force another restart cycle.
+            await self._wait_port_free()
+            if self._stop.is_set():
                 return
             try:
                 self._proc = subprocess.Popen(
