@@ -7,8 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-14
+
+Distributed MLX inference — run one model across multiple Macs — plus a consolidation of the MLX config surface down to a single `FLEET_NODE_MLX_SERVERS` array. A `mlx_lm.server` can now be wrapped in `mlx.launch` so rank 0 serves HTTP while peer ranks hold shards; the herd sees one endpoint whether one Mac or four are behind it. The `ring` backend works over plain LAN today (memory pooling via pipeline parallelism); the `jaccl` backend targets RDMA over Thunderbolt 5 for tensor-parallel speedup. This release also removes the legacy single-server MLX env vars (see **Removed** — breaking) and fixes a latent bug where a `0.0.0.0` bind made health checks dial `http://0.0.0.0`.
+
+### Added
+
+- **Distributed MLX inference.** `FLEET_NODE_MLX_SERVERS` entries gain four optional keys: `backend` (`ring`\|`jaccl`\|`mpi`), `hosts` (comma-separated peer IPs — the node prepends its own; `ring` only), `hostfile` (path to a JSON hostfile — `jaccl`/`mpi`), and `pipeline` (`true` = pipeline parallelism for memory pooling, `false` = tensor). The supervisor wraps the inner `mlx_lm.server` in `mlx.launch --backend … --env MLX_METAL_FAST_SYNCH=1 --no-verify-script -- …`; `MLX_METAL_FAST_SYNCH=1` is passed via `--env` so it reaches remote ranks. The whole-model memory gate is skipped for distributed servers (each node holds only a shard). See `docs/plans/distributed-mlx-inference.md` and `docs/guides/testing-distributed-mlx.md`.
+- **Distributed status on the dashboard.** `MlxServerInfo` heartbeat fields gain `distributed`, `backend`, and `node_count`; the "Node Models" card renders a `backend · N nodes` chip per distributed server. Fields default back-compatibly so heartbeats from older agents still parse.
+
+### Changed
+
+- **`FLEET_NODE_MLX_SERVERS` is now the single node MLX config surface.** A single-model deploy is a one-entry array: `[{"model":"…","port":11440}]`. Optional per-entry keys: `kv_bits`, `prompt_cache_size`, `prompt_cache_bytes`, `draft_model`, `num_draft_tokens`, plus the distributed keys above.
+- **Binary discovery unified into `common/binaries.py::which_extended`.** The collector, image server, and MLX supervisor previously carried three near-duplicate copies; `find_mlx_lm_binary` / `find_mlx_launch_binary` now wrap the shared helper (which also fixes the supervisor's Windows fallback gap).
+
+### Removed
+
+- **Legacy single-server MLX env vars (breaking).** `FLEET_NODE_MLX_AUTO_START`, `FLEET_NODE_MLX_AUTO_START_MODEL`, `FLEET_NODE_MLX_URL`, `FLEET_NODE_MLX_KV_BITS`, `FLEET_NODE_MLX_PROMPT_CACHE_SIZE/BYTES`, `FLEET_NODE_MLX_DRAFT_MODEL`, and `FLEET_NODE_MLX_NUM_DRAFT_TOKENS` are gone, along with the poll-only `MlxClient` heartbeat path. Migrate to a one-entry `FLEET_NODE_MLX_SERVERS` array (the internal `FLEET_*` vars, `~/.fleet-manager/`, and the `herd`/`herd-node` CLI are unchanged). The server-side `FLEET_MLX_URL` proxy fallback and `FLEET_MLX_ENABLED` remain.
+
 ### Fixed
 
+- **`0.0.0.0` bind no longer breaks MLX health polling.** `MlxSupervisor` built its health-poll URL from the bind host, so setting `FLEET_NODE_MLX_BIND_HOST=0.0.0.0` (required for multi-node aggregation and distributed rank-0) made it poll `http://0.0.0.0/v1/models` — not a valid connect target. Health polling now always dials loopback (`health_host`), while `--host` still carries the real bind.
+- **Port-release wait before MLX respawn.** After a `SIGKILL`, TIME_WAIT entries from the 5s health-check connections could briefly hold the port; the 1s-later respawn then hit `EADDRINUSE` and burned an extra restart cycle. The supervisor now polls until the port is bindable (10s cap, honors shutdown) before spawning.
+- **`--kv-bits` preflight only gates when quantization is requested.** The check fired for every start (the condition was always-true on an int), so stock/unpatched `mlx_lm.server` couldn't serve even `f16` (`kv_bits=0`). Now it only requires the patch when `kv_bits` is `4` or `8` — important for distributed peer nodes that don't run the patch.
 - **Embedding sidecar bind failure no longer crashes the whole node.** When the native text (port 11439) or vision (port 11438) embedding server couldn't bind its port — e.g. a restart race where the previous `herd-node` hadn't released the port yet — uvicorn's `sys.exit(1)` raised a `SystemExit` that escaped the fire-and-forget `asyncio.create_task(server.serve())` and propagated out of the event loop, exiting the entire node process (heartbeats, LAN proxy, and LLM routing all died with it). The sidecars now bind their socket eagerly during setup via a shared `_bind_sidecar_socket()` helper: a port conflict surfaces as a catchable `OSError`, the node logs `… embedding server port … unavailable — … disabled; node continues serving`, sets the port to `0`, and keeps running. The pre-bound socket is handed to `Server.serve(sockets=[sock])`, and the "started" log now fires only after a confirmed bind (previously it logged success before the async bind actually happened). An optional embedding capability failing to grab its port must degrade only itself, not core inference routing. See `docs/issues/embedding-sidecar-bind-failure-crashes-node.md`.
 
 ## [0.7.0] - 2026-06-07
