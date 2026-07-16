@@ -7,6 +7,7 @@ and evicting gpt-oss:120b every router restart.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,6 +15,7 @@ import pytest
 from fleet_manager.server.model_preloader import (
     _estimate_model_size,
     _model_is_loaded_anywhere,
+    _model_resident_on_node,
     _nodes_with_model_on_disk,
     _parse_pinned_models,
 )
@@ -43,8 +45,18 @@ def test_parse_pinned_models_drops_empties():
     assert _parse_pinned_models("a,,b,") == ["a", "b"]
 
 
-def _node(name: str, loaded_models: list[str], disk_models: list[str], mem_gb: float = 100.0):
-    """Build a mock node for the loaded/disk checks."""
+def _node(
+    name: str,
+    loaded_models: list[str],
+    disk_models: list[str],
+    mem_gb: float = 100.0,
+    mlx_servers: list[tuple[str, str]] | None = None,
+):
+    """Build a mock node for the loaded/disk checks.
+
+    ``mlx_servers`` is a list of ``(model, status)`` tuples → per-server
+    residency for the MLX branch of ``_model_resident_on_node``.
+    """
     n = MagicMock()
     n.node_id = name
     n.ollama = MagicMock()
@@ -56,6 +68,11 @@ def _node(name: str, loaded_models: list[str], disk_models: list[str], mem_gb: f
     n.ollama.models_available = list(disk_models)
     n.memory = MagicMock()
     n.memory.available_gb = mem_gb
+    # Default to an empty list (not a MagicMock) so the MLX branch can iterate.
+    n.mlx_servers = [
+        SimpleNamespace(model=model, status=status)
+        for model, status in (mlx_servers or [])
+    ]
     return n
 
 
@@ -70,6 +87,99 @@ def test_model_is_loaded_anywhere_true():
 def test_model_is_loaded_anywhere_false():
     nodes = [_node("A", loaded_models=["other:1b"], disk_models=["foo:1b"])]
     assert _model_is_loaded_anywhere("foo:1b", nodes) is False
+
+
+# ----------------------------------------------------------------------------
+# _model_resident_on_node — Ollama + MLX residency (fleet-pin-readiness)
+# ----------------------------------------------------------------------------
+
+
+def test_model_resident_on_node_ollama_loaded():
+    node = _node("A", loaded_models=["foo:1b"], disk_models=["foo:1b"])
+    assert _model_resident_on_node("foo:1b", node) is True
+    assert _model_resident_on_node("bar:7b", node) is False
+
+
+def test_model_resident_on_node_mlx_healthy():
+    # MLX names carry the mlx: prefix in the request; the server list stores
+    # them stripped — the helper must reconcile that.
+    node = _node(
+        "A", loaded_models=[], disk_models=[],
+        mlx_servers=[("some/Model-4bit", "healthy")],
+    )
+    assert _model_resident_on_node("mlx:some/Model-4bit", node) is True
+
+
+def test_model_resident_on_node_mlx_not_healthy_is_false():
+    node = _node(
+        "A", loaded_models=[], disk_models=[],
+        mlx_servers=[("some/Model-4bit", "starting")],
+    )
+    assert _model_resident_on_node("mlx:some/Model-4bit", node) is False
+
+
+def test_model_resident_on_node_absent():
+    node = _node("A", loaded_models=[], disk_models=[], mlx_servers=[])
+    assert _model_resident_on_node("foo:1b", node) is False
+    assert _model_resident_on_node("mlx:some/Model-4bit", node) is False
+
+
+def test_model_is_loaded_anywhere_includes_mlx():
+    # Regression: the refactor routes _model_is_loaded_anywhere through
+    # _model_resident_on_node, so a healthy MLX server now counts as loaded.
+    nodes = [
+        _node("A", loaded_models=[], disk_models=[]),
+        _node("B", loaded_models=[], disk_models=[],
+              mlx_servers=[("some/Model-4bit", "healthy")]),
+    ]
+    assert _model_is_loaded_anywhere("mlx:some/Model-4bit", nodes) is True
+
+
+# ----------------------------------------------------------------------------
+# _wait_until_resident — deadline-poll on the residency signal
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_wait_until_resident_true_when_model_appears(monkeypatch):
+    import fleet_manager.server.model_preloader as mp
+    monkeypatch.setattr(mp, "_RESIDENCY_POLL_INTERVAL", 0.001)
+    calls = {"n": 0}
+
+    def get_node(_node_id):
+        calls["n"] += 1
+        loaded = ["foo:1b"] if calls["n"] >= 3 else []  # flips resident on 3rd poll
+        return _node("A", loaded_models=loaded, disk_models=["foo:1b"])
+
+    registry = MagicMock()
+    registry.get_node = get_node
+    ready, elapsed_ms = await mp._wait_until_resident(registry, "A", "foo:1b", timeout_s=5)
+    assert ready is True
+    assert calls["n"] >= 3
+    assert isinstance(elapsed_ms, int)
+
+
+@pytest.mark.asyncio
+async def test_wait_until_resident_times_out(monkeypatch):
+    import fleet_manager.server.model_preloader as mp
+    monkeypatch.setattr(mp, "_RESIDENCY_POLL_INTERVAL", 0.001)
+    registry = MagicMock()
+    registry.get_node = lambda _nid: _node("A", loaded_models=[], disk_models=["foo:1b"])
+    ready, elapsed_ms = await mp._wait_until_resident(registry, "A", "foo:1b", timeout_s=0.02)
+    assert ready is False
+    assert isinstance(elapsed_ms, int)
+
+
+@pytest.mark.asyncio
+async def test_wait_until_resident_none_node_waits_anywhere(monkeypatch):
+    import fleet_manager.server.model_preloader as mp
+    monkeypatch.setattr(mp, "_RESIDENCY_POLL_INTERVAL", 0.001)
+    registry = MagicMock()
+    registry.get_online_nodes = lambda: [
+        _node("A", loaded_models=["foo:1b"], disk_models=["foo:1b"]),
+    ]
+    ready, _ = await mp._wait_until_resident(registry, None, "foo:1b", timeout_s=5)
+    assert ready is True
 
 
 def test_nodes_with_model_on_disk_filters_correctly():

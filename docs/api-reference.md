@@ -1734,10 +1734,39 @@ absorb just produces `429`s (or Ollama queue-full 503s) — read this first.
 
 ### `POST /fleet/pin`
 Pre-warm a model resident **and** persist the pin (reloaded if evicted).
-Body: `{"model": "<name>", "node_id": "<optional>"}`. One call replaces the
-manual `ollama … keep_alive` dance. Returns `404` if the model isn't on disk
-on any online node. Pin the model you're benchmarking, then send requests
-serially against it (`X-Fleet-Fallback: false` confirms it actually ran).
+Body: `{"model": "<name>", "node_id": "<optional>", "wait": <bool>, "timeout_s": <float>}`.
+One call replaces the manual `ollama … keep_alive` dance. Returns `404` if the
+model isn't on disk on any online node.
+
+**`wait` (default `false`)** — when `true`, the call blocks until the router's
+routing view confirms the model **resident** before returning, so a caller that
+pins-then-scans doesn't race the heartbeat and get fallback-substituted. The
+pre-warm itself already blocks through the Ollama load; `wait` additionally
+waits out the heartbeat-reflection lag (~5s, the window where the model is
+loaded but routing hasn't seen it yet). `timeout_s` (default `30`) caps that
+wait. Response adds `"ready": true|false` and `"ready_after_ms": <int>`. On
+timeout, `ready: false` (the model may still become resident shortly — the
+client learns the truth instead of racing).
+
+```jsonc
+// POST /fleet/pin  {"model": "qwen3-coder:30b", "wait": true}
+{
+  "ok": true,
+  "model": "qwen3-coder:30b",
+  "pinned_node": "mac-studio",
+  "ready": true,
+  "ready_after_ms": 2140,
+  "per_node": { … }
+}
+```
+
+**`mlx:` models** are always-resident subprocesses (configured via
+`FLEET_NODE_MLX_SERVERS`), so pinning is a no-op: the call skips warming and
+reports `ready` from the MLX server's health, with an explanatory `note`.
+
+Pin the model you're benchmarking (use `wait: true` to drop your own readiness
+loop), then send requests serially against it (`X-Fleet-Fallback: false`
+confirms it actually ran).
 
 ### `DELETE /fleet/pin/{model}`
 Release a pin so the model can be evicted normally. The `{model}` path segment

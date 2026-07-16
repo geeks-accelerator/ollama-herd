@@ -37,6 +37,7 @@ import logging
 import time
 
 from fleet_manager.models.config import ServerSettings
+from fleet_manager.server.mlx_proxy import is_mlx_model, strip_mlx_prefix
 from fleet_manager.server.model_knowledge import lookup_model
 from fleet_manager.server.pinned_models import PinnedModelsStore
 from fleet_manager.server.registry import NodeRegistry
@@ -49,6 +50,11 @@ logger = logging.getLogger(__name__)
 _priority_cache: list[dict] = []
 _priority_cache_time: float = 0
 _CACHE_TTL = 300  # 5 minutes
+
+# Seconds between registry residency polls in _wait_until_resident.  The
+# limiting factor is heartbeat_interval (~5s) — models_loaded only refreshes
+# then — so a sub-second interval would just spin.
+_RESIDENCY_POLL_INTERVAL = 1.0
 
 
 async def get_cached_priorities(trace_store: TraceStore) -> list[dict]:
@@ -101,12 +107,61 @@ def _parse_pinned_models(setting: str) -> list[str]:
     return [m.strip() for m in (setting or "").split(",") if m.strip()]
 
 
-def _model_is_loaded_anywhere(model: str, nodes) -> bool:
-    """True if any online node has the model currently hot."""
-    return any(
-        n.ollama and model in [m.name for m in n.ollama.models_loaded]
-        for n in nodes
+def _model_resident_on_node(model: str, node) -> bool:
+    """True if ``node`` currently has ``model`` resident and serving.
+
+    Covers both backends: Ollama (``models_loaded``) and MLX (``mlx_servers``
+    entry with a ``healthy`` status — MLX names carry the ``mlx:`` prefix,
+    which the server list stores stripped).  This is the SAME residency the
+    scorer gates on ([scorer.py](scorer.py) reads ``models_loaded``), so
+    "resident here" ⇒ routing won't fall back for it.
+    """
+    if is_mlx_model(model):
+        target = strip_mlx_prefix(model)
+        return any(
+            s.model == target and s.status == "healthy"
+            for s in (node.mlx_servers or [])
+        )
+    return bool(
+        node.ollama and model in [m.name for m in node.ollama.models_loaded]
     )
+
+
+def _model_is_loaded_anywhere(model: str, nodes) -> bool:
+    """True if any online node has the model currently resident."""
+    return any(_model_resident_on_node(model, n) for n in nodes)
+
+
+async def _wait_until_resident(
+    registry, node_id: str | None, model: str, timeout_s: float,
+) -> tuple[bool, int]:
+    """Poll the registry until ``model`` is resident, or ``timeout_s`` elapses.
+
+    Mirrors the deadline-poll idiom in ``mlx_supervisor`` (``_wait_healthy``).
+    The signal watched is the same ``models_loaded`` / healthy ``mlx_servers``
+    the scorer gates on, so once this returns ``True`` the router won't fall
+    back for the model.  ``pre_warm`` already blocks through the actual Ollama
+    load, so this only waits out the heartbeat-reflection lag
+    (``heartbeat_interval``, ~5s) — hence a short default timeout upstream.
+
+    ``node_id=None`` waits for the model to appear on ANY online node (used
+    when the pin didn't target a specific node); otherwise it polls that node.
+    Returns ``(ready, elapsed_ms)``.
+    """
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    deadline = start + timeout_s
+    while True:
+        if node_id is None:
+            resident = _model_is_loaded_anywhere(model, registry.get_online_nodes())
+        else:
+            node = registry.get_node(node_id)
+            resident = node is not None and _model_resident_on_node(model, node)
+        if resident:
+            return True, int((loop.time() - start) * 1000)
+        if loop.time() >= deadline:
+            return False, int((loop.time() - start) * 1000)
+        await asyncio.sleep(_RESIDENCY_POLL_INTERVAL)
 
 
 def _nodes_with_model_on_disk(model: str, nodes):

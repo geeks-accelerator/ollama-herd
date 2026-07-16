@@ -87,22 +87,60 @@ async def fleet_pin(request: Request):
     """Pin a model resident: pre-warm it now (evicting the LRU if needed) and
     persist the pin so the preloader keeps it warm if it's later evicted.
 
-    Body: ``{"model": "<name>", "node_id": "<optional>"}``.  Reuses the same
-    ``PinnedModelsStore`` + ``model_preloader`` machinery as the dashboard —
-    this is the one-call replacement for the manual ``curl :11434 keep_alive``
-    dance a benchmark otherwise needs.
+    Body: ``{"model": "<name>", "node_id": "<optional>", "wait": <bool>,
+    "timeout_s": <float>}``.  Reuses the same ``PinnedModelsStore`` +
+    ``model_preloader`` machinery as the dashboard — this is the one-call
+    replacement for the manual ``curl :11434 keep_alive`` dance a benchmark
+    otherwise needs.
+
+    ``wait=true`` blocks until the router's routing view confirms the model
+    resident (``models_loaded`` / healthy ``mlx_servers``) before returning,
+    so a caller that pins-then-uses doesn't race the heartbeat and get
+    fallback-substituted.  See ``docs/plans/fleet-pin-readiness.md``.
     """
-    from fleet_manager.server.model_preloader import _load_model_on_best_node
+    from fleet_manager.server.mlx_proxy import is_mlx_model, strip_mlx_prefix
+    from fleet_manager.server.model_preloader import (
+        _load_model_on_best_node,
+        _model_resident_on_node,
+        _wait_until_resident,
+    )
 
     body = await request.json()
     model = (body.get("model") or "").strip()
     node_id = (body.get("node_id") or "").strip() or None
+    wait = bool(body.get("wait", False))
+    timeout_s = float(body.get("timeout_s", 30))
     if not model:
         return JSONResponse({"ok": False, "error": "model required"}, status_code=400)
 
     registry = request.app.state.registry
     proxy = request.app.state.streaming_proxy
     store = request.app.state.pinned_store
+
+    # MLX models are always-resident subprocesses configured via
+    # FLEET_NODE_MLX_SERVERS — they can't be loaded on demand, so pinning is a
+    # no-op.  Report readiness from mlx_servers health instead of warming
+    # (pre_warm would POST to Ollama and 404).
+    if is_mlx_model(model):
+        target = strip_mlx_prefix(model)
+        ready_node = None
+        for n in registry.get_online_nodes():
+            if any(
+                s.model == target and s.status == "healthy"
+                for s in (n.mlx_servers or [])
+            ):
+                ready_node = n.node_id
+                break
+        return {
+            "ok": True,
+            "model": model,
+            "pinned_node": ready_node,
+            "ready": ready_node is not None,
+            "note": (
+                "MLX models are always resident (configured via "
+                "FLEET_NODE_MLX_SERVERS); pin is a no-op."
+            ),
+        }
 
     loaded = await _load_model_on_best_node(
         model, registry.get_online_nodes(), proxy,
@@ -119,16 +157,33 @@ async def fleet_pin(request: Request):
             status_code=404,
         )
 
+    # Optionally wait for the router's residency view to catch up.  pre_warm
+    # already blocked through the actual Ollama load, so this only waits out
+    # the heartbeat-reflection lag.  Doing it BEFORE resolving pin_node also
+    # fixes a persistence race: when node_id is omitted and the heartbeat
+    # hasn't landed, the scan below would find no node and the pin would
+    # silently not persist.
+    ready: bool | None = None
+    ready_after_ms: int | None = None
+    if wait:
+        ready, ready_after_ms = await _wait_until_resident(
+            registry, node_id, model, timeout_s,
+        )
+
     # Persist the pin on whichever node now holds it (so the preloader
     # reloads it if evicted).  Prefer the requested node.
     pin_node = node_id
     if pin_node is None:
         for n in registry.get_all_nodes():
-            if n.ollama and any(m.name == model for m in n.ollama.models_loaded):
+            if _model_resident_on_node(model, n):
                 pin_node = n.node_id
                 break
     per_node = store.set_pin(pin_node, model, True) if pin_node else store.load()
-    return {"ok": True, "model": model, "pinned_node": pin_node, "per_node": per_node}
+    resp = {"ok": True, "model": model, "pinned_node": pin_node, "per_node": per_node}
+    if wait:
+        resp["ready"] = bool(ready)
+        resp["ready_after_ms"] = ready_after_ms
+    return resp
 
 
 @router.delete("/fleet/pin/{model:path}")
