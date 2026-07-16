@@ -4,6 +4,7 @@
 **Severity:** Medium — affects model selection / benchmarking; no correctness impact
 **Discovered:** 2026-07-15, during a Tier-0 model benchmark on the local fleet
 **Upstream:** [ollama/ollama#14045 — "glm-4.7-flash is slow and uses a lot of cpu"](https://github.com/ollama/ollama/issues/14045)
+**See also:** [`docs/research/mlx-vs-ollama-adoption-2026.md`](../research/mlx-vs-ollama-adoption-2026.md) §"Why new architectures land faster on MLX" — the structural reason this class of bug hits Ollama first
 
 ---
 
@@ -31,6 +32,19 @@ glm matches the **dense** 27B, not the **3B-active** MoE it actually is → Olla
 3. **(Prefill + variance) 202,752 default context + contention.** The model defaults to a **198 K** context window → giant KV allocation → **51 s average TTFT** for 13 K prompts (qwen: 4.8 s), and it feeds the CPU-offload. Sharing the box with concurrent `gpt-oss:120b` traffic produced wild variance (one request hit a **175 s TTFT**; decode swung 10→42 tok/s purely on prompt size — 7.4 K prompt → 42.6 tok/s, 13 K → 10.6).
 
 Wall-clock ≈ [9× tokens] × [4× slower/token from the Ollama bug] × [51 s prefill + contention].
+
+## Why this hits Ollama first (despite the much bigger community)
+
+Counterintuitive, but the asymmetry is structural — Ollama's larger community does **not** translate into faster support for brand-new architectures like `glm4_moe_lite`. The premise is also not "MLX works, Ollama doesn't": stock `mlx-lm` has its own open issue for this exact arch ([ml-explore/mlx-lm#806](https://github.com/ml-explore/mlx-lm/issues/806) — `Model type glm4_moe_lite not supported`). The real difference is **iteration speed and the barrier to a correct implementation**, driven by four factors:
+
+1. **Ollama's community is downstream, not upstream.** Its ~9M developers build apps and integrations (Open WebUI, LangChain, agents), not inference kernels. The model-execution code lives in **llama.cpp/GGML** (a small circle of C++/Metal experts) and Ollama's own Go engine (a 14-person company). A million users filing "it's slow" doesn't add kernel engineers.
+2. **Adding an architecture is far cheaper in MLX.** In MLX it's often a **single Python file** (~200–400 lines defining the forward pass), which the model vendor or the mlx-community can write in days. In llama.cpp/GGML it needs new **C++/Metal kernels**, GGUF conversion, quantization compatibility, and — for MoE — correct expert-routing kernels. Much higher barrier, much smaller pool.
+3. **MoE is the specific crux.** The GLM bug isn't "won't run" — it runs at *dense* speed because the sparse-MoE kernel is wrong (executing ~30B params instead of gathering the ~3B active). Correct sparse-MoE execution is one of the hardest things to get right in a low-level kernel; MLX's array framework expresses expert-gather more naturally, so novel MoE variants tend to work there sooner.
+4. **Vendors ship MLX weights first.** Chinese labs (Zhipu/zai-org, Alibaba, DeepSeek) increasingly release or bless MLX conversions on day one because the porting cost is trivial ([lmstudio-community](https://huggingface.co/lmstudio-community/GLM-4.7-Flash-MLX-4bit), [mlx-community](https://huggingface.co/mlx-community/glm-4.7-flash-abliterated-8bit)). GGUF support waits on llama.cpp maintainers to reverse-engineer and kernel-ify the architecture.
+
+**One-sentence version:** Ollama's community is huge at the *application* layer, but new-model support is bottlenecked at the *kernel* layer (llama.cpp/GGML) where the community is tiny and the work is hard — while MLX lets the model vendors themselves add an architecture in a few hundred lines of Python, so novel MoE models land there first (though "land first" ≠ "land working" — see the mlx-lm caveat in the fix path).
+
+This is a concrete argument for herd's MLX-backend strategy: its value isn't primarily raw speed (tuned Ollama matched patched MLX+Q8 on `qwen3-coder:30b` — see [`mlx-vs-ollama-adoption-2026.md`](../research/mlx-vs-ollama-adoption-2026.md)), it's **model availability** — getting the newest architectures running correctly before Ollama does.
 
 ## Fix path
 
