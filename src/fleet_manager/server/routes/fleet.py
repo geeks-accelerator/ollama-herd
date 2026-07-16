@@ -6,6 +6,9 @@ import contextlib
 import time
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
+
+from fleet_manager.server.serializers import OLLAMA_HOT_MODEL_CAP, serialize_node
 
 router = APIRouter(tags=["fleet"])
 
@@ -21,49 +24,10 @@ async def fleet_status(request: Request):
     total_requests_active = 0
 
     for node in registry.get_all_nodes():
-        node_data = {
-            "node_id": node.node_id,
-            "status": node.status.value,
-            "hardware": {
-                "memory_total_gb": node.hardware.memory_total_gb,
-                "cores_physical": node.hardware.cores_physical,
-                "chip": node.hardware.chip,
-                "memory_bandwidth_gbps": node.hardware.memory_bandwidth_gbps,
-                "arch": node.hardware.arch,
-            },
-            "ollama_url": node.ollama_base_url,
-        }
-        if node.cpu:
-            node_data["cpu"] = node.cpu.model_dump()
-        if node.memory:
-            node_data["memory"] = node.memory.model_dump()
+        nodes.append(serialize_node(node))
         if node.ollama:
-            node_data["ollama"] = node.ollama.model_dump()
             total_models_loaded += len(node.ollama.models_loaded)
             total_requests_active += node.ollama.requests_active
-        if node.image:
-            node_data["image"] = node.image.model_dump()
-            node_data["image_port"] = node.image_port
-        if node.transcription:
-            node_data["transcription"] = node.transcription.model_dump()
-            node_data["transcription_port"] = node.transcription_port
-        if node.vision_embedding:
-            node_data["vision_embedding"] = node.vision_embedding.model_dump()
-            node_data["vision_embedding_port"] = node.vision_embedding_port
-        # Always expose backend status (even when no models cached) so
-        # operators can tell "I never installed embedding" from "I did
-        # but it's silently broken."  Empty dict for older agents.
-        if node.vision_embedding_status:
-            node_data["vision_embedding_status"] = dict(node.vision_embedding_status)
-        if node.text_embedding:
-            node_data["text_embedding"] = node.text_embedding.model_dump()
-            node_data["text_embedding_port"] = node.text_embedding_port
-        if node.text_embedding_status:
-            node_data["text_embedding_status"] = dict(node.text_embedding_status)
-        if node.mlx_servers:
-            node_data["mlx_servers"] = [s.model_dump() for s in node.mlx_servers]
-            node_data["mlx_bind_host"] = node.mlx_bind_host
-        nodes.append(node_data)
 
     online_count = sum(1 for n in registry.get_all_nodes() if n.status.value == "online")
 
@@ -78,6 +42,107 @@ async def fleet_status(request: Request):
         "queues": queue_mgr.get_queue_info(),
         "timestamp": time.time(),
     }
+
+
+@router.get("/fleet/limits")
+async def fleet_limits(request: Request):
+    """Effective serving constraints, so a client can auto-serialize instead of
+    self-DoSing a saturated box.
+
+    Reports the per-node hot-model cap and free slots, the router's max
+    in-flight retry budget, and (when set) the node's ``OLLAMA_NUM_PARALLEL``
+    so a caller knows how many concurrent requests the fleet can actually
+    absorb before requests start queueing / 503-ing.
+    """
+    registry = request.app.state.registry
+    settings = request.app.state.settings
+
+    node_limits = []
+    for node in registry.get_all_nodes():
+        loaded = len(node.ollama.models_loaded) if node.ollama else 0
+        node_limits.append({
+            "node_id": node.node_id,
+            "status": node.status.value,
+            "hot_model_cap": OLLAMA_HOT_MODEL_CAP,
+            "models_loaded": loaded,
+            "free_slots": max(0, OLLAMA_HOT_MODEL_CAP - loaded),
+        })
+
+    return {
+        # Router-side retry budget (per request, across nodes).
+        "max_retries": getattr(settings, "max_retries", 0),
+        # macOS Ollama hot-load cap — the same on every node.
+        "hot_model_cap": OLLAMA_HOT_MODEL_CAP,
+        # Per-model in-flight cap the MLX backend enforces (Ollama uses
+        # OLLAMA_NUM_PARALLEL, set outside the herd on the node).
+        "mlx_max_inflight_per_model": getattr(settings, "mlx_max_inflight_per_model", 1),
+        "mlx_max_queue_depth": getattr(settings, "mlx_max_queue_depth", 10),
+        "nodes": node_limits,
+        "timestamp": time.time(),
+    }
+
+
+@router.post("/fleet/pin")
+async def fleet_pin(request: Request):
+    """Pin a model resident: pre-warm it now (evicting the LRU if needed) and
+    persist the pin so the preloader keeps it warm if it's later evicted.
+
+    Body: ``{"model": "<name>", "node_id": "<optional>"}``.  Reuses the same
+    ``PinnedModelsStore`` + ``model_preloader`` machinery as the dashboard —
+    this is the one-call replacement for the manual ``curl :11434 keep_alive``
+    dance a benchmark otherwise needs.
+    """
+    from fleet_manager.server.model_preloader import _load_model_on_best_node
+
+    body = await request.json()
+    model = (body.get("model") or "").strip()
+    node_id = (body.get("node_id") or "").strip() or None
+    if not model:
+        return JSONResponse({"ok": False, "error": "model required"}, status_code=400)
+
+    registry = request.app.state.registry
+    proxy = request.app.state.streaming_proxy
+    store = request.app.state.pinned_store
+
+    loaded = await _load_model_on_best_node(
+        model, registry.get_online_nodes(), proxy,
+        why="fleet-pin", target_node_id=node_id,
+    )
+    if not loaded:
+        return JSONResponse(
+            {
+                "ok": False,
+                "model": model,
+                "error": f"'{model}' is not on disk on any online node — "
+                f"run 'ollama pull {model}' on a fleet device first.",
+            },
+            status_code=404,
+        )
+
+    # Persist the pin on whichever node now holds it (so the preloader
+    # reloads it if evicted).  Prefer the requested node.
+    pin_node = node_id
+    if pin_node is None:
+        for n in registry.get_all_nodes():
+            if n.ollama and any(m.name == model for m in n.ollama.models_loaded):
+                pin_node = n.node_id
+                break
+    per_node = store.set_pin(pin_node, model, True) if pin_node else store.load()
+    return {"ok": True, "model": model, "pinned_node": pin_node, "per_node": per_node}
+
+
+@router.delete("/fleet/pin/{model:path}")
+async def fleet_unpin(model: str, request: Request):
+    """Release a pin so the model can be evicted normally.  ``{model:path}``
+    accepts names with ``/`` and ``:`` (e.g. ``mlx-community/Foo`` or
+    ``qwen3-coder:30b``).  Unpins from every node that had it pinned."""
+    store = request.app.state.pinned_store
+    unpinned_from = []
+    for node_id, models in list(store.load().items()):
+        if model in models:
+            store.set_pin(node_id, model, False)
+            unpinned_from.append(node_id)
+    return {"ok": True, "model": model, "unpinned_from": unpinned_from, "per_node": store.load()}
 
 
 @router.get("/fleet/queue")

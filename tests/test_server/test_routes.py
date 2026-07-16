@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import sqlite3
 import time
 from contextlib import asynccontextmanager
@@ -13,20 +11,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from fleet_manager.models.config import ServerSettings
-from fleet_manager.models.node import (
-    CpuMetrics,
-    LoadedModel,
-    MemoryMetrics,
-    MemoryPressure,
-    OllamaMetrics,
-)
 from fleet_manager.server.latency_store import LatencyStore
 from fleet_manager.server.queue_manager import QueueManager
 from fleet_manager.server.registry import NodeRegistry
 from fleet_manager.server.scorer import ScoringEngine
 from fleet_manager.server.streaming import StreamingProxy
 from fleet_manager.server.trace_store import TraceStore
-
 from tests.conftest import make_heartbeat
 
 
@@ -98,6 +88,12 @@ def create_test_app(tmp_path=None) -> FastAPI:
         app.state.scorer = scorer
         app.state.queue_mgr = queue_mgr
         app.state.streaming_proxy = streaming_proxy
+        from pathlib import Path as _Path
+
+        from fleet_manager.server.pinned_models import PinnedModelsStore
+        app.state.pinned_store = PinnedModelsStore(
+            _Path(str(tmp_path)) / "pins.json" if tmp_path else _Path("/tmp/herd-test-pins.json")
+        )
 
         if tmp_path is not None:
             store = LatencyStore(data_dir=str(tmp_path))
@@ -118,7 +114,13 @@ def create_test_app(tmp_path=None) -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
 
-    from fleet_manager.server.routes import dashboard, fleet, heartbeat, ollama_compat, openai_compat
+    from fleet_manager.server.routes import (
+        dashboard,
+        fleet,
+        heartbeat,
+        ollama_compat,
+        openai_compat,
+    )
 
     app.include_router(heartbeat.router)
     app.include_router(openai_compat.router)
