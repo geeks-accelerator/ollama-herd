@@ -161,6 +161,36 @@ Operator runbook for "database is locked" recovery: `docs/troubleshooting.md` §
 
 ---
 
+### MLX supervisor SIGKILLs an idle server on a saturated box (false-positive health kill) `OPEN`
+
+**File:** `src/fleet_manager/node/mlx_supervisor.py`
+**Severity:** Medium (churn + wasted VRAM/reloads; auto-recovers, no user-facing request failure)
+**Observed:** 2026-07-16 — port 11440 (`mlx-community/Qwen3-Coder-Next-4bit`)
+
+The runtime monitor flags a server `unhealthy` when its `GET /v1/models` health poll (a **3 s** `httpx` timeout) doesn't respond while the process is running ([`mlx_supervisor.py`](../src/fleet_manager/node/mlx_supervisor.py) ~L1007), then restarts it: SIGTERM → wait 5 s → **SIGKILL** (~L1035-1038). A wedged-or-slow server doesn't exit on SIGTERM in time → exit `rc=-9`, then the port isn't re-bindable for ~10 s (`_wait_port_free` "port still occupied … spawning anyway"), and the 30B model is re-mmap'd on the respawn.
+
+Over an 8 h benchmark window, port 11440 was SIGKILLed **6×**, clustered in the load peak (06:24–06:43). It is **not memory** — the 131 MB `mlx-server-11440.log` has **zero** `out of memory` / `Metal` / `allocate` markers; the 12k+ tracebacks are restart-race noise (`cannot schedule new futures after interpreter shutdown` from the dying process + `Address already in use` from the respawn before the port frees). Crucially, **11440 was essentially idle**: 19,904 health pings vs **3** real inference requests. Nothing routes to Qwen3-Coder-Next; the coding load went to Ollama `qwen3-coder:30b`. So an idle-but-Metal/CPU-contended server couldn't answer its health `GET` within 3 s while the box was saturated by *other* models → misread as unhealthy → needlessly killed + reloaded.
+
+**Proposed fix (any of):**
+- **Debounce** — require N consecutive failed health polls before restarting (a single slow poll under load shouldn't trigger a kill).
+- **Longer runtime health timeout** — the 3 s poll is too tight for a contended box; the startup path already allows `_HEALTH_POLL_TIMEOUT=120`.
+- **Don't restart an idle server** — a server with no in-flight/recent inference can't be "wedged serving"; a slow health poll there is contention, not a hang.
+- Operationally: a model with zero routed traffic shouldn't stay resident (it holds ~35 GB and churns). Drop unused MLX servers from `FLEET_NODE_MLX_SERVERS` (done for Qwen3-Coder-Next 2026-07-16).
+
+---
+
+### Error-path requests skip `record_trace` — dashboard under-counts failures `OPEN`
+
+**Files:** `src/fleet_manager/server/routes/openai_compat.py`, `src/fleet_manager/server/streaming.py`
+**Severity:** Medium (observability — success rate reads higher than reality)
+**Observed:** 2026-07-16
+
+Distinct from the `TraceStore` write-storm above (which was "trace write *failed*"): here the trace is **never attempted** on some error paths. Over an 8 h window, **242** inbound OpenAI requests for `glm-4.7-flash:latest` produced **211** Ollama 503 `"server busy"` responses and **0** trace records — `glm` appears under no `original_model`, not even as a fallback. (Context, not a herd bug: the client was sending the *Ollama* model name to `/v1/chat/completions` instead of the resident `mlx:` model, so every request hit Ollama's saturated queue. `glm-4.7-flash:latest` has no same-category model hot to fall back to, so it 503s and returns an error.) Because the failure returns before the success/stream-completion path that calls `record_trace`, the trace DB — and therefore the dashboard's request count and success rate — is **blind to these failures**. A soak that reported "99.98 % success (4,669 requests)" was computing over *traced* traffic only; the 211 GLM failures weren't in the denominator.
+
+**Proposed fix:** record a `failed` trace on the error / no-fallback / queue-full return paths (both the OpenAI route and the streaming proxy's non-retryable-error branch), mirroring what `record_trace_mlx` already does for MLX failures. Then the dashboard's success rate reflects real end-to-end outcomes, not just completed requests. Pairs with the existing `trace_store_write_failures` health check (that catches "write failed"; this catches "write never issued").
+
+---
+
 ### 1. `LatencyStore.get_percentile()` — Unbounded Memory Growth `FIXED`
 
 **File:** `src/fleet_manager/server/latency_store.py`
