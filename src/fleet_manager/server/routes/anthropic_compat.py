@@ -50,8 +50,10 @@ from fleet_manager.server.mlx_proxy import (
     record_trace_mlx,
     strip_mlx_prefix,
 )
+from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.routing import (
     check_context_overflow,
+    client_concurrency_response,
     extract_tags,
     get_all_fleet_models,
     parse_allow_fallback,
@@ -945,6 +947,8 @@ async def messages(
     proxy = request.app.state.streaming_proxy
     registry = request.app.state.registry
 
+    if not inference_req.client_ip:
+        inference_req.client_ip = request.client.host if request.client else ""
     allow_fallback = parse_allow_fallback(inference_req.raw_body, request.headers)
     results, actual_model = await score_with_fallbacks(
         inference_req, scorer, queue_mgr, registry, proxy=proxy, settings=settings,
@@ -1012,7 +1016,10 @@ async def messages(
     queue_key = winner.queue_key
 
     process_fn = proxy.make_process_fn(queue_key, queue_mgr, scorer=scorer, settings=settings)
-    response_future = await queue_mgr.enqueue(entry, process_fn)
+    try:
+        response_future = await queue_mgr.enqueue(entry, process_fn)
+    except ClientConcurrencyExceeded as e:
+        return client_concurrency_response(e)
     stream = await response_future
 
     _extra = check_context_overflow(winner, inference_req, registry)

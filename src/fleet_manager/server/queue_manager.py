@@ -15,6 +15,20 @@ logger = logging.getLogger(__name__)
 _reaper_events: list[dict] = []
 
 
+class ClientConcurrencyExceeded(Exception):
+    """Raised by :meth:`QueueManager.enqueue` when a client is over its
+    per-client in-flight cap.  Carries ``retry_after`` so the route can return
+    ``429`` + ``Retry-After`` instead of piling the request onto the queue."""
+
+    def __init__(self, client_ip: str, limit: int, retry_after: int):
+        self.client_ip = client_ip
+        self.limit = limit
+        self.retry_after = retry_after
+        super().__init__(
+            f"client {client_ip or '<anon>'} exceeded max in-flight={limit}"
+        )
+
+
 def get_reaper_events(hours: float = 24) -> list[dict]:
     """Return zombie reaper events from the last N hours."""
     cutoff = time.time() - (hours * 3600)
@@ -83,6 +97,45 @@ class QueueManager:
             else _STALE_IN_FLIGHT_SECONDS
         )
         self._reaper_task: asyncio.Task | None = None
+        # Per-client concurrency accounting.  ``_client_in_flight`` counts
+        # reserved slots per client IP; ``_counted_requests`` makes release
+        # idempotent (a request is released exactly once no matter which
+        # terminal path — complete / fail / reap — fires).  All ops are
+        # sync + await-free, so they're atomic under asyncio without a lock.
+        self._client_in_flight: dict[str, int] = {}
+        self._counted_requests: set[str] = set()
+
+    def _acquire_client(self, entry: QueueEntry) -> None:
+        """Reserve a client-concurrency slot, or raise ClientConcurrencyExceeded.
+
+        No-op when the cap is 0 (disabled, default) or the caller is anonymous
+        (no IP to bound).  Check-and-increment is a single await-free sequence,
+        so it's atomic under asyncio's single-threaded scheduling.
+        """
+        limit = getattr(self._settings, "client_max_in_flight", 0) if self._settings else 0
+        if limit <= 0:
+            return
+        ip = entry.request.client_ip or ""
+        if not ip:
+            return
+        if self._client_in_flight.get(ip, 0) >= limit:
+            retry_after = getattr(self._settings, "client_concurrency_retry_after", 2)
+            raise ClientConcurrencyExceeded(ip, limit, retry_after)
+        self._client_in_flight[ip] = self._client_in_flight.get(ip, 0) + 1
+        self._counted_requests.add(entry.request.request_id)
+
+    def _release_client(self, entry: QueueEntry) -> None:
+        """Release a client-concurrency slot.  Idempotent per request."""
+        rid = entry.request.request_id
+        if rid not in self._counted_requests:
+            return
+        self._counted_requests.discard(rid)
+        ip = entry.request.client_ip or ""
+        remaining = self._client_in_flight.get(ip, 0) - 1
+        if remaining > 0:
+            self._client_in_flight[ip] = remaining
+        else:
+            self._client_in_flight.pop(ip, None)
 
     def start_reaper(self):
         """Start the background stale in-flight reaper."""
@@ -102,6 +155,7 @@ class QueueManager:
                     ]
                     for rid, entry in stale:
                         del q.in_flight[rid]
+                        self._release_client(entry)
                         entry.status = RequestStatus.FAILED
                         entry.completed_at = now
                         q.failed_count += 1
@@ -222,7 +276,15 @@ class QueueManager:
         """
         Add a request to the appropriate queue.
         Returns a Future that resolves to an async generator of response chunks.
+
+        Raises :class:`ClientConcurrencyExceeded` if the caller is already at
+        its per-client in-flight cap — the route turns that into 429 rather
+        than queueing the request (backpressure, not amplification).
         """
+        # Reserve the client-concurrency slot first — reject fast, before any
+        # queue/worker work, so an over-cap caller can't grow the backlog.
+        self._acquire_client(entry)
+
         queue_key = f"{entry.assigned_node}:{entry.request.model}"
 
         async with self._lock:
@@ -286,6 +348,7 @@ class QueueManager:
         treated as 0 for that sample) to keep the happy path simple for
         callers that don't always have token counts (e.g. image generation).
         """
+        self._release_client(entry)
         if queue_key in self._queues:
             q = self._queues[queue_key]
             entry.status = RequestStatus.COMPLETED
@@ -308,6 +371,7 @@ class QueueManager:
 
     def mark_failed(self, queue_key: str, entry: QueueEntry):
         """Remove an entry from in-flight and mark failed."""
+        self._release_client(entry)
         if queue_key in self._queues:
             q = self._queues[queue_key]
             entry.status = RequestStatus.FAILED

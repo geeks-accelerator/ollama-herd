@@ -15,10 +15,12 @@ from fleet_manager.models.node import NodeStatus
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.fleet_headers import fleet_headers
 from fleet_manager.server.model_knowledge import is_image_model
+from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.routing import (
     _pick_pull_node,
     _pulls_in_flight,
     check_context_overflow,
+    client_concurrency_response,
     extract_tags,
     get_all_fleet_models,
     parse_allow_fallback,
@@ -642,6 +644,8 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
     registry = request.app.state.registry
     settings = request.app.state.settings
     model = inference_req.original_model or inference_req.model
+    if not inference_req.client_ip:
+        inference_req.client_ip = request.client.host if request.client else ""
     logger.info(f"Ollama request: model={model} stream={inference_req.stream}")
 
     # Score with fallback support + auto-pull (per-request strict-mode override)
@@ -692,7 +696,10 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
     queue_key = winner.queue_key
 
     process_fn = proxy.make_process_fn(queue_key, queue_mgr, scorer=scorer, settings=settings)
-    response_future = await queue_mgr.enqueue(entry, process_fn)
+    try:
+        response_future = await queue_mgr.enqueue(entry, process_fn)
+    except ClientConcurrencyExceeded as e:
+        return client_concurrency_response(e)
     stream = await response_future
 
     # Build response headers — canonical X-Fleet-* set via the shared builder.

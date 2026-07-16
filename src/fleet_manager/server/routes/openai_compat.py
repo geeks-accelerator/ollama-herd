@@ -13,9 +13,11 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.fleet_headers import fleet_headers
+from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.ollama_compat import _build_thinking_headers
 from fleet_manager.server.routes.routing import (
     check_context_overflow,
+    client_concurrency_response,
     extract_tags,
     get_all_fleet_models,
     parse_allow_fallback,
@@ -84,6 +86,7 @@ async def chat_completions(request: Request):
         original_format=RequestFormat.OPENAI,
         raw_body=body,
         tags=tags,
+        client_ip=request.client.host if request.client else "",
     )
 
     scorer = request.app.state.scorer
@@ -149,7 +152,10 @@ async def chat_completions(request: Request):
     queue_key = winner.queue_key
 
     process_fn = proxy.make_process_fn(queue_key, queue_mgr, scorer=scorer, settings=settings)
-    response_future = await queue_mgr.enqueue(entry, process_fn)
+    try:
+        response_future = await queue_mgr.enqueue(entry, process_fn)
+    except ClientConcurrencyExceeded as e:
+        return client_concurrency_response(e)
     stream = await response_future
 
     # Build response headers — canonical X-Fleet-* set via the shared builder.

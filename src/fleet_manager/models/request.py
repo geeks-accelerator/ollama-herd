@@ -71,6 +71,8 @@ class InferenceRequest(BaseModel):
     request_type: str = "text"
     # True when messages contain image content (vision requests)
     has_images: bool = False
+    # Caller IP for per-client concurrency accounting (empty = anonymous).
+    client_ip: str = ""
 
     @model_validator(mode="after")
     def _normalize_model_names(self) -> InferenceRequest:

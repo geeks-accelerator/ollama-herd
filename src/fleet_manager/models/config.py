@@ -86,6 +86,16 @@ class ServerSettings(BaseSettings):
     # Retry
     max_retries: int = 2
 
+    # Per-client concurrency cap — max requests one client (by IP) may have
+    # in flight (pending + processing) at once, across all queues.  0 disables
+    # (unlimited, the default — no production behavior change).  Set a positive
+    # value so one caller flooding the herd (e.g. an unthrottled benchmark)
+    # can't monopolize the box or starve other clients; excess requests are
+    # shed with 429 + Retry-After instead of piling into the queue.
+    client_max_in_flight: int = 0
+    # Retry-After seconds returned on a client-concurrency 429.
+    client_concurrency_retry_after: int = 2
+
     # Device-aware scoring — see docs/plans/device-aware-scoring.md.
     # When true, Signal 5 (role affinity) rewards nodes proportional to their
     # memory bandwidth instead of using flat memory-size tiers, so a Mac

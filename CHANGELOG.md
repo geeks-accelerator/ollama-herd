@@ -7,16 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-15
+
 Client ergonomics from a benchmark agent's feedback — make the herd's routing
 behavior legible and controllable to callers (see
 `docs/plans/client-ergonomics-from-agent-feedback.md`). Production defaults are
-unchanged: fallback and retry stay ON; the new controls are opt-in per request.
+unchanged: fallback and retry stay ON, per-client cap defaults to unlimited;
+the new controls are opt-in per request / per operator.
 
 ### Added
 
 - **Per-request strict mode.** Send `X-Fleet-No-Fallback: true` (or `"fallback": false` in the body) and the herd serves the *exact* model requested or returns an explicit error — no silent same-category substitution. Overrides the global `FLEET_VRAM_FALLBACK` for that one call, so a benchmark can demand determinism without changing behavior for every other client.
 - **`GET /fleet/limits`.** Reports effective serving constraints — per-node hot-model cap + free slots, the router's retry budget, MLX in-flight caps — so a client can auto-serialize instead of self-DoSing a saturated box.
 - **`POST /fleet/pin` / `DELETE /fleet/pin/{model}`.** One-call model pinning: pre-warm a model resident (evicting LRU as needed) and persist the pin so it's reloaded if evicted; delete to release. Reuses the existing `PinnedModelsStore` + preloader. Replaces the manual `curl :11434 keep_alive` dance.
+- **Per-client concurrency cap.** `FLEET_CLIENT_MAX_IN_FLIGHT` (default `0` = unlimited) caps how many requests one client (by IP) may have in flight across all queues; excess is shed with `429` + `Retry-After` (`FLEET_CLIENT_CONCURRENCY_RETRY_AFTER`, default `2`s) instead of piling onto the queue, so one unthrottled caller can't monopolize the box or starve other clients.
 
 ### Changed
 

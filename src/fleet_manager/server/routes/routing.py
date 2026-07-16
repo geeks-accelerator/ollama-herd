@@ -6,9 +6,12 @@ import asyncio
 import logging
 import time
 
+from fastapi.responses import JSONResponse
+
 from fleet_manager.models.node import MemoryPressure, NodeStatus
 from fleet_manager.models.request import InferenceRequest, RoutingResult
 from fleet_manager.server.model_knowledge import classify_model
+from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.scorer import ScoringEngine
 
 logger = logging.getLogger(__name__)
@@ -60,6 +63,28 @@ def extract_tags(body: dict, headers=None) -> list[str]:
             unique.append(t)
 
     return unique
+
+
+def client_concurrency_response(e: ClientConcurrencyExceeded) -> JSONResponse:
+    """Build the 429 + Retry-After response for a per-client concurrency reject.
+
+    Shared by every inference route so the backpressure signal is identical
+    regardless of endpoint.  The ``{"error": {...}}`` shape is OpenAI/Anthropic
+    friendly; Ollama clients read the message string too.
+    """
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": {
+                "message": (
+                    f"Too many concurrent requests from this client "
+                    f"(limit {e.limit}). Retry after {e.retry_after}s."
+                ),
+                "type": "rate_limit_exceeded",
+            }
+        },
+        headers={"Retry-After": str(e.retry_after)},
+    )
 
 
 def parse_allow_fallback(body: dict, headers=None) -> bool | None:
