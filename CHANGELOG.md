@@ -21,6 +21,7 @@ the new controls are opt-in per request / per operator.
 - **`GET /fleet/limits`.** Reports effective serving constraints — per-node hot-model cap + free slots, the router's retry budget, MLX in-flight caps — so a client can auto-serialize instead of self-DoSing a saturated box.
 - **`POST /fleet/pin` / `DELETE /fleet/pin/{model}`.** One-call model pinning: pre-warm a model resident (evicting LRU as needed) and persist the pin so it's reloaded if evicted; delete to release. Reuses the existing `PinnedModelsStore` + preloader. Replaces the manual `curl :11434 keep_alive` dance.
 - **Per-client concurrency cap.** `FLEET_CLIENT_MAX_IN_FLIGHT` (default `0` = unlimited) caps how many requests one client (by IP) may have in flight across all queues; excess is shed with `429` + `Retry-After` (`FLEET_CLIENT_CONCURRENCY_RETRY_AFTER`, default `2`s) instead of piling onto the queue, so one unthrottled caller can't monopolize the box or starve other clients.
+- **`mlx:` models reachable via the OpenAI endpoint.** `POST /v1/chat/completions` now routes `mlx:`-prefixed models straight to `mlx_lm.server` (a clean passthrough — it's OpenAI-native — with the same admission control, queue-full 503s, and trace recording as the Anthropic path). Previously only `/v1/messages` (Anthropic) could reach the MLX backend, so any OpenAI-only client (or one that supports just openai-compatible + ollama providers) had its `mlx:` request fall through to a slow Ollama fallback — e.g. GLM-4.7-Flash at ~13 tok/s instead of the ~59 tok/s MLX path. `/v1/models` now also advertises healthy `mlx:` models so clients that validate against the model list can discover them.
 
 ### Changed
 
@@ -30,6 +31,8 @@ the new controls are opt-in per request / per operator.
 ### Fixed
 
 - **Queue-full 503 no longer amplifies floods.** Ollama's `"maximum pending requests exceeded"` 503 is now classified non-retryable — retrying a saturated node just piled more load on it (2026-07-15: a benchmark's requests + 3× retries produced 156 503s in 5 minutes). Other 5xx are still retried.
+- **MLX reasoning-model output no longer dropped.** Reasoning models served via `mlx_lm.server` (GLM-4.7-Flash / `glm4_moe_lite`) stream their chain-of-thought in a separate `reasoning` / `reasoning_content` field and keep `content` empty until thinking ends. The MLX→Anthropic translation (and the non-streaming stream-and-collapse accumulator `_collect_openai_stream`) only ever read `content`, so a GLM request came back **empty**. Reasoning is now surfaced — an Anthropic `thinking` block on the Anthropic route, coalesced into the visible text stream on streaming, and preserved as the `reasoning` field on the OpenAI passthrough.
+- **OpenAI `max_tokens` no longer dropped on the MLX path.** `_to_openai_body` assumed an Ollama-shaped body (generation params under `options`); OpenAI bodies carry them at the top level, so `max_tokens` was silently lost when an OpenAI request hit an `mlx:` model — fatal for reasoning models, which never finish thinking without a large budget. The builder is now `original_format`-aware.
 
 ## [0.8.0] - 2026-07-14
 
