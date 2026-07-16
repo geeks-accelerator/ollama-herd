@@ -999,6 +999,16 @@ class MlxProxy:
         """
         raw = request.raw_body or {}
         options = raw.get("options", {}) or {}
+        # OpenAI-native requests (via /v1/chat/completions) carry generation
+        # params at the *top level*, not under Ollama's `options` wrapper.  The
+        # Anthropic/Ollama paths build an Ollama-shaped raw_body (params in
+        # `options`); the OpenAI path passes the client body through as-is.
+        # Read from the right place or e.g. max_tokens is silently dropped —
+        # fatal for reasoning models like GLM-4.7-Flash, which never finish
+        # thinking without a large budget.
+        openai_native = request.original_format == RequestFormat.OPENAI
+        params = raw if openai_native else options
+        max_tokens_key = "max_tokens" if openai_native else "num_predict"
 
         outbound_model = strip_mlx_prefix(request.model)
         if not outbound_model:
@@ -1043,13 +1053,13 @@ class MlxProxy:
             # that matters most.  See docs/plans/mlx-prompt-cache-optimization.md
             # Phase 3 — this is the fix that actually surfaces the data.
             out["stream_options"] = {"include_usage": True}
-        # Flatten Ollama options to OpenAI top-level params
-        if "num_predict" in options:
-            out["max_tokens"] = options["num_predict"]
-        if "temperature" in options:
-            out["temperature"] = options["temperature"]
-        if "top_p" in options:
-            out["top_p"] = options["top_p"]
+        # Generation params → OpenAI top-level (source depends on inbound format)
+        if max_tokens_key in params:
+            out["max_tokens"] = params[max_tokens_key]
+        if "temperature" in params:
+            out["temperature"] = params["temperature"]
+        if "top_p" in params:
+            out["top_p"] = params["top_p"]
         # Always include Qwen chat-template turn-boundary tokens as stop
         # sequences.  At long context (30K+), Qwen3-Coder models can
         # hallucinate `<|im_start|>` tokens mid-response — attention to role
@@ -1063,7 +1073,7 @@ class MlxProxy:
         # the turn is done.  Force stop.  Same for `<|endoftext|>` which
         # can leak in at session boundaries.
         stop_list = ["<|im_start|>", "<|endoftext|>"]
-        user_stop = options.get("stop")
+        user_stop = params.get("stop")
         if user_stop:
             if isinstance(user_stop, list):
                 stop_list.extend(user_stop)

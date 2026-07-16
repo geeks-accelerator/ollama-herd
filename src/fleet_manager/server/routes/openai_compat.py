@@ -13,6 +13,13 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.fleet_headers import fleet_headers
+from fleet_manager.server.mlx_proxy import (
+    MlxModelMissingError,
+    MlxQueueFullError,
+    is_mlx_model,
+    record_trace_mlx,
+    strip_mlx_prefix,
+)
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.ollama_compat import _build_thinking_headers
 from fleet_manager.server.routes.routing import (
@@ -43,6 +50,13 @@ async def list_models(request: Request):
         if node.image:
             for m in node.image.models_available:
                 models.add(m.name)
+        # Include healthy MLX models (advertised with the `mlx:` prefix that
+        # routes them to mlx_lm.server).  Without this, an OpenAI client that
+        # validates against /v1/models can't discover the fast MLX models it's
+        # now allowed to request via /v1/chat/completions.
+        for s in node.mlx_servers:
+            if s.status == "healthy":
+                models.add(f"mlx:{s.model}")
 
     return {
         "object": "list",
@@ -56,6 +70,116 @@ async def list_models(request: Request):
             for m in sorted(models)
         ],
     }
+
+
+async def _serve_openai_via_mlx(
+    *,
+    request: Request,
+    inference_req: InferenceRequest,
+    mlx_proxy,
+    model: str,
+):
+    """Forward an OpenAI chat-completions request straight to ``mlx_lm.server``.
+
+    ``mlx_lm.server`` speaks the OpenAI API natively, so this is a passthrough:
+    non-streaming returns its response dict verbatim, streaming forwards its raw
+    SSE chunks.  No Anthropic-style translation (that's the anthropic route's
+    job).  Admission control, queue-full 503s, and trace recording match the
+    Anthropic MLX path so the dashboard + health checks see MLX traffic.
+    """
+    trace_store = getattr(request.app.state, "trace_store", None)
+    t_start = time.time()
+    headers = fleet_headers(
+        node_id="mlx-local",
+        served_model=model,
+        requested_model=model,
+        backend="mlx",
+    )
+    headers["Cache-Control"] = "no-cache"
+
+    if not inference_req.stream:
+        # Non-streaming — one-shot request/response, no translation needed.
+        try:
+            openai_resp = await mlx_proxy.completions_non_streaming(inference_req)
+        except MlxQueueFullError as exc:
+            logger.warning(f"OpenAI MLX queue full: {exc} — returning 503")
+            record_trace_mlx(
+                trace_store, inference_req, t_start, None, "failed",
+                error_message=str(exc),
+            )
+            return JSONResponse(
+                status_code=503,
+                headers={"Retry-After": str(exc.retry_after)},
+                content={"error": {"message": str(exc), "type": "model_overloaded"}},
+            )
+        except (MlxModelMissingError, Exception) as exc:  # noqa: BLE001
+            status = 500 if isinstance(exc, MlxModelMissingError) else 502
+            logger.error(f"OpenAI MLX error ({status}): {type(exc).__name__}: {exc}")
+            record_trace_mlx(
+                trace_store, inference_req, t_start, None, "failed",
+                error_message=str(exc),
+            )
+            return JSONResponse(
+                status_code=status,
+                content={"error": {"message": str(exc), "type": "api_error"}},
+            )
+        # pop_token_counts folds cached_tokens into rolling stats as a side effect.
+        mlx_proxy.pop_token_counts(inference_req.request_id)
+        record_trace_mlx(trace_store, inference_req, t_start, t_start, "completed")
+        return JSONResponse(content=openai_resp, headers=headers)
+
+    # Streaming — pre-admit before StreamingResponse locks in a 200 status, so
+    # admission failures surface as a clean 503.
+    model_key = strip_mlx_prefix(inference_req.model)
+    try:
+        await mlx_proxy._acquire_slot(model_key)
+    except MlxModelMissingError as exc:
+        record_trace_mlx(
+            trace_store, inference_req, t_start, None, "failed", error_message=str(exc),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"message": str(exc), "type": "api_error"}},
+        )
+    except MlxQueueFullError as exc:
+        logger.warning(f"OpenAI MLX queue full (stream): {exc} — returning 503")
+        record_trace_mlx(
+            trace_store, inference_req, t_start, None, "failed", error_message=str(exc),
+        )
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": str(exc.retry_after)},
+            content={"error": {"message": str(exc), "type": "model_overloaded"}},
+        )
+
+    async def _passthrough():
+        first_token_time: float | None = None
+        error: Exception | None = None
+        try:
+            # already_admitted=True — slot acquired above, we own the release.
+            # stream_openai yields bare SSE lines (aiter_lines strips the "\n\n"
+            # event framing and drops empty separator lines); re-add "\n\n" so
+            # the client receives well-formed `data: {...}\n\n` events.
+            async for raw in mlx_proxy.stream_openai(inference_req, already_admitted=True):
+                if first_token_time is None:
+                    first_token_time = time.time()
+                yield raw + b"\n\n"
+        except Exception as exc:  # noqa: BLE001
+            error = exc
+            logger.exception(f"OpenAI MLX stream aborted: {type(exc).__name__}: {exc}")
+            raise
+        finally:
+            mlx_proxy._release_slot(model_key)
+            mlx_proxy.pop_token_counts(inference_req.request_id)
+            record_trace_mlx(
+                trace_store, inference_req, t_start, first_token_time,
+                "failed" if error else "completed",
+                error_message=str(error) if error else None,
+            )
+
+    return StreamingResponse(
+        _passthrough(), media_type="text/event-stream", headers=headers,
+    )
 
 
 @router.post("/v1/chat/completions")
@@ -88,6 +212,33 @@ async def chat_completions(request: Request):
         tags=tags,
         client_ip=request.client.host if request.client else "",
     )
+
+    # MLX backend fast-path — mirrors the Anthropic route (anthropic_compat.py).
+    # `mlx:`-prefixed models live in an mlx_lm.server subprocess, not Ollama, so
+    # the scoring + Ollama-streaming pipeline below can't reach them.  Because
+    # mlx_lm.server is itself OpenAI-compatible, this path is a clean passthrough
+    # (no response translation) — unlike the Anthropic route, which translates.
+    # This is what lets OpenAI-only clients (e.g. a scanner that speaks only
+    # /v1/chat/completions) reach the fast MLX models instead of the slow Ollama
+    # fallback.  See docs/plans/mlx-backend-for-large-models.md.
+    if is_mlx_model(model):
+        mlx_proxy = getattr(request.app.state, "mlx_proxy", None)
+        if mlx_proxy is None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": {
+                        "message": (
+                            f"Model '{model}' needs the MLX backend but "
+                            "FLEET_MLX_ENABLED is false. Enable it and restart herd."
+                        ),
+                        "type": "model_not_available",
+                    }
+                },
+            )
+        return await _serve_openai_via_mlx(
+            request=request, inference_req=inference_req, mlx_proxy=mlx_proxy, model=model,
+        )
 
     scorer = request.app.state.scorer
     queue_mgr = request.app.state.queue_mgr

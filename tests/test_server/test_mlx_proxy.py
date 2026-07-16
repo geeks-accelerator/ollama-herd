@@ -88,6 +88,49 @@ def test_to_openai_body_flattens_options_to_top_level():
     assert "keep_alive" not in body
 
 
+def test_to_openai_body_openai_native_reads_top_level_params():
+    """OpenAI-native requests (/v1/chat/completions) carry params at the top
+    level, not under Ollama's `options` wrapper.  Regression guard: max_tokens
+    must NOT be dropped — reasoning models like GLM-4.7-Flash never finish
+    thinking without a large budget, so a silently-dropped max_tokens produced
+    truncated/empty responses on the OpenAI MLX path."""
+    req = _make_request(
+        original_format=RequestFormat.OPENAI,
+        raw_body={
+            "model": "mlx:Test-Model-4bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "max_tokens": 4000,
+            "temperature": 0.3,
+            "top_p": 0.8,
+            "stop": ["END"],
+        },
+    )
+    body = MlxProxy._to_openai_body(req)
+    assert body["max_tokens"] == 4000
+    assert body["temperature"] == 0.3
+    assert body["top_p"] == 0.8
+    assert "END" in body["stop"]
+    assert "options" not in body
+
+
+def test_to_openai_body_openai_native_ignores_options_wrapper():
+    """An OpenAI-native body has no `options`; params must come from top level
+    even if a stray `options` key is present (top level wins for OPENAI)."""
+    req = _make_request(
+        original_format=RequestFormat.OPENAI,
+        raw_body={
+            "model": "mlx:Test-Model-4bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "max_tokens": 2048,
+            "options": {"num_predict": 50},  # must be ignored for OPENAI format
+        },
+    )
+    body = MlxProxy._to_openai_body(req)
+    assert body["max_tokens"] == 2048
+
+
 def test_to_openai_body_preserves_messages_and_stream():
     req = _make_request()
     body = MlxProxy._to_openai_body(req)
