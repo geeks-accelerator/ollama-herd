@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -317,3 +318,72 @@ class TestStreamWithRetry:
                 entry, "node-a:phi4:14b", queue_mgr, scorer, settings
             ):
                 pass
+
+
+class TestTraceReliability:
+    """Fixes for docs/issues.md 'Failed-request traces get GC'd' (0.8.2)."""
+
+    @pytest.mark.asyncio
+    async def test_create_logged_task_keeps_strong_reference(self):
+        """Regression: asyncio only weakly references tasks, so a fire-and-forget
+        task with no other reference can be GC'd before it runs — which silently
+        dropped trace writes on error paths.  The helper must hold a strong ref
+        until the task completes."""
+        from fleet_manager.server.streaming import (
+            _background_tasks,
+            _create_logged_task,
+        )
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def work():
+            started.set()
+            await release.wait()
+
+        task = _create_logged_task(work(), name="strong-ref-test")
+        await started.wait()
+        assert task in _background_tasks  # strong ref held while running
+        release.set()
+        await task
+        assert task not in _background_tasks  # removed on completion
+
+    @pytest.mark.asyncio
+    async def test_exhausted_retries_records_terminal_failed_trace(self):
+        """A request that burns every retry must leave a terminal 'failed' trace,
+        not only per-attempt 'retried' rows — otherwise the dashboard's success
+        rate never sees the failure."""
+        registry = MagicMock()
+        trace_store = MagicMock()
+        trace_store.record_trace = AsyncMock()
+        proxy = StreamingProxy(registry, trace_store=trace_store)
+        queue_mgr = _mock_queue_mgr()
+        settings = ServerSettings(max_retries=1)
+
+        node_b = RoutingResult(
+            node_id="node-b", queue_key="node-b:phi4:14b", score=70.0,
+        )
+        scorer = _mock_scorer(score_fn=lambda model, depths: [node_b])
+        entry = _make_entry(node_id="node-a")
+
+        async def always_fail(node_id, request):
+            raise httpx.ConnectError("refused")
+            yield  # makes this an async generator
+
+        proxy.stream_from_node = always_fail
+
+        with pytest.raises(httpx.ConnectError):
+            async for _ in proxy._stream_with_retry(
+                entry, "node-a:phi4:14b", queue_mgr, scorer, settings,
+            ):
+                pass
+
+        # Let the fire-and-forget trace tasks run.
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        statuses = [
+            c.kwargs.get("status") for c in trace_store.record_trace.call_args_list
+        ]
+        assert "failed" in statuses  # terminal outcome recorded
+        assert "retried" in statuses  # earlier attempt still recorded

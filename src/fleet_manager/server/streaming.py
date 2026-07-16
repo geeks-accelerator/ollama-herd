@@ -49,11 +49,30 @@ def get_context_protection_events(hours: float = 24) -> list[dict]:
     return [e for e in _context_protection_events if e["timestamp"] >= cutoff]
 
 
+# Strong references to in-flight background tasks.  asyncio only holds a *weak*
+# reference to a task (see the create_task docs), so a fire-and-forget task with
+# no other reference can be garbage-collected mid-flight and silently vanish.
+# This bit trace recording on error paths specifically: `_record_trace` schedules
+# the write and the caller `raise`s on the next line with no further `await`, so
+# the loop never runs the weakly-referenced task before the request tears down
+# and GC collects it — completed-request traces survived (the route keeps
+# awaiting afterward) but failed-request traces disappeared, making the
+# dashboard's success rate blind to failures.  Keeping the task in a set until
+# it finishes is the documented fix.
+_background_tasks: set[asyncio.Task] = set()
+
+
 def _create_logged_task(coro, *, name: str = "background"):
-    """Create an asyncio task that logs exceptions instead of silently dropping them."""
+    """Create an asyncio task that logs exceptions instead of silently dropping them.
+
+    Holds a strong reference until completion so the task can't be GC'd before it
+    runs — critical for fire-and-forget trace writes on error paths.
+    """
     task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
 
     def _on_done(t: asyncio.Task):
+        _background_tasks.discard(t)
         if t.cancelled():
             return
         exc = t.exception()
@@ -484,7 +503,25 @@ class StreamingProxy:
                     f"(attempt {attempt}/{max_retries + 1}): {type(e).__name__}: {e}"
                 )
 
-                # Record "retried" trace for the failed attempt
+                if attempt > max_retries:
+                    # Retries exhausted — terminal failure.  Record it as
+                    # "failed" (not another "retried") so the trace DB has a
+                    # terminal outcome for this request; otherwise a request
+                    # that burned every retry left only "retried" rows and no
+                    # failure, and the dashboard's success rate never saw it.
+                    queue_manager.mark_failed(current_queue_key, entry)
+                    self._record_trace(
+                        entry,
+                        current_node,
+                        start_time,
+                        None,
+                        "failed",
+                        error_message=str(e) or repr(e),
+                        response_chunks=capture_chunks,
+                    )
+                    raise
+
+                # Record "retried" trace for this failed attempt (we will retry)
                 self._record_trace(
                     entry,
                     current_node,
@@ -494,10 +531,6 @@ class StreamingProxy:
                     error_message=str(e) or repr(e),
                     response_chunks=capture_chunks,
                 )
-
-                if attempt > max_retries:
-                    queue_manager.mark_failed(current_queue_key, entry)
-                    raise
 
                 # Re-score excluding failed nodes
                 queue_depths = queue_manager.get_queue_depths()

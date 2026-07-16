@@ -1004,7 +1004,13 @@ class MlxSupervisor:
             )
         # Non-200 / exception
         if self._proc is not None and self._proc.poll() is None:
-            # Process running but not responding → unhealthy (monitor will restart)
+            # Process running but not responding → mark unhealthy for the
+            # dashboard/heartbeat ONLY.  Nothing here (or in the monitor)
+            # restarts a running-but-unhealthy server — `_monitor` acts solely
+            # on an actual process exit (rc is not None).  A slow health poll
+            # under whole-box load is contention, not a hang; treating it as a
+            # kill trigger would needlessly churn an idle server.  See
+            # docs/issues.md "An idle MLX server gets externally SIGKILLed".
             self._status = "unhealthy"
             self._status_reason = "health check failed while process running"
         else:

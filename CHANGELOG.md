@@ -5,7 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+> **Release status:** `0.8.0`–`0.8.2` are developed and soaked on the local fleet but **not yet published**. The latest release on PyPI and git tags is **`0.7.0`**. The accumulated 0.8.x work will publish together as `0.8.2` — the dated headers below mark when each milestone was cut on `main`, not a PyPI release.
+
+## [0.8.2] - Unreleased
+
+Observability + reliability fixes surfaced by an 8-hour soak review, plus two issue-diagnosis corrections (see `docs/issues.md`).
+
+### Fixed
+
+- **Failed-request traces no longer vanish before they persist.** `_create_logged_task` scheduled fire-and-forget writes (traces, latency records, client closes) with `asyncio.create_task` but kept **no strong reference** — and asyncio only *weakly* references tasks, so one could be garbage-collected before it ran. Completed-request traces survived (the route keeps `await`-ing afterward, so the loop runs the task); but the error path records a trace and `raise`s on the very next line with no further `await`, so the weakly-referenced write was collected before persisting. Net effect: the dashboard's success rate was computed over *completed* traffic only and was **blind to failures** — an 8-hour window logged 211 Ollama `503`s with **0** trace records. The helper now holds each task in a module-level set until its done-callback fires. Additionally, a request that exhausts every retry now records a terminal `failed` trace instead of leaving only per-attempt `retried` rows. See `docs/issues.md` → "Failed-request traces get garbage-collected before they persist."
+
+### Changed
+
+- **Corrected the MLX idle-server-churn diagnosis** (docs + a misleading comment; no behavior change). An earlier issue draft blamed a supervisor "false-positive health kill" and proposed a health-poll debounce. On inspection that mechanism doesn't exist: the supervisor **never restarts a running-but-unhealthy server** — `_monitor` acts only on an actual process exit, and `poll_health`/`refresh_health` only update the status string for the dashboard. The `rc=-9` kills of an idle ~35 GB MLX server under load came from **outside** the supervisor; the signature (selective — only the idle server died while its busy siblings survived — silent, clustered in load peaks) points at **OS memory pressure**, not a health check. No code fix applies; the mitigation is operational — don't keep an unused large model resident (Qwen3-Coder-Next was dropped from `FLEET_NODE_MLX_SERVERS`). The misleading `poll_health` "monitor will restart" comment was corrected.
 
 ## [0.8.1] - 2026-07-15
 
