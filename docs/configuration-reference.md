@@ -95,8 +95,11 @@ Pre-warm proactively loads models on runner-up nodes before they're needed.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FLEET_MAX_RETRIES` | `2` | Max retry attempts on node failure (before first chunk) |
+| `FLEET_MAX_RETRIES` | `2` | Max retry attempts on node failure (before first chunk). Ollama's queue-full 503 (`maximum pending requests exceeded`) is **not** retried — it surfaces as `429` + `Retry-After` so a saturated node isn't piled higher. |
 | `FLEET_STALE_TIMEOUT` | `600.0` | Seconds before in-flight requests are considered zombied and reaped (10 min) |
+| `FLEET_CLIENT_MAX_IN_FLIGHT` | `0` | Max requests one client (by IP) may have in flight across all queues. `0` = unlimited (no production change). Set a positive value so one caller flooding the herd (e.g. an unthrottled benchmark) can't monopolize the box — excess is shed with `429` + `Retry-After` instead of queued. Anonymous callers (no IP) aren't capped. |
+| `FLEET_CLIENT_CONCURRENCY_RETRY_AFTER` | `2` | `Retry-After` seconds returned on a client-concurrency `429`. |
+| `FLEET_VRAM_FALLBACK` | `true` | When a requested model isn't loaded, route to a loaded same-category model instead of cold-loading (protects Claude Code from the macOS 3-model eviction bug). Per-request override: `X-Fleet-No-Fallback: true` (or `"fallback": false` in the body) for strict "exact model or error" — preferred over flipping this global, which affects every client. |
 
 ### Device-Aware Scoring
 

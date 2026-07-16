@@ -79,19 +79,28 @@ data: [DONE]\n\n
 }
 ```
 
-**Response headers:**
+**Request headers (optional):**
 
-| Header | Description |
-|--------|-------------|
-| `X-Fleet-Node` | Node ID that handled the request |
-| `X-Fleet-Score` | Winning routing score (integer) |
-| `X-Fleet-Fallback` | Fallback model used (only if primary was unavailable) |
-| `X-Fleet-Retries` | Number of retries (only if retry occurred) |
-| `X-Fleet-Context-Overflow` | Context overflow warning: `estimated_tokens=N; context_length=M` (only if estimated tokens exceed the node's context window) |
-| `X-Thinking-Tokens` | Estimated tokens spent on chain-of-thought reasoning (thinking models only, non-streaming) |
-| `X-Output-Tokens` | Estimated tokens of visible output content (thinking models only, non-streaming) |
-| `X-Budget-Used` | `completion_tokens/num_predict` — at-a-glance budget check (non-streaming only) |
-| `X-Done-Reason` | Ollama's done_reason: `stop` (natural end) or `length` (budget exhausted) (non-streaming only) |
+| Header | Effect |
+|--------|--------|
+| `X-Fleet-No-Fallback: true` | **Strict mode** — serve the *exact* model requested or return an explicit error; never substitute a same-category loaded model. Overrides the global `FLEET_VRAM_FALLBACK` for this one request. (Also settable as `"fallback": false` in the body.) |
+| `X-Herd-Tags` | Comma-separated request tags for per-app analytics. |
+
+**Response headers** — the canonical `X-Fleet-*` set is emitted on **every** proxied response (all endpoints, streaming and non-streaming), so a client reads the same three fields anywhere and knows exactly what ran:
+
+| Header | Always? | Description |
+|--------|---------|-------------|
+| `X-Fleet-Node` | ✅ | Node ID that served the request |
+| `X-Fleet-Served-Model` | ✅ | The model that **actually ran** (differs from requested on a fallback) |
+| `X-Fleet-Requested-Model` | ✅ | What the client asked for |
+| `X-Fleet-Fallback` | ✅ | `true` / `false` — whether a substitution happened (a real boolean; not a model name) |
+| `X-Fleet-Backend` | ✅ | `ollama` / `mlx` / `native` / `vision` / `image` / `transcription` |
+| `X-Fleet-Retries` | ✅ | Retry count (`0` when none) |
+| `X-Fleet-Score` | scorer-routed | Winning routing score (integer) |
+| `X-Fleet-Context-Overflow` | on overflow | `estimated_tokens=N; context_length=M` when input exceeds the node's context window |
+| `X-Thinking-Tokens` / `X-Output-Tokens` / `X-Budget-Used` / `X-Done-Reason` | thinking models, non-streaming | Reasoning-budget diagnostics |
+
+> `X-Fleet-Model` is **retired** (0.8.1) — use `X-Fleet-Served-Model`.
 
 **Error responses:**
 
@@ -99,6 +108,7 @@ data: [DONE]\n\n
 |--------|-----------|
 | 400 | Missing `model` field |
 | 404 | Model not found on any node (auto-pull attempted first if `FLEET_AUTO_PULL=true`) |
+| 429 | Per-client concurrency cap exceeded (`FLEET_CLIENT_MAX_IN_FLIGHT`); includes `Retry-After` |
 | 503 | Model exists but no node can serve it right now |
 
 ---
@@ -1700,6 +1710,38 @@ When `FLEET_NODE_TELEMETRY_LOCAL_SUMMARY=true` (or `--telemetry-local-summary`) 
 **Idempotency:** Platform returns 409 if the same (user, node, day) was already ingested. The node treats 409 as success. Local state file `~/.fleet-manager/telemetry_state.json` tracks the last successfully sent day.
 
 **Retention:** Platform keeps rollups 90 days rolling.
+
+---
+
+## Fleet Management Endpoints
+
+Read + control endpoints for clients that need to reason about capacity or pin
+models (e.g. a benchmark that must hold hardware constant). See
+`docs/plans/client-ergonomics-from-agent-feedback.md`.
+
+### `GET /fleet/status`
+Full fleet state — every node's hardware/cpu/memory/ollama/mlx status plus
+derived `models_loaded_count` and `free_slots` per node, and all queue info.
+
+### `GET /fleet/queue`
+Lightweight queue depths + estimated wait, for high-frequency client backoff.
+
+### `GET /fleet/limits`
+Effective serving constraints so a client can **auto-serialize instead of
+self-DoSing**: `hot_model_cap`, per-node `free_slots`, router `max_retries`,
+and the MLX in-flight caps. Firing more concurrent requests than the box can
+absorb just produces `429`s (or Ollama queue-full 503s) — read this first.
+
+### `POST /fleet/pin`
+Pre-warm a model resident **and** persist the pin (reloaded if evicted).
+Body: `{"model": "<name>", "node_id": "<optional>"}`. One call replaces the
+manual `ollama … keep_alive` dance. Returns `404` if the model isn't on disk
+on any online node. Pin the model you're benchmarking, then send requests
+serially against it (`X-Fleet-Fallback: false` confirms it actually ran).
+
+### `DELETE /fleet/pin/{model}`
+Release a pin so the model can be evicted normally. The `{model}` path segment
+accepts `/` and `:` (e.g. `mlx-community/Foo` or `qwen3-coder:30b`).
 
 ---
 
