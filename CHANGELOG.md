@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Client ergonomics from a benchmark agent's feedback — make the herd's routing
+behavior legible and controllable to callers (see
+`docs/plans/client-ergonomics-from-agent-feedback.md`). Production defaults are
+unchanged: fallback and retry stay ON; the new controls are opt-in per request.
+
+### Added
+
+- **Per-request strict mode.** Send `X-Fleet-No-Fallback: true` (or `"fallback": false` in the body) and the herd serves the *exact* model requested or returns an explicit error — no silent same-category substitution. Overrides the global `FLEET_VRAM_FALLBACK` for that one call, so a benchmark can demand determinism without changing behavior for every other client.
+- **`GET /fleet/limits`.** Reports effective serving constraints — per-node hot-model cap + free slots, the router's retry budget, MLX in-flight caps — so a client can auto-serialize instead of self-DoSing a saturated box.
+- **`POST /fleet/pin` / `DELETE /fleet/pin/{model}`.** One-call model pinning: pre-warm a model resident (evicting LRU as needed) and persist the pin so it's reloaded if evicted; delete to release. Reuses the existing `PinnedModelsStore` + preloader. Replaces the manual `curl :11434 keep_alive` dance.
+
+### Changed
+
+- **Canonical `X-Fleet-*` response headers.** Every proxied response now emits the same set via a shared `fleet_headers()` builder (was 6+ divergent copy-pasted blocks): `X-Fleet-Served-Model` (what actually ran) + `X-Fleet-Requested-Model` (what was asked) + `X-Fleet-Fallback` (a real always-present boolean — previously a model *name* set only when a fallback happened) + `X-Fleet-Node` / `X-Fleet-Backend` / `X-Fleet-Retries`, and `X-Fleet-Score` when scorer-routed. A client reads three headers on **any** endpoint and knows exactly what ran. **`X-Fleet-Model` is retired** in favor of `X-Fleet-Served-Model`.
+- **`/fleet/status` node fields** now include `models_loaded_count` and `free_slots`, via a shared `serialize_node()` serializer (replaces hand-built duplication).
+
+### Fixed
+
+- **Queue-full 503 no longer amplifies floods.** Ollama's `"maximum pending requests exceeded"` 503 is now classified non-retryable — retrying a saturated node just piled more load on it (2026-07-15: a benchmark's requests + 3× retries produced 156 503s in 5 minutes). Other 5xx are still retried.
+
 ## [0.8.0] - 2026-07-14
 
 Distributed MLX inference — run one model across multiple Macs — plus a consolidation of the MLX config surface down to a single `FLEET_NODE_MLX_SERVERS` array. A `mlx_lm.server` can now be wrapped in `mlx.launch` so rank 0 serves HTTP while peer ranks hold shards; the herd sees one endpoint whether one Mac or four are behind it. The `ring` backend works over plain LAN today (memory pooling via pipeline parallelism); the `jaccl` backend targets RDMA over Thunderbolt 5 for tensor-parallel speedup. This release also removes the legacy single-server MLX env vars (see **Removed** — breaking) and fixes a latent bug where a `0.0.0.0` bind made health checks dial `http://0.0.0.0`.

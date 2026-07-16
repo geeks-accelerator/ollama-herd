@@ -1,6 +1,6 @@
 # Client Ergonomics — Feedback from a Benchmark Agent
 
-**Status**: Proposed (roadmap; sequence after 0.8.0 ships)
+**Status**: Implemented 2026-07-15 — #1, #2, #3a, #4, #5 done (batches 1–2, tested + committed). **#3b (per-client concurrency cap) NOT done** — needs `client_ip` plumbed through routes → `QueueEntry` → `QueueManager` + a shed-to-429 path; deferred so it isn't shipped half-tested (concurrency code). Changes are in `[Unreleased]`; version/release timing (0.8.1 vs 0.9.0) decided at publish time.
 **Created**: 2026-07-15
 **Source**: An AI agent tried to benchmark specific models through the herd and lost hours to (a) silent model substitution and (b) queue saturation. Its five recommendations are captured below with an engineering triage against what already exists.
 
