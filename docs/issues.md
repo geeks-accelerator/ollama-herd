@@ -95,6 +95,15 @@ The watchdog detects stuck `/api/chat` and kills `ollama runner` processes via `
 
 ## External Dependencies
 
+### GLM-4.7-Flash ~4× too slow on Ollama (glm4moelite MoE not exploited) `OPEN` (upstream)
+
+**File:** none (upstream Ollama bug — herd serves/measures correctly)
+**Severity:** Medium (affects model selection/benchmarking; no correctness impact)
+
+`glm-4.7-flash` decodes at ~13.7 tok/s on the M3 Ultra via Ollama — the speed of the **dense** `gemma3:27b` — despite being a **30B-A3B MoE with 3B active params** that should match `qwen3-coder:30b-a3b` (~56.7 tok/s). Ollama's `glm4moelite` path doesn't exploit the sparsity and CPU-offloads the experts ([ollama/ollama#14045](https://github.com/ollama/ollama/issues/14045)). Compounded by interleaved thinking (~3,600 output tokens vs qwen's ~400) and a 202,752-token default context (51 s prefill). **Fix:** serve via MLX (verify `mlx-lm` supports `glm4_moe_lite` — [mlx-lm#806](https://github.com/ml-explore/mlx-lm/issues/806) — our pinned 0.31.3 may need an upgrade + re-patch); herd-side, cap `num_ctx` to cut the prefill. Full analysis: [`issues/glm-4.7-flash-ollama-glm4moelite-slow.md`](issues/glm-4.7-flash-ollama-glm4moelite-slow.md).
+
+---
+
 ### DiffusionKit `argmaxtools` crashes on macOS 26+ `FIXED` (local patch)
 
 **File:** `argmaxtools/test_utils.py` (installed dependency, not our code)
