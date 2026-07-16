@@ -356,6 +356,24 @@ class StreamingProxy:
             )
 
     @staticmethod
+    def _is_queue_full_error(e: Exception) -> bool:
+        """True for Ollama's queue-saturation 503 ("maximum pending requests exceeded").
+
+        This is emphatically NOT a transient failure: it means the node's
+        pending-request queue is already full, so retrying just piles more load
+        onto a saturated node — turning a flood into a bigger flood (observed
+        2026-07-15: a benchmark's requests + 3x retries produced 156 503s in
+        5 min).  Classified as non-retryable and surfaced upstream as a 429.
+        """
+        if not isinstance(e, httpx.HTTPStatusError) or e.response.status_code != 503:
+            return False
+        try:
+            body = e.response.text or ""
+        except Exception:  # noqa: BLE001 — body may not be readable; treat as generic 503
+            return False
+        return "maximum pending requests" in body.lower()
+
+    @staticmethod
     def _is_retryable_error(e: Exception) -> bool:
         """Return True if the error suggests a node infrastructure failure worth retrying."""
         if isinstance(
@@ -369,7 +387,12 @@ class StreamingProxy:
             ),
         ):
             return True
-        return isinstance(e, httpx.HTTPStatusError) and e.response.status_code >= 500
+        if isinstance(e, httpx.HTTPStatusError):
+            # Queue-full is a saturation signal — never retry it (would amplify).
+            if StreamingProxy._is_queue_full_error(e):
+                return False
+            return e.response.status_code >= 500
+        return False
 
     async def _stream_with_retry(
         self,

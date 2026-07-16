@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
+from fleet_manager.server.fleet_headers import fleet_headers
 from fleet_manager.server.model_knowledge import is_image_model
 from fleet_manager.server.routes.routing import extract_tags
 
@@ -228,11 +229,13 @@ async def generate_image(request: Request):
         return Response(
             content=png_bytes,
             media_type="image/png",
-            headers={
-                "X-Fleet-Node": best.node_id,
-                "X-Fleet-Model": model,
-                "X-Generation-Time": str(elapsed_ms),
-            },
+            headers=fleet_headers(
+                node_id=best.node_id,
+                served_model=model,
+                requested_model=model,
+                backend="image",
+                extra={"X-Generation-Time": str(elapsed_ms)},
+            ),
         )
     except Exception as e:
         elapsed_ms = int((time.monotonic() - start) * 1000)

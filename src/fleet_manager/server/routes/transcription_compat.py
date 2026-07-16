@@ -10,6 +10,7 @@ from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
+from fleet_manager.server.fleet_headers import fleet_headers
 from fleet_manager.server.routes.routing import extract_tags
 
 logger = logging.getLogger(__name__)
@@ -153,11 +154,13 @@ async def transcribe_audio(request: Request, audio: UploadFile):
 
         return JSONResponse(
             content=result,
-            headers={
-                "X-Fleet-Node": best.node_id,
-                "X-Fleet-Model": model,
-                "X-Transcription-Time": str(elapsed_ms),
-            },
+            headers=fleet_headers(
+                node_id=best.node_id,
+                served_model=model,
+                requested_model=model,
+                backend="transcription",
+                extra={"X-Transcription-Time": str(elapsed_ms)},
+            ),
         )
     except Exception as e:
         elapsed_ms = int((time.monotonic() - start) * 1000)

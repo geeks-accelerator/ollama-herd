@@ -75,6 +75,25 @@ class TestIsRetryableError:
     def test_value_error_is_not_retryable(self):
         assert not StreamingProxy._is_retryable_error(ValueError("something"))
 
+    def test_queue_full_503_is_not_retryable(self):
+        # Ollama's "maximum pending requests exceeded" 503 must NOT be retried —
+        # retrying a saturated node amplifies the flood (2026-07-15 incident).
+        response = MagicMock()
+        response.status_code = 503
+        response.text = '{"error":"server busy, please try again.  maximum pending requests exceeded"}'
+        err = httpx.HTTPStatusError("busy", request=MagicMock(), response=response)
+        assert StreamingProxy._is_queue_full_error(err) is True
+        assert StreamingProxy._is_retryable_error(err) is False
+
+    def test_generic_503_is_still_retryable(self):
+        # A 503 that isn't the queue-full signal is a transient failure — retry it.
+        response = MagicMock()
+        response.status_code = 503
+        response.text = '{"error":"model is loading"}'
+        err = httpx.HTTPStatusError("loading", request=MagicMock(), response=response)
+        assert StreamingProxy._is_queue_full_error(err) is False
+        assert StreamingProxy._is_retryable_error(err) is True
+
 
 class TestStreamWithRetry:
     @pytest.mark.asyncio

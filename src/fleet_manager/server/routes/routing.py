@@ -62,6 +62,30 @@ def extract_tags(body: dict, headers=None) -> list[str]:
     return unique
 
 
+def parse_allow_fallback(body: dict, headers=None) -> bool | None:
+    """Per-request override of the global ``vram_fallback`` setting.
+
+    Sources (header wins over body):
+      - ``X-Fleet-No-Fallback: true``  → strict mode (return ``False``)
+      - ``X-Fleet-No-Fallback: false`` → force fallback (return ``True``)
+      - body ``{"fallback": <bool>}``  → that value
+
+    Returns ``None`` when the client expressed no preference, so
+    :func:`score_with_fallbacks` inherits the global setting.  Lets a
+    benchmark demand the exact model per-request without touching global config.
+    """
+    if headers:
+        raw = (headers.get("x-fleet-no-fallback") or "").strip().lower()
+        if raw in ("1", "true", "yes", "on"):
+            return False
+        if raw in ("0", "false", "no", "off"):
+            return True
+    val = body.get("fallback") if isinstance(body, dict) else None
+    if isinstance(val, bool):
+        return val
+    return None
+
+
 async def score_with_fallbacks(
     inference_req: InferenceRequest,
     scorer,
@@ -70,6 +94,7 @@ async def score_with_fallbacks(
     *,
     proxy=None,
     settings=None,
+    allow_fallback: bool | None = None,
 ) -> tuple[list[RoutingResult], str]:
     """
     Try scoring the primary model, then each fallback in order.
@@ -77,6 +102,13 @@ async def score_with_fallbacks(
     When vram_fallback is enabled: if the best score only has a COLD thermal
     signal (model not loaded), route to the best loaded model in the same
     category instead of triggering a slow cold load.
+
+    ``allow_fallback`` is the **per-request** override of the global
+    ``vram_fallback`` setting: pass ``False`` for strict mode (serve the exact
+    requested model or return no result → the route surfaces an explicit
+    error), ``True`` to force substitution, or ``None`` (default) to inherit
+    the global setting.  This is what lets one benchmark demand determinism
+    without flipping the global flag for every other client.
 
     If no model exists on any node and auto-pull is enabled, pulls the primary
     model onto the best available node and retries.
@@ -86,7 +118,10 @@ async def score_with_fallbacks(
     """
     models_to_try = [inference_req.model] + inference_req.fallback_models
     estimated_tokens = ScoringEngine.estimate_tokens(inference_req.messages)
-    vram_fallback_enabled = settings and getattr(settings, "vram_fallback", False)
+    if allow_fallback is not None:
+        vram_fallback_enabled = allow_fallback
+    else:
+        vram_fallback_enabled = settings and getattr(settings, "vram_fallback", False)
 
     # --- First pass: try all models, check if any are HOT ---
     cold_results: tuple[list[RoutingResult], str] | None = None

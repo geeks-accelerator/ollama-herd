@@ -13,6 +13,8 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from fleet_manager.server.fleet_headers import fleet_headers
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["vision-embedding"])
@@ -195,5 +197,10 @@ async def embed_image(request: Request):
     result["node"] = best.node_id
     return JSONResponse(
         content=result,
-        headers={"X-Fleet-Node": best.node_id},
+        headers=fleet_headers(
+            node_id=best.node_id,
+            served_model=model,
+            requested_model=model,
+            backend="vision",
+        ),
     )

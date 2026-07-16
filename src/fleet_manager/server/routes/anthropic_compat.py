@@ -39,6 +39,7 @@ from fleet_manager.server.anthropic_translator import (
     map_anthropic_model,
     ollama_chunk_to_anthropic_events,
 )
+from fleet_manager.server.fleet_headers import fleet_headers
 from fleet_manager.server.mlx_proxy import (
     MlxModelMissingError,
     MlxQueueFullError,
@@ -53,6 +54,7 @@ from fleet_manager.server.routes.routing import (
     check_context_overflow,
     extract_tags,
     get_all_fleet_models,
+    parse_allow_fallback,
     score_with_fallbacks,
 )
 
@@ -943,8 +945,10 @@ async def messages(
     proxy = request.app.state.streaming_proxy
     registry = request.app.state.registry
 
+    allow_fallback = parse_allow_fallback(inference_req.raw_body, request.headers)
     results, actual_model = await score_with_fallbacks(
         inference_req, scorer, queue_mgr, registry, proxy=proxy, settings=settings,
+        allow_fallback=allow_fallback,
     )
 
     if not results:
@@ -1011,19 +1015,19 @@ async def messages(
     response_future = await queue_mgr.enqueue(entry, process_fn)
     stream = await response_future
 
-    headers = {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Fleet-Node": winner.node_id,
-        "X-Fleet-Score": str(int(winner.score)),
-    }
-    if fallback_used:
-        headers["X-Fleet-Fallback"] = actual_model
-    if entry.retry_count > 0:
-        headers["X-Fleet-Retries"] = str(entry.retry_count)
-    headers.update(check_context_overflow(winner, inference_req, registry))
+    _extra = check_context_overflow(winner, inference_req, registry)
     if anthropic_version:
-        headers["anthropic-version"] = anthropic_version
+        _extra["anthropic-version"] = anthropic_version
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    headers.update(fleet_headers(
+        node_id=winner.node_id,
+        served_model=actual_model,
+        requested_model=local_model,
+        backend="mlx" if actual_model.startswith("mlx:") else "ollama",
+        score=winner.score,
+        retries=entry.retry_count,
+        extra=_extra,
+    ))
 
     if body.stream:
         async def _sse_generator():

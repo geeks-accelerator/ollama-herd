@@ -12,11 +12,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
+from fleet_manager.server.fleet_headers import fleet_headers
 from fleet_manager.server.routes.ollama_compat import _build_thinking_headers
 from fleet_manager.server.routes.routing import (
     check_context_overflow,
     extract_tags,
     get_all_fleet_models,
+    parse_allow_fallback,
     score_with_fallbacks,
 )
 
@@ -90,10 +92,13 @@ async def chat_completions(request: Request):
     registry = request.app.state.registry
     settings = request.app.state.settings
 
-    # Score with fallback support + auto-pull
+    # Score with fallback support + auto-pull.  A per-request strict-mode
+    # signal (X-Fleet-No-Fallback header / "fallback" body field) overrides
+    # the global vram_fallback setting for this call only.
+    allow_fallback = parse_allow_fallback(body, request.headers)
     results, actual_model = await score_with_fallbacks(
         inference_req, scorer, queue_mgr, registry,
-        proxy=proxy, settings=settings,
+        proxy=proxy, settings=settings, allow_fallback=allow_fallback,
     )
 
     if not results:
@@ -147,18 +152,17 @@ async def chat_completions(request: Request):
     response_future = await queue_mgr.enqueue(entry, process_fn)
     stream = await response_future
 
-    # Build response headers
-    headers = {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Fleet-Node": winner.node_id,
-        "X-Fleet-Score": str(int(winner.score)),
-    }
-    if fallback_used:
-        headers["X-Fleet-Fallback"] = actual_model
-    if entry.retry_count > 0:
-        headers["X-Fleet-Retries"] = str(entry.retry_count)
-    headers.update(check_context_overflow(winner, inference_req, registry))
+    # Build response headers — canonical X-Fleet-* set via the shared builder.
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    headers.update(fleet_headers(
+        node_id=winner.node_id,
+        served_model=actual_model,
+        requested_model=model,
+        backend="mlx" if actual_model.startswith("mlx:") else "ollama",
+        score=winner.score,
+        retries=entry.retry_count,
+        extra=check_context_overflow(winner, inference_req, registry),
+    ))
 
     if inference_req.stream:
 
