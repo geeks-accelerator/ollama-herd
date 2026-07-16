@@ -237,6 +237,11 @@ async def _collect_openai_stream(lines: AsyncIterator[str]) -> dict:
     top_usage: dict | None = None
     # Per-choice accumulators, keyed by choice index
     contents: dict[int, list[str]] = {}
+    # Reasoning models (GLM-4.7-Flash) stream chain-of-thought in a separate
+    # ``reasoning`` / ``reasoning_content`` delta field; content stays empty
+    # until thinking ends.  Accumulate it or the rebuilt non-stream message
+    # loses the model's entire output on short-budget requests.
+    reasonings: dict[int, list[str]] = {}
     roles: dict[int, str] = {}
     finish_reasons: dict[int, str | None] = {}
     # Per-choice per-tool accumulators:
@@ -282,6 +287,12 @@ async def _collect_openai_stream(lines: AsyncIterator[str]) -> dict:
             content_piece = delta.get("content")
             if isinstance(content_piece, str) and content_piece:
                 contents.setdefault(idx, []).append(content_piece)
+            # Reasoning delta (see accumulator note above)
+            reasoning_piece = delta.get("reasoning") or delta.get(
+                "reasoning_content"
+            )
+            if isinstance(reasoning_piece, str) and reasoning_piece:
+                reasonings.setdefault(idx, []).append(reasoning_piece)
             # Role usually comes on the first delta of a choice
             role_piece = delta.get("role")
             if isinstance(role_piece, str) and role_piece:
@@ -312,7 +323,11 @@ async def _collect_openai_stream(lines: AsyncIterator[str]) -> dict:
 
     # Build non-stream choices
     all_indices = sorted(
-        set(contents) | set(roles) | set(finish_reasons) | set(tool_calls),
+        set(contents)
+        | set(reasonings)
+        | set(roles)
+        | set(finish_reasons)
+        | set(tool_calls),
     )
     out_choices: list[dict] = []
     for idx in all_indices:
@@ -320,6 +335,8 @@ async def _collect_openai_stream(lines: AsyncIterator[str]) -> dict:
             "role": roles.get(idx, "assistant"),
             "content": "".join(contents.get(idx, [])),
         }
+        if idx in reasonings:
+            message["reasoning"] = "".join(reasonings[idx])
         if idx in tool_calls:
             tools_list: list[dict] = []
             for t_idx in sorted(tool_calls[idx]):
@@ -1212,7 +1229,12 @@ def openai_sse_to_anthropic_events(
         )
 
     # --- Text content ---
-    text = delta.get("content")
+    # Reasoning models stream their chain-of-thought in ``reasoning`` /
+    # ``reasoning_content`` deltas (content stays empty until thinking ends).
+    # Coalesce those into the visible text stream so a reasoning model's
+    # output isn't silently dropped (GLM-4.7-Flash streams only reasoning
+    # until it finishes).  A given delta carries one or the other.
+    text = delta.get("content") or delta.get("reasoning") or delta.get("reasoning_content")
     if text:
         # Defensive: strip Qwen chat-template turn-boundary tokens that can
         # leak into the output stream at long context.  The `stop` parameter
@@ -1403,6 +1425,16 @@ def build_anthropic_non_streaming_response(
     choice = (openai_response.get("choices") or [{}])[0]
     message = choice.get("message", {}) or {}
     content_blocks: list[dict] = []
+
+    # Reasoning models (e.g. GLM-4.7-Flash) put their chain-of-thought in a
+    # separate ``reasoning`` / ``reasoning_content`` field, NOT ``content`` —
+    # and only emit ``content`` once thinking finishes.  Surface it as an
+    # Anthropic ``thinking`` block (before the answer, per the Anthropic
+    # ordering) so the caller actually sees the model's output instead of an
+    # empty response.  Without this, any MLX reasoning model returns nothing.
+    reasoning = message.get("reasoning") or message.get("reasoning_content")
+    if reasoning:
+        content_blocks.append({"type": "thinking", "thinking": reasoning})
 
     text = message.get("content")
     if text:

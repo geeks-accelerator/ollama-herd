@@ -928,6 +928,39 @@ async def test_collect_text_only_concatenates_content():
 
 
 @_pytest.mark.asyncio
+async def test_collect_accumulates_reasoning_field():
+    """Reasoning models (GLM-4.7-Flash) stream chain-of-thought in a separate
+    ``reasoning`` delta; content stays empty until thinking ends.  The
+    accumulator must keep it or a short-budget response loses the entire
+    output (the herd would surface an empty message)."""
+    lines = [
+        'data: {"id":"g1","model":"glm","choices":[{"index":0,"delta":'
+        '{"role":"assistant","reasoning":"Let me "},"finish_reason":null}]}',
+        'data: {"id":"g1","choices":[{"index":0,"delta":{"reasoning":"think. "},'
+        '"finish_reason":null}]}',
+        'data: {"id":"g1","choices":[{"index":0,"delta":{"content":"391"},'
+        '"finish_reason":"stop"}]}',
+        "data: [DONE]",
+    ]
+    out = await _collect_openai_stream(_as_aiter(lines))
+    msg = out["choices"][0]["message"]
+    assert msg["reasoning"] == "Let me think. "
+    assert msg["content"] == "391"
+
+
+@_pytest.mark.asyncio
+async def test_collect_accepts_reasoning_content_alias():
+    """Some mlx_lm builds emit ``reasoning_content`` instead of ``reasoning``."""
+    lines = [
+        'data: {"id":"g2","choices":[{"index":0,"delta":'
+        '{"reasoning_content":"hmm"},"finish_reason":"length"}]}',
+        "data: [DONE]",
+    ]
+    out = await _collect_openai_stream(_as_aiter(lines))
+    assert out["choices"][0]["message"]["reasoning"] == "hmm"
+
+
+@_pytest.mark.asyncio
 async def test_collect_captures_trailing_usage_chunk():
     """mlx_lm emits a final chunk with empty choices + populated usage when
     include_usage=True.  Must land on the response."""
