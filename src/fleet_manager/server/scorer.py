@@ -507,37 +507,45 @@ class ScoringEngine:
         return max(1, text_tokens + image_count * ScoringEngine.IMAGE_TOKENS_PER_IMAGE)
 
     def _estimate_model_size(self, model: str, node: NodeState) -> float:
-        """Estimate model size in GB. Check loaded models first, then all nodes."""
-        for m in node.ollama.models_loaded:
-            if m.name == model:
-                return m.size_gb
+        """Model size in GB — real data when a node reports it, else a guess.
 
+        Delegates to the **shared** estimator so there is one definition of "how
+        big is this model". There used to be two — this one and the preloader's —
+        with different name heuristics and different wrong answers. When the
+        preloader's was taught to read Ollama's real ``/api/tags`` sizes, this
+        copy kept guessing from the name, and it guessed **10 GB for
+        `qwen3-coder:480b`** (really 290 GB, ~348 GB resident) and 10 GB for
+        `llama4:maverick` (244 GB): its heuristic knew `671b` and `405b` but not
+        `480b`, and anything unrecognised fell through to a 10 GB default.
+
+        This is the path a **client request** takes, so that 29× under-estimate
+        was load-bearing: a request for the 480b was scored as "10 GB, plenty of
+        room", Ollama loaded 348 GB, and the box kernel-panicked on
+        ``watchdog timeout`` — twice on 2026-07-17, from two different callers.
+        Duplicated logic doesn't drift symmetrically; it drifts until one copy
+        is dangerous.
+        """
+        from fleet_manager.server.model_preloader import (
+            _UNKNOWN_MODEL_SIZE_GB,
+        )
+        from fleet_manager.server.model_preloader import (
+            _estimate_model_size as shared_estimate,
+        )
+
+        # This node's own report — on-disk size from /api/tags, or resident
+        # size if it's already loaded — is ground truth.
+        size = shared_estimate(model, node)
+        if size != _UNKNOWN_MODEL_SIZE_GB:
+            return size
+
+        # Unknown here; a peer may have it resident and know the real number.
         for other in self._registry.get_all_nodes():
-            if other.ollama:
-                for m in other.ollama.models_loaded:
-                    if m.name == model:
-                        return m.size_gb
+            if other is node or not getattr(other, "ollama", None):
+                continue
+            peer = shared_estimate(model, other)
+            if peer != _UNKNOWN_MODEL_SIZE_GB:
+                return peer
 
-        name_lower = model.lower()
-        if "671b" in name_lower:
-            return 370.0
-        if "405b" in name_lower:
-            return 230.0
-        if "70b" in name_lower:
-            return 40.0
-        if "32b" in name_lower or "8x7b" in name_lower:
-            return 20.0
-        if "22b" in name_lower:
-            return 14.0
-        if "14b" in name_lower:
-            return 9.0
-        if "7b" in name_lower or "8b" in name_lower:
-            return 5.0
-        if "3b" in name_lower or "4b" in name_lower:
-            return 2.5
-        if "1b" in name_lower or "0.5b" in name_lower:
-            return 1.0
-        if "embed" in name_lower:
-            return 0.3
-        logger.debug(f"Model size unknown for '{model}', defaulting to 10.0GB")
-        return 10.0
+        # Genuinely unknown fleet-wide — shared_estimate already logged why and
+        # returns a deliberately pessimistic value (fail toward "don't load").
+        return size

@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from fleet_manager.models.config import ServerSettings
-from fleet_manager.models.node import MemoryPressure, NodeStatus
+from fleet_manager.models.node import MemoryPressure
 from fleet_manager.server.registry import NodeRegistry
 from fleet_manager.server.scorer import ScoringEngine
-
 from tests.conftest import make_heartbeat
 
 
@@ -472,3 +469,56 @@ class TestScoreLoadedModels:
         results = scorer.score_loaded_models(None, {})
         assert len(results) == 2
         assert results[0][0].score >= results[1][0].score
+
+
+class TestScorerUsesRealModelSizes:
+    """The scorer must not guess sizes from model names.
+
+    It kept a private copy of the size heuristic after the preloader's was
+    taught to read Ollama's real /api/tags sizes. That copy knew `671b` and
+    `405b` but not `480b`, so anything unrecognised fell through to a 10 GB
+    "default" — and this is the path a client REQUEST takes. A request for
+    qwen3-coder:480b (290 GB on disk, ~348 GB resident) was scored as "10 GB,
+    plenty of room"; Ollama loaded it and the box kernel-panicked twice on
+    2026-07-17 from two different callers.
+    """
+
+    @staticmethod
+    def _engine():
+        from types import SimpleNamespace
+
+        from fleet_manager.server.scorer import ScoringEngine
+        return ScoringEngine(
+            ServerSettings(), SimpleNamespace(get_all_nodes=lambda: []),
+        )
+
+    @staticmethod
+    def _node(sizes: dict[str, float]):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            ollama=SimpleNamespace(models_loaded=[], models_available_sizes=dict(sizes)),
+        )
+
+    def test_uses_real_disk_size_not_the_name(self):
+        node = self._node({"qwen3-coder:480b-a35b-q4_K_M": 290.1})
+        got = self._engine()._estimate_model_size("qwen3-coder:480b-a35b-q4_K_M", node)
+        assert got == 290.1, "the scorer used to call this 10GB and route it into a panic"
+
+    def test_no_giant_model_is_ever_estimated_small(self):
+        """Even with no node data, a huge model must never look loadable."""
+        eng = self._engine()
+        node = self._node({})
+        for m in (
+            "qwen3-coder:480b-a35b-q4_K_M",
+            "deepseek-v3:671b-q4_K_M",
+            "llama4:maverick",
+        ):
+            assert eng._estimate_model_size(m, node) >= 100.0, f"{m} estimated dangerously small"
+
+    def test_resident_size_still_wins_for_loaded_models(self):
+        from types import SimpleNamespace
+        loaded = SimpleNamespace(name="gpt-oss:120b", size_gb=76.0)
+        node = SimpleNamespace(
+            ollama=SimpleNamespace(models_loaded=[loaded], models_available_sizes={}),
+        )
+        assert self._engine()._estimate_model_size("gpt-oss:120b", node) == 76.0

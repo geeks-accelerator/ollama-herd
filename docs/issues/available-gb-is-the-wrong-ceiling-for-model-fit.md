@@ -78,3 +78,53 @@ Deliberately left open. The failure window is narrow and self-healing, and picki
 ## Suggested first step
 
 Instrument before changing: log `available_gb` alongside `wired`/`inactive`/`free` and the resident-model set on every heartbeat for a day, then check how often the dip actually coincides with an elimination. That tells us whether to fix the metric (option 1) or just the volatility (option 2) — and gives a baseline to verify against.
+
+---
+
+## Update 2026-07-17 — this metric has now kernel-panicked the box twice
+
+**Both panics were the same model**, requested by two different callers, and both were `watchdog timeout: no checkins from watchdogd` (a *starvation* panic — userspace never got a chance to log anything):
+
+| Panic | Trigger | Model |
+|---|---|---|
+| 02:11 | a `/fleet/pin` test that fell through to a real load | `qwen3-coder:480b` |
+| 04:08 | a client agent's `run-matrix.sh` run, whose `config.sh` defaults to the full 8-model roster starting with the 480b | `qwen3-coder:480b` |
+
+### Contributing cause now FIXED: the scorer had its own estimator
+
+The scorer kept a **private copy** of the size heuristic. After the preloader's copy was taught to read Ollama's real `/api/tags` sizes, the scorer's kept guessing from the name — and it knew `671b` and `405b` but not `480b`, so it fell through to a **10 GB "default"**:
+
+```
+scorer said  qwen3-coder:480b-a35b-q4_K_M =  10.0 GB   (really 290 GB, ~348 GB resident)
+scorer said  llama4:maverick              =  10.0 GB   (really 244 GB)
+```
+
+**This is the path a client request takes.** The 480b was scored "10 GB, plenty of room", routed, and Ollama loaded 348 GB. Fixed: the scorer now delegates to the shared estimator (real sizes first). Duplicated logic doesn't drift symmetrically — it drifts until one copy is dangerous.
+
+### But the estimator fix alone does NOT prevent this
+
+With correct sizes, the gate still passes:
+
+```
+available 431GB, model resident ~348GB  ->  348 < 431  ->  LOADS  ->  panic
+```
+
+348 GB of a 512 GB box leaves 164 GB — minus the OS, a 20 GB VM, the MLX servers (~34 GB), and the **pinned `gpt-oss:120b` (76 GB) that the fleet exists to serve**. The box starves.
+
+### The missing check: reserve the fleet's committed set
+
+`available` is a snapshot of "free right now". It does **not** account for memory the fleet has *committed* to but hasn't materialised — chiefly **pinned models that aren't currently resident**. At the moment the 480b loaded, gpt-oss was not resident, so its 76 GB looked free. It wasn't; it was spoken for.
+
+```
+available 431GB - pinned-but-not-resident gpt-oss (76 x 1.2 = 91GB) = 340GB
+model resident 348GB > 340GB  ->  REFUSE     <-- the check we needed
+```
+
+**A flat "max fraction of total RAM" cap was tried and rejected.** At 0.6 it eliminates a 70B model on a 64 GB node — a legitimate, common deployment — while still being the wrong model of the problem (it ignores what else must be resident). The fraction isn't the invariant; the **committed set** is.
+
+### Suggested design
+
+`available_for_new_model = available_gb − Σ(resident cost of pinned models not currently loaded)`, then keep the existing `× 1.2` resident-overhead comparison. This reuses machinery that already exists: the pin store, real per-model sizes from `/api/tags`, and the `_PIN_MEMORY_BUDGET_FRACTION` precedent in `/fleet/pin`'s admission control. Open questions: whether MLX servers' footprint should also be reserved (they're separate processes, so they're already outside `available`), and whether the guard belongs in the scorer's `_eliminate`, the preloader's gate, or both.
+
+**Operationally, right now:** `qwen3-coder:480b` (290 GB) and `deepseek-v3:671b` (404 GB) simply do not fit this fleet alongside its own committed set. Until the guard exists, they should not be requested or benchmarked on this box.
+
