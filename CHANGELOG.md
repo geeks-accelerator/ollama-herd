@@ -5,7 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status:** `0.8.0`–`0.8.2` are developed and soaked on the local fleet but **not yet published**. The latest release on PyPI and git tags is **`0.7.0`**. The accumulated 0.8.x work will publish together as `0.8.2` — the dated headers below mark when each milestone was cut on `main`, not a PyPI release.
+> **Release status:** the latest release on PyPI and git tags is **`0.7.0`**. Everything below it — `0.9.0` and the `0.8.x` milestones it supersedes — is developed and soaked on the local fleet but **not yet published**, and will ship together as **`0.9.0`**. The dated `0.8.x` headers mark when each milestone was cut on `main`, not a PyPI release.
+
+## [0.9.0] - Unreleased
+
+**The first release since `0.7.0`, and it contains breaking changes.** Nothing between `0.7.0` and this was ever published, so upgrading from `0.7.0` lands **all** of `0.8.0`, `0.8.1`, and `0.8.2` at once — see those sections below for the full detail. This section is the upgrade guide: what breaks, and what's new enough to matter.
+
+Versioned `0.9.0` rather than `0.8.2` deliberately: a `0.7.0 → 0.8.2` jump reads like "two patches on a release I already have," which would invite a casual deploy straight into removed env vars and a retired header. Under 0.x SemVer, MINOR is where breaking changes belong.
+
+### ⚠️ Breaking — read before upgrading from 0.7.0
+
+- **Legacy single-server MLX env vars are gone.** `FLEET_NODE_MLX_AUTO_START`, `FLEET_NODE_MLX_AUTO_START_MODEL`, `FLEET_NODE_MLX_URL`, `FLEET_NODE_MLX_KV_BITS`, `FLEET_NODE_MLX_PROMPT_CACHE_SIZE/BYTES`, `FLEET_NODE_MLX_DRAFT_MODEL`, `FLEET_NODE_MLX_NUM_DRAFT_TOKENS`. **Migrate to a one-entry `FLEET_NODE_MLX_SERVERS` array.** (`FLEET_MLX_ENABLED` and the server-side `FLEET_MLX_URL` fallback remain; the `herd`/`herd-node` CLI, `FLEET_*` internals and `~/.fleet-manager/` are unchanged.)
+- **`X-Fleet-Model` is retired** in favour of `X-Fleet-Served-Model`. `X-Fleet-Fallback` also changed meaning: it is now an always-present `"true"`/`"false"` boolean, not a model name emitted only on substitution.
+- **Queue-full is now `429`, not `503`.** Ollama's "maximum pending requests exceeded" is no longer retried (retrying a saturated node amplified the flood).
+- **`POST /fleet/pin` can now refuse.** `409` when the pinned set can't physically co-reside (`"force": true` overrides), `400` for an unknown `node_id`. Previously every pin was accepted silently — which is how a 307 GB pinned set on a 512 GB box produced hours of thrash.
+- **Image requests can now fail instead of silently succeeding.** A request carrying images will no longer fall back to a model that can't see them; it fails loudly rather than returning a confident answer about an image the model never received.
+- **Backend client errors surface as themselves.** A 4xx from Ollama (e.g. "model does not support tools") now reaches you as that 4xx with the backend's message, instead of an opaque `500`.
+
+### Headline features
+
+- **Distributed MLX inference** — run one model across multiple Macs via `mlx.launch` (`ring` over LAN today; `jaccl`/Thunderbolt 5 targeted). The herd sees one endpoint whether one Mac or four are behind it.
+- **Fleet control API** — `GET /fleet/limits`, `POST /fleet/pin` (with `wait` for readiness), `DELETE /fleet/pin/{model}`.
+- **`mlx:` models reachable over the OpenAI endpoint**, not just Anthropic — OpenAI-only clients get the fast backend instead of a slow fallback.
+- **Canonical `X-Fleet-*` headers** on every proxied response, so a caller can always tell what actually ran.
+- **Per-request strict mode** (`X-Fleet-No-Fallback`) and a **per-client concurrency cap** (`FLEET_CLIENT_MAX_IN_FLIGHT`, default off).
+
+### Notable fixes
+
+- **Image requests are never answered by a blind model** (the 2026-04-23 incident class — see below).
+- **Failed-request traces no longer vanish**, so the dashboard's success rate stops hiding failures.
+- **Model sizes come from Ollama's real `/api/tags` data** instead of being guessed from the name — the guess called a 290 GB model "10 GB" and defeated the memory gate.
+- **The hot-model cap is no longer hardcoded to 3** — nodes report their own, and `free_slots` follows it.
+
+### Recommended alongside this release
+
+**Upgrade Ollama to `0.32.1`.** Not required, but measured on the same hardware: `glm-4.7-flash` **13.7 → 77.8 tok/s** (the `glm4moelite` expert-offload bug is fixed upstream), `gpt-oss:120b` 50.9 → 74.5, and prefix caching demonstrably works. See `docs/plans/ollama-0.32-upgrade-and-mlx-evaluation.md`.
+
+---
 
 ## [0.8.2] - Unreleased
 
