@@ -8,7 +8,11 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from fleet_manager.server.serializers import OLLAMA_HOT_MODEL_CAP, serialize_node
+from fleet_manager.server.serializers import (
+    OLLAMA_HOT_MODEL_CAP,
+    hot_model_cap_for,
+    serialize_node,
+)
 
 router = APIRouter(tags=["fleet"])
 
@@ -60,18 +64,22 @@ async def fleet_limits(request: Request):
     node_limits = []
     for node in registry.get_all_nodes():
         loaded = len(node.ollama.models_loaded) if node.ollama else 0
+        cap = hot_model_cap_for(node)
         node_limits.append({
             "node_id": node.node_id,
             "status": node.status.value,
-            "hot_model_cap": OLLAMA_HOT_MODEL_CAP,
+            # Per-node: each node reports its own OLLAMA_MAX_LOADED_MODELS.
+            "hot_model_cap": cap,
             "models_loaded": loaded,
-            "free_slots": max(0, OLLAMA_HOT_MODEL_CAP - loaded),
+            "free_slots": max(0, cap - loaded),
         })
 
     return {
         # Router-side retry budget (per request, across nodes).
         "max_retries": getattr(settings, "max_retries", 0),
-        # macOS Ollama hot-load cap — the same on every node.
+        # Fallback cap for nodes that don't report one. Kept for compatibility;
+        # `nodes[].hot_model_cap` is authoritative and can differ per node,
+        # since each reports its own OLLAMA_MAX_LOADED_MODELS.
         "hot_model_cap": OLLAMA_HOT_MODEL_CAP,
         # Per-model in-flight cap the MLX backend enforces (Ollama uses
         # OLLAMA_NUM_PARALLEL, set outside the herd on the node).
@@ -79,6 +87,79 @@ async def fleet_limits(request: Request):
         "mlx_max_queue_depth": getattr(settings, "mlx_max_queue_depth", 10),
         "nodes": node_limits,
         "timestamp": time.time(),
+    }
+
+
+#: Fraction of a node's RAM the pinned set may claim. Pins must all be resident
+#: *simultaneously*, so whatever they take is permanently unavailable for the
+#: load-and-swap the fleet exists to do. Leave room for the OS, MLX servers
+#: (separate processes, ~34GB on our box), and non-pinned models to cycle.
+_PIN_MEMORY_BUDGET_FRACTION = 0.8
+
+#: Resident-size multiplier over on-disk weights — the same 1.2 the preloader's
+#: memory gate uses, kept consistent on purpose. A model costs more resident
+#: than it does on disk (gpt-oss:120b: 65GB on disk, 76GB resident at 131K
+#: context ≈ +17%). Summing raw disk sizes under-counts and let a 355GB pin set
+#: "fit" a 512GB box that in practice thrashed.
+_PIN_RESIDENT_OVERHEAD = 1.2
+
+
+def _pin_would_not_fit(model: str, node_id: str | None, registry, store) -> dict | None:
+    """Return a refusal payload if pinning ``model`` over-commits the node.
+
+    Returns None when the pin is fine. Uses real model sizes (nodes report
+    on-disk sizes from /api/tags), so this is arithmetic on ground truth rather
+    than the name-guessing that let a 290GB model look like 10GB.
+    """
+    from fleet_manager.server.model_preloader import _estimate_model_size
+
+    node = registry.get_node(node_id) if node_id else None
+    if node is None:
+        # No specific target — judge against the roomiest online node, since
+        # that's where the loader would put it.
+        online = [n for n in registry.get_online_nodes() if n.memory]
+        if not online:
+            return None  # nothing to reason about; let the normal path 404/503
+        node = max(online, key=lambda n: n.memory.total_gb or 0)
+
+    total_gb = (node.memory.total_gb if node.memory else 0) or 0
+    if total_gb <= 0:
+        return None  # unknown capacity — don't block on a guess
+
+    per_node = store.load() or {}
+    already = [m for m in (per_node.get(node.node_id) or []) if m != model]
+    budget = total_gb * _PIN_MEMORY_BUDGET_FRACTION
+
+    # Compare *resident* cost, not on-disk weights — see _PIN_RESIDENT_OVERHEAD.
+    sizes = {
+        m: _estimate_model_size(m, node) * _PIN_RESIDENT_OVERHEAD
+        for m in [*already, model]
+    }
+    pinned_gb = sum(sizes[m] for m in already)
+    new_gb = sizes[model]
+    if pinned_gb + new_gb <= budget:
+        return None
+
+    return {
+        "ok": False,
+        "model": model,
+        "error": (
+            f"Pinning '{model}' (~{new_gb:.0f}GB resident) would bring the "
+            f"pinned set on '{node.node_id}' to ~{pinned_gb + new_gb:.0f}GB, "
+            f"over the {budget:.0f}GB budget "
+            f"({_PIN_MEMORY_BUDGET_FRACTION:.0%} of {total_gb:.0f}GB). Pinned "
+            f"models must ALL stay resident simultaneously, so over-committing "
+            f"makes the preloader evict and reload them in a loop forever. "
+            f"Unpin something first (DELETE /fleet/pin/<model>), or pass "
+            f'"force": true if you know this fits.'
+        ),
+        "node_id": node.node_id,
+        "requested_gb": round(new_gb, 1),
+        "already_pinned_gb": round(pinned_gb, 1),
+        "budget_gb": round(budget, 1),
+        "node_total_gb": round(total_gb, 1),
+        "already_pinned": {m: round(sizes[m], 1) for m in already},
+        "hint": "Pin only what you need resident; unpin after benchmarking.",
     }
 
 
@@ -118,6 +199,28 @@ async def fleet_pin(request: Request):
     proxy = request.app.state.streaming_proxy
     store = request.app.state.pinned_store
 
+    # Validate the target node exists. Without this, a pin to a node_id that
+    # never existed (or stopped existing after a rename) is accepted and rots
+    # in the store forever — every preloader cycle logs "target node X doesn't
+    # have <model> on disk; falling back to best-mem node" and loads it
+    # somewhere else anyway. Found 2026-07-17: a `gemma3:27b` pin targeting
+    # "Neons-Mac-Studio" long after that node became "bb".
+    if node_id and registry.get_node(node_id) is None:
+        known = [n.node_id for n in registry.get_all_nodes()]
+        return JSONResponse(
+            {
+                "ok": False,
+                "model": model,
+                "error": (
+                    f"node_id '{node_id}' is not in the fleet. "
+                    f"Known nodes: {known or '(none online)'}. "
+                    f"Omit node_id to let the router choose."
+                ),
+                "known_nodes": known,
+            },
+            status_code=400,
+        )
+
     # MLX models are always-resident subprocesses configured via
     # FLEET_NODE_MLX_SERVERS — they can't be loaded on demand, so pinning is a
     # no-op.  Report readiness from mlx_servers health instead of warming
@@ -142,6 +245,20 @@ async def fleet_pin(request: Request):
                 "FLEET_NODE_MLX_SERVERS); pin is a no-op."
             ),
         }
+
+    # Admission control — refuse a pin that can't physically co-reside with the
+    # pins already in place.  Pins bypass every other safety net: the preloader
+    # reloads them unconditionally ("no recency check — user pinned it"), and
+    # nothing else asks whether the pinned SET fits.  On 2026-07-17 a client
+    # agent benchmarking models pinned each one as our own docs instructed and
+    # never unpinned; the set reached 307GB (incl. a 290GB model) on a 512GB
+    # box, and the preloader spent hours evicting and reloading them in a loop.
+    # The agent did nothing wrong — we accepted every pin silently.
+    # `force: true` overrides for operators who know what they're doing.
+    if not bool(body.get("force", False)):
+        refusal = _pin_would_not_fit(model, node_id, registry, store)
+        if refusal is not None:
+            return JSONResponse(refusal, status_code=409)
 
     # Distinguish the failure causes BEFORE relying on the loader's bare bool.
     # `_load_model_on_best_node` returns False for three different reasons —

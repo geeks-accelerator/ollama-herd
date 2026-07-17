@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import os
 import platform
 import shutil
 import subprocess
@@ -463,6 +464,24 @@ async def collect_heartbeat(
     except Exception as e:  # noqa: BLE001
         logger.debug(f"Model sizes unavailable: {type(e).__name__}: {e}")
 
+    # Report the local Ollama's configured hot-model cap so the router doesn't
+    # have to hardcode one.  We read it from our own environment: the node agent
+    # manages the Ollama on its own host and both are started from the same
+    # environment, so this is the closest thing to ground truth available —
+    # Ollama exposes no "what's your max_loaded_models" endpoint.  0 means
+    # "unset/unknown"; the router then falls back to Ollama's documented default.
+    max_loaded_models = 0
+    raw_cap = os.environ.get("OLLAMA_MAX_LOADED_MODELS", "").strip()
+    if raw_cap:
+        try:
+            parsed = int(raw_cap)
+            # Ollama parses this as an unsigned int — a negative value silently
+            # fails there and falls back to its default, so don't report it as
+            # if it were honored.
+            max_loaded_models = parsed if parsed > 0 else 0
+        except ValueError:
+            logger.debug(f"OLLAMA_MAX_LOADED_MODELS not an int: {raw_cap!r}")
+
     # MLX backend — the supervisor set drives heartbeat.mlx_servers; each
     # healthy server's model is added to models_available with an mlx: prefix.
     mlx_server_infos: list = []
@@ -539,6 +558,7 @@ async def collect_heartbeat(
             models_loaded=models_loaded,
             models_available=models_available,
             models_available_sizes=models_available_sizes,
+            max_loaded_models=max_loaded_models,
             requests_active=requests_active,
         ),
         ollama_host=_make_lan_reachable_url(ollama_host, lan_ip),

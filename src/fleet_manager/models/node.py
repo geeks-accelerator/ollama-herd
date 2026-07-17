@@ -93,6 +93,13 @@ class OllamaMetrics(BaseModel):
     # that defaulted to 10 GB and called a 290 GB model "10 GB", defeating the
     # preloader's memory gate entirely (2026-07-17 thrash loop).
     models_available_sizes: dict[str, float] = Field(default_factory=dict)
+    # The node's OLLAMA_MAX_LOADED_MODELS, so the router stops hardcoding a
+    # hot-model cap it can't actually know.  0 = not reported (older agent, or
+    # the var isn't set) → the router falls back to Ollama's documented default.
+    # Measured 2026-07-17 on Ollama 0.32.1: with this set to 10 we observed 4
+    # concurrent residents, disproving the long-documented "hardcoded 3-model
+    # cap on macOS" that `free_slots` was built on.
+    max_loaded_models: int = 0
     requests_active: int = 0
 
 

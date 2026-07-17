@@ -1764,9 +1764,38 @@ client learns the truth instead of racing).
 `FLEET_NODE_MLX_SERVERS`), so pinning is a no-op: the call skips warming and
 reports `ready` from the MLX server's health, with an explanatory `note`.
 
+> ### ⚠️ Unpin when you're done — pins are forever
+>
+> **A pin persists until you delete it.** It is not scoped to your session, and
+> nothing expires it. The preloader reloads pinned models *unconditionally* —
+> no recency check, no budget — because you asked for them.
+>
+> **Pinned models must all stay resident simultaneously.** Pin more than the box
+> can hold and they evict each other, and the preloader reloads them in a loop,
+> forever. A benchmark that pinned each model it tested and never unpinned
+> reached 307 GB of pins (including a 290 GB model) on a 512 GB box and produced
+> hours of ~300 GB disk→memory churn (2026-07-17).
+>
+> **If you're benchmarking, the pattern is:**
+> ```
+> POST /fleet/pin   {"model": "X", "wait": true}   # pin + wait until resident
+> …run your requests against X…
+> DELETE /fleet/pin/X                              # ← DO NOT SKIP THIS
+> ```
+>
+> Since 0.8.2 the herd refuses a pin that can't physically co-reside with your
+> existing pins (**`409`**, with the arithmetic and what's already pinned).
+> That's a backstop, not a substitute for unpinning — check `GET /fleet/limits`
+> and `GET /fleet/status` (`pinned` per node) to see what you're holding.
+
 Pin the model you're benchmarking (use `wait: true` to drop your own readiness
 loop), then send requests serially against it (`X-Fleet-Fallback: false`
-confirms it actually ran).
+confirms it actually ran) — **then unpin it.**
+
+**Errors:** `400` model missing / unknown `node_id` (the response lists
+`known_nodes`) · `404` model not on disk anywhere · `409` pin would over-commit
+the node (pass `"force": true` to override) · `503` on disk but wouldn't load
+(usually insufficient free memory).
 
 ### `DELETE /fleet/pin/{model}`
 Release a pin so the model can be evicted normally. The `{model}` path segment

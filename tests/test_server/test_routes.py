@@ -91,8 +91,15 @@ def create_test_app(tmp_path=None) -> FastAPI:
         from pathlib import Path as _Path
 
         from fleet_manager.server.pinned_models import PinnedModelsStore
+        # A UNIQUE pin file per app instance. This used to be a fixed
+        # /tmp/herd-test-pins.json, which persists across pytest runs — so a
+        # pin written by one test leaked into every later test AND every future
+        # run, and the pollution was invisible until pin admission control
+        # started reading existing pins (2026-07-17).
+        import uuid as _uuid
         app.state.pinned_store = PinnedModelsStore(
-            _Path(str(tmp_path)) / "pins.json" if tmp_path else _Path("/tmp/herd-test-pins.json")
+            _Path(str(tmp_path)) / "pins.json" if tmp_path
+            else _Path(f"/tmp/herd-test-pins-{_uuid.uuid4().hex}.json")
         )
 
         if tmp_path is not None:
