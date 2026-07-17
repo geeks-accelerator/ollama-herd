@@ -202,7 +202,7 @@ class ScoringEngine:
 
             # Check memory can fit if model needs loading
             if model not in loaded_names:
-                model_size = self._estimate_model_size(model, node)
+                model_size = self._model_fit_cost_gb(model, node)
                 # Use capacity ceiling if available, otherwise raw available memory
                 available = node.memory.available_gb if node.memory else 0
                 if node.capacity and node.capacity.ceiling_gb > 0:
@@ -246,7 +246,7 @@ class ScoringEngine:
         if model in loaded_names:
             return self._s.score_memory_fit_max
 
-        model_size = self._estimate_model_size(model, node)
+        model_size = self._model_fit_cost_gb(model, node)
         if model_size <= 0 or not node.memory:
             return 0.0
 
@@ -505,6 +505,33 @@ class ScoringEngine:
             total_chars += 16
         text_tokens = total_chars // 4
         return max(1, text_tokens + image_count * ScoringEngine.IMAGE_TOKENS_PER_IMAGE)
+
+    def _model_fit_cost_gb(self, model: str, node: NodeState) -> float:
+        """What loading ``model`` on ``node`` costs in RAM, for fit decisions.
+
+        Weights alone are the wrong number: a model costs ``weights + KV
+        cache``, and the KV cache scales with context. qwen3-coder:30b is 18.6GB
+        of weights and **122.9GB** resident at its default 262K context — a 6.6x
+        difference the routing gates were blind to (see
+        docs/issues/model-sizing-ignores-kv-cache.md).
+
+        Uses the measured cost when the fleet has actually observed this model,
+        and falls back to **plain weights** — the pre-existing behaviour — when
+        it hasn't. Deliberately *not* ``weights * 1.2`` here: inflating an
+        unmeasured guess would eliminate nodes that legitimately fit today
+        (a 70B on a 64GB box) to defend against a case we have no evidence for.
+        Evidence tightens this gate; guesswork doesn't.
+        """
+        from fleet_manager.server.model_preloader import (
+            _expected_num_ctx,
+            measured_resident_gb,
+        )
+
+        weights = self._estimate_model_size(model, node)
+        measured = measured_resident_gb(
+            model, node, _expected_num_ctx(model, self._s), weights_gb=weights
+        )
+        return measured if measured is not None else weights
 
     def _estimate_model_size(self, model: str, node: NodeState) -> float:
         """Model size in GB — real data when a node reports it, else a guess.

@@ -96,22 +96,25 @@ async def fleet_limits(request: Request):
 #: (separate processes, ~34GB on our box), and non-pinned models to cycle.
 _PIN_MEMORY_BUDGET_FRACTION = 0.8
 
-#: Resident-size multiplier over on-disk weights — the same 1.2 the preloader's
-#: memory gate uses, kept consistent on purpose. A model costs more resident
-#: than it does on disk (gpt-oss:120b: 65GB on disk, 76GB resident at 131K
-#: context ≈ +17%). Summing raw disk sizes under-counts and let a 355GB pin set
-#: "fit" a 512GB box that in practice thrashed.
-_PIN_RESIDENT_OVERHEAD = 1.2
-
-
-def _pin_would_not_fit(model: str, node_id: str | None, registry, store) -> dict | None:
+def _pin_would_not_fit(
+    model: str, node_id: str | None, registry, store, settings=None
+) -> dict | None:
     """Return a refusal payload if pinning ``model`` over-commits the node.
 
-    Returns None when the pin is fine. Uses real model sizes (nodes report
-    on-disk sizes from /api/tags), so this is arithmetic on ground truth rather
-    than the name-guessing that let a 290GB model look like 10GB.
+    Returns None when the pin is fine. Sizes come from ``estimate_resident_gb``
+    — the single estimator the preloader and scorer also use — so this is
+    arithmetic on ground truth (real resident size, or weights plus the model's
+    measured KV cost at the context it'll run with) rather than the
+    name-guessing that let a 290GB model look like 10GB.
+
+    Keeping a private copy of this arithmetic is precisely what caused the
+    2026-07-17 04:08 kernel panic: the scorer had its own estimator that still
+    returned 10GB for a 290GB model long after the preloader's was fixed.
     """
-    from fleet_manager.server.model_preloader import _estimate_model_size
+    from fleet_manager.server.model_preloader import (
+        _expected_num_ctx,
+        estimate_resident_gb,
+    )
 
     node = registry.get_node(node_id) if node_id else None
     if node is None:
@@ -130,9 +133,11 @@ def _pin_would_not_fit(model: str, node_id: str | None, registry, store) -> dict
     already = [m for m in (per_node.get(node.node_id) or []) if m != model]
     budget = total_gb * _PIN_MEMORY_BUDGET_FRACTION
 
-    # Compare *resident* cost, not on-disk weights — see _PIN_RESIDENT_OVERHEAD.
+    # Compare *resident* cost — weights + KV cache at the context each model
+    # will actually run with — not on-disk weights. The KV cache is what
+    # dominates: qwen3-coder:30b is 18.6GB of weights and 122.9GB resident.
     sizes = {
-        m: _estimate_model_size(m, node) * _PIN_RESIDENT_OVERHEAD
+        m: estimate_resident_gb(m, node, _expected_num_ctx(m, settings))
         for m in [*already, model]
     }
     pinned_gb = sum(sizes[m] for m in already)
@@ -256,7 +261,10 @@ async def fleet_pin(request: Request):
     # The agent did nothing wrong — we accepted every pin silently.
     # `force: true` overrides for operators who know what they're doing.
     if not bool(body.get("force", False)):
-        refusal = _pin_would_not_fit(model, node_id, registry, store)
+        refusal = _pin_would_not_fit(
+            model, node_id, registry, store,
+            getattr(request.app.state, "settings", None),
+        )
         if refusal is not None:
             return JSONResponse(refusal, status_code=409)
 
@@ -282,6 +290,7 @@ async def fleet_pin(request: Request):
 
     loaded = await _load_model_on_best_node(
         model, nodes, proxy, why="fleet-pin", target_node_id=node_id,
+        settings=getattr(request.app.state, "settings", None),
     )
     if not loaded:
         # On disk but wouldn't load — in practice the memory gate refusing for

@@ -676,13 +676,25 @@ class StreamingProxy:
         if request.original_format == RequestFormat.OPENAI:
             yield "data: [DONE]\n\n"
 
-    async def pre_warm(self, node_id: str, model: str):
-        """Send a load-only request to pre-warm a model on a node."""
+    async def pre_warm(self, node_id: str, model: str, num_ctx: int | None = None):
+        """Send a load-only request to pre-warm a model on a node.
+
+        ``num_ctx`` must be the same context the streaming path will inject for
+        this model (see ``_apply_context_protection``).  Warming without it
+        loaded the model at its own default and the first real request then
+        reloaded it at the overridden size — churn, and it made the preloader's
+        memory gate unanswerable, since the context decides the KV cache and
+        the KV cache can be 5x the weights.  See
+        docs/issues/model-sizing-ignores-kv-cache.md.
+        """
         try:
             client = self._get_client(node_id)
+            body: dict = {"model": model, "prompt": "", "keep_alive": -1}
+            if num_ctx and num_ctx > 0:
+                body["options"] = {"num_ctx": num_ctx}
             resp = await client.post(
                 "/api/generate",
-                json={"model": model, "prompt": "", "keep_alive": -1},
+                json=body,
                 timeout=120.0,
             )
             if resp.status_code == 200:

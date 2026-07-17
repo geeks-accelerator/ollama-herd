@@ -63,6 +63,181 @@ _RESIDENCY_POLL_INTERVAL = 1.0
 # while guessing too HIGH just declines to preload and logs why.
 _UNKNOWN_MODEL_SIZE_GB = 100.0
 
+# Resident-cost multiplier over on-disk weights, used ONLY when we have no
+# measured KV cost for a model.  It is a poor approximation and we know it —
+# measured ratios span 1.0x (gpt-oss:120b) to 6.6x (qwen3-coder:30b at 262K
+# context).  See _observe_kv_cost / estimate_resident_gb, and
+# docs/issues/model-sizing-ignores-kv-cache.md.
+_RESIDENT_OVERHEAD = 1.2
+
+# Learned KV-cache cost per model, in MB per context token:
+#   {model_name: mb_per_token}
+# Populated from heartbeat data — every LoadedModel reports BOTH its real
+# resident size_gb AND its context_length, so each loaded model is a free
+# measurement of (resident - weights) / context_length.  Measured on the fleet
+# 2026-07-17: qwen3-coder:30b = 0.387 MB/tok @32K and 0.407 MB/tok @262K —
+# linear to ~5%, so one observation predicts any context.
+_kv_cost_mb_per_token: dict[str, float] = {}
+
+# Models whose learned cost we've already logged, so the discovery is auditable
+# without spamming a line per heartbeat.
+_kv_cost_logged: set[str] = set()
+
+# Last context window each model was actually loaded with:
+#   {model_name: context_length}
+# When we DON'T override num_ctx, the model gets its own default — which we
+# can't read from the manifest but can simply remember from the last time it
+# was resident.  qwen3-coder:30b defaults to 262144, and that default is the
+# entire difference between a 31GB model and a 122GB one.
+_observed_ctx: dict[str, int] = {}
+
+# Below this, treat a measured KV cost as noise rather than signal (rounding in
+# the reported sizes can make a genuinely-tiny KV look like a small negative).
+_KV_COST_MIN_MB_PER_TOKEN = 0.0
+
+
+def _num(value) -> float:
+    """Coerce a reported field to a float, or 0.0 if it isn't a number.
+
+    ``_observe_kv_cost`` reads heartbeat-supplied attributes off arbitrary
+    objects and runs inside routing decisions.  A malformed or absent field
+    should make us decline to learn, never raise into a routing path.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
+def _observe_kv_cost(node) -> None:
+    """Learn each loaded model's KV cost per token from what ``node`` reports.
+
+    ``LoadedModel`` already carries the real resident ``size_gb`` and the
+    allocated ``context_length``; combined with the on-disk weight size from
+    ``/api/tags`` that gives us::
+
+        kv_per_token = (resident_gb - weights_gb) / context_length
+
+    We were throwing this away and multiplying weights by a constant instead —
+    which under-estimated qwen3-coder:30b by 5.4x (22.8GB assumed vs 122.9GB
+    real) and twice let a load through that kernel-panicked the box.
+
+    Cheap and idempotent: call it wherever a node is in hand.
+    """
+    ollama = getattr(node, "ollama", None)
+    if not ollama:
+        return
+    sizes = getattr(ollama, "models_available_sizes", None)
+    weights_of = sizes.get if isinstance(sizes, dict) else lambda _n, _d=0: 0
+    for m in getattr(ollama, "models_loaded", None) or []:
+        ctx = int(_num(getattr(m, "context_length", 0)))
+        resident = _num(getattr(m, "size_gb", 0))
+        weight = _num(weights_of(getattr(m, "name", None), 0))
+        if ctx > 0:
+            # Worth remembering even if we can't derive a KV cost below: it's
+            # the context this model gets when nobody overrides it, and that
+            # default is the whole difference between 31GB and 122GB.
+            _observed_ctx[m.name] = ctx
+        if ctx <= 0 or resident <= 0 or weight <= 0:
+            continue  # can't derive without all three
+        kv_gb = resident - weight
+        if kv_gb < 0:
+            continue  # reported resident below weights — don't learn nonsense
+        mb_per_token = (kv_gb * 1024.0) / ctx
+        if mb_per_token < _KV_COST_MIN_MB_PER_TOKEN:
+            continue
+        _kv_cost_mb_per_token[m.name] = mb_per_token
+        if m.name not in _kv_cost_logged:
+            _kv_cost_logged.add(m.name)
+            logger.info(
+                f"Learned KV cost for {m.name}: {mb_per_token:.3f} MB/token "
+                f"({weight:.1f}GB weights + {kv_gb:.1f}GB KV = {resident:.1f}GB "
+                f"resident @ {ctx} ctx). Resident/weights ratio "
+                f"{resident / weight:.1f}x."
+            )
+
+
+def measured_resident_gb(
+    model: str, node, num_ctx: int | None = None, weights_gb: float | None = None
+) -> float | None:
+    """Resident cost of ``model`` on ``node`` — or None when we'd be guessing.
+
+    A model's resident footprint is ``weights + KV cache``, and the KV cache
+    scales with the context window; it can dwarf the weights (qwen3-coder:30b:
+    18.6GB of weights, 104GB of KV at 262K context). Sizing by weights alone is
+    what let a "19GB" model consume 122GB and starve the box into a kernel
+    panic (2026-07-17).
+
+    Answers only from evidence, in ground-truth-first order:
+
+    1. **It's already loaded** → its reported resident size, KV and all.
+    2. **We've measured its KV cost** → ``weights + kv_per_token * num_ctx``.
+    3. **Neither** → None. Callers decide what to do without evidence; this
+       function does not manufacture it.
+
+    ``num_ctx`` should be the context the model will actually run with (see
+    ``_expected_num_ctx``). ``weights_gb`` overrides the on-disk size lookup for
+    callers that have a better one — the scorer can ask peer nodes.
+    """
+    _observe_kv_cost(node)
+
+    # 1. Loaded → we know exactly, including whatever KV it actually allocated.
+    for m in getattr(getattr(node, "ollama", None), "models_loaded", None) or []:
+        if getattr(m, "name", None) == model and _num(getattr(m, "size_gb", 0)) > 0:
+            return _num(m.size_gb)
+
+    # 2. Measured KV cost + the context we intend to use.
+    kv_mb = _kv_cost_mb_per_token.get(model)
+    if kv_mb is not None and num_ctx and num_ctx > 0:
+        weights = _estimate_model_size(model, node) if weights_gb is None else weights_gb
+        return weights + (kv_mb * num_ctx) / 1024.0
+
+    return None
+
+
+def estimate_resident_gb(
+    model: str, node, num_ctx: int | None = None, weights_gb: float | None = None
+) -> float:
+    """``measured_resident_gb``, falling back to the old ``weights * 1.2``.
+
+    For callers that need a number rather than an admission of ignorance. The
+    fallback is a poor approximation and known to be — measured ratios span
+    1.0x to 6.6x — but it is the *previous* behaviour, so an un-observed model
+    is sized exactly as it was before this function existed. No regression.
+    """
+    measured = measured_resident_gb(model, node, num_ctx, weights_gb)
+    if measured is not None:
+        return measured
+    weights = _estimate_model_size(model, node) if weights_gb is None else weights_gb
+    return weights * _RESIDENT_OVERHEAD
+
+
+def _num_ctx_override(model: str, settings) -> int | None:
+    """The num_ctx the router will SEND for ``model``, or None if it sends none.
+
+    Mirrors ``StreamingProxy._apply_context_protection`` deliberately: an
+    override only applies when dynamic num_ctx is on and the model has one.  If
+    these two ever disagree the preloader warms a model at one size and the
+    first request reloads it at another.
+    """
+    if not settings or not getattr(settings, "dynamic_num_ctx", False):
+        return None
+    overrides = getattr(settings, "num_ctx_overrides", None)
+    if not isinstance(overrides, dict):
+        return None
+    override = int(_num(overrides.get(model, 0)))
+    return override if override > 0 else None
+
+
+def _expected_num_ctx(model: str, settings) -> int | None:
+    """The context ``model`` will actually RUN with, override or not.
+
+    An override is authoritative — we're about to send it.  Otherwise the model
+    gets its own default, which we can't read from the manifest but have
+    probably watched it use before.  That default is not a detail:
+    qwen3-coder:30b defaults to 262144 and costs 122GB, versus 31GB at 32K.
+    """
+    return _num_ctx_override(model, settings) or _observed_ctx.get(model)
+
 
 async def get_cached_priorities(trace_store: TraceStore) -> list[dict]:
     """Get priority scores, cached for 5 minutes."""
@@ -230,12 +405,18 @@ def _nodes_with_model_on_disk(model: str, nodes):
 async def _load_model_on_best_node(
     model: str, nodes, proxy: StreamingProxy, *,
     why: str = "preload", target_node_id: str | None = None,
+    settings=None,
 ) -> bool:
     """Pre-warm model; prefer ``target_node_id`` if given, else pick best-mem node.
 
     Returns True if load was attempted.  When ``target_node_id`` is set but
     that node doesn't have the model on disk or is offline, we fall back to
     the best-memory node (so a per-node pin still warms the fleet).
+
+    ``settings`` supplies the num_ctx override, which decides both what we warm
+    with and what we predict the model will cost.  Without it the gate falls
+    back to the model's observed default context, or — never having seen it —
+    to the old weights-only approximation.
     """
     available_nodes = _nodes_with_model_on_disk(model, nodes)
     if not available_nodes:
@@ -257,9 +438,14 @@ async def _load_model_on_best_node(
             available_nodes,
             key=lambda n: n.memory.available_gb if n.memory else 0,
         )
-    # Pass the node: it reports the model's real on-disk size, so the gate
-    # below compares against ground truth instead of a name guess.
-    model_size = _estimate_model_size(model, best)
+    # What this model will actually COST resident — weights + KV cache for the
+    # context we're about to request — not just its on-disk weights.  Sizing by
+    # weights alone under-estimated qwen3-coder:30b by 5.4x (22.8GB assumed vs
+    # 122.9GB real) and twice let a load through that panicked the box.  See
+    # docs/issues/model-sizing-ignores-kv-cache.md.
+    send_ctx = _num_ctx_override(model, settings)  # what we'll ask Ollama for
+    num_ctx = _expected_num_ctx(model, settings)  # what it'll actually run at
+    resident_gb = estimate_resident_gb(model, best, num_ctx)
     available = best.memory.available_gb if best.memory else 0
     # Skip the memory gate when the model is ALREADY resident on this node — it
     # is in memory by definition, so there is nothing left to "fit".  Without
@@ -269,18 +455,20 @@ async def _load_model_on_best_node(
     # refused because the gate saw "need 72GB but only 49GB free".  pre_warm
     # still runs below so keep_alive=-1 is (re)applied, which is the whole
     # point of pinning an already-loaded model.
-    if not _model_resident_on_node(model, best) and available < model_size * 1.2:
+    if not _model_resident_on_node(model, best) and available < resident_gb:
+        ctx_note = f" @ {num_ctx} ctx" if num_ctx else ""
         logger.info(
-            f"Preloader: skipping {model} — need {model_size:.0f}GB "
-            f"but only {available:.0f}GB free on {best.node_id} ({why})"
+            f"Preloader: skipping {model} — needs ~{resident_gb:.0f}GB resident"
+            f"{ctx_note} but only {available:.0f}GB free on {best.node_id} ({why})"
         )
         return False
+    ctx_note = f" @ {num_ctx} ctx" if num_ctx else ""
     logger.info(
-        f"Preloader: loading {model} (~{model_size:.0f}GB) "
+        f"Preloader: loading {model} (~{resident_gb:.0f}GB resident{ctx_note}) "
         f"on {best.node_id} ({why})"
     )
     try:
-        await proxy.pre_warm(best.node_id, model)
+        await proxy.pre_warm(best.node_id, model, num_ctx=send_ctx)
         return True
     except Exception as exc:
         logger.warning(f"Preloader: failed to load {model}: {exc}")
@@ -368,6 +556,7 @@ async def preload_priority_models(
         why = f"pinned:{target}" if target else "pinned"
         if await _load_model_on_best_node(
             model, nodes, proxy, why=why, target_node_id=target,
+            settings=settings,
         ):
             loaded_count += 1
             await asyncio.sleep(2)  # let Ollama update /api/ps
@@ -397,6 +586,7 @@ async def preload_priority_models(
                 continue  # already hot, no need to load
             if await _load_model_on_best_node(
                 model, nodes, proxy, why=f"priority score={score}",
+                settings=settings,
             ):
                 loaded_count += 1
                 await asyncio.sleep(2)
@@ -423,6 +613,7 @@ async def preload_priority_models(
             await _refresh_priority_models(
                 registry, trace_store, proxy,
                 pinned_plan=refreshed_plan, max_count=max_count,
+                settings=settings,
             )
         except Exception as exc:
             logger.warning(f"Preloader refresh failed: {exc}")
@@ -436,6 +627,7 @@ async def _refresh_priority_models(
     pinned: list[str] | None = None,
     pinned_plan: list[tuple[str, str | None]] | None = None,
     max_count: int = 3,
+    settings=None,
 ) -> None:
     """Keep pinned models hot + top priorities with recent activity hot.
 
@@ -480,6 +672,7 @@ async def _refresh_priority_models(
         why = f"pinned-refresh:{target}" if target else "pinned-refresh"
         if await _load_model_on_best_node(
             model, nodes, proxy, why=why, target_node_id=target,
+            settings=settings,
         ):
             loaded_this_cycle += 1
             await asyncio.sleep(2)
@@ -522,6 +715,7 @@ async def _refresh_priority_models(
             continue
         if await _load_model_on_best_node(
             model, nodes, proxy, why=f"priority-refresh score={entry['priority_score']}",
+            settings=settings,
         ):
             remaining_budget -= 1
             await asyncio.sleep(2)

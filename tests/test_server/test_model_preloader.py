@@ -222,7 +222,7 @@ async def test_load_model_on_best_node_picks_most_free_memory():
     ok = await _load_model_on_best_node("foo:7b", nodes, proxy, why="test")
     assert ok is True
     # Must have called pre_warm on B (more free memory)
-    proxy.pre_warm.assert_called_once_with("B", "foo:7b")
+    proxy.pre_warm.assert_called_once_with("B", "foo:7b", num_ctx=None)
 
 
 @pytest.mark.asyncio
@@ -600,3 +600,240 @@ async def test_memory_gate_still_loads_when_it_genuinely_fits():
     )
     assert ok is True
     proxy.pre_warm.assert_awaited_once()
+
+
+# ----------------------------------------------------------------------------
+# KV-cache-aware resident sizing
+#
+# Guards docs/issues/model-sizing-ignores-kv-cache.md: sizing models by their
+# on-disk weights under-counted qwen3-coder:30b by 5.4x (22.8GB assumed vs
+# 122.9GB real) and twice let a load through that kernel-panicked the box.
+# The numbers below are the measurements taken from the fleet on 2026-07-17.
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_kv_learning():
+    """Learned KV costs are module-level, so a test could otherwise teach the
+    next one a cost it never observed."""
+    from fleet_manager.server import model_preloader as mp
+
+    mp._kv_cost_mb_per_token.clear()
+    mp._kv_cost_logged.clear()
+    mp._observed_ctx.clear()
+    yield
+    mp._kv_cost_mb_per_token.clear()
+    mp._kv_cost_logged.clear()
+    mp._observed_ctx.clear()
+
+
+def _kv_node(name: str = "studio", *, loaded=(), disk_sizes=None, mem_gb=500.0):
+    """A node reporting what a real heartbeat reports.
+
+    ``loaded`` is a list of ``(model, resident_gb, context_length)`` — the
+    fields LoadedModel actually carries. ``disk_sizes`` is the {model: GB} map
+    the node builds from Ollama's /api/tags.
+    """
+    n = MagicMock()
+    n.node_id = name
+    n.ollama = MagicMock()
+    n.ollama.models_loaded = [
+        SimpleNamespace(name=m, size_gb=gb, context_length=ctx) for m, gb, ctx in loaded
+    ]
+    n.ollama.models_available = list((disk_sizes or {}).keys())
+    n.ollama.models_available_sizes = dict(disk_sizes or {})
+    n.memory = MagicMock()
+    n.memory.available_gb = mem_gb
+    n.memory.total_gb = 512.0
+    n.mlx_servers = []
+    return n
+
+
+def test_observe_kv_cost_learns_from_heartbeat():
+    """Every loaded model reports resident size AND context — that's a free
+    measurement of (resident - weights) / context. We were discarding it."""
+    from fleet_manager.server.model_preloader import _kv_cost_mb_per_token, _observe_kv_cost
+
+    node = _kv_node(
+        loaded=[("qwen3-coder:30b", 122.9, 262144)],
+        disk_sizes={"qwen3-coder:30b": 18.6},
+    )
+    _observe_kv_cost(node)
+
+    # (122.9 - 18.6) GB * 1024 / 262144 tokens = 0.407 MB/token, as measured.
+    assert _kv_cost_mb_per_token["qwen3-coder:30b"] == pytest.approx(0.407, abs=0.01)
+
+
+def test_observe_kv_cost_records_default_context():
+    """The context a model runs at when nobody overrides it is the difference
+    between a 31GB model and a 122GB one — so remember it."""
+    from fleet_manager.server.model_preloader import _observed_ctx, _observe_kv_cost
+
+    node = _kv_node(
+        loaded=[("qwen3-coder:30b", 122.9, 262144)],
+        disk_sizes={"qwen3-coder:30b": 18.6},
+    )
+    _observe_kv_cost(node)
+    assert _observed_ctx["qwen3-coder:30b"] == 262144
+
+
+def test_observe_kv_cost_ignores_incoherent_reports():
+    """Resident below weights can't be true; don't learn a negative KV cost."""
+    from fleet_manager.server.model_preloader import _kv_cost_mb_per_token, _observe_kv_cost
+
+    node = _kv_node(
+        loaded=[("weird:1b", 1.0, 8192)],
+        disk_sizes={"weird:1b": 9.0},
+    )
+    _observe_kv_cost(node)
+    assert "weird:1b" not in _kv_cost_mb_per_token
+
+
+def test_measured_resident_uses_real_size_when_loaded():
+    """A loaded model needs no estimate — its reported size IS the answer."""
+    from fleet_manager.server.model_preloader import measured_resident_gb
+
+    node = _kv_node(
+        loaded=[("qwen3-coder:30b", 122.9, 262144)],
+        disk_sizes={"qwen3-coder:30b": 18.6},
+    )
+    assert measured_resident_gb("qwen3-coder:30b", node) == pytest.approx(122.9)
+
+
+def test_measured_resident_predicts_from_learned_kv_cost():
+    """The whole point: having watched it at 262K, predict its cost at 32K.
+
+    Same weights, a quarter of the memory — 31GB vs 122GB, purely from context.
+    """
+    from fleet_manager.server.model_preloader import measured_resident_gb, _observe_kv_cost
+
+    # Learn from a node that has it hot at the default 262K context...
+    _observe_kv_cost(_kv_node(
+        loaded=[("qwen3-coder:30b", 122.9, 262144)],
+        disk_sizes={"qwen3-coder:30b": 18.6},
+    ))
+    # ...then predict on a node where it is NOT loaded, at a smaller context.
+    cold = _kv_node("other", loaded=[], disk_sizes={"qwen3-coder:30b": 18.6})
+
+    at_32k = measured_resident_gb("qwen3-coder:30b", cold, 32768)
+    assert at_32k == pytest.approx(31.6, abs=1.0)  # 18.6 weights + ~13 KV
+
+    at_262k = measured_resident_gb("qwen3-coder:30b", cold, 262144)
+    assert at_262k == pytest.approx(122.9, abs=1.0)
+
+
+def test_measured_resident_admits_ignorance_rather_than_guessing():
+    """Never observed → None. Callers decide; this must not invent evidence."""
+    from fleet_manager.server.model_preloader import measured_resident_gb
+
+    cold = _kv_node("other", loaded=[], disk_sizes={"never-seen:7b": 4.0})
+    assert measured_resident_gb("never-seen:7b", cold, 32768) is None
+
+
+def test_estimate_resident_falls_back_to_old_behaviour_when_unmeasured():
+    """An un-observed model must be sized exactly as it was before this
+    existed (weights * 1.2) — the change may not regress what already worked."""
+    from fleet_manager.server.model_preloader import estimate_resident_gb
+
+    cold = _kv_node("other", loaded=[], disk_sizes={"never-seen:7b": 4.0})
+    assert estimate_resident_gb("never-seen:7b", cold, 32768) == pytest.approx(4.8)
+
+
+@pytest.mark.asyncio
+async def test_memory_gate_refuses_load_that_would_not_fit_with_kv():
+    """The 2026-07-17 kernel panic, as a test.
+
+    A node with 40GB free looks like ample room for an "18.6GB" model — and
+    that is exactly the reasoning that panicked the box, because at its default
+    262K context the model really wants 122.9GB.
+    """
+    from fleet_manager.server.model_preloader import _load_model_on_best_node, _observe_kv_cost
+
+    _observe_kv_cost(_kv_node(
+        loaded=[("qwen3-coder:30b", 122.9, 262144)],
+        disk_sizes={"qwen3-coder:30b": 18.6},
+    ))
+    cold = _kv_node("cold", loaded=[], disk_sizes={"qwen3-coder:30b": 18.6}, mem_gb=40.0)
+    proxy = MagicMock()
+    proxy.pre_warm = AsyncMock()
+
+    ok = await _load_model_on_best_node("qwen3-coder:30b", [cold], proxy, why="test")
+
+    assert ok is False
+    proxy.pre_warm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_memory_gate_allows_load_when_num_ctx_override_makes_it_fit():
+    """Context is a memory dial the herd already owns: the same model the gate
+    refuses at 262K fits comfortably at 32K, and the override says 32K."""
+    from fleet_manager.server.model_preloader import _load_model_on_best_node, _observe_kv_cost
+
+    _observe_kv_cost(_kv_node(
+        loaded=[("qwen3-coder:30b", 122.9, 262144)],
+        disk_sizes={"qwen3-coder:30b": 18.6},
+    ))
+    cold = _kv_node("cold", loaded=[], disk_sizes={"qwen3-coder:30b": 18.6}, mem_gb=40.0)
+    settings = _mock_settings()
+    settings.dynamic_num_ctx = True
+    settings.num_ctx_overrides = {"qwen3-coder:30b": 32768}
+    proxy = MagicMock()
+    proxy.pre_warm = AsyncMock()
+
+    ok = await _load_model_on_best_node(
+        "qwen3-coder:30b", [cold], proxy, why="test", settings=settings,
+    )
+
+    assert ok is True
+    # And it must WARM at the same context it was sized for — warming at the
+    # default would load the 122.9GB variant the gate just approved as 31.6GB.
+    proxy.pre_warm.assert_awaited_once_with("cold", "qwen3-coder:30b", num_ctx=32768)
+
+
+@pytest.mark.asyncio
+async def test_pre_warm_sends_no_num_ctx_without_an_override():
+    """No override configured → don't invent one; the model keeps its default,
+    matching what the streaming path would inject (nothing)."""
+    from fleet_manager.server.model_preloader import _load_model_on_best_node
+
+    node = _kv_node("cold", loaded=[], disk_sizes={"tiny:1b": 1.0}, mem_gb=100.0)
+    settings = _mock_settings()
+    settings.dynamic_num_ctx = False
+    settings.num_ctx_overrides = {"tiny:1b": 32768}
+    proxy = MagicMock()
+    proxy.pre_warm = AsyncMock()
+
+    await _load_model_on_best_node("tiny:1b", [node], proxy, settings=settings)
+
+    proxy.pre_warm.assert_awaited_once_with("cold", "tiny:1b", num_ctx=None)
+
+
+@pytest.mark.asyncio
+async def test_refresh_reloads_evicted_pinned_model(monkeypatch):
+    """The refresh loop is what keeps pinned models hot, and every existing
+    test monkeypatches it away — so a NameError in it survived 1112 green
+    tests until ruff caught it (2026-07-17). Actually run it."""
+    from fleet_manager.server import model_preloader as mp
+
+    async def fast_sleep(_s): pass
+    monkeypatch.setattr("fleet_manager.server.model_preloader.asyncio.sleep", fast_sleep)
+    mp._priority_cache = []
+    mp._priority_cache_time = 0
+
+    # gpt-oss is pinned but has been evicted; qwen is hot.
+    node = _kv_node(
+        loaded=[("qwen3-coder:30b", 122.9, 262144)],
+        disk_sizes={"qwen3-coder:30b": 18.6, "gpt-oss:120b": 65.4},
+    )
+    registry = _mock_registry([node])
+    trace = MagicMock()
+    trace.get_model_priority_scores = AsyncMock(return_value=[])
+    proxy = MagicMock()
+    proxy.pre_warm = AsyncMock()
+
+    await mp._refresh_priority_models(
+        registry, trace, proxy, pinned=["gpt-oss:120b"], max_count=3,
+        settings=_mock_settings(),
+    )
+
+    proxy.pre_warm.assert_awaited_once_with("studio", "gpt-oss:120b", num_ctx=None)

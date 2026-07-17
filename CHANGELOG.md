@@ -35,6 +35,8 @@ Versioned `0.9.0` rather than `0.8.2` deliberately: a `0.7.0 → 0.8.2` jump rea
 - **Image requests are never answered by a blind model** (the 2026-04-23 incident class — see below).
 - **Failed-request traces no longer vanish**, so the dashboard's success rate stops hiding failures.
 - **Model sizes come from Ollama's real `/api/tags` data** instead of being guessed from the name — the guess called a 290 GB model "10 GB" and defeated the memory gate.
+- **Models are now sized by what they actually cost in RAM — weights *plus* KV cache.** Every "will this fit?" decision previously counted on-disk weights and ignored the KV cache, which scales with context and routinely dwarfs the weights: `qwen3-coder:30b` is 18.6 GB of weights and **122.9 GB resident** at its default 262K context, so the gate was under-counting it by **5.4×**. The router now learns each model's KV cost per token from heartbeat data it was already receiving (`(resident − weights) / context_length`) and predicts the real footprint at the context the model will actually run with. The preloader gate, `/fleet/pin` admission and the scorer all share one estimator. Models the fleet has never observed keep their previous sizing — evidence tightens these gates, guesswork doesn't. See `docs/issues/model-sizing-ignores-kv-cache.md`.
+- **Preloading warms a model at the same `num_ctx` requests will use.** It previously warmed at the model's default and let the first real request reload it at the override — pointless churn, and it made the model's cost unknowable at load time.
 - **The hot-model cap is no longer hardcoded to 3** — nodes report their own, and `free_slots` follows it.
 
 ### Recommended alongside this release
