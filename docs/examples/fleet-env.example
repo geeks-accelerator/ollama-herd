@@ -28,10 +28,15 @@
 # FLEET_NODE_MLX_BIND_HOST=0.0.0.0
 
 # ---- Anthropic compatibility → which local model serves each tier ------
-# Route Claude Code / Anthropic SDK requests to a local model via the
-# model-map.  `mlx:` prefix bypasses Ollama's 3-model cap.
+# Claude Code / Anthropic SDK requests auto-route to the best model you have
+# LOADED by default — no map needed. Just pull a coding model and go. The map
+# below is OPTIONAL, for pinning a specific alias to a specific model (entries
+# win over auto-routing; unmapped aliases still auto-route). Use models you've
+# actually pulled — a `mlx:` value must be a running FLEET_NODE_MLX_SERVERS
+# entry. Set FLEET_ANTHROPIC_AUTO_ROUTE=false to require an explicit map.
+# See docs/reference/anthropic-auto-routing.md.
 # FLEET_ANTHROPIC_DEFAULT_MAX_TOKENS=4096
-# FLEET_ANTHROPIC_MODEL_MAP={"default":"mlx:mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit","claude-sonnet-4-5":"mlx:mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit","claude-opus-4-7":"mlx:mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit"}
+# FLEET_ANTHROPIC_MODEL_MAP={"claude-opus-4-7":"qwen3:32b","claude-sonnet-4-5":"qwen3-coder:30b","claude-haiku-4-5":"qwen3:14b"}
 
 # ---- Context Hygiene Compactor -----------------------------------------
 # Shrinks bloated tool_result blocks before main-model inference.  Only

@@ -519,7 +519,7 @@ Anthropic Messages endpoint — streaming + non-streaming, full tool use, system
 - `x-api-key: <key>` — required when `FLEET_ANTHROPIC_REQUIRE_KEY=true`
 - `anthropic-version: 2023-06-01` — reflected back in response headers
 
-**Model mapping:** `claude-*` model ids are mapped to local Ollama models via `FLEET_ANTHROPIC_MODEL_MAP`. Real Ollama model names (e.g. `qwen3-coder:30b`) pass through unchanged. See [configuration-reference.md](configuration-reference.md).
+**Model resolution:** by default `claude-*` ids **auto-route** to the best local model you have loaded for that tier — no configuration required. `FLEET_ANTHROPIC_MODEL_MAP` is optional and pins specific aliases to specific models (its entries win over auto-routing). Real local model names (e.g. `qwen3-coder:30b`) pass through unchanged. The response's `X-Fleet-Served-Model` header reports what actually ran. See [anthropic-auto-routing.md](reference/anthropic-auto-routing.md) and [configuration-reference.md](configuration-reference.md).
 
 **Non-streaming response:**
 
