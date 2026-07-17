@@ -106,7 +106,7 @@ Ollama now has a **first-party native MLX runner** ([ollama.com/blog/mlx](https:
 
 **Not threatened:** the herd's core value is routing (scoring, queues, health, multi-node) — a faster Ollama helps it for free — and **distributed multi-Mac inference is still ours** (Ollama is single-host). The decisive unknown is **Ollama's MLX model coverage** (the preview accelerated only Qwen3.5-35B-A3B; `mlx_lm` runs arbitrary HF conversions).
 
-**Do not act before investigating.** Full analysis, verified-vs-unverified split, and the read-only investigation plan: [`issues/ollama-native-mlx-runner.md`](issues/ollama-native-mlx-runner.md).
+**We are 8 versions behind:** latest is **v0.32.1**; `0.24.0` **predates stable MLX** (the 0.30 line). Full analysis + verified-vs-unverified split: [`issues/ollama-native-mlx-runner.md`](issues/ollama-native-mlx-runner.md). **Execution plan** (upgrade to v0.32.1 + the four measurements that decide the MLX subsystem's fate, install landmines, rollback): [`plans/ollama-0.32-upgrade-and-mlx-evaluation.md`](plans/ollama-0.32-upgrade-and-mlx-evaluation.md).
 
 ---
 

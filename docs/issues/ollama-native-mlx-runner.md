@@ -4,6 +4,7 @@
 **Severity:** Medium–High (strategic: a large subsystem may be redundant; **plus** load-bearing design constants may be wrong)
 **Discovered:** 2026-07-17, from an external tip that "Ollama 0.19 now runs on MLX"
 **Upstream:** [ollama.com/blog/mlx](https://ollama.com/blog/mlx) — *"Ollama is now powered by MLX on Apple Silicon in preview"* (first-party) · [ollama.com/blog/mlx-performance](https://ollama.com/blog/mlx-performance)
+**▶ Plan to resolve this:** [`plans/ollama-0.32-upgrade-and-mlx-evaluation.md`](../plans/ollama-0.32-upgrade-and-mlx-evaluation.md) — upgrade `0.24.0` → **`v0.32.1`** (we are 8 versions behind and predate stable MLX), then answer the four questions below with measurements.
 
 ---
 
@@ -82,14 +83,20 @@ Worth stating plainly so this doesn't get over-read:
 
 ---
 
-## Investigation plan (read-only first — do not disturb the 0.8.2 soak)
+## Investigation plan
 
-1. **Re-verify the hot-model cap on 0.24.** Cheap, highest urgency: it may already be invalidating live behavior (`free_slots`, preloader budget). If the cap moved, fix the constants.
-2. **Test `OLLAMA_NEW_ENGINE=1`** and measure `glm-4.7-flash` decode tok/s. If Ollama's MLX serves it near the 59 tok/s we get from `mlx_lm.server`, the `glm4moelite` issue closes at the source.
-3. **Map Ollama's MLX model coverage** against what we run on `mlx_lm.server`. **This single fact decides whether the MLX subsystem is legacy or load-bearing.**
-4. **Check whether Ollama's MLX prefix-cache (`mlxrunner.trieNode`) actually reuses prefixes** — a client agent measured **zero** prefix reuse on the llama.cpp path (1,873 prompt tokens re-evaluated on an identical-prefix repeat). If the MLX runner fixes that, it changes the caching guidance too.
-5. **Consider upgrading Ollama** to the stable-MLX version (0.30, if the third-party claim holds) — but *not* mid-soak.
-6. **Then** decide the subsystem's fate: keep for coverage gaps + distributed, or begin deprecation.
+**Superseded 2026-07-17 by [`plans/ollama-0.32-upgrade-and-mlx-evaluation.md`](../plans/ollama-0.32-upgrade-and-mlx-evaluation.md)**, which carries the full execution plan, version analysis, install mechanics, rollback, and risks. Summary of what it resolves:
+
+1. **Upgrade `0.24.0` → `v0.32.1`.** Verified 2026-07-17: latest is **v0.32.1** (2026-07-16) — we are **8 minor versions behind**, and 0.24 **predates stable MLX** (the 0.30 line). 0.32.1 is the pick because it fixes a *recurrent MLX model cache leak* that **every earlier version carries** — including the "safer" 0.31.2. Given this fleet's memory sensitivity, an older version means deliberately choosing the leak.
+2. **Q1 — the hot-model cap.** Highest urgency; may already be invalidating `free_slots` + the preloader budget. ⚠️ **Attempted 2026-07-16 and blocked**: with the soak live, `OLLAMA_NUM_PARALLEL=2` was saturated by gpt-oss, so model loads queued and timed out at 180 s — a second model never became resident. **Must run in the post-restart quiet window.** (Also: don't test with `nomic-embed-text` — it's embed-only and `/api/generate` rejects it.)
+3. **Q2 — glm-4.7-flash speed** on Ollama's MLX vs the 13.7 baseline / 59 tok/s `mlx_lm` reference.
+4. **Q3 — prefix reuse** (`mlxrunner.trieNode`) vs the client agent's measured zero-reuse (1,873 tokens re-evaluated).
+5. **Q4 — MLX model coverage.** The decisive question for this subsystem's fate.
+6. **Then** decide: keep for coverage gaps + distributed multi-Mac, or begin deprecation.
+
+**Sequencing (decided 2026-07-17):** upgrade **now** rather than after the 0.8.2 soak — 0.8.2 shipped ~1 h prior, so re-soaking costs ~1 hour, versus a full cycle if the need surfaces later. Soak once, on the final stack.
+
+**Install landmines found:** Ollama here is the **Mac app** (`/usr/local/bin/ollama` → `/Applications/Ollama.app/…`), so **`brew upgrade ollama` would do nothing useful** — and a **stale brew formula sits at `ollama 0.16.3`**, a live PATH hazard worth removing.
 
 ## Immediate doc fixes (independent of the above)
 
