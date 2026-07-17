@@ -25,6 +25,7 @@ from fleet_manager.server.routes.ollama_compat import _build_thinking_headers
 from fleet_manager.server.routes.routing import (
     check_context_overflow,
     client_concurrency_response,
+    client_error_passthrough,
     extract_tags,
     get_all_fleet_models,
     parse_allow_fallback,
@@ -339,14 +340,27 @@ async def chat_completions(request: Request):
     else:
         # Non-streaming: accumulate full response
         full_content = ""
-        async for chunk in stream:
-            if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
-                try:
-                    data = json.loads(chunk[6:])
-                    delta = data.get("choices", [{}])[0].get("delta", {})
-                    full_content += delta.get("content", "")
-                except (json.JSONDecodeError, IndexError) as e:
-                    logger.debug(f"Skipping malformed SSE chunk: {e}")
+        try:
+            async for chunk in stream:
+                if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
+                    try:
+                        data = json.loads(chunk[6:])
+                        delta = data.get("choices", [{}])[0].get("delta", {})
+                        full_content += delta.get("content", "")
+                    except (json.JSONDecodeError, IndexError) as e:
+                        logger.debug(f"Skipping malformed SSE chunk: {e}")
+        except Exception as exc:  # noqa: BLE001 — 4xx passes through, 5xx re-raises
+            # A backend client-error (e.g. "model does not support tools") must
+            # reach the caller as that 4xx, not an opaque 500. See
+            # client_error_passthrough.
+            client_err = client_error_passthrough(exc, model=actual_model)
+            if client_err is not None:
+                logger.info(
+                    f"OpenAI: backend client-error for {actual_model} → "
+                    f"passing through {client_err.status_code}"
+                )
+                return client_err
+            raise
 
         # Retrieve real token counts extracted from Ollama response
         tokens = proxy.pop_token_counts(inference_req.request_id)

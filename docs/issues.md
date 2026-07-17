@@ -149,6 +149,17 @@ SD3.5 Large (11.6GB peak memory) occasionally triggers a "Python quit unexpected
 
 ## Performance (Will Bite at Scale)
 
+### `available_gb` is the wrong ceiling for "can this model fit?" `OPEN` (needs a design decision)
+
+**Files:** `src/fleet_manager/server/scorer.py`, `src/fleet_manager/server/model_preloader.py`
+**Severity:** Medium (real request failures, narrow + self-healing window)
+
+The scorer/preloader gate model loads on psutil's `available_gb`, which on macOS is **volatile** (sampled 17 GB → 445 GB on an idle 512 GB box; -97 GB in 3 s) because resident models are **wired** and wired isn't counted as available. Worse, it's the **wrong question**: Ollama evicts its own LRU model to make room, so resident-model memory *is* usable for a new model. After the 2026-07-17 reboot this produced `All 1 nodes eliminated for gpt-oss:120b` ×100+ and 30 s holding-queue timeouts on a machine with ~358 GB free.
+
+**Narrow:** the scorer already skips the memory check for *resident* models ([`scorer.py:203`](../src/fleet_manager/server/scorer.py)), so it only bites at cold start / just after a restart. **Left open deliberately** — picking the wrong metric fails in the dangerous direction (over-reporting capacity is what produced the 290 GB thrash loop + kernel panic). Full analysis, four options, and a suggested instrument-first step: [`issues/available-gb-is-the-wrong-ceiling-for-model-fit.md`](issues/available-gb-is-the-wrong-ceiling-for-model-fit.md).
+
+---
+
 ### `TraceStore` write-storm under WAL contention `FIXED` (0.6.2)
 
 **Files:** `src/fleet_manager/server/trace_store.py`, `src/fleet_manager/server/latency_store.py`, `src/fleet_manager/server/health_engine.py`

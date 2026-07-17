@@ -54,6 +54,7 @@ from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.routing import (
     check_context_overflow,
     client_concurrency_response,
+    client_error_passthrough,
     extract_tags,
     get_all_fleet_models,
     parse_allow_fallback,
@@ -1117,6 +1118,9 @@ async def messages(
             f"Anthropic[{rid}] non-streaming failed on node={winner.node_id}: "
             f"{type(exc).__name__}: {exc}"
         )
+        client_err = client_error_passthrough(exc, model=body.model, anthropic=True)
+        if client_err is not None:
+            return client_err
         raise
     finally:
         proxy.pop_token_counts(inference_req.request_id)

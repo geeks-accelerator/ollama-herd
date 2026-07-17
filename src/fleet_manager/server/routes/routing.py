@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 
+import httpx
 from fastapi.responses import JSONResponse
 
 from fleet_manager.models.node import MemoryPressure, NodeStatus
@@ -63,6 +64,47 @@ def extract_tags(body: dict, headers=None) -> list[str]:
             unique.append(t)
 
     return unique
+
+
+def client_error_passthrough(exc, *, model: str = "", anthropic: bool = False):
+    """Turn a backend **4xx** into the same 4xx for the caller, or None.
+
+    Ollama answers some requests with a perfectly clear client error — e.g.
+    ``400 {"error":"gemma3:4b does not support tools"}``. Letting that exception
+    propagate makes FastAPI return an opaque **500 Internal Server Error**, so
+    the caller is told the herd broke when in fact *their request* was invalid,
+    and the real reason is buried in our logs (observed 2026-07-17).
+
+    Only 4xx passes through — a 5xx really is a backend failure and keeps its
+    existing retry/500 handling. Returns ``None`` when *exc* isn't a client
+    error, so callers can ``raise`` exactly as before.
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    status = exc.response.status_code
+    if not (400 <= status < 500):
+        return None
+
+    detail = ""
+    try:
+        body = exc.response.json()
+        if isinstance(body, dict):
+            detail = str(body.get("error") or body.get("message") or "")
+    except Exception:  # noqa: BLE001 — body may be empty or non-JSON
+        try:
+            detail = (exc.response.text or "")[:300]
+        except Exception:  # noqa: BLE001
+            detail = ""
+    msg = detail or f"backend rejected the request ({status})"
+    if model and model not in msg:
+        msg = f"{msg} (model: {model})"
+
+    content = (
+        {"type": "error", "error": {"type": "invalid_request_error", "message": msg}}
+        if anthropic
+        else {"error": {"message": msg, "type": "invalid_request_error"}}
+    )
+    return JSONResponse(status_code=status, content=content)
 
 
 def client_concurrency_response(e: ClientConcurrencyExceeded) -> JSONResponse:

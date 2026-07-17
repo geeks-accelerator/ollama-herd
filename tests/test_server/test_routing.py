@@ -446,3 +446,52 @@ class TestVramFallback:
         # Falls through to cold results
         assert actual_model == "qwen3-coder:latest"
         assert results[0].scores_breakdown["thermal"] == 10.0
+
+
+class TestClientErrorPassthrough:
+    """A backend 4xx must reach the caller as that 4xx, not an opaque 500.
+
+    Ollama returns e.g. 400 {"error":"gemma3:4b does not support tools"}; letting
+    it propagate made FastAPI answer 500 Internal Server Error, telling the client
+    the herd broke when their request was simply invalid (2026-07-17).
+    """
+
+    @staticmethod
+    def _http_error(status: int, body: dict | None = None, text: str = ""):
+        import httpx
+        resp = MagicMock()
+        resp.status_code = status
+        resp.json.side_effect = (lambda: body) if body is not None else ValueError("no json")
+        resp.text = text
+        return httpx.HTTPStatusError("boom", request=MagicMock(), response=resp)
+
+    def test_400_passes_through_with_backend_reason(self):
+        from fleet_manager.server.routes.routing import client_error_passthrough
+        err = self._http_error(400, {"error": "gemma3:4b does not support tools"})
+        r = client_error_passthrough(err, model="gemma3:4b")
+        assert r is not None
+        assert r.status_code == 400  # not 500
+        assert b"does not support tools" in bytes(r.body)
+
+    def test_anthropic_shape(self):
+        from fleet_manager.server.routes.routing import client_error_passthrough
+        err = self._http_error(400, {"error": "nope"})
+        r = client_error_passthrough(err, model="m", anthropic=True)
+        assert r.status_code == 400
+        assert b'"type":"error"' in bytes(r.body)  # JSONResponse serializes compactly
+
+    def test_5xx_is_not_swallowed(self):
+        """A real backend failure must keep its existing retry/500 handling."""
+        from fleet_manager.server.routes.routing import client_error_passthrough
+        assert client_error_passthrough(self._http_error(500, {"error": "boom"})) is None
+        assert client_error_passthrough(self._http_error(503, {"error": "busy"})) is None
+
+    def test_non_http_errors_ignored(self):
+        from fleet_manager.server.routes.routing import client_error_passthrough
+        assert client_error_passthrough(ValueError("x")) is None
+        assert client_error_passthrough(ConnectionError("x")) is None
+
+    def test_non_json_body_still_yields_a_message(self):
+        from fleet_manager.server.routes.routing import client_error_passthrough
+        r = client_error_passthrough(self._http_error(422, None, text="plain text boom"))
+        assert r is not None and r.status_code == 422
