@@ -95,6 +95,21 @@ The watchdog detects stuck `/api/chat` and kills `ollama runner` processes via `
 
 ## External Dependencies
 
+### Ollama ships a native MLX runner — our MLX subsystem's premise is stale `OPEN` (investigate first)
+
+**Files:** `src/fleet_manager/node/mlx_supervisor.py`, `src/fleet_manager/server/mlx_proxy.py`, `scripts/setup-mlx.sh`, `CLAUDE.md`
+**Severity:** Medium–High (strategic — a large subsystem may be redundant; **plus** load-bearing constants may be wrong)
+
+Ollama now has a **first-party native MLX runner** ([ollama.com/blog/mlx](https://ollama.com/blog/mlx)). Verified on this fleet 2026-07-17: the running Ollama is **`0.24.0`** (not the `0.20.4` CLAUDE.md documents), and its binary contains **`github.com/ollama/ollama/x/mlxrunner`**, real MLX C-API bindings (`mlx_enable_compile`, `mlx_set_memory_limit`), `OLLAMA_MLX_MTP_*` + `OLLAMA_NEW_ENGINE` env knobs, a prefix-cache trie (`mlxrunner.trieNode`), and MTP speculative decoding — 6,925 `mlx` string hits in total.
+
+**Two problems.** (1) **Stale, load-bearing facts:** the documented "Ollama 0.20.4 has a hardcoded 3-model hot cap" underpins `model_preload_max_count=3`, `OLLAMA_HOT_MODEL_CAP` / `free_slots`, the `OLLAMA_MAX_LOADED_MODELS=-1` gotcha, and the eviction/pin logic — if 0.24+ changed the cap, the herd is enforcing a limit that no longer exists. (2) **Expiring premise:** our whole `mlx_lm.server` stack (supervisor, proxy, `mlx:` prefix, the `--kv-bits` patch that breaks on every `mlx-lm` upgrade, and its recent bug tax) exists *because Ollama couldn't do MLX*.
+
+**Not threatened:** the herd's core value is routing (scoring, queues, health, multi-node) — a faster Ollama helps it for free — and **distributed multi-Mac inference is still ours** (Ollama is single-host). The decisive unknown is **Ollama's MLX model coverage** (the preview accelerated only Qwen3.5-35B-A3B; `mlx_lm` runs arbitrary HF conversions).
+
+**Do not act before investigating.** Full analysis, verified-vs-unverified split, and the read-only investigation plan: [`issues/ollama-native-mlx-runner.md`](issues/ollama-native-mlx-runner.md).
+
+---
+
 ### GLM-4.7-Flash ~4× too slow on Ollama (glm4moelite MoE not exploited) `OPEN` (upstream)
 
 **File:** none (upstream Ollama bug — herd serves/measures correctly)
