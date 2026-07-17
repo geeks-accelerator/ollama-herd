@@ -1,7 +1,7 @@
 # `available_gb` is the wrong ceiling for "can this model fit?" — it ignores that Ollama evicts its own models
 
 **Status:** `OPEN` — needs a design decision, not a patch
-**Severity:** Medium — causes real request failures, but only in a narrow window (cold model + dipped reading)
+**Severity:** **High** — the gate under-sizes models by up to 5.4x (weights vs weights+KV), which has twice kernel-panicked the box. Originally filed as Medium/narrow; the KV finding (Update 2) widened it.
 **Discovered:** 2026-07-17, while validating the Ollama 0.32.1 upgrade
 **Files:** `src/fleet_manager/server/scorer.py` (~L207, L254), `src/fleet_manager/server/model_preloader.py` (~L258, L263), `src/fleet_manager/node/collector.py` (memory metrics)
 
@@ -127,4 +127,61 @@ model resident 348GB > 340GB  ->  REFUSE     <-- the check we needed
 `available_for_new_model = available_gb − Σ(resident cost of pinned models not currently loaded)`, then keep the existing `× 1.2` resident-overhead comparison. This reuses machinery that already exists: the pin store, real per-model sizes from `/api/tags`, and the `_PIN_MEMORY_BUDGET_FRACTION` precedent in `/fleet/pin`'s admission control. Open questions: whether MLX servers' footprint should also be reserved (they're separate processes, so they're already outside `available`), and whether the guard belongs in the scorer's `_eliminate`, the preloader's gate, or both.
 
 **Operationally, right now:** `qwen3-coder:480b` (290 GB) and `deepseek-v3:671b` (404 GB) simply do not fit this fleet alongside its own committed set. Until the guard exists, they should not be requested or benchmarked on this box.
+
+---
+
+## Update 2026-07-17 (2) — the real root cause: we size models by WEIGHTS, but pay for WEIGHTS + KV CACHE
+
+Credit to a client agent, who caught this while auditing their own benchmark chart: *"`ollama ps` shows qwen3-coder:30b resident at 114-122GB, not 18GB. The weights are 18GB; a 262,144-token context KV cache is the rest."* Their chart's memory axis used weight sizes — **and so does our memory gate.** This supersedes the "committed set" theory in the update above: that was a secondary effect. **This is the primary error.**
+
+### Measured on the fleet
+
+```
+model             disk    resident      ctx        KV≈    ratio
+qwen3-coder:30b  18.6G     122.9G   262144     104.3G    6.6x
+gpt-oss:120b     65.4G      65.4G   131072       0.0G    1.0x
+```
+
+The gate assumes `qwen3-coder:30b` needs `18.6 × 1.2 = 22.8 GB`. It needs **122.9 GB** — a **5.4× under-estimate**. For `gpt-oss:120b` the same formula *over*-estimates (86 GB assumed vs 65 GB real). **`_RESIDENT_OVERHEAD = 1.2` is a fiction: the true ratio spans 1.0×–6.6×, and it is dominated by context, not by the model.**
+
+(gpt-oss:120b showing ~zero KV is itself worth noting — its attention layout is far cheaper per token. The variance between models is enormous, which is exactly why a constant multiplier can't work.)
+
+### KV is linear in context and predictable per model
+
+Two observations of the same model, two different contexts:
+
+```
+qwen3-coder:30b @  32768:  18.6G weights + 12.4G KV = 31.0G    -> 0.387 MB/token
+qwen3-coder:30b @ 262144:  18.6G weights + 104.3G KV = 122.9G  -> 0.407 MB/token
+```
+
+Consistent to ~5%. So:
+
+```
+resident ≈ weights + kv_per_token × num_ctx
+```
+
+**Same weights, 4× the memory, purely from context** (31 GB @ 32K vs 122 GB @ 262K).
+
+### This explains the crashes better than anything prior
+
+- **Both kernel panics.** Models cost multiples of what the gate believed, so "it fits" was never true.
+- **The `available_gb` volatility** documented above — KV caches ballooning and being reclaimed *are* the swings.
+- **`Preloader: skipping qwen3-coder:30b — need 19GB but only 8GB free`** two minutes before the 04:08 panic: the gate was reasoning about a **19 GB** model that was really consuming **122 GB**.
+
+### The data and the lever both already exist
+
+- **Data:** `LoadedModel` carries **both `size_gb` (real resident) and `context_length`** — every heartbeat is a free `(weights, ctx, resident)` observation, and we discard it. One observation per model yields `kv_per_token`.
+- **Lever:** `FLEET_DYNAMIC_NUM_CTX` + `num_ctx_overrides` already let the herd *choose* num_ctx on cold loads. **Context is the memory dial we already own** — capping qwen3-coder:30b at 32K instead of 262K is a 92 GB saving on one model.
+
+### Suggested design
+
+1. **Learn `kv_per_token` per model** from heartbeat observations: `(size_gb − weights_gb) / context_length`, stored like the capacity learner's other rolling stats. Falls back to a conservative default until first observed.
+2. **Predict resident cost** for the num_ctx the router is *about to request*: `weights + kv_per_token × num_ctx`. This is knowable *before* the load, because the herd chooses the context.
+3. **Gate on that**, replacing `_RESIDENT_OVERHEAD = 1.2` in the preloader gate, the scorer's memory check, and `/fleet/pin`'s admission.
+4. **Then** consider reserving the committed set (previous update) — still valid, but second-order next to a 5.4× sizing error.
+
+**Worth noting:** with a correct model, `num_ctx` becomes a *fitting strategy*, not just a waste-reduction tweak — "this model doesn't fit at 262K but does at 32K" is a decision the router could make instead of refusing or crashing.
+
+**Until then, operationally:** resident cost is not predictable from `ollama list` sizes. Anyone sizing this fleet (benchmarks included) must read `ollama ps` **with the CONTEXT column**, not the on-disk weights.
 
