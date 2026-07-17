@@ -480,3 +480,123 @@ async def test_load_still_gates_when_model_not_resident():
     )
     assert ok is False  # 49GB free < 72GB * 1.2 → correctly refused
     proxy.pre_warm.assert_not_awaited()
+
+
+# ----------------------------------------------------------------------------
+# _estimate_model_size — real sizes beat name-guessing (2026-07-17 thrash loop)
+# ----------------------------------------------------------------------------
+
+
+def _sized_node(sizes: dict[str, float], loaded: list[tuple[str, float]] | None = None):
+    """Node reporting real /api/tags sizes (what the collector now sends)."""
+    n = MagicMock()
+    n.ollama = MagicMock()
+    n.ollama.models_available_sizes = dict(sizes)
+    ml = []
+    for name, gb in (loaded or []):
+        m = MagicMock()
+        m.name = name
+        m.size_gb = gb
+        ml.append(m)
+    n.ollama.models_loaded = ml
+    return n
+
+
+def test_estimate_uses_real_disk_size_from_node():
+    """Regression: qwen3-coder:480b is 290GB but the name heuristic called it
+    10GB, so the memory gate computed 'need 12GB, have 355GB → load it' and
+    Ollama evicted the fleet to make room. The node reports the true size."""
+    node = _sized_node({"qwen3-coder:480b-a35b-q4_K_M": 290.1})
+    assert _estimate_model_size("qwen3-coder:480b-a35b-q4_K_M", node) == 290.1
+
+
+def test_estimate_falls_back_to_loaded_size():
+    node = _sized_node({}, loaded=[("gpt-oss:120b", 65.4)])
+    assert _estimate_model_size("gpt-oss:120b", node) == 65.4
+
+
+def test_estimate_never_returns_the_old_10gb_default_for_giants():
+    """Even WITHOUT node data, no huge model may be estimated small enough to
+    slip past the memory gate."""
+    for m in (
+        "qwen3-coder:480b-a35b-q4_K_M",
+        "deepseek-v3:671b-q4_K_M",
+        "llama4:maverick",
+        "MichelRosselli/GLM-4.6:Q4_K_M",
+    ):
+        assert _estimate_model_size(m) >= 100.0, f"{m} estimated dangerously small"
+
+
+def test_estimate_matches_biggest_token_not_a_substring():
+    """'480b-a35b' must match 480b, not the '35b' hiding inside it."""
+    assert _estimate_model_size("qwen3-coder:480b-a35b-q4_K_M") >= 200.0
+
+
+def test_estimate_unknown_model_is_pessimistic_not_optimistic():
+    """An unknown model must fail toward 'don't load', not 'evict everything'."""
+    assert _estimate_model_size("some-vendor/mystery-model:Q4") >= 100.0
+
+
+def test_estimate_node_data_wins_over_heuristic():
+    """Real data must override the name guess, even when the name looks big."""
+    node = _sized_node({"tiny-but-named-70b": 2.0})
+    assert _estimate_model_size("tiny-but-named-70b", node) == 2.0
+    assert _estimate_model_size("tiny-but-named-70b") == 45.0  # heuristic, no node
+
+
+def test_estimate_tolerates_node_without_size_reporting():
+    """Older node agents don't send models_available_sizes — must not crash."""
+    n = MagicMock()
+    n.ollama = MagicMock()
+    n.ollama.models_available_sizes = {}
+    n.ollama.models_loaded = []
+    assert _estimate_model_size("gpt-oss:120b", n) > 0
+    assert _estimate_model_size("gpt-oss:120b", None) > 0
+
+
+@pytest.mark.asyncio
+async def test_memory_gate_now_refuses_the_oversized_model():
+    """End-to-end regression for the 2026-07-17 thrash loop.
+
+    The 480B is 290GB. Under the old name-guess (10GB) the gate needed only
+    12GB free and waved it through on a box with 100GB free — then Ollama
+    evicted the whole fleet trying to make room. With the real size the gate
+    needs 290*1.2=348GB and correctly refuses.
+    """
+    from fleet_manager.server.model_preloader import _load_model_on_best_node
+
+    node = _sized_node({"qwen3-coder:480b-a35b-q4_K_M": 290.1})
+    node.node_id = "bb"
+    node.ollama.models_available = ["qwen3-coder:480b-a35b-q4_K_M"]
+    node.memory = MagicMock()
+    node.memory.available_gb = 100.0  # old math: 12GB needed → LOADS. new: 348 → refuses
+    node.mlx_servers = []
+    proxy = MagicMock()
+    proxy.pre_warm = AsyncMock()
+
+    ok = await _load_model_on_best_node(
+        "qwen3-coder:480b-a35b-q4_K_M", [node], proxy, why="test", target_node_id="bb",
+    )
+    assert ok is False
+    proxy.pre_warm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_memory_gate_still_loads_when_it_genuinely_fits():
+    """Guard against over-correcting into never loading anything."""
+    from fleet_manager.server.model_preloader import _load_model_on_best_node
+
+    node = _sized_node({"gpt-oss:120b": 65.4})
+    node.node_id = "bb"
+    node.ollama.models_available = ["gpt-oss:120b"]
+    node.memory = MagicMock()
+    node.memory.available_gb = 300.0  # 65.4*1.2 = 78GB needed → fits easily
+    node.mlx_servers = []
+    proxy = MagicMock()
+    proxy.pre_warm = AsyncMock()
+
+    ok = await _load_model_on_best_node(
+        "gpt-oss:120b", [node], proxy, why="test", target_node_id="bb",
+    )
+    assert ok is True
+    proxy.pre_warm.assert_awaited_once()

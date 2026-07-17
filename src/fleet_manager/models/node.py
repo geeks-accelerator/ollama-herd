@@ -86,6 +86,13 @@ class LoadedModel(BaseModel):
 class OllamaMetrics(BaseModel):
     models_loaded: list[LoadedModel] = Field(default_factory=list)
     models_available: list[str] = Field(default_factory=list)
+    # True on-disk size in GB per available model, straight from /api/tags.
+    # Optional by design: older node agents don't send it and the server falls
+    # back to name-heuristic guessing, so a mixed-version fleet still works.
+    # Without this the server had to guess sizes from model names — a guess
+    # that defaulted to 10 GB and called a 290 GB model "10 GB", defeating the
+    # preloader's memory gate entirely (2026-07-17 thrash loop).
+    models_available_sizes: dict[str, float] = Field(default_factory=dict)
     requests_active: int = 0
 
 

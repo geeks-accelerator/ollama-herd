@@ -56,6 +56,13 @@ _CACHE_TTL = 300  # 5 minutes
 # then — so a sub-second interval would just spin.
 _RESIDENCY_POLL_INTERVAL = 1.0
 
+# Assumed size for a model whose size we genuinely cannot determine (node
+# reports none, not in the catalog, name carries no parameter count).  Chosen
+# to be larger than anything we'd casually auto-preload: the failure mode of
+# guessing too LOW is evicting the whole fleet for a model that doesn't fit,
+# while guessing too HIGH just declines to preload and logs why.
+_UNKNOWN_MODEL_SIZE_GB = 100.0
+
 
 async def get_cached_priorities(trace_store: TraceStore) -> list[dict]:
     """Get priority scores, cached for 5 minutes."""
@@ -75,31 +82,82 @@ def get_model_priority(model: str, priorities: list[dict]) -> float:
     return 0.0
 
 
-def _estimate_model_size(model: str) -> float:
-    """Estimate model RAM in GB from catalog or name heuristics."""
+def _model_size_from_node(model: str, node) -> float | None:
+    """Real size in GB for ``model`` on ``node``, or None if unknown.
+
+    Prefers ground truth over guessing, in order:
+      1. ``models_available_sizes`` — the on-disk size straight from
+         Ollama's ``/api/tags`` (works even when the model isn't loaded,
+         which is exactly the preloader's case).
+      2. ``models_loaded[].size_gb`` — resident size, if it's already up.
+
+    Returns None for older node agents that don't report sizes, so the caller
+    can fall back to the name heuristic.
+    """
+    if node is None:
+        return None
+    ollama = getattr(node, "ollama", None)
+    if not ollama:
+        return None
+    sizes = getattr(ollama, "models_available_sizes", None) or {}
+    real = sizes.get(model)
+    if isinstance(real, (int, float)) and real > 0:
+        return float(real)
+    for m in getattr(ollama, "models_loaded", None) or []:
+        if m.name == model and m.size_gb:
+            return float(m.size_gb)
+    return None
+
+
+def _estimate_model_size(model: str, node=None) -> float:
+    """Model RAM in GB — real size when the node reports one, else a guess.
+
+    **Always pass ``node`` when you have one.** The name heuristic below cannot
+    know the size of a model whose name carries no parameter count
+    (``llama4:maverick``, ``MichelRosselli/GLM-4.6:Q4_K_M``) and silently
+    returned a 10 GB "conservative default" for them.  That default was not
+    conservative — it was catastrophic: ``qwen3-coder:480b-a35b-q4_K_M`` is
+    **290 GB** on disk and estimated at 10 GB, so the memory gate computed
+    "need 12 GB, have 355 GB → load it" and Ollama evicted the entire fleet to
+    make room.  A pinned model doing that on every preloader cycle produced a
+    ~300 GB disk→memory thrash loop (2026-07-17; see docs/issues.md).
+    """
+    # 1. Ground truth from the node (on-disk via /api/tags, or resident size).
+    real = _model_size_from_node(model, node)
+    if real is not None:
+        return real
+
+    # 2. Curated catalog.
     spec = lookup_model(model)
     if spec:
         return spec.ram_gb
 
-    # Heuristic from model name
+    # 3. Name heuristic — last resort. Ordered biggest-first so that a name
+    #    like "480b-a35b" matches 480b, not the "35b" hiding inside it.
     lower = model.lower()
     if "embed" in lower or "nomic" in lower:
         return 0.5
-    if any(s in lower for s in (":1b", ":0.6b", ":0.5b")):
-        return 1.0
-    if any(s in lower for s in (":3b", ":4b")):
-        return 3.0
-    if any(s in lower for s in (":7b", ":8b")):
-        return 5.0
-    if any(s in lower for s in (":13b", ":14b")):
-        return 10.0
-    if any(s in lower for s in (":22b", ":27b", ":32b")):
-        return 20.0
-    if any(s in lower for s in (":70b", ":72b")):
-        return 45.0
-    if any(s in lower for s in (":120b", ":122b", ":235b")):
-        return 75.0
-    return 10.0  # Conservative default
+    for token, gb in (
+        ("671b", 400.0), ("480b", 290.0), ("405b", 230.0), ("235b", 140.0),
+        ("122b", 75.0), ("120b", 72.0), ("70b", 45.0), ("72b", 45.0),
+        ("32b", 20.0), ("30b", 19.0), ("27b", 19.0), ("22b", 14.0),
+        ("14b", 10.0), ("13b", 10.0), ("8b", 5.0), ("7b", 5.0),
+        ("4b", 3.0), ("3b", 3.0), ("1b", 1.0), ("0.6b", 1.0), ("0.5b", 1.0),
+    ):
+        if token in lower:
+            return gb
+
+    # 4. Unknown. Deliberately pessimistic: an under-estimate lets an
+    #    unloadable model past the memory gate and thrashes the fleet, while an
+    #    over-estimate merely declines to preload it — which the operator sees
+    #    in the log. Fail toward "don't load", not "evict everything".
+    logger.info(
+        f"Preloader: unknown size for {model!r} and the node reported none — "
+        f"assuming {_UNKNOWN_MODEL_SIZE_GB:.0f}GB (pessimistic). If this model "
+        f"is small, it may not preload; check the node reports "
+        f"models_available_sizes."
+    )
+    return _UNKNOWN_MODEL_SIZE_GB
 
 
 def _parse_pinned_models(setting: str) -> list[str]:
@@ -199,7 +257,9 @@ async def _load_model_on_best_node(
             available_nodes,
             key=lambda n: n.memory.available_gb if n.memory else 0,
         )
-    model_size = _estimate_model_size(model)
+    # Pass the node: it reports the model's real on-disk size, so the gate
+    # below compares against ground truth instead of a name guess.
+    model_size = _estimate_model_size(model, best)
     available = best.memory.available_gb if best.memory else 0
     # Skip the memory gate when the model is ALREADY resident on this node — it
     # is in memory by definition, so there is nothing left to "fit".  Without

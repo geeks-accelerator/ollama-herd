@@ -77,6 +77,32 @@ class OllamaClient:
             logger.debug(f"Failed to get available models: {type(e).__name__}: {e}")
             return []
 
+    async def get_available_model_sizes(self) -> dict[str, float]:
+        """GET /api/tags — ``{model_name: on-disk size in GB}``.
+
+        ``/api/tags`` already reports each model's true byte size; we used to
+        parse only the name and throw the size away, leaving the server to
+        *guess* sizes from the model name.  That guess silently defaulted to
+        10 GB for anything it didn't recognise — so a 290 GB model looked like
+        10 GB, sailed through the preloader's memory gate, and Ollama evicted
+        the whole fleet to make room for it (2026-07-17 thrash loop; see
+        docs/issues.md).  Real numbers are right here — use them.
+        """
+        try:
+            resp = await self._client.get("/api/tags")
+            resp.raise_for_status()
+            data = resp.json()
+            sizes: dict[str, float] = {}
+            for m in data.get("models", []):
+                name = m.get("model", m.get("name", ""))
+                size_bytes = m.get("size")
+                if name and isinstance(size_bytes, (int, float)) and size_bytes > 0:
+                    sizes[name] = size_bytes / 1e9
+            return sizes
+        except Exception as e:  # noqa: BLE001 — sizes are best-effort; caller falls back
+            logger.debug(f"Failed to get model sizes: {type(e).__name__}: {e}")
+            return {}
+
     async def chat_stream(self, body: dict) -> AsyncIterator[bytes]:
         """POST /api/chat with streaming. Yields raw response lines."""
         async with self._client.stream("POST", "/api/chat", json=body) as response:

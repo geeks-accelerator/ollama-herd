@@ -452,6 +452,17 @@ async def collect_heartbeat(
         models_available = []
         requests_active = 0
 
+    # Real on-disk sizes so the server never has to guess from the name (see
+    # OllamaMetrics.models_available_sizes).  Deliberately its OWN try block:
+    # sizes are best-effort enrichment, and a failure here must never wipe the
+    # model list above — the server degrades to name-heuristic guessing, which
+    # is exactly what an older node agent does anyway.
+    models_available_sizes: dict[str, float] = {}
+    try:
+        models_available_sizes = await ollama.get_available_model_sizes()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"Model sizes unavailable: {type(e).__name__}: {e}")
+
     # MLX backend — the supervisor set drives heartbeat.mlx_servers; each
     # healthy server's model is added to models_available with an mlx: prefix.
     mlx_server_infos: list = []
@@ -479,6 +490,12 @@ async def collect_heartbeat(
                 prefix_mlx(st.model) for st in statuses if st.status == "healthy"
             ]
             models_available = list(models_available) + healthy_models
+            # The supervisor already knows each MLX model's on-disk size —
+            # carry it through so mlx: models don't fall back to name-guessing
+            # either.
+            for st in statuses:
+                if st.status == "healthy" and st.model_size_gb:
+                    models_available_sizes[prefix_mlx(st.model)] = st.model_size_gb
             logger.debug(
                 f"MLX state: {len(healthy_models)} healthy server(s), "
                 f"{len(statuses)} total configured"
@@ -521,6 +538,7 @@ async def collect_heartbeat(
         ollama=OllamaMetrics(
             models_loaded=models_loaded,
             models_available=models_available,
+            models_available_sizes=models_available_sizes,
             requests_active=requests_active,
         ),
         ollama_host=_make_lan_reachable_url(ollama_host, lan_ip),
