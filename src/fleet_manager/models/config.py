@@ -121,15 +121,19 @@ class ServerSettings(BaseSettings):
     debug_request_retention_days: int = 7
 
     # Anthropic Messages API compat (for Claude Code etc.)
-    # JSON map of claude-* model id → local Ollama model.
-    # Always include a "default" key to catch unknown claude-* requests.
-    anthropic_model_map: dict[str, str] = {
-        "default": "qwen3-coder:30b",
-        "claude-opus-4-7": "qwen3:32b",
-        "claude-sonnet-4-6": "qwen3-coder:30b",
-        "claude-sonnet-4-5": "qwen3-coder:30b",
-        "claude-haiku-4-5": "qwen3:14b",
-    }
+    # JSON map of claude-* model id → local model name.  OPTIONAL: with
+    # anthropic_auto_route on (the default), any claude-* id without an entry
+    # here is resolved to the best currently-loaded local model for its tier
+    # (see server/anthropic_autoroute.py).  So a fresh install needs no map at
+    # all — it routes to whatever the user has pulled.  Entries here are
+    # per-alias overrides that win over auto-routing; a "default" key still
+    # works as a catch-all.  Empty by default precisely so we don't ship
+    # hard-coded model names a given deployment may never have downloaded.
+    anthropic_model_map: dict[str, str] = {}
+    # When a claude-* id has no explicit mapping above, resolve it to the best
+    # loaded (else best on-disk) local model for its tier instead of failing.
+    # Set false to require an explicit map (the pre-0.9 behaviour).
+    anthropic_auto_route: bool = True
     # Optional shared secret for /v1/messages. When require_key is true and the
     # client's x-api-key header doesn't match anthropic_api_key, return 401.
     anthropic_require_key: bool = False

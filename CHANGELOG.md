@@ -21,6 +21,7 @@ Versioned `0.9.0` rather than `0.8.2` deliberately: a `0.7.0 → 0.8.2` jump rea
 - **`POST /fleet/pin` can now refuse.** `409` when the pinned set can't physically co-reside (`"force": true` overrides), `400` for an unknown `node_id`. Previously every pin was accepted silently — which is how a 307 GB pinned set on a 512 GB box produced hours of thrash.
 - **Image requests can now fail instead of silently succeeding.** A request carrying images will no longer fall back to a model that can't see them; it fails loudly rather than returning a confident answer about an image the model never received.
 - **Backend client errors surface as themselves.** A 4xx from Ollama (e.g. "model does not support tools") now reaches you as that 4xx with the backend's message, instead of an opaque `500`.
+- **The built-in default `anthropic_model_map` is now empty.** It previously hard-coded `qwen3-coder:30b` / `qwen3:32b` / `qwen3:14b` — model names a given deployment may never have pulled. Deployments that relied on that built-in default (never set `FLEET_ANTHROPIC_MODEL_MAP`) now get **auto-routing** instead (best loaded model per tier), which is strictly more likely to resolve to something they actually have. Explicit maps set via env are unaffected. See the auto-routing feature below.
 
 ### Headline features
 
@@ -29,6 +30,7 @@ Versioned `0.9.0` rather than `0.8.2` deliberately: a `0.7.0 → 0.8.2` jump rea
 - **`mlx:` models reachable over the OpenAI endpoint**, not just Anthropic — OpenAI-only clients get the fast backend instead of a slow fallback.
 - **Canonical `X-Fleet-*` headers** on every proxied response, so a caller can always tell what actually ran.
 - **Per-request strict mode** (`X-Fleet-No-Fallback`) and a **per-client concurrency cap** (`FLEET_CLIENT_MAX_IN_FLIGHT`, default off).
+- **`FLEET_ANTHROPIC_MODEL_MAP` is now optional — Claude Code works with zero configuration.** A `claude-*` id with no explicit mapping is resolved to the best *currently-loaded* local model for its tier (coding models preferred for Claude Code's workload; a loaded vision model chosen automatically for image requests), falling back to the best on-disk model, then a configured `default`. So a fresh install routes to whatever the user pulled — no hand-written map that has to match your downloads, and no map entry silently pointing at a model you never pulled. Explicit map entries still win as per-alias overrides; set `FLEET_ANTHROPIC_AUTO_ROUTE=false` to require an explicit map (the pre-0.9 behaviour). See `docs/reference/anthropic-auto-routing.md`.
 
 ### Notable fixes
 

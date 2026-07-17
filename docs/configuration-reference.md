@@ -249,7 +249,8 @@ See [docs/guides/claude-code-integration.md](guides/claude-code-integration.md) 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FLEET_ANTHROPIC_MODEL_MAP` | `{"default":"qwen3-coder:30b","claude-opus-4-7":"qwen3:32b","claude-sonnet-4-6":"qwen3-coder:30b","claude-sonnet-4-5":"qwen3-coder:30b","claude-haiku-4-5":"qwen3:14b"}` | JSON map of `claude-*` model id → local Ollama model. Always include a `"default"` key. Real Ollama model names pass through unchanged. |
+| `FLEET_ANTHROPIC_MODEL_MAP` | `{}` (empty) | **Optional** JSON map of `claude-*` model id → local model, used as per-alias overrides. With auto-routing on (below), unmapped ids resolve to the best loaded model automatically, so no map is needed. A `"default"` key is the last-resort catch-all. Real model names pass through unchanged. See [`docs/reference/anthropic-auto-routing.md`](reference/anthropic-auto-routing.md). |
+| `FLEET_ANTHROPIC_AUTO_ROUTE` | `true` | When a `claude-*` id has no explicit `FLEET_ANTHROPIC_MODEL_MAP` entry, resolve it to the best currently-loaded (else best on-disk) local model for its tier — coding models preferred, embedding/image models excluded, vision models chosen for image requests. Set `false` to require an explicit map (pre-0.9 behaviour). |
 | `FLEET_ANTHROPIC_REQUIRE_KEY` | `false` | If true, validate the `x-api-key` header against `FLEET_ANTHROPIC_API_KEY`. Default off — local trust boundary like the rest of the router. |
 | `FLEET_ANTHROPIC_API_KEY` | `""` | Shared secret for `/v1/messages` when `require_key` is true. Set the matching value as `ANTHROPIC_AUTH_TOKEN` in Claude Code. |
 | `FLEET_ANTHROPIC_DEFAULT_MAX_TOKENS` | `4096` | Used when the client omits `max_tokens` from the request. |

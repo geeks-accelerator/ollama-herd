@@ -26,6 +26,7 @@ from pydantic import ValidationError
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server import debug_log
+from fleet_manager.server.anthropic_autoroute import resolve_model
 from fleet_manager.server.anthropic_models import AnthropicMessagesRequest
 from fleet_manager.server.anthropic_translator import (
     AnthropicSSEState,
@@ -36,7 +37,6 @@ from fleet_manager.server.anthropic_translator import (
     apply_tool_choice,
     estimate_tokens,
     flatten_text_for_count,
-    map_anthropic_model,
     ollama_chunk_to_anthropic_events,
 )
 from fleet_manager.server.fleet_headers import fleet_headers
@@ -57,6 +57,7 @@ from fleet_manager.server.routes.routing import (
     client_error_passthrough,
     extract_tags,
     get_all_fleet_models,
+    get_fleet_loaded_and_ondisk,
     parse_allow_fallback,
     score_with_fallbacks,
 )
@@ -716,30 +717,47 @@ async def messages(
             },
         )
 
-    # Map model
+    # Resolve model.  An explicit anthropic_model_map entry still wins, but is
+    # now optional: with auto-routing on, an unmapped claude-* id resolves to
+    # the best currently-loaded local model for its tier, so a fresh install
+    # routes to whatever the user has pulled without a hand-written map.  See
+    # server/anthropic_autoroute.py.
     model_map = getattr(settings, "anthropic_model_map", {}) or {}
-    local_model = map_anthropic_model(body.model, model_map)
+    auto_route = getattr(settings, "anthropic_auto_route", True)
+    has_images = _request_has_images(body)
+    loaded_names, ondisk_names = get_fleet_loaded_and_ondisk(
+        request.app.state.registry
+    )
+    local_model, route_reason = resolve_model(
+        body.model, model_map, loaded_names, ondisk_names,
+        auto_route=auto_route, has_images=has_images,
+    )
     if not local_model:
         return JSONResponse(
-            status_code=400,
+            status_code=404,
             content={
                 "type": "error",
                 "error": {
-                    "type": "invalid_request_error",
+                    "type": "not_found_error",
                     "message": (
-                        f"No mapping for model '{body.model}' and no default configured. "
-                        "Set FLEET_ANTHROPIC_MODEL_MAP."
+                        f"No local model available to serve '{body.model}'. "
+                        "Pull a chat/coding model (e.g. 'ollama pull qwen3-coder:30b') "
+                        "or set FLEET_ANTHROPIC_MODEL_MAP."
                     ),
                 },
             },
         )
+    logger.info(
+        f"Anthropic resolved {body.model} → {local_model} ({route_reason})"
+    )
 
-    # Vision override — if the request contains image content blocks, route to
-    # the configured vision model regardless of the Claude tier mapping.  Keeps
-    # opus/sonnet on their coding models while still handling image requests
-    # correctly.  No-op when FLEET_ANTHROPIC_VISION_MODEL is empty.
+    # Vision override — if the request contains image content blocks and an
+    # explicit vision model is configured, route there regardless of tier.
+    # Keeps opus/sonnet on their coding models while still handling images.
+    # (When unset, auto-routing above already preferred a loaded vision model,
+    # since has_images was passed through.)  No-op when the setting is empty.
     vision_model = getattr(settings, "anthropic_vision_model", "") or ""
-    if vision_model and _request_has_images(body):
+    if vision_model and has_images:
         logger.info(
             f"Anthropic vision: {body.model} → {vision_model} "
             f"(override from {local_model} due to image content)"

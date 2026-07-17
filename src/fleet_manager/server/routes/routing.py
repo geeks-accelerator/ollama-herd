@@ -570,3 +570,28 @@ def get_all_fleet_models(registry) -> set[str]:
             all_models.update(m.name for m in n.ollama.models_loaded)
             all_models.update(n.ollama.models_available)
     return all_models
+
+
+def get_fleet_loaded_and_ondisk(registry) -> tuple[set[str], set[str]]:
+    """Split ONLINE-node models into (currently loaded, available on disk).
+
+    Used by Anthropic auto-routing to prefer a resident model (no cold load)
+    over one that would have to be pulled into memory.  Healthy MLX servers are
+    counted as loaded (they're always-resident subprocesses) and carry the
+    ``mlx:`` prefix under which they're routed.  Offline nodes are excluded —
+    we can't route to them.
+    """
+    loaded: set[str] = set()
+    ondisk: set[str] = set()
+    for n in registry.get_online_nodes():
+        if n.ollama:
+            loaded.update(m.name for m in n.ollama.models_loaded)
+            ondisk.update(n.ollama.models_available)
+        for s in getattr(n, "mlx_servers", None) or []:
+            if getattr(s, "status", None) == "healthy" and getattr(s, "model", None):
+                name = f"mlx:{s.model}"
+                loaded.add(name)
+                ondisk.add(name)
+    # On-disk is a superset of loaded by intent (a loaded model is also present).
+    ondisk |= loaded
+    return loaded, ondisk

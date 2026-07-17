@@ -50,26 +50,18 @@ What we **don't** implement: the Anthropic Compaction API (`anthropic-beta: comp
 
 ## Model mapping
 
-Claude Code sends model IDs like `claude-sonnet-4-5`. Ollama-herd maps them to local Ollama models via `FLEET_ANTHROPIC_MODEL_MAP`:
+Claude Code sends model IDs like `claude-sonnet-4-5`. **You don't have to map them** — by default the herd auto-routes each `claude-*` id to the best model you currently have loaded (coding models preferred; a vision model chosen automatically for image requests). Pull a coding model and Claude Code works with no `FLEET_ANTHROPIC_MODEL_MAP` at all. Full details: [`docs/reference/anthropic-auto-routing.md`](../reference/anthropic-auto-routing.md).
+
+Set the map only when you want to **pin** a specific alias to a specific model. Entries you set win over auto-routing; unmapped aliases still auto-route:
 
 ```bash
-# Default (no env var needed):
-#   claude-opus-4-7    → qwen3:32b
-#   claude-sonnet-4-6  → qwen3-coder:30b
-#   claude-sonnet-4-5  → qwen3-coder:30b
-#   claude-haiku-4-5   → qwen3:14b
-#   default (anything claude-*) → qwen3-coder:30b
-
-# Override:
-export FLEET_ANTHROPIC_MODEL_MAP='{
-  "default": "qwen3-coder:30b",
-  "claude-opus-4-7": "deepseek-r1:70b",
-  "claude-sonnet-4-5": "qwen3-coder:30b",
-  "claude-haiku-4-5": "qwen3:14b"
-}'
+# Pin opus to a big model you keep hot; sonnet/haiku keep auto-routing.
+export FLEET_ANTHROPIC_MODEL_MAP='{"claude-opus-4-7": "qwen3:32b"}'
 ```
 
-You can also pass a real Ollama model name (e.g. `"model": "qwen3-coder:30b"`) and ollama-herd will pass it through unchanged.
+Map values must be models you've actually pulled (or a running `mlx:` server) — a value pointing at a model that isn't downloaded is a 404 for that alias. Auto-routing never has this problem because it only picks from what's present.
+
+You can also pass a real Ollama model name (e.g. `"model": "qwen3-coder:30b"`) and ollama-herd will pass it through unchanged. To require an explicit map and disable auto-routing (the pre-0.9 behaviour), set `FLEET_ANTHROPIC_AUTO_ROUTE=false`.
 
 ### Per-tier tradeoff pattern
 
@@ -77,10 +69,10 @@ Nothing requires the tiers to map to the same model. Different-family, different
 
 ```bash
 export FLEET_ANTHROPIC_MODEL_MAP='{
-  "default":           "mlx:mlx-community/Qwen3-Coder-Next-4bit",
-  "claude-haiku-4-5":  "gpt-oss:120b",
-  "claude-sonnet-4-5": "mlx:mlx-community/Qwen3-Coder-Next-4bit",
-  "claude-opus-4-7":   "mlx:mlx-community/Qwen3-Coder-Next-4bit"
+  "default":           "qwen3-coder:30b",
+  "claude-haiku-4-5":  "qwen3:14b",
+  "claude-sonnet-4-5": "qwen3-coder:30b",
+  "claude-opus-4-7":   "qwen3:32b"
 }'
 ```
 
@@ -115,9 +107,13 @@ Prints a delta table: `gen_tok/s.p50  32.5 → 38.1   +17.2%`. Uses your fleet's
 ### Running more than 3 models with MLX backend
 
 Ollama on macOS caps concurrent hot models at 3 ([docs/issues.md](../issues.md)).
-To keep a 4th model (typically an opus-tier giant like `qwen3-coder:480b`) hot,
-route it through the MLX backend — an independent `mlx_lm.server` process
-that has its own memory budget, separate from Ollama's.
+To keep a 4th model hot — e.g. a dedicated MLX coding model like
+`mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` — route it through the MLX
+backend, an independent `mlx_lm.server` process with its own memory budget
+separate from Ollama's. (Size the model to your hardware: remember a model's
+resident cost is weights *plus* KV cache, and the KV cache scales with context —
+a 30B model at 256K context can need 120 GB+, so an "opus-tier giant" that fits
+on disk may not fit in memory. See [`docs/issues/model-sizing-ignores-kv-cache.md`](../issues/model-sizing-ignores-kv-cache.md).)
 
 Setup on the node (the supervisor spawns and manages mlx_lm.server for you):
 
@@ -340,11 +336,11 @@ Cheap workflow: keep a short handoff note in a scratch file (`notes/handoff.md` 
 
 ### 4. Size-based model escalation
 
-The router supports `FLEET_ANTHROPIC_SIZE_ESCALATION_TOKENS` + `FLEET_ANTHROPIC_SIZE_ESCALATION_MODEL` — any request above N tokens automatically routes to a different (usually larger) model. Example: map Claude Sonnet to `qwen3-coder:30b` for fast turns, but escalate to `mlx:mlx-community/Qwen3-Coder-Next-4bit` when prompts exceed 50K tokens.
+The router supports `FLEET_ANTHROPIC_SIZE_ESCALATION_TOKENS` + `FLEET_ANTHROPIC_SIZE_ESCALATION_MODEL` — any request above N tokens automatically routes to a different (usually larger-context) model. Example: let short turns auto-route to your fast coding model, but escalate to a big-context model when prompts exceed 50K tokens. Use a model you actually have loaded/pulled:
 
 ```bash
 FLEET_ANTHROPIC_SIZE_ESCALATION_TOKENS=50000
-FLEET_ANTHROPIC_SIZE_ESCALATION_MODEL=mlx:mlx-community/Qwen3-Coder-Next-4bit
+FLEET_ANTHROPIC_SIZE_ESCALATION_MODEL=gpt-oss:120b
 ```
 
 This trades small-request throughput for large-request quality where it matters, without making the user think about routing.
