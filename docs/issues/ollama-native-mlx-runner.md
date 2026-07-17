@@ -1,6 +1,35 @@
 # Ollama ships a native MLX runner — our MLX subsystem's premise (and our documented Ollama facts) are stale
 
-**Status:** `OPEN` — investigation required before any code change
+**Status:** `OPEN` — **investigated 2026-07-17; the premise was half-wrong. See "Answers" below.** The subsystem decision is still open, but for a *different and stronger* reason than this issue originally argued.
+
+---
+
+## ✅ Answers (measured 2026-07-17, on Ollama 0.32.1)
+
+We upgraded `0.24.0` → `0.32.1` and measured. **The headline finding inverts this issue's premise:**
+
+> **Ollama's MLX runner is NOT active — and Ollama is faster than our MLX anyway.**
+
+| Q | Answer |
+|---|---|
+| **Q1 — is the 3-model cap real?** | ❌ **No.** With `OLLAMA_MAX_LOADED_MODELS=10` we observed **4 concurrent residents**. The "hardcoded 3 on macOS" claim is dead. Nodes now report their own cap; `free_slots` went 2 → 9. |
+| **Q2 — does it fix glm?** | ✅ **Yes, spectacularly.** **13.7 → 77.8 tok/s (5.7×)**. `gpt-oss:120b`: 50.9 → 74.5. See [`glm-4.7-flash-ollama-glm4moelite-slow.md`](glm-4.7-flash-ollama-glm4moelite-slow.md) — **now FIXED**. |
+| **Q3 — does prefix caching work?** | ✅ **Yes — and the "zero reuse" report was a measurement error.** Cold prefill 568 ms → **38 ms** warm on the same prefix (**29× faster per token**). The client agent measured `prompt_eval_count`, which reports the **logical prompt size, not tokens computed** — it stays flat whether caching works or not. Their "1,873 tokens re-evaluated" was never evidence of a miss. |
+| **Q4 — MLX model coverage?** | ⚠️ **Zero — MLX isn't running at all.** `ggml_metal_init` + `llama_model_loader` throughout; **0 `mlx` mentions in a 5 MB server log**; `OLLAMA_NEW_ENGINE` unset. Every gain above came from **llama.cpp**, with MLX dormant behind an opt-in (`--mlx-engine` / `OLLAMA_NEW_ENGINE`). |
+
+### What this means — the case against our MLX subsystem got *stronger*, not weaker
+
+This issue argued: *"Ollama has native MLX, so our `mlx_lm.server` stack may be redundant."* The reality is sharper:
+
+> **Ollama's llama.cpp path (77.8 tok/s) already beats our `mlx_lm.server` (59 tok/s) for glm — and Ollama's MLX isn't even switched on yet.**
+
+So we maintain `MlxSupervisor`, `mlx_proxy`, the `mlx:` prefix, `setup-mlx.sh`, the `--kv-bits` patch that breaks on every `mlx-lm` upgrade, plus a week of bug tax (kv_bits crash, dropped `reasoning` field, port races, jetsam churn) — to be **32% slower** than the backend we route around. Enabling Ollama's MLX could widen that gap further.
+
+**Still ours:** distributed multi-Mac inference (`mlx.launch`) — Ollama is single-host. That is now the *only* load-bearing justification for the subsystem.
+
+**Unanswered:** whether `OLLAMA_NEW_ENGINE=1` makes MLX faster than 77.8. Requires an Ollama restart; not yet tested.
+
+---
 **Severity:** Medium–High (strategic: a large subsystem may be redundant; **plus** load-bearing design constants may be wrong)
 **Discovered:** 2026-07-17, from an external tip that "Ollama 0.19 now runs on MLX"
 **Upstream:** [ollama.com/blog/mlx](https://ollama.com/blog/mlx) — *"Ollama is now powered by MLX on Apple Silicon in preview"* (first-party) · [ollama.com/blog/mlx-performance](https://ollama.com/blog/mlx-performance)

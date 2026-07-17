@@ -1,9 +1,41 @@
 # GLM-4.7-Flash is ~4× too slow on Ollama (glm4moelite MoE not exploited)
 
-**Status:** `OPEN` (upstream Ollama bug — not a herd defect)
-**Severity:** Medium — affects model selection / benchmarking; no correctness impact
+**Status:** ✅ `FIXED UPSTREAM` — resolved by upgrading Ollama `0.24.0` → `0.32.1` (2026-07-17)
+**Severity:** Medium — affected model selection / benchmarking; no correctness impact
 **Discovered:** 2026-07-15, during a Tier-0 model benchmark on the local fleet
+**Resolved:** 2026-07-17 — **13.7 → 77.8 tok/s (5.7×)**, measured on the same box
 **Upstream:** [ollama/ollama#14045 — "glm-4.7-flash is slow and uses a lot of cpu"](https://github.com/ollama/ollama/issues/14045)
+
+---
+
+## ✅ Resolution (2026-07-17)
+
+Upgrading Ollama to **0.32.1** fixed this entirely. Measured on the same M3 Ultra:
+
+| | Before (Ollama 0.24.0) | **After (0.32.1)** |
+|---|---|---|
+| `glm-4.7-flash` decode | **13.7 tok/s** | **77.8 tok/s** |
+| `gpt-oss:120b` decode | 50.9 tok/s | 74.5 tok/s |
+
+**The mechanism is visible in Ollama's own log:**
+
+```
+handle_glm4moelite: detected Ollama-format glm4moelite GGUF;
+                    translating to deepseek2 (MLA conventions)
+```
+
+Ollama now translates `glm4moelite` GGUF into deepseek2 MLA conventions — i.e. it stopped CPU-offloading the experts and now exploits the 3B-active sparsity, exactly as the analysis below predicted it should.
+
+### Two things this resolution corrects
+
+1. **The fix was NOT MLX.** The "Fix path" below recommended serving via `mlx_lm.server`. That advice is now **obsolete and backwards**: Ollama's **llama.cpp** path (77.8 tok/s) is *faster* than our `mlx_lm.server` (59 tok/s). Verified: Ollama's native MLX runner is **not even active** (0 `mlx` mentions in a 5 MB server log; `ggml_metal_init` + `llama_model_loader` throughout). The gain is pure llama.cpp maturation across 0.24 → 0.32.1.
+2. **Guidance given to client agents is now inverted.** We told them *"use `mlx:` for GLM — the Ollama path is slow."* On 0.32.1, **Ollama is the fast path**. See `ollama-native-mlx-runner.md` for what this means for the `mlx_lm.server` subsystem.
+
+**Still true:** GLM is a heavy reasoner (~3,600 output tokens where qwen emits ~400) and defaults to a 202,752-token context. The `num_ctx` cap remains worthwhile for prefill; the thinking-token cost is inherent to the model.
+
+The original analysis is preserved below — its architectural prediction ("a 30B-A3B MoE should decode ~50 tok/s") was correct, and upstream ultimately delivered better than that.
+
+---
 **See also:** [`docs/research/mlx-vs-ollama-adoption-2026.md`](../research/mlx-vs-ollama-adoption-2026.md) §"Why new architectures land faster on MLX" — the structural reason this class of bug hits Ollama first
 
 ---

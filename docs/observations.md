@@ -226,6 +226,30 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+## 2026-07-17: Two false alarms from one bug — the log timestamps are UTC, the fleet isn't
+
+**Evidence:** Scanning `herd.jsonl` for errors twice produced confidently wrong answers in the same session. First: `0 ERRORs in 8h` on a fleet that had logged 399 — the parser used `timestamp`/`message`, but `JSONLFormatter` writes `ts`/`level`/`logger`/`msg`, so every record silently failed the filter. Second, after fixing the field names: `218 warnings in the last 3 minutes` — which nearly blocked a green-light to resume production work. The real number was **0**. Cause: `ts` is ISO-8601 *with* a `+00:00` offset (`2026-07-17T10:22:21.109982+00:00`) while the box runs UTC-8. `time.mktime(time.strptime(ts[:19], ...))` treats that UTC string as **local**, yielding epochs **8 hours in the future** — so `ts >= now - 180` matched **every line ever written**. The tell was visible and ignored: a "last 3 min" query returning 218 rows from a log with ~91 lines in the window.
+
+**Insight:** This is the same failure family as the 2026-05-15 grep-pattern miss (`'"level":"ERROR"'` without the space), and it fails in *both* directions — false-clean and false-alarm. A false-clean hides an incident for days; a false-alarm burns trust and blocks real work. Both come from asserting on a log's shape without verifying it. **Parse with `datetime.fromisoformat(ts).timestamp()`** (it honours the offset), use the real field names, and **always print the total line count alongside a windowed query** — if "last 3 minutes" returns thousands of rows, the clock math is wrong, not the fleet. Cheap invariant, catches the whole class.
+
+---
+
+## 2026-07-17: I kernel-panicked the box by ignoring a number I had already printed
+
+**Evidence:** A `watchdog timeout: no checkins from watchdogd in 90 seconds` panic took down the M3 Ultra at 02:11 during Ollama upgrade testing. Not memory exhaustion — the machine was *starved* for 90 straight seconds. Cause was testing method: a `/fleet/pin` test on a 290 GB model fell through to a real load; curl gave up after 20 s, I checked the pin store, saw it hadn't persisted, and moved on — but the **load kept running server-side for minutes**, persisted the pin on completion (it reappeared after reboot), and the sustained memory/IO starved `watchdogd`. The warning sign was in my own output, unread: **a 19 GB model reporting a 394-second load time**. On a healthy box that load is seconds. I ran three more heavy tests after seeing it.
+
+**Insight:** Three compounding lessons. (1) **A slow load is a stop signal, not a curiosity** — 394 s for 19 GB means the box is already thrashing, and everything after it is stacking onto a machine in distress. (2) **A client timeout does not cancel server-side work** — curl returning doesn't mean the 290 GB load stopped; it kept going and *persisted state*. Never infer "it didn't happen" from "my request gave up." (3) **The plan said "read-only first, do not disturb the soak"** and I wrote that sentence myself before ignoring it. Memory-heavy measurements belong on an idle fleet, one at a time, with `memory_pressure` + `vm.swapusage` checked between each. Following your own plan is the cheap version of this lesson; the expensive version is a kernel panic and a paused workday.
+
+---
+
+## 2026-07-17: Ollama 0.24 → 0.32.1 — the fix was llama.cpp, not the MLX we upgraded for
+
+**Evidence:** We upgraded chasing Ollama's native MLX runner (real: `x/mlxrunner`, MLX C-API bindings, 6,925 `mlx` strings in the binary). Results on the same M3 Ultra: **glm-4.7-flash 13.7 → 77.8 tok/s (5.7×)**, gpt-oss:120b 50.9 → 74.5, prefix cache 568 ms → 38 ms cold-vs-warm (29×/token). But **MLX never ran**: 0 `mlx` mentions in a 5 MB server log, `ggml_metal_init` + `llama_model_loader` throughout, `OLLAMA_NEW_ENGINE` unset. The glm fix is visible upstream in llama.cpp: `handle_glm4moelite: detected Ollama-format glm4moelite GGUF; translating to deepseek2 (MLA conventions)` — it stopped CPU-offloading the experts. Meanwhile our own `mlx_lm.server` serves the same model at **59 tok/s**.
+
+**Insight:** **Ollama's llama.cpp path is now 32% faster than our MLX subsystem — with Ollama's MLX still switched off.** Two years of local-inference strategy assumed "Ollama is the slow, convenient path; MLX is the fast path you bolt on." That inverted while we weren't looking, because we were 8 versions behind and documenting `0.20.4` while running `0.24.0`. Every piece of guidance built on the old premise ("use `mlx:` for GLM", "Ollama can't prefix-cache", "macOS hardcodes a 3-model cap") turned out false on 0.32.1. **A dependency's weaknesses are not permanent, and a documented constant can outlive its truth silently.** Pin the version *and* re-verify the beliefs attached to it — and put the dependency's version in the soak checks so the drift can't hide.
+
+---
+
 ## 2026-04-02: shutil.which() blind spots in tool-installed binaries
 
 **Evidence:** Image generation stopped working after every Herd restart. The node agent couldn't find `mflux-generate-z-image-turbo` even though `uv tool list` confirmed it was installed. Root cause: `uv tool install` puts binaries in `~/.local/bin/` via symlinks, but when `uv run herd-node` launches the Python process, `~/.local/bin` isn't in `$PATH`. `shutil.which()` only checks `$PATH`. The fleet status showed `image=none, port=none` — zero image capabilities reported despite mflux being fully functional if called with the full path.

@@ -1,6 +1,41 @@
 # Ollama 0.24 → 0.32.1 Upgrade + Native-MLX Evaluation
 
-**Status**: 📋 Planned — not yet executed
+**Status**: ✅ **EXECUTED 2026-07-17.** Upgraded to v0.32.1; Q1–Q4 all answered (results below); glm issue closed upstream. Remaining: Phase 5 (the subsystem decision) and one untested lever (`OLLAMA_NEW_ENGINE=1`).
+
+---
+
+## ✅ Results (2026-07-17)
+
+**The upgrade is a clear win. glm 13.7 → 77.8 tok/s (5.7×); gpt-oss 50.9 → 74.5. Nothing regressed.**
+
+| Q | Answer |
+|---|---|
+| **Q1 cap** | Not 3 — **4 residents observed** with `OLLAMA_MAX_LOADED_MODELS=10`. Constants fixed; nodes now report their own cap. `free_slots` 2 → 9. |
+| **Q2 glm** | ✅ **13.7 → 77.8 tok/s.** Log shows the mechanism: `handle_glm4moelite: … translating to deepseek2 (MLA conventions)`. Issue **closed**. |
+| **Q3 prefix cache** | ✅ Works — 568 ms cold → **38 ms** warm (29×/token). The client agent's "zero reuse" was a **measurement error**: `prompt_eval_count` reports logical prompt size, not tokens computed. |
+| **Q4 MLX coverage** | ⚠️ **MLX is NOT active.** 0 `mlx` in a 5 MB log; `ggml_metal_init`/`llama_model_loader` throughout; `OLLAMA_NEW_ENGINE` unset. **All gains are llama.cpp**, MLX still dormant. |
+
+**Strategic inversion:** Ollama's *llama.cpp* (77.8) now beats our `mlx_lm.server` (59) — with its MLX off. The subsystem's only remaining justification is **distributed multi-Mac** (Ollama is single-host).
+
+**Functional validation (all ✅):** OpenAI / Anthropic / MLX routes, **streaming on all three**, **tool use** (with a tool-capable model), **concurrency 4/4**, embeddings (768 dims, 0.18 s), trace recording, gpt-oss:120b in production. Zero errors in a clean 3-minute window.
+
+### ⚠️ Operational lesson — this testing panicked the box
+
+**A kernel panic (`watchdog timeout: no checkins from watchdogd in 90 seconds`) took the machine down at 02:11.** Cause: testing method, **not** the upgrade. A 290 GB pin test fell through to a real load that ran for minutes after curl gave up, and the sustained memory/IO starved `watchdogd`. The warning sign was ignored in plain sight — **a 19 GB model reporting a 394-second load time**.
+
+**Rules for next time, learned the hard way:**
+- Run memory-heavy measurements on an **idle** fleet, **one at a time**, checking `memory_pressure` + `vm.swapusage` between each.
+- **A slow load is a stop signal**, not a curiosity.
+- A curl timeout does **not** cancel the server-side work — it keeps loading, and can persist state (the pin re-appeared after reboot).
+- This plan literally said "read-only first, do not disturb the soak." Following your own plan is the cheap version of this lesson.
+
+### Known issues after the upgrade (none blocking)
+
+1. **`available_gb` is volatile** (17 GB ↔ 445 GB on a 512 GB box) → the scorer transiently eliminates nodes for big models (`All 1 nodes eliminated for gpt-oss:120b`). **Pre-existing**, not the upgrade. Best open lead.
+2. **`free_slots` reports 3, not 10** — herd-node can't see `OLLAMA_MAX_LOADED_MODELS`. Ollama gets it via `launchctl`; the node is shell-started. The per-node cap fix reads *the node's* env, which is a **proxy that has now diverged** — the CLAUDE.md `launchctl` gotcha in action. Fix: add it to `~/.fleet-manager/env`, or read `launchctl getenv` on macOS.
+3. **Ollama's clean 400 ("model does not support tools") becomes a herd 500.** Pre-existing, cosmetic.
+
+---
 **Created**: 2026-07-17
 **Issue**: [`issues/ollama-native-mlx-runner.md`](../issues/ollama-native-mlx-runner.md) — this plan is how that issue gets resolved
 **Related**: [`issues/glm-4.7-flash-ollama-glm4moelite-slow.md`](../issues/glm-4.7-flash-ollama-glm4moelite-slow.md) (may close at the source), `CLAUDE.md` (stale Ollama facts)
