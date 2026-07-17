@@ -7,8 +7,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from fleet_manager.models.config import ServerSettings
-from fleet_manager.models.request import RoutingResult
+from fleet_manager.models.request import (
+    InferenceRequest,
+    RequestFormat,
+    RoutingResult,
+)
+from fleet_manager.server import model_preloader
 from fleet_manager.server.routes.routing import (
+    _try_vram_fallback,
     _vram_fallback_events,
     score_with_fallbacks,
 )
@@ -495,3 +501,57 @@ class TestClientErrorPassthrough:
         from fleet_manager.server.routes.routing import client_error_passthrough
         r = client_error_passthrough(self._http_error(422, None, text="plain text boom"))
         assert r is not None and r.status_code == 422
+
+
+class TestImageFallbackGuard:
+    """Never answer an image-bearing request with a model that cannot see images.
+
+    The 2026-04-23 incident: 20 gemma3:27b vision requests were silently
+    answered by gpt-oss:120b with the images dropped. The risk was logged as a
+    QUALITY RISK for months while ``InferenceRequest.has_images`` — computed on
+    every request — went unread by the fallback decision.
+    """
+
+    @staticmethod
+    def _req(model: str, *, images: bool) -> InferenceRequest:
+        msg = {"role": "user", "content": "what is in this picture?"}
+        if images:
+            msg["images"] = ["<base64-image-data>"]
+        return InferenceRequest(
+            model=model, original_model=model, messages=[msg],
+            original_format=RequestFormat.OPENAI, raw_body={"model": model},
+        )
+
+    @staticmethod
+    def _scorer_with_only(model: str):
+        """Nothing in-category loaded; only `model` is loaded fleet-wide."""
+        scorer = MagicMock()
+        scorer.score_request.return_value = []
+        scorer.score_loaded_models.side_effect = lambda cat, *a, **k: (
+            [] if cat is not None else
+            [(RoutingResult(node_id="bb", queue_key=f"bb:{model}", score=90.0), model)]
+        )
+        return scorer
+
+    def test_has_images_is_autodetected(self):
+        assert self._req("gemma3:4b", images=True).has_images is True
+        assert self._req("gemma3:4b", images=False).has_images is False
+
+    def test_image_request_is_never_given_a_blind_model(self, monkeypatch):
+        """gemma3:4b + images, only gpt-oss (reasoning) loaded → refuse to substitute."""
+        monkeypatch.setattr(model_preloader, "_priority_cache", [], raising=False)
+        out = _try_vram_fallback(
+            self._req("gemma3:4b", images=True),
+            self._scorer_with_only("gpt-oss:120b"), {}, 10, [],
+        )
+        assert out is None, "a blind model must never answer an image request"
+
+    def test_textonly_vision_model_request_may_still_fall_back(self, monkeypatch):
+        """No images in the payload → the swap is survivable; don't over-block."""
+        monkeypatch.setattr(model_preloader, "_priority_cache", [], raising=False)
+        out = _try_vram_fallback(
+            self._req("gemma3:4b", images=False),
+            self._scorer_with_only("gpt-oss:120b"), {}, 10, [],
+        )
+        assert out is not None, "blocking text-only requests would over-correct"
+        assert out[1] == "gpt-oss:120b"

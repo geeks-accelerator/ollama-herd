@@ -352,17 +352,41 @@ def _try_vram_fallback(
             return None
 
         fallback_cat = classify_model(best_model).value
+
+        # HARD BLOCK: never substitute a non-vision model for a request that
+        # actually carries images.  A text model cannot see them — it answers
+        # confidently about content it was never shown, which is worse than an
+        # error because nothing downstream can detect it.  This is the
+        # 2026-04-23 incident (20 gemma3:27b vision requests silently answered
+        # by gpt-oss:120b with the images dropped); the risk was documented and
+        # logged for months while `InferenceRequest.has_images` — computed on
+        # every single request — went unread by this decision.
+        #
+        # Note the distinction from the category check below: a *vision-model*
+        # request without images (someone routed a text question to gemma3) is
+        # harmless to substitute. It's the actual image payload that can't
+        # survive the swap.
+        if inference_req.has_images and fallback_cat != "vision":
+            logger.error(
+                f"VRAM fallback BLOCKED: request carries images and the only "
+                f"loaded model '{best_model}' ({fallback_cat}) cannot see them. "
+                f"Requested '{inference_req.model}' ({category.value}). Failing "
+                f"loudly instead of answering about images the model never saw — "
+                f"load a vision model or retry once one is warm."
+            )
+            return None
+
         # Cross-category fallback is a QUALITY RISK — the client asked for a
-        # model in one category (often because the payload depends on that
-        # category's abilities, e.g. images for a vision model) and we're
-        # giving them a different category.  Escalate to ERROR so it shows
-        # up in log scans; the caller still gets ``X-Fleet-Fallback`` in
-        # the response headers to detect this programmatically.
+        # model in one category and we're giving them a different one.
+        # Escalate to ERROR so it shows up in log scans; the caller still gets
+        # ``X-Fleet-Fallback`` in the response headers to detect this
+        # programmatically.
         risk_note = ""
         if category.value == "vision" and fallback_cat != "vision":
             risk_note = (
-                " — QUALITY RISK: non-vision model answering a vision "
-                "request; images in the payload will be dropped or ignored"
+                " — QUALITY RISK: non-vision model answering a vision-model "
+                "request (no images in this payload, so the swap is survivable; "
+                "an image-bearing request would have been blocked)"
             )
         logger.error(
             f"VRAM fallback (cross-category): '{inference_req.model}' "
