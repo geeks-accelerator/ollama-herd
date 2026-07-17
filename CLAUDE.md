@@ -18,7 +18,7 @@ The `--extra embedding` now also installs `fastembed` for the **native text embe
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 1074 tests (~40s)
+uv run pytest                    # run all 1077 tests (~40s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint

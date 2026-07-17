@@ -180,6 +180,33 @@ The signature points at **macOS memory pressure (jetsam / memorystatus)**: the k
 
 ---
 
+### `/fleet/pin` reported "not on disk" for a resident, serving model `FIXED` (0.8.2)
+
+**Files:** `src/fleet_manager/server/routes/fleet.py`, `src/fleet_manager/server/model_preloader.py`
+**Severity:** Medium (factually false error; intermittent — depends on free memory at the instant of the call)
+**Observed:** 2026-07-17 02:41 — reported by a client agent
+
+`POST /fleet/pin {"model":"gpt-oss:120b","node_id":"bb"}` returned:
+
+> `{"ok":false,"error":"'gpt-oss:120b' is not on disk on any online node — run 'ollama pull gpt-oss:120b' first."}`
+
+…while gpt-oss:120b was **on disk, loaded (70.96 GB), and served 30/30 requests seconds later**. No restart, no traffic gap, and **not reproducible** on retry.
+
+**Root cause — two compounding bugs.** The router log carried the real reason:
+
+```
+2026-07-17T02:41:01  Preloader: skipping gpt-oss:120b — need 72GB but only 49GB free on bb (fleet-pin)
+```
+
+1. **The error message conflated three causes.** `_load_model_on_best_node` returns a bare `False` for *not-on-disk*, *memory-gate refusal*, **and** *pre_warm error* — and `/fleet/pin` hardcoded the "not on disk … run `ollama pull`" message for all of them. The caller was told to pull a model that was already resident and serving.
+2. **The memory gate ran against an already-resident model.** `_estimate_model_size("gpt-oss:120b")` = 72 GB, so the gate demands `72 × 1.2 = 86.4 GB` free. gpt-oss:120b was **already loaded**, and its own ~71 GB footprint is subtracted from the node's free memory — so the gate saw 49 GB free and refused to "load" a model that was **already in memory**. Pinning a hot model could fail *because it was hot*. (The preloader dodges this by checking `_model_is_loaded_anywhere` before calling the loader; the pin route called it directly.) The intermittency is explained by free memory fluctuating — the same call succeeded at 03:02 once memory recovered (`Preloader: loading gpt-oss:120b (~72GB) on bb (fleet-pin)`).
+
+**Fix shipped in 0.8.2:**
+- `_load_model_on_best_node` skips the memory gate when the model is **already resident** on the chosen node (reusing `_model_resident_on_node`); `pre_warm` still runs so `keep_alive=-1` is re-applied — the actual point of pinning a loaded model. Safe for the preloader, which never reaches that branch.
+- `/fleet/pin` now checks on-disk explicitly (`_nodes_with_model_on_disk`) and reports each cause truthfully: genuine not-on-disk → `404` with the pull hint; on-disk-but-wouldn't-load → **`503`** naming insufficient free memory and pointing at `/fleet/status` + the router log's exact need-vs-free numbers.
+
+---
+
 ### Failed-request traces get garbage-collected before they persist `FIXED` (0.8.2)
 
 **File:** `src/fleet_manager/server/streaming.py`

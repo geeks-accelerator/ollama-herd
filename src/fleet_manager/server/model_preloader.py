@@ -201,7 +201,15 @@ async def _load_model_on_best_node(
         )
     model_size = _estimate_model_size(model)
     available = best.memory.available_gb if best.memory else 0
-    if available < model_size * 1.2:
+    # Skip the memory gate when the model is ALREADY resident on this node — it
+    # is in memory by definition, so there is nothing left to "fit".  Without
+    # this, warming a hot model can fail *because it's hot*: its own footprint
+    # is already subtracted from the free memory the gate inspects.  Observed
+    # 2026-07-17 — gpt-oss:120b was resident (71GB) and serving, yet a pin was
+    # refused because the gate saw "need 72GB but only 49GB free".  pre_warm
+    # still runs below so keep_alive=-1 is (re)applied, which is the whole
+    # point of pinning an already-loaded model.
+    if not _model_resident_on_node(model, best) and available < model_size * 1.2:
         logger.info(
             f"Preloader: skipping {model} — need {model_size:.0f}GB "
             f"but only {available:.0f}GB free on {best.node_id} ({why})"

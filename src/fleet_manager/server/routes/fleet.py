@@ -102,6 +102,7 @@ async def fleet_pin(request: Request):
     from fleet_manager.server.model_preloader import (
         _load_model_on_best_node,
         _model_resident_on_node,
+        _nodes_with_model_on_disk,
         _wait_until_resident,
     )
 
@@ -142,11 +143,16 @@ async def fleet_pin(request: Request):
             ),
         }
 
-    loaded = await _load_model_on_best_node(
-        model, registry.get_online_nodes(), proxy,
-        why="fleet-pin", target_node_id=node_id,
-    )
-    if not loaded:
+    # Distinguish the failure causes BEFORE relying on the loader's bare bool.
+    # `_load_model_on_best_node` returns False for three different reasons —
+    # not-on-disk, memory-gate refusal, and a pre_warm error — so reporting them
+    # all as "not on disk" produces a factually false error.  Observed
+    # 2026-07-17: a pin for gpt-oss:120b (resident, serving 30/30 requests) was
+    # refused with "not on disk — run 'ollama pull'"; the router log showed the
+    # real cause was the memory gate ("need 72GB but only 49GB free").  Check
+    # on-disk explicitly here so each failure reports the truth.
+    nodes = registry.get_online_nodes()
+    if not _nodes_with_model_on_disk(model, nodes):
         return JSONResponse(
             {
                 "ok": False,
@@ -155,6 +161,24 @@ async def fleet_pin(request: Request):
                 f"run 'ollama pull {model}' on a fleet device first.",
             },
             status_code=404,
+        )
+
+    loaded = await _load_model_on_best_node(
+        model, nodes, proxy, why="fleet-pin", target_node_id=node_id,
+    )
+    if not loaded:
+        # On disk but wouldn't load — in practice the memory gate refusing for
+        # lack of free RAM.  The router log carries the exact need-vs-free.
+        return JSONResponse(
+            {
+                "ok": False,
+                "model": model,
+                "error": f"'{model}' is on disk but could not be loaded on any "
+                f"online node — most likely insufficient free memory. Check "
+                f"/fleet/status for node memory (the router log records the "
+                f"exact need-vs-free numbers), or free a slot and retry.",
+            },
+            status_code=503,
         )
 
     # Optionally wait for the router's residency view to catch up.  pre_warm

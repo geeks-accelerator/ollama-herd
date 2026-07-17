@@ -435,3 +435,48 @@ def contextlib_suppress():
     """pytest-compatible suppressor for cancellation noise."""
     import contextlib
     return contextlib.suppress(Exception)
+
+
+# ----------------------------------------------------------------------------
+# Memory gate must not block an ALREADY-RESIDENT model (2026-07-17 pin bug)
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_load_skips_memory_gate_when_model_already_resident():
+    """Regression: pinning a hot model failed *because it was hot* — its own
+    footprint is subtracted from free memory, so the gate saw "need 72GB but
+    only 49GB free" for a model that was already loaded and serving.  When the
+    model is already resident the gate must be skipped (pre_warm still runs, to
+    re-apply keep_alive=-1)."""
+    from fleet_manager.server.model_preloader import _load_model_on_best_node
+
+    # Node has the model loaded, on disk, but very little free memory left
+    # (precisely because the model occupies it).
+    node = _node(
+        "bb", loaded_models=["gpt-oss:120b"], disk_models=["gpt-oss:120b"], mem_gb=49.0,
+    )
+    proxy = MagicMock()
+    proxy.pre_warm = AsyncMock()
+
+    ok = await _load_model_on_best_node(
+        "gpt-oss:120b", [node], proxy, why="fleet-pin", target_node_id="bb",
+    )
+    assert ok is True  # not refused by the gate
+    proxy.pre_warm.assert_awaited_once()  # keep_alive=-1 still re-applied
+
+
+@pytest.mark.asyncio
+async def test_load_still_gates_when_model_not_resident():
+    """The gate must still refuse a NOT-loaded model that genuinely won't fit."""
+    from fleet_manager.server.model_preloader import _load_model_on_best_node
+
+    node = _node("bb", loaded_models=[], disk_models=["gpt-oss:120b"], mem_gb=49.0)
+    proxy = MagicMock()
+    proxy.pre_warm = AsyncMock()
+
+    ok = await _load_model_on_best_node(
+        "gpt-oss:120b", [node], proxy, why="fleet-pin", target_node_id="bb",
+    )
+    assert ok is False  # 49GB free < 72GB * 1.2 → correctly refused
+    proxy.pre_warm.assert_not_awaited()

@@ -137,3 +137,26 @@ def test_fleet_pin_no_wait_omits_ready_fields(monkeypatch):
         assert b["ok"] is True
         assert "ready" not in b
         assert "ready_after_ms" not in b
+
+
+def test_fleet_pin_on_disk_but_wont_fit_reports_truthfully_not_not_on_disk():
+    """Regression (2026-07-17): a pin for a model that IS on disk was refused
+    with "'X' is not on disk — run 'ollama pull X'" when the real cause was the
+    memory gate.  _load_model_on_best_node returns a bare False for several
+    causes; the route must not report them all as not-on-disk."""
+    with TestClient(create_test_app()) as c:
+        # Model on disk, NOT loaded, and the node has far too little free RAM
+        # for a 120B (gate needs ~86GB free).
+        c.post("/heartbeat", json=make_heartbeat(
+            node_id="bb",
+            memory_total=100.0,
+            memory_used=90.0,  # → 10GB available
+            loaded_models=[],
+            available_models=["gpt-oss:120b"],
+        ).model_dump())
+        r = c.post("/fleet/pin", json={"model": "gpt-oss:120b", "node_id": "bb"})
+        assert r.status_code == 503  # not 404
+        err = r.json()["error"]
+        assert "not on disk" not in err  # the false claim is gone
+        assert "could not be loaded" in err
+        assert "memory" in err.lower()
