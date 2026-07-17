@@ -31,7 +31,15 @@ class TestRegistryChecks:
         from fleet_manager import __version__
 
         engine = HealthEngine()
-        node = make_node("studio", memory_total=128.0, memory_used=100.0, agent_version=__version__)
+        # A realistic healthy node has a chat/coding model loaded — without one
+        # the anthropic_no_chat_model check correctly flags that Claude Code
+        # requests would 404.
+        node = make_node(
+            "studio", memory_total=128.0, memory_used=100.0,
+            agent_version=__version__,
+            loaded_models=[("qwen3-coder:30b", 19.0)],
+            available_models=["qwen3-coder:30b"],
+        )
         report = await engine.analyze(FakeRegistry([node]), None)
         assert report.vitals.health_score == 100
         assert len(report.recommendations) == 0

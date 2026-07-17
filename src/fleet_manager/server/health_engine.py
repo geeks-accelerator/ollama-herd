@@ -98,6 +98,7 @@ class HealthEngine:
         recommendations.extend(self._check_mlx_backend(nodes))
         recommendations.extend(self._check_vision_backend_missing(nodes))
         recommendations.extend(self._check_mapped_models_hot(nodes))
+        recommendations.extend(self._check_anthropic_no_chat_model(nodes))
         recommendations.extend(self._check_trace_store_write_failures(trace_store))
         recommendations.extend(self._check_text_embedding_backend_missing(nodes))
         recommendations.extend(self._check_text_embedding_ollama_bypass(nodes))
@@ -1591,6 +1592,118 @@ class HealthEngine:
                 data={"not_hot": sorted(not_hot)},
             ))
         return recs
+
+    def _check_anthropic_no_chat_model(self, nodes) -> list[Recommendation]:
+        """Warn when nothing on the fleet can serve a Claude Code request.
+
+        With auto-routing (the default) a ``claude-*`` id resolves to the best
+        loaded — else on-disk — chat/coding model.  If the fleet has none, every
+        Anthropic Messages (``/v1/messages``) request 404s, and today the user
+        only finds out when Claude Code first calls.  The dominant case is a
+        brand-new install: ``ANTHROPIC_BASE_URL`` is set but no model has been
+        pulled yet.  Surface it proactively, and distinguish "pull a model" from
+        the config case (auto-routing off with no map covering ``claude-*``).
+
+        Reuses the real ``resolve_model`` so this check can't drift from what
+        the route actually does.  Embedding-only models don't count as chat, so
+        an embeddings-only deployment is correctly flagged (it can't serve
+        Claude Code) — the WARNING says to ignore it if that's intentional.
+        """
+        import json as _json
+        import os
+
+        from fleet_manager.server.anthropic_autoroute import (
+            rank_candidates,
+            resolve_model,
+        )
+
+        model_map: dict = {}
+        raw_map = os.environ.get("FLEET_ANTHROPIC_MODEL_MAP", "")
+        if raw_map:
+            try:
+                parsed = _json.loads(raw_map)
+                if isinstance(parsed, dict):
+                    model_map = parsed
+            except (ValueError, TypeError):
+                model_map = {}
+        auto_route = os.environ.get(
+            "FLEET_ANTHROPIC_AUTO_ROUTE", "true"
+        ).strip().lower() not in ("false", "0", "no", "off")
+
+        loaded: set[str] = set()
+        ondisk: set[str] = set()
+        any_online = False
+        for node in nodes:
+            if node.status.value != "online":
+                continue
+            any_online = True
+            ollama = getattr(node, "ollama", None)
+            if ollama is not None:
+                for m in ollama.models_loaded or []:
+                    name = getattr(m, "name", None)
+                    if isinstance(name, str):
+                        loaded.add(name)
+                for m in ollama.models_available or []:
+                    if isinstance(m, str):
+                        ondisk.add(m)
+            for s in getattr(node, "mlx_servers", None) or []:
+                if getattr(s, "status", None) == "healthy" and getattr(
+                    s, "model", None
+                ):
+                    nm = f"mlx:{s.model}"
+                    loaded.add(nm)
+                    ondisk.add(nm)
+        ondisk |= loaded
+
+        # No online node → offline-fleet checks own that; nothing to say here.
+        if not any_online:
+            return []
+
+        model, _reason = resolve_model(
+            "claude-sonnet-4-5", model_map, loaded, ondisk, auto_route=auto_route
+        )
+        if model:
+            return []  # a claude-* request would resolve fine
+
+        # Unresolved — is it because there's no chat model, or a config gap?
+        has_chat = bool(rank_candidates(ondisk, "claude-sonnet-4-5"))
+        if not has_chat:
+            return [Recommendation(
+                check_id="anthropic_no_chat_model",
+                severity=Severity.WARNING,
+                title="No model available for Claude Code",
+                description=(
+                    "No chat/coding model is loaded or on disk anywhere on the "
+                    "fleet, so Anthropic Messages (/v1/messages) requests — e.g. "
+                    "Claude Code — will 404 until one is present. Embedding-only "
+                    "models don't count. Expected on a brand-new install before "
+                    "any model is pulled."
+                ),
+                fix=(
+                    "Pull a coding model, e.g. `ollama pull qwen3-coder:30b`. "
+                    "With auto-routing on (default), Claude Code resolves to it "
+                    "automatically — no FLEET_ANTHROPIC_MODEL_MAP needed. If you "
+                    "don't use Claude Code, ignore this."
+                ),
+                data={"auto_route": auto_route, "loaded": sorted(loaded)[:10]},
+            )]
+        return [Recommendation(
+            check_id="anthropic_unrouted_config",
+            severity=Severity.WARNING,
+            title="Claude Code requests won't route (auto-routing off, no map)",
+            description=(
+                "The fleet has chat-capable models, but FLEET_ANTHROPIC_AUTO_ROUTE "
+                "is off and no FLEET_ANTHROPIC_MODEL_MAP entry (or 'default' key) "
+                "covers claude-* ids — so Anthropic Messages requests will 404 "
+                "even though a usable model is loaded."
+            ),
+            fix=(
+                "Either set FLEET_ANTHROPIC_AUTO_ROUTE=true (resolves claude-* to "
+                "the best loaded model), or add a FLEET_ANTHROPIC_MODEL_MAP with a "
+                "'default' key pointing at a loaded model."
+            ),
+            data={"auto_route": auto_route, "loaded": sorted(loaded)[:10]},
+        )]
 
     # ------------------------------------------------------------------
     # Trace-based checks
