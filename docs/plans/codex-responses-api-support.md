@@ -20,7 +20,7 @@ We already do exactly this shape of work for Claude Code: accept a foreign provi
 | Response headers | `fleet_headers` |
 | Trace recording | the existing trace path |
 
-**New surface is small and localized:** a `responses_translator.py` (wire ↔ internal, mirroring `anthropic_translator.py`) and a `responses_compat.py` route (mirroring `anthropic_compat.py`), plus `RequestFormat.RESPONSES`.
+**New surface is small and localized:** a `responses_translator.py` (wire ↔ internal) and a `responses_compat.py` route (route *skeleton* mirrors `anthropic_compat.py`), plus `RequestFormat.RESPONSES`. See the **Codebase audit** below — the request side reuses the OpenAI path (Responses is OpenAI's own format), so the only genuinely new code is the response SSE translator.
 
 ## Design principles (greenfield)
 
@@ -38,6 +38,19 @@ A mid-2026 competitive-marketing study (private repo: `docs/research/codex-claud
 - **Prior-art shims are open source — study them, don't reinvent.** opencodex / LocalCodeCli / csurong-codex-proxy have already solved Responses↔chat translation edge cases; use them as a reference during Phases 1–3 (with our own capture as the oracle, not their code).
 
 **What the finished build must make claimable** (for the site copy): *dual-CLI (Claude Code **and** Codex) · protocol-current (`wire_api="responses"`) · fleet-routed · verified end-to-end.* No competitor combines these.
+
+## Codebase audit — reuse & no-gating (2026-07-18)
+
+A pre-implementation audit sharpened the reuse story and **shrank the new code below what "mirror the Anthropic route" implied.** The key realization: **Responses is OpenAI's own format, so it's closer to our OpenAI path than to the Anthropic one.** Findings that revise the phases below:
+
+- **The request side is nearly free — reuse the OpenAI path, don't mirror the Anthropic translator.** `routes/openai_compat.py::chat_completions` is essentially *passthrough*: it sets `raw_body=body` and `messages=body["messages"]` and ships them to Ollama's `/api/chat`, which **natively accepts OpenAI-shaped messages and function-shaped tools** — there is no OpenAI→Ollama message translation because none is needed ([openai_compat.py:203](../../src/fleet_manager/server/routes/openai_compat.py:203)). So the Codex request translator is a **thin adapter** — `input` items → messages, `instructions` → a system message, `tools` passthrough — producing an OpenAI-shaped `raw_body`. The heavier `anthropic_to_ollama_messages` block-coercion is for Anthropic's content-block format, which Responses doesn't use — **don't borrow it.**
+- **`RequestFormat.RESPONSES` slots in with two one-line touches, not a new body path.** Add it to the `(OLLAMA, ANTHROPIC)` grouping in `_build_ollama_body` ([streaming.py:1199](../../src/fleet_manager/server/streaming.py:1199)) so the pre-translated `raw_body` is used as-is. In the streamer, RESPONSES is simply *not* OPENAI, so it already falls into the raw-lines `else` branch ([streaming.py:678](../../src/fleet_manager/server/streaming.py:678)) — the route owns translation, exactly like Anthropic. No third branch inside `StreamingProxy`.
+- **Only the response SSE translation is genuinely new — and it's "Anthropic's structure + OpenAI's field names."** Mirror the Anthropic *route-owned* stateful translator (`ResponsesSSEState`), but borrow field mapping from `_ollama_to_openai_sse` ([streaming.py:1343](../../src/fleet_manager/server/streaming.py:1343)) since Responses is OpenAI-family — not from the Anthropic event mapper.
+- **The resolver needs ONE change that *reduces* special-casing, not a parametrization.** Today `resolve_model` passes a model through when `_looks_local()` is true, and `_looks_local` is `":" in model or not model.startswith("claude")` ([anthropic_autoroute.py:111](../../src/fleet_manager/server/anthropic_autoroute.py:111)) — a Codex id like `gpt-5-codex` matches, passes through, and 404s. **Fix: make passthrough conditional on *actual fleet presence* (`model in ondisk_names`) instead of the claude-prefix heuristic.** That single change serves *both* providers with *less* provider-specific logic: a real local name (either CLI sends one) is present → passthrough; a `claude-*` alias or a `gpt-5-codex` id is absent → auto-route. Rename the `claude_model` param to `model` — the resolver is now genuinely shared, not Anthropic's.
+- **MLX reuse is even cleaner than the Anthropic route's.** Because we produce an OpenAI-shaped body, `mlx:` targets go through the existing `_serve_openai_via_mlx` ([openai_compat.py:76](../../src/fleet_manager/server/routes/openai_compat.py:76)) — a clean passthrough (mlx_lm.server is OpenAI-native) — then only its OpenAI SSE needs wrapping into Responses events. No new MLX bridge.
+- **No gating** — confirmed, and unchanged: `/v1/responses` is always present, no `FLEET_*` toggle. The resolver change removes a heuristic rather than adding a flag.
+
+Net: **new code is one thin request adapter + one response SSE state machine + a `ResponsesRequest` model + a route skeleton.** The resolver change is a simplification; everything else is reuse.
 
 ---
 
@@ -100,18 +113,17 @@ The Anthropic translator was built against real Claude Code traffic; the over-co
 
 ## Phase 2 — Request translation (wire → internal)
 
-New `responses_translator.py`, mirroring the request half of `anthropic_translator.py`:
-- `responses_input_to_ollama_messages(input, instructions)` — `input` (string or item array) + `instructions` → the `messages` list our pipeline uses. `function_call_output` items → tool-result messages; assistant `function_call` items in history → assistant tool-call messages. Reuse the block-coercion approach from `anthropic_to_ollama_messages`.
-- `responses_tools_to_ollama(tools)` — `{type:"function", name, parameters}` → our tool shape. Nearly identical to the OpenAI tool shape we already handle; likely a thin adapter.
-- `apply_tool_choice` — reuse as-is (same semantics).
-- Add `RequestFormat.RESPONSES` to `models/request.py`.
-- **Model resolution:** reuse `resolve_model` (Phase-2 auto-routing). Codex ids aren't `claude-*`, so extend/parametrize the resolver so a non-local id routes to the best loaded coding model instead of falling through `_looks_local` → passthrough → 404. One shared resolver, a small generalization.
+New `responses_translator.py`, but targeting the **OpenAI-body shape** (which Ollama accepts natively), not the Anthropic block format — see the audit:
+- `responses_to_openai_body(responses_request)` — a **thin adapter**: `input` (string or item array) → OpenAI `messages`; `instructions` → a leading `system` message; `tools` (`{type:"function", name, parameters}`) → passthrough (already our tool shape); `function_call_output` items → `tool`-role messages; assistant `function_call` history items → assistant `tool_calls`. Output is an OpenAI-shaped `raw_body`, so the rest of the pipeline treats it exactly like an `/v1/chat/completions` request. **Do not** reuse `anthropic_to_ollama_messages` — its block-coercion is for Anthropic content blocks Responses doesn't have.
+- `apply_tool_choice` — reuse as-is if the semantics match; otherwise a thin map. Confirm from the Phase-1 capture.
+- Add `RequestFormat.RESPONSES` to `models/request.py`, and to the `(OLLAMA, ANTHROPIC)` grouping in `_build_ollama_body` ([streaming.py:1199](../../src/fleet_manager/server/streaming.py:1199)).
+- **Model resolution — one simplifying change to the shared resolver.** Make `resolve_model` passthrough conditional on *actual fleet presence* (`model in ondisk_names`) rather than the `not startswith("claude")` heuristic in `_looks_local` ([anthropic_autoroute.py:111](../../src/fleet_manager/server/anthropic_autoroute.py:111)), and rename the `claude_model` param to `model`. Then `gpt-5-codex` (absent) auto-routes to the best loaded coding model, a real local name passes through, and Anthropic behavior is unchanged — with *less* provider-specific logic, not more.
 
 ## Phase 3 — Response translation (internal → wire)
 
-Two paths, non-streaming first (simpler, testable), then streaming:
-- **Non-streaming:** `accumulate_responses_object(ollama_response, …)` → the `{object:"response", output:[…], usage}` shape. Mirrors `accumulate_anthropic_response`.
-- **Streaming:** `ResponsesSSEState` + `ollama_chunk_to_responses_events(...)` — a state machine emitting the event sequence above with correct `sequence_number`/`item_id`/`output_index`. Mirrors `AnthropicSSEState` + `ollama_chunk_to_anthropic_events`, which already solves the hard part (interleaving text + streaming tool-call argument deltas, mapping stop reasons). The Responses event names differ but the state transitions are the same problem.
+The only genuinely-new code. Route-owned (like Anthropic), because RESPONSES falls into the streamer's raw-lines `else` branch ([streaming.py:678](../../src/fleet_manager/server/streaming.py:678)) — no branch added to `StreamingProxy`. Non-streaming first (simpler, testable), then streaming:
+- **Non-streaming:** `accumulate_responses_object(ollama_response, …)` → the `{object:"response", output:[…], usage}` shape. Mirrors `accumulate_anthropic_response`'s *structure*.
+- **Streaming:** `ResponsesSSEState` + `ollama_chunk_to_responses_events(...)` — a state machine emitting the event sequence above with correct `sequence_number`/`item_id`/`output_index`. Take the **structure** from `AnthropicSSEState` + `ollama_chunk_to_anthropic_events` (which already solves interleaving text + streaming tool-call argument deltas and stop-reason mapping), but the **field mapping** from `_ollama_to_openai_sse` ([streaming.py:1343](../../src/fleet_manager/server/streaming.py:1343)) — Responses is OpenAI-family, so deltas/roles/usage map from the OpenAI shape, not the Anthropic one.
 
 ## Phase 4 — The route
 
@@ -119,7 +131,7 @@ New `responses_compat.py` (`@router.post("/v1/responses")`), mirroring `anthropi
 1. auth (reuse the `_check_auth` pattern), parse/validate (a `ResponsesRequest` pydantic model), model resolution (Phase 2).
 2. translate → build `InferenceRequest(original_format=RESPONSES)` → `tool_schema_fixup` → context management.
 3. `score_with_fallbacks` → `QueueEntry` → `StreamingProxy`.
-4. `mlx:` targets → `_serve_via_mlx`, translating Responses ↔ OpenAI chat (mlx_lm.server is chat-native; extend the existing Anthropic→OpenAI MLX bridge).
+4. `mlx:` targets → reuse the OpenAI MLX path `_serve_openai_via_mlx` ([openai_compat.py:76](../../src/fleet_manager/server/routes/openai_compat.py:76)) since we already hold an OpenAI-shaped body (mlx_lm.server is OpenAI-native → clean passthrough); then wrap its OpenAI SSE into Responses events with the Phase-3 translator. No new MLX bridge.
 5. translate the response back (Phase 3), attach `fleet_headers`, record the trace.
 6. `client_error_passthrough` for backend 4xx.
 7. Register the router in `app.py` (one line, next to the other `include_router` calls).
