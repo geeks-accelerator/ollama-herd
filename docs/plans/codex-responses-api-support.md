@@ -1,6 +1,6 @@
 # Codex support — an OpenAI Responses API (`/v1/responses`) shim
 
-**Status**: Phases **2–5 IMPLEMENTED** 2026-07-18 (translator, route, tests, guide — 27 tests, suite 1169 green). **Phase 1 (capture) and Phase 6 (prove) are NOT done** — both need a real Codex CLI, which wasn't available. So the shim is **spec-complete, not client-verified**: it matches the documented Responses API, but no real Codex session has exercised it. Do not make the "verified" marketing claim until Phase 6 runs. MLX-backed models are deferred to v2 (see § v2).
+**Status**: **VERIFIED END-TO-END 2026-07-18.** Phases 2–5 implemented and Phase 1/6 completed — a real `codex-cli 0.145.0-alpha.18` (bundled in ChatGPT.app) ran turns against the herd via `/v1/responses`, auto-routing `gpt-5.6-sol` → `qwen3-coder:30b`. The capture **confirmed the stateless assumption** (Codex sent the full conversation, `msgs=7`, no `previous_response_id`). Two real bugs the spec-built code could not have caught were found and fixed (see § Verification). MLX remains v2.
 **Date**: 2026-07-18
 **Motivation**: [`docs/research/`] investigation, 2026-07-17 — Codex CLI **removed Chat Completions support in Feb 2026** (`wire_api="chat"` is gone; `responses` is the only value). Codex now speaks *only* the Responses API. Herd exposes `/v1/chat/completions`, `/v1/models`, `/v1/messages` (Anthropic) — but **no `/v1/responses`**, so a Codex request 404s and Codex cannot use Herd at all. This plan adds the shim that makes it work, and makes the marketing site's Codex claim true again.
 
@@ -172,3 +172,30 @@ Shipping that without an MLX integration test would be exactly the debt this pro
 - Stateful `previous_response_id` storage (only if Phase 1 proves it's required).
 - Non-Codex Responses features: hosted tools (web_search, file_search, code_interpreter), MCP tool items, image/audio output, background mode, `store:true` persistence.
 - Anything the Codex CLI doesn't actually exercise — driven by the capture, not the full API surface.
+
+---
+
+## Verification (2026-07-18) — what the real client found
+
+Ran `codex exec` from the CLI bundled in ChatGPT.app against the live fleet.
+**Result: working end-to-end**, `provider: herd`, `x-fleet-served-model: qwen3-coder:30b`,
+traced with `original_format='responses'`.
+
+Confirmed from the capture:
+- **Stateless chaining** — Codex sent the whole conversation in `input` (`msgs=7`) and never
+  used `previous_response_id`. The plan's core assumption held, so no response store is needed.
+- **Model id** is `gpt-5.6-sol` (its default), which auto-routed cleanly — vindicating the
+  presence-based resolver change over the old `claude-*` heuristic.
+
+Two bugs only a real client could surface:
+1. **`QueueEntry(node_id=…)` was silently ignored** — the field is `assigned_node`, and pydantic
+   dropped the unknown kwarg, so the proxy got an empty node and every request 500'd with
+   `ValueError: Node  not found in registry`. The route tests only covered pre-pipeline guards,
+   so nothing caught it. **Fixed**, plus the routing context (`routing_score`,
+   `routing_breakdown`, `fallback_used`) the Anthropic route passes.
+2. **`/v1/models` shape** — Codex's model manager rejects the OpenAI schema, wanting `models`
+   (not `data`) and then `slug`, `supported_reasoning_levels`, … We now emit both keys (`data`
+   stays OpenAI-pure). The chain of required fields didn't terminate within a reasonable number
+   of probes, so **the model picker may still not populate — cosmetic, inference is unaffected.**
+
+**Lesson, again:** the unit tests passed the whole time. Spec-complete is not client-verified.

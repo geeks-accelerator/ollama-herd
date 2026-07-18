@@ -96,6 +96,19 @@ Smaller / non-coding-tuned models tend to drop tool calls or hallucinate argumen
 - **MLX-backed models aren't served here yet.** Auto-routing skips `mlx:` models for Codex, so you'll get an Ollama-backed model automatically. An explicit `mlx:` mapping returns a clear `503`. (Claude Code's `/v1/messages` endpoint *does* serve MLX.)
 - **Stateful chaining isn't supported.** Herd doesn't persist responses, so `previous_response_id` is rejected with a `400`. Codex's default stateless mode — resending the conversation each turn — is what's supported.
 - **Hosted tools are dropped.** `web_search` / `file_search` / MCP tool items have no local equivalent; function tools pass through normally.
+- **Codex's model picker may not populate.** Codex's model manager decodes `/v1/models` against its own undocumented schema (not the OpenAI one) and logs `failed to refresh available models: ... missing field ...` on each refresh. We emit the fields it asked for as far as we could reverse-engineer them against codex-cli 0.145-alpha; the schema keeps demanding more. **This is cosmetic — inference is unaffected** and every turn routes normally. Specify the model with `-m` or `model_provider` config rather than the picker.
+
+## Common config mistake
+
+If you're appending to an existing `~/.codex/config.toml`, `model_provider = "herd"` **must go above the first `[table]` header**. TOML assigns a bare key to whatever table precedes it, so putting it at the bottom silently makes it `desktop.model_provider` — Codex never sees it, no error is raised, and it quietly keeps using the default provider.
+
+```toml
+model_provider = "herd"     # ← first line, before ANY [section]
+
+[some.existing.section]
+...
+[model_providers.herd]      # ← this is a table header, so it can live anywhere
+```
 
 ## Troubleshooting
 

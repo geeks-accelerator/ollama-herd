@@ -187,7 +187,13 @@ async def responses(request: Request):
     logger.info(
         f"Responses[{rid}] routed to node={winner.node_id} score={int(winner.score)}"
     )
-    entry = QueueEntry(request=inference_req, node_id=winner.node_id)
+    entry = QueueEntry(
+        request=inference_req,
+        assigned_node=winner.node_id,
+        routing_score=winner.score,
+        routing_breakdown=winner.scores_breakdown,
+        fallback_used=actual_model != local_model,
+    )
     queue_key = winner.queue_key
 
     process_fn = proxy.make_process_fn(

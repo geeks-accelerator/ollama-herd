@@ -59,18 +59,36 @@ async def list_models(request: Request):
             if s.status == "healthy":
                 models.add(f"mlx:{s.model}")
 
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": m,
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": "ollama",
-            }
-            for m in sorted(models)
-        ],
-    }
+    now = int(time.time())
+    # `data` — the OpenAI standard shape. Kept pure.
+    entries = [
+        {"id": m, "object": "model", "created": now, "owned_by": "ollama"}
+        for m in sorted(models)
+    ]
+    # `models` — Codex CLI's model manager requires its own richer schema and
+    # rejects the OpenAI one, logging "failed to decode models response:
+    # missing field `models`" then "... missing field `slug`" on every refresh,
+    # which leaves its model picker empty.  Discovered by running a real
+    # codex-cli 0.145 against the herd (2026-07-18); each added field revealed
+    # the next required one.  Emitting a second key keeps `data` OpenAI-clean
+    # while satisfying Codex — neither client notices the other's key.
+    codex_entries = [
+        {
+            "id": m,
+            "slug": m,
+            "display_name": m,
+            "description": f"Local model served by Ollama Herd ({m})",
+            "object": "model",
+            "created": now,
+            "owned_by": "ollama",
+            "context_window": 131072,
+            "max_output_tokens": 32768,
+            "supported_reasoning_efforts": [],
+            "supported_reasoning_levels": [],
+        }
+        for m in sorted(models)
+    ]
+    return {"object": "list", "data": entries, "models": codex_entries}
 
 
 async def _serve_openai_via_mlx(
