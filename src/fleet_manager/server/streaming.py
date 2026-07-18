@@ -1232,6 +1232,18 @@ class StreamingProxy:
         elif request.raw_body.get("prompt") is not None:
             body["prompt"] = request.raw_body["prompt"]
 
+        # Carry tool definitions through.  Ollama's /api/chat accepts the OpenAI
+        # tool shape natively, so this is a passthrough — but WITHOUT it this
+        # branch silently drops `tools`, and the OPENAI format lands here (only
+        # OLLAMA/ANTHROPIC/RESPONSES take the raw_body path above).  Effect: every
+        # OpenAI-compatible client doing function calling got no tools and could
+        # only reply in prose.  Verified 2026-07-18 — identical tools+prompt
+        # produced a tool_call straight to Ollama and none through this route.
+        for field in ("tools", "tool_choice"):
+            value = request.raw_body.get(field)
+            if value:
+                body[field] = value
+
         options = {}
         if request.temperature != 0.7:
             options["temperature"] = request.temperature
@@ -1357,28 +1369,50 @@ class StreamingProxy:
 
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
+        msg = data.get("message") or {}
+        # Ollama returns tool calls with `arguments` as an OBJECT; OpenAI clients
+        # expect a JSON *string*.  Without this the whole tool call was dropped —
+        # `_ollama_to_openai_sse` only ever emitted `delta.content`, so an
+        # OpenAI-compatible client doing function calling saw the model's prose
+        # and never the call it actually made (found 2026-07-18).
+        tool_calls = []
+        for i, tc in enumerate(msg.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            args = fn.get("arguments")
+            if not isinstance(args, str):
+                args = json.dumps(args if args is not None else {})
+            tool_calls.append({
+                "index": i,
+                "id": tc.get("id") or f"call_{uuid.uuid4().hex[:12]}",
+                "type": "function",
+                "function": {"name": fn.get("name", ""), "arguments": args},
+            })
+
         if data.get("done", False):
             chunk = {
                 "id": chunk_id,
                 "object": "chat.completion.chunk",
                 "model": model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "tool_calls" if tool_calls else "stop",
+                }],
             }
         else:
-            content = data.get("message", {}).get("content", "")
-            if not content:
-                content = data.get("response", "")
+            content = msg.get("content", "") or data.get("response", "")
+            delta: dict = {}
+            if content:
+                delta["content"] = content
+            if tool_calls:
+                delta["tool_calls"] = tool_calls
+            if not delta:
+                delta["content"] = ""
             chunk = {
                 "id": chunk_id,
                 "object": "chat.completion.chunk",
                 "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"content": content},
-                        "finish_reason": None,
-                    }
-                ],
+                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
             }
 
         return f"data: {json.dumps(chunk)}\n\n"

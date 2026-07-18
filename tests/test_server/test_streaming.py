@@ -367,3 +367,77 @@ class TestContextProtection:
         # No model has 262k context — keep num_ctx and warn
         assert body["options"]["num_ctx"] == 262144
         assert "client wants num_ctx=262144" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# OpenAI function calling — regression guard
+#
+# Found 2026-07-18: the OpenAI route silently dropped tool calls in BOTH
+# directions. Requests lost `tools` (only OLLAMA/ANTHROPIC/RESPONSES took the
+# raw_body passthrough; OPENAI fell to a fallback branch that rebuilt the body
+# without them), and responses lost `tool_calls` (_ollama_to_openai_sse only
+# ever emitted delta.content). Net effect: every OpenAI-SDK client doing
+# function calling got prose instead of the call it had actually made.
+# ---------------------------------------------------------------------------
+
+
+def test_openai_request_carries_tools_to_ollama():
+    """The fallback body-builder must not drop `tools`/`tool_choice`."""
+    import json as _json
+
+    from fleet_manager.models.request import InferenceRequest, RequestFormat
+
+    tools = [{"type": "function", "function": {"name": "bash", "parameters": {}}}]
+    proxy = _make_proxy_with_loaded_model()
+    req = InferenceRequest(
+        model="qwen3-coder:30b",
+        messages=[{"role": "user", "content": "hi"}],
+        original_format=RequestFormat.OPENAI,
+        raw_body={"model": "qwen3-coder:30b", "messages": [], "tools": tools,
+                  "tool_choice": "auto"},
+    )
+    body = proxy._build_ollama_body(req, "some-node")
+    assert body.get("tools") == tools, "tools must survive to the Ollama body"
+    assert body.get("tool_choice") == "auto"
+    _ = _json
+
+
+def test_ollama_tool_call_becomes_openai_streaming_delta():
+    """Ollama emits tool_calls with an OBJECT `arguments`; OpenAI clients expect
+    a JSON string, inside delta.tool_calls."""
+    import json as _json
+
+    proxy = _make_proxy_with_loaded_model()
+    line = _json.dumps({"message": {"content": "", "tool_calls": [
+        {"function": {"name": "bash", "arguments": {"cmd": "ls"}}}]}})
+    out = proxy._ollama_to_openai_sse(line, "qwen3-coder:30b")
+    chunk = _json.loads(out.removeprefix("data: ").strip())
+    tc = chunk["choices"][0]["delta"]["tool_calls"][0]
+    assert tc["function"]["name"] == "bash"
+    assert tc["function"]["arguments"] == '{"cmd": "ls"}'  # string, not object
+    assert tc["id"] and tc["type"] == "function"
+
+
+def test_openai_done_chunk_reports_tool_calls_finish_reason():
+    import json as _json
+
+    proxy = _make_proxy_with_loaded_model()
+    line = _json.dumps({"done": True, "message": {"tool_calls": [
+        {"function": {"name": "bash", "arguments": {}}}]}})
+    chunk = _json.loads(
+        proxy._ollama_to_openai_sse(line, "m").removeprefix("data: ").strip()
+    )
+    assert chunk["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_plain_text_streaming_is_unchanged():
+    """Guard the non-tool path stayed identical."""
+    import json as _json
+
+    proxy = _make_proxy_with_loaded_model()
+    chunk = _json.loads(
+        proxy._ollama_to_openai_sse(_json.dumps({"message": {"content": "hi"}}), "m")
+        .removeprefix("data: ").strip()
+    )
+    assert chunk["choices"][0]["delta"] == {"content": "hi"}
+    assert chunk["choices"][0]["finish_reason"] is None

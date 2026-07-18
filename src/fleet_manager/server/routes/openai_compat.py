@@ -364,13 +364,19 @@ async def chat_completions(request: Request):
     else:
         # Non-streaming: accumulate full response
         full_content = ""
+        # Tool calls arrive as deltas too and must be accumulated alongside the
+        # text — previously only `content` was collected, so a non-streaming
+        # function-calling client got the prose and lost the call entirely.
+        collected_tool_calls: list[dict] = []
         try:
             async for chunk in stream:
                 if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
                     try:
                         data = json.loads(chunk[6:])
                         delta = data.get("choices", [{}])[0].get("delta", {})
-                        full_content += delta.get("content", "")
+                        full_content += delta.get("content", "") or ""
+                        for tc in delta.get("tool_calls") or []:
+                            collected_tool_calls.append(tc)
                     except (json.JSONDecodeError, IndexError) as e:
                         logger.debug(f"Skipping malformed SSE chunk: {e}")
         except Exception as exc:  # noqa: BLE001 — 4xx passes through, 5xx re-raises
@@ -403,8 +409,18 @@ async def chat_completions(request: Request):
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": full_content},
-                        "finish_reason": "stop",
+                        "message": (
+                            {
+                                "role": "assistant",
+                                "content": full_content or None,
+                                "tool_calls": collected_tool_calls,
+                            }
+                            if collected_tool_calls
+                            else {"role": "assistant", "content": full_content}
+                        ),
+                        "finish_reason": (
+                            "tool_calls" if collected_tool_calls else "stop"
+                        ),
                     }
                 ],
                 "usage": {
