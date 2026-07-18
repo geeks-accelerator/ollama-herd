@@ -95,6 +95,15 @@ class StreamingProxy:
         self._request_tokens: dict[str, tuple[int | None, int | None]] = {}
         # Extended request metadata: thinking tokens, done_reason, num_predict budget
         self._request_meta: dict[str, dict] = {}
+        # done_reason kept separately from _request_meta, which routes pop to build
+        # response headers. Trace recording runs in the queue worker while the route
+        # runs in its own task, so reading done_reason out of _request_meta races the
+        # route's pop — it lost ~8% of the time, always on the non-streaming path
+        # where the route consumes everything at once. This dict is owned by the
+        # trace path alone, mirroring _request_tokens.
+        self._request_done_reason: dict[str, str] = {}
+        # Models we've already warned about an inert num_ctx override for.
+        self._inert_override_logged: set[str] = set()
 
     def pop_token_counts(
         self, request_id: str
@@ -202,6 +211,7 @@ class StreamingProxy:
                 response_chunks=capture_chunks,
             )
             self._request_tokens.pop(entry.request.request_id, None)
+            self._request_done_reason.pop(entry.request.request_id, None)
         except Exception as e:
             error_occurred = True
             # Invalidate stale client on connection errors so next request gets a fresh one
@@ -292,6 +302,7 @@ class StreamingProxy:
             else:
                 # Clean up token tracking on error
                 self._request_tokens.pop(entry.request.request_id, None)
+                self._request_done_reason.pop(entry.request.request_id, None)
 
     def _record_trace(
         self,
@@ -315,6 +326,11 @@ class StreamingProxy:
         prompt_tokens, completion_tokens = self._request_tokens.get(
             entry.request.request_id, (None, None)
         )
+        # Ollama's done_reason ("stop" | "length" | …) is already captured for
+        # the response headers. Persisting it is what separates "the model chose
+        # to stop" from "it exhausted num_predict" — otherwise a turn that ends
+        # mid-task is only diagnosable by eyeballing completion_tokens.
+        finish_reason = self._request_done_reason.pop(entry.request.request_id, "") or None
 
         if self._trace_store:
             _create_logged_task(
@@ -336,6 +352,7 @@ class StreamingProxy:
                     original_format=entry.request.original_format.value,
                     error_message=error_message,
                     tags=entry.request.tags if entry.request.tags else None,
+                    finish_reason=finish_reason,
                 ),
                 name=f"trace-record-{entry.request.request_id[:8]}",
             )
@@ -462,6 +479,7 @@ class StreamingProxy:
                     response_chunks=capture_chunks,
                 )
                 self._request_tokens.pop(entry.request.request_id, None)
+                self._request_done_reason.pop(entry.request.request_id, None)
                 return
             except Exception as e:
                 # Invalidate stale client on connection errors
@@ -661,6 +679,7 @@ class StreamingProxy:
                             prompt_tok,
                             completion_tok,
                         )
+                        self._request_done_reason[request.request_id] = done_reason
                         # Store extended metadata for headers
                         self._request_meta[request.request_id] = {
                             "thinking_tokens": thinking_token_count,
@@ -1104,6 +1123,22 @@ class StreamingProxy:
             return best_candidate[0]  # Return model name
         return None
 
+    def _log_override_inert_once(self, model: str, override: int, loaded_ctx: int) -> None:
+        """Say once per model that its num_ctx override can't apply while resident.
+
+        Attributable and actionable, rather than silently doing nothing: the
+        override takes effect the next time the model cold-loads.
+        """
+        if model in self._inert_override_logged:
+            return
+        self._inert_override_logged.add(model)
+        logger.warning(
+            f"Dynamic num_ctx: override num_ctx={override} for {model} cannot apply — "
+            f"already resident at {loaded_ctx}. Shrinking would force an unload/reload, "
+            f"so the override is deferred to the next cold load. To apply it now, unload "
+            f"the model on {model!r}'s node."
+        )
+
     def _apply_context_protection(self, body: dict, model: str, node_id: str) -> None:
         """Strip or warn about num_ctx values that would trigger Ollama model reloads.
 
@@ -1121,23 +1156,33 @@ class StreamingProxy:
         if mode == "passthrough":
             return
 
-        # Dynamic num_ctx: inject override when client didn't specify num_ctx
-        # This ensures cold-loaded models use the optimized context size
+        # Dynamic num_ctx: inject override when client didn't specify num_ctx.
+        # This sets the context a *cold* load comes up with. It cannot shrink a
+        # model that is already resident at a larger window — Ollama would have
+        # to unload and reload, the multi-minute hang this whole method exists
+        # to prevent. So when the model is already loaded at or above the
+        # override, don't inject a value the strip branch below is guaranteed to
+        # remove: that produced 393 injected/393 stripped log pairs in 9 hours
+        # and made a knob that was doing nothing look active.
         if getattr(self._settings, "dynamic_num_ctx", False):
             overrides = getattr(self._settings, "num_ctx_overrides", {})
             override = overrides.get(model, 0)
             if override > 0:
                 options = body.get("options")
                 if not options or "num_ctx" not in options:
-                    if "options" not in body:
-                        body["options"] = {}
-                    body["options"]["num_ctx"] = override
-                    logger.info(
-                        f"Dynamic num_ctx: injected num_ctx={override} for {model}"
-                    )
-                    _record_context_protection(
-                        "dynamic_override", model, node_id, override, 0
-                    )
+                    already_loaded_ctx = self._get_loaded_context(model, node_id)
+                    if already_loaded_ctx > 0 and override <= already_loaded_ctx:
+                        self._log_override_inert_once(model, override, already_loaded_ctx)
+                    else:
+                        if "options" not in body:
+                            body["options"] = {}
+                        body["options"]["num_ctx"] = override
+                        logger.info(
+                            f"Dynamic num_ctx: injected num_ctx={override} for {model}"
+                        )
+                        _record_context_protection(
+                            "dynamic_override", model, node_id, override, 0
+                        )
 
         options = body.get("options")
         if not options or "num_ctx" not in options:

@@ -182,6 +182,47 @@ class TestContextProtection:
         # Other options should be preserved
         assert body["options"]["temperature"] == 0.5
 
+    def test_inert_override_is_not_injected(self, caplog):
+        """A num_ctx override below the loaded context can't apply — Ollama would
+        have to unload and reload. Don't inject a value the strip branch is
+        guaranteed to remove; that produced 393 injected/393 stripped log pairs
+        in 9 hours and made a dead knob look active.
+        See docs/plans/codex-code-mode-escalation.md (soak findings)."""
+        proxy = _make_proxy_with_loaded_model(context_length=262144, context_protection="strip")
+        proxy._settings.dynamic_num_ctx = True
+        proxy._settings.num_ctx_overrides = {"gpt-oss:120b": 32768}
+        req = InferenceRequest(
+            model="gpt-oss:120b",
+            messages=[{"role": "user", "content": "Hi"}],
+            original_format=RequestFormat.OLLAMA,
+            raw_body={"model": "gpt-oss:120b", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+        with caplog.at_level(logging.WARNING):
+            body = proxy._build_ollama_body(req, "test-node")
+        assert "num_ctx" not in body.get("options", {})
+        assert "cannot apply" in caplog.text
+        assert "injected" not in caplog.text
+
+        # ...and the explanation is logged once per model, not once per request.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            proxy._build_ollama_body(req, "test-node")
+        assert "cannot apply" not in caplog.text
+
+    def test_override_still_applies_when_model_not_loaded(self):
+        """The override's real job — setting the context a cold load comes up with."""
+        proxy = _make_proxy_with_loaded_model(context_length=262144, context_protection="strip")
+        proxy._settings.dynamic_num_ctx = True
+        proxy._settings.num_ctx_overrides = {"qwen3-coder:30b": 32768}
+        req = InferenceRequest(
+            model="qwen3-coder:30b",   # not resident on the node
+            messages=[{"role": "user", "content": "Hi"}],
+            original_format=RequestFormat.OLLAMA,
+            raw_body={"model": "qwen3-coder:30b", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+        body = proxy._build_ollama_body(req, "test-node")
+        assert body["options"]["num_ctx"] == 32768
+
     def test_keeps_larger_num_ctx(self, caplog):
         """num_ctx larger than loaded context should be preserved (client needs more)."""
         proxy = _make_proxy_with_loaded_model(context_length=32768, context_protection="strip")
@@ -441,3 +482,23 @@ def test_plain_text_streaming_is_unchanged():
     )
     assert chunk["choices"][0]["delta"] == {"content": "hi"}
     assert chunk["choices"][0]["finish_reason"] is None
+
+
+def test_finish_reason_survives_the_route_popping_request_meta():
+    """Regression: finish_reason was read out of `_request_meta`, which routes pop
+    to build response headers. Trace recording runs in the queue worker while the
+    route runs in its own task, so the read raced the pop and lost ~8% of the
+    time — always on the non-streaming path, where the route consumes everything
+    at once. done_reason now lives in a dict the trace path alone owns.
+    """
+    proxy = _make_proxy_with_loaded_model()
+    rid = "req-1"
+    proxy._request_tokens[rid] = (10, 20)
+    proxy._request_meta[rid] = {"done_reason": "length"}
+    proxy._request_done_reason[rid] = "length"
+
+    # The route builds its headers first — this is the race that used to win.
+    assert proxy.pop_request_meta(rid) == {"done_reason": "length"}
+
+    # The trace path still sees the value.
+    assert proxy._request_done_reason.pop(rid, "") == "length"

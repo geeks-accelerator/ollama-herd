@@ -678,3 +678,31 @@ Full research doc: `docs/research/apple-distributed-mlx-jaccl-2026.md`
 **Root cause**: With VRAM-aware fallback ON, the unservable `mlx:` request (invalid to Ollama) was silently substituted with a *loaded* model (gpt-oss) and returned 200. The 0.8.0 "MLX inference verified" was a **false positive** — it never touched the MLX server; it was a fallback. Turning the global flag off (for strict benchmarking) unmasked the real behavior: the request path was broken all along.
 
 **Insight**: A resilience feature that substitutes on failure will **mask** a broken path *and* fake a green test — a request "succeeds" while doing something entirely different from what was asked. Two lessons: (1) when verifying a specific backend, assert on `X-Fleet-Served-Model` / `x-fleet-fallback: false`, never just on a 200 + plausible output — that's exactly the visibility gap 0.8.1's canonical headers close. (2) Run capability tests with fallback OFF (now a per-request `X-Fleet-No-Fallback: true`) so a substitution can't paper over a real failure. Corollary for operators: `mlx:` models are reached via `/v1/messages` (model-map) or the MLX proxy, not by passing a literal `mlx:` name to `/v1/chat/completions`.
+
+---
+
+## 2026-07-18 — A tok/s number measured under load is not a tok/s number
+
+**Evidence**: Investigating "qwen is slow during the benchmark", `qwen3-coder:30b` measured **24.8 tok/s** and `gpt-oss:120b` **26.3**, while idle models on the same box measured 78.8 (`glm-4.7-flash`) and 80.3 (`gemma3:4b`). That correlation looked like a context-size story — the slow models were loaded at 262144/131072 ctx, the fast ones smaller. It wasn't. The two "slow" models were the only ones the benchmark was driving. Re-measured in isolation, `qwen3-coder:30b` does **108.4 tok/s** — the *fastest* of the three MoE models, not the slowest. `gpt-oss:120b` does 75.1, matching the 74.5 already recorded in CLAUDE.md.
+
+Trace data isolated the real curve: 1 concurrent request → 56.3 tok/s/req, 2 → 31.0, 3 → 29.5 (and cleanly, 1 → 107.3, 2 → 80.2, 4 → 52.7). Aggregate still rises (107 → 160 → 211); per-request latency is what collapses.
+
+**Insight**: Contention produces *plausible* numbers, not obviously broken ones — 24.8 tok/s looks like a config problem, and a tidy correlation (big context = slow) was available to explain it. Two guards: (1) **the contradiction is the tell** — CLAUDE.md already recorded gpt-oss at 74.5 and the fresh measurement said 26.3; reconciling that gap immediately, instead of reporting around it, would have caught this before a research task was launched on a false premise. (2) Before attributing a throughput number to configuration, check whether the model was *serving traffic* while you measured it — `SELECT model, COUNT(*) FROM request_traces WHERE timestamp > strftime('%s','now')-600 GROUP BY model` takes two seconds and invalidates most of the interesting-sounding hypotheses.
+
+**Corollary, measured and source-verified**: allocated KV cache has **zero** effect on decode speed. A randomised, reload-verified A/B on the M3 Ultra gave median 108.1 tok/s at `-c=131072` and 108.1 at `-c=1048576` — 8× the allocation, identical throughput. Attention runs on a view sized by *used* KV (`n_kv`), not the allocation. Oversized context costs **memory, not speed**; `FLEET_DYNAMIC_NUM_CTX` should be justified on memory-reclamation grounds only. What does drive decode: used context (22 tok → 107.7, 18.7K → 75.0, 58K → 46.1) and concurrency.
+
+---
+
+## 2026-07-18 — A config knob that silently does nothing looks exactly like one that works
+
+**Evidence**: `FLEET_NUM_CTX_OVERRIDES={"qwen3-coder:30b": 32768}` with `FLEET_DYNAMIC_NUM_CTX=true` logged **393 injections and 393 strips in 9 hours** — a 100% defeat rate. `_apply_context_protection` injected the override, then the strip branch immediately below removed it because the model was already resident at 262144 and shrinking would force an unload/reload (the multi-minute hang that method exists to prevent). Both lines logged at INFO, so the feature looked busy while doing nothing, and the `context_waste` health check kept recommending a value the system structurally could not apply.
+
+**Insight**: The logic was correct — the override's real job is setting the context a *cold* load comes up with, and refusing to thrash a resident model is right. The defect was **narrative**: two INFO lines that read as "working" when composed they mean "no-op". Fixed by checking the loaded context *before* injecting and, when the override can't apply, saying so once per model at WARNING with the reason and the remedy. Generalisation: when a feature's effect can be cancelled by a later stage in the same function, the cancelling path needs to be as loud as the acting path — otherwise the logs actively argue against the bug.
+
+---
+
+## 2026-07-18 — Codex tells the model to narrate before acting; local models take that as permission to stop
+
+**Evidence**: A Codex Desktop session ended mid-task after emitting *"Let me check for documentation files in the project root and docs directory:"* — 15 tokens, no tool call. Herd was blameless: tools reached the model every turn (`tools=3 custom=['exec']`), the stream completed, no errors. Codex's system prompt instructs *"Before making tool calls, send a brief preamble to the user explaining what you're about to do."* Frontier models satisfy that by emitting preamble **and** tool call in one response; `qwen3-coder:30b` emits the preamble and ends the turn — and a text-only response means "turn complete" in the Responses protocol. Measured on the real captured tool schema, 15 trials each: **15/15** turns called a tool with no preamble instruction, **7/15** with it, **15/15** with a counter-instruction appended.
+
+**Insight**: Client system prompts are tuned for the models the client ships with, and a compatibility shim inherits prompts that assume behaviours local models don't have. The failure is invisible from the server side — every metric says success, because the request *did* succeed; it's the agentic loop that ended early. When a client-side agent "just stops", check whether its own prompt asks for something the local model will satisfy *instead of*, rather than *in addition to*, the action.

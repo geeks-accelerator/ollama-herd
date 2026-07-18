@@ -110,6 +110,17 @@ class TraceStore:
             logger.info("Added 'tags' column to request_traces")
         except Exception:
             pass  # Column already exists
+        # Schema migration: finish_reason separates "the model chose to stop"
+        # from "it hit the token budget" from "a stop token misfired". Without
+        # it, a turn that ends mid-task is only diagnosable by eyeballing
+        # completion_tokens — see docs/plans/codex-code-mode-escalation.md.
+        try:
+            await self._db.execute(
+                "ALTER TABLE request_traces ADD COLUMN finish_reason TEXT"
+            )
+            logger.info("Added 'finish_reason' column to request_traces")
+        except Exception:
+            pass  # Column already exists
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_traces_tags ON request_traces(tags)")
 
         # Benchmark runs table
@@ -234,6 +245,7 @@ class TraceStore:
         original_format: str = "",
         error_message: str | None = None,
         tags: list[str] | None = None,
+        finish_reason: str | None = None,
     ):
         """Insert a single trace record.
 
@@ -266,14 +278,15 @@ class TraceStore:
             error_message,
             json.dumps(tags) if tags else None,
             time.time(),
+            finish_reason,
         )
         sql = (
             "INSERT INTO request_traces "
             "(request_id, model, original_model, node_id, score, scores_breakdown, "
             "status, latency_ms, time_to_first_token_ms, prompt_tokens, completion_tokens, "
             "retry_count, fallback_used, excluded_nodes, client_ip, original_format, "
-            "error_message, tags, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "error_message, tags, timestamp, finish_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         # Retry-on-locked: the busy_timeout PRAGMA above absorbs short
         # contention, but a stuck-reader scenario can still expire it.
