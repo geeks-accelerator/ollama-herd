@@ -85,7 +85,12 @@ async def list_models(request: Request):
             "max_output_tokens": 32768,
             "supported_reasoning_efforts": [],
             "supported_reasoning_levels": [],
-            "shell_type": "bash",
+            # Codex requires this and rejects anything outside its enum
+            # (default|local|unified_exec|disabled|shell_command). It does NOT
+            # affect which tools Codex offers — all five values were tested and
+            # produce an identical 12-tool payload. Present purely to stop a
+            # models-refresh error on every turn.
+            "shell_type": "default",
         }
         for m in sorted(models)
     ]

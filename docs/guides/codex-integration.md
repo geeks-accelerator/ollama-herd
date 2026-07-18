@@ -85,11 +85,13 @@ sqlite3 ~/.fleet-manager/latency.db \
 
 For the chat path that works today, any capable coding model is fine. (Tool-use quality would matter for agentic work — see [Limitations](#limitations-v1).)
 
-| Model | Tool use | Notes |
+| Model | Agentic coding | Notes |
 |---|---|---|
-| `qwen3-coder:30b` | Excellent | Best general-purpose pick. ~19 GB, 256K context |
-| `qwen3:32b` | Excellent | Strong reasoning, good tool use |
-| `gpt-oss:120b` | Good | Large; thinking tokens can slow agentic loops |
+| `qwen3-coder:30b` | ✅ verified (3/3 tasks) | Best general-purpose pick. ~19 GB, 256K context |
+| `gpt-oss:120b` | ✅ verified (1/1 task) | Reasoning model; also drove the loop successfully |
+| `qwen3:32b` | untested | Strong reasoning, good tool use |
+
+Verified tasks: fix an even-length `median()` bug, fix a whole-percent discount bug, and **create a new module from scratch** to satisfy failing imports — each run ending with the model executing pytest itself and reaching green.
 
 Smaller / non-coding-tuned models tend to drop tool calls or hallucinate arguments.
 
