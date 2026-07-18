@@ -145,9 +145,22 @@ def responses_input_to_messages(
         itype = item.get("type")
 
         if itype == "function_call":
+            # Ollama's chat templates expect `arguments` as an OBJECT, while the
+            # Responses/OpenAI wire format carries it as a JSON *string*.  Passing
+            # the string through makes Ollama 400 with "Value looks like object,
+            # but can't find closing '}' symbol", which breaks the *second* turn
+            # of every agentic session — the first tool call runs, then the
+            # follow-up carrying its result dies (2026-07-18).
             args = item.get("arguments", "")
-            if not isinstance(args, str):
-                args = json.dumps(args)
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args) if args.strip() else {}
+                except (json.JSONDecodeError, TypeError):
+                    # Not JSON — hand it over as-is rather than dropping the call.
+                    logger.warning(
+                        f"Responses: tool-call arguments for "
+                        f"{item.get('name')!r} are not valid JSON; passing raw"
+                    )
             messages.append({
                 "role": "assistant",
                 "content": "",

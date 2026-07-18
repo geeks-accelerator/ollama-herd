@@ -1192,11 +1192,18 @@ class StreamingProxy:
 
     def _build_ollama_body(self, request: InferenceRequest, node_id: str) -> dict:
         """Convert normalized request to Ollama API format."""
-        # ANTHROPIC requests are pre-translated by routes/anthropic_compat into a
-        # ready-to-send Ollama body (messages, tools, options) stored in raw_body.
+        # ANTHROPIC and RESPONSES requests are pre-translated by their routes
+        # into a ready-to-send body (messages, tools, options) in raw_body.
         # Treat them the same as OLLAMA for body construction.
+        #
+        # RESPONSES *must* be here: the fallback branch below rebuilds the body
+        # from request.messages and drops `tools` entirely.  Omitting it meant
+        # Codex's tool catalogue reached the route, survived translation, and
+        # was then thrown away one layer later — so the model got no tools and
+        # narrated actions it never took (2026-07-18).
         if (
-            request.original_format in (RequestFormat.OLLAMA, RequestFormat.ANTHROPIC)
+            request.original_format
+            in (RequestFormat.OLLAMA, RequestFormat.ANTHROPIC, RequestFormat.RESPONSES)
             and request.raw_body
         ):
             body = dict(request.raw_body)

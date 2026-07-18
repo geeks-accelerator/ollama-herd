@@ -73,14 +73,24 @@ def test_tool_call_round_trip_threads_call_id():
     assert msgs[1]["role"] == "assistant"
     assert msgs[1]["tool_calls"][0]["id"] == "call_1"
     assert msgs[1]["tool_calls"][0]["function"]["name"] == "bash"
+    assert msgs[1]["tool_calls"][0]["function"]["arguments"] == {"cmd": "ls"}
     assert msgs[2] == {"role": "tool", "tool_call_id": "call_1", "content": "a.txt"}
 
 
-def test_dict_arguments_are_json_encoded():
-    msgs = responses_input_to_messages([
+def test_tool_call_arguments_are_objects_not_json_strings():
+    """Ollama's chat templates want `arguments` as an OBJECT. The Responses wire
+    format sends a JSON *string*; passing it through 400s Ollama with "Value
+    looks like object, but can't find closing '}' symbol" and kills the second
+    turn of every agentic session."""
+    from_str = responses_input_to_messages([
+        {"type": "function_call", "call_id": "c1", "name": "f",
+         "arguments": '{"a": 1}'},
+    ])
+    assert from_str[0]["tool_calls"][0]["function"]["arguments"] == {"a": 1}
+    from_dict = responses_input_to_messages([
         {"type": "function_call", "call_id": "c1", "name": "f", "arguments": {"a": 1}},
     ])
-    assert msgs[0]["tool_calls"][0]["function"]["arguments"] == '{"a": 1}'
+    assert from_dict[0]["tool_calls"][0]["function"]["arguments"] == {"a": 1}
 
 
 def test_reasoning_items_are_dropped():
