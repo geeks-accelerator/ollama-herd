@@ -65,13 +65,25 @@ async def list_models(request: Request):
         {"id": m, "object": "model", "created": now, "owned_by": "ollama"}
         for m in sorted(models)
     ]
-    # `models` — Codex CLI's model manager requires its own richer schema and
-    # rejects the OpenAI one, logging "failed to decode models response:
-    # missing field `models`" then "... missing field `slug`" on every refresh,
-    # which leaves its model picker empty.  Discovered by running a real
-    # codex-cli 0.145 against the herd (2026-07-18); each added field revealed
-    # the next required one.  Emitting a second key keeps `data` OpenAI-clean
-    # while satisfying Codex — neither client notices the other's key.
+    # `models` — Codex requires its own richer schema and rejects the OpenAI
+    # one, so we emit a second key; `data` above stays OpenAI-pure and neither
+    # client notices the other's.
+    #
+    # This is NOT cosmetic, though it looks it.  The Codex **CLI** is unaffected
+    # (you pass -m directly), which is why an incomplete schema seemed harmless
+    # for a long time.  But the **Desktop app** has no -m flag: its model picker
+    # is populated *only* from this endpoint.  A schema Codex can't decode means
+    # an empty picker, which means the app falls back to its built-in defaults —
+    # all of which are `sol`/`luna`/`terra` "Responses-Lite" slugs that trigger
+    # openai/codex#31894 and hide the entire tool catalogue.  Net effect: the
+    # Desktop app can chat but cannot run a command or edit a file, and the
+    # model rationalises the failure instead of reporting it.
+    #
+    # So: completing this schema is what makes Desktop agentic coding possible.
+    # Field set discovered by iterating a real codex-cli 0.145 against the herd
+    # (2026-07-18) — each added field revealed the next required one, and
+    # `shell_type` additionally rejects anything outside its enum
+    # (default|local|unified_exec|disabled|shell_command).
     codex_entries = [
         {
             "id": m,
@@ -91,6 +103,9 @@ async def list_models(request: Request):
             # produce an identical 12-tool payload. Present purely to stop a
             # models-refresh error on every turn.
             "shell_type": "default",
+            "supports_tools": True,
+            "supports_vision": False,
+            "visibility": "public",
         }
         for m in sorted(models)
     ]
