@@ -77,6 +77,26 @@ When you see a pattern, add it below with the date and evidence.
 
 ## Observations
 
+### 2026-07-17 — Ollama 0.30.2 changed `prompt_eval_count` to include cached prefix tokens
+
+**Evidence:** Ollama 0.30.2 release note: *"The llama.cpp backend now includes cached prompt tokens in token accounting, improving usage reporting for requests with prompt cache hits."* We read `prompt_eval_count` directly at `streaming.py` (the `done:true` branch) and feed it to traces → `context_optimizer`'s `total_p99` → dynamic num_ctx sizing. Before 0.30.2, on a prefix-cache hit Ollama reported only the *newly-evaluated* tokens, so a cache hit made a large prompt look small — **undercounting** true prompt size. After 0.30.2 it reports the full logical prompt.
+
+**Insight:** This is a net **accuracy win** for us, not a bug — dynamic num_ctx and the KV-sizing work (see `docs/issues/model-sizing-ignores-kv-cache.md`) now run on truthful prompt sizes. Two things follow. (1) During the 7-day p99 window rollover, stats briefly blend pre-0.30.2 (undercounted) and post-0.30.2 (accurate) traces; self-correcting, no action. (2) `prompt_eval_count` is now unambiguously *logical prompt size incl. cached*, **not** "tokens actually computed" — so it must never be used to infer prefix-cache effectiveness. That exact confusion produced the false "zero prefix-cache reuse" report (`docs/issues/ollama-native-mlx-runner.md` Q3: the number stays flat whether caching works or not). Verified 0.32.1 tok/s estimation is unaffected — `benchmark_estimate.py` uses `completion_tokens / latency`, never `prompt_eval_count`.
+
+**Action taken:** Comment at the `prompt_eval_count` read in `streaming.py` recording the semantics. No code change — the value was already the right one for context sizing. Part of the post-0.32.1 upgrade audit (`docs/plans/post-0.32-enhancements.md`).
+
+---
+
+### 2026-07-17 — On Ollama 0.32.1, an over-context single message truncates (HTTP 200), it does not error
+
+**Evidence:** The 0.30.9 release note said *"Ollama will now return an error if a single message is larger than the current context window."* Probed directly against the installed 0.32.1: loaded `gemma3:4b` with `options.num_ctx=512` (Ollama clamped it up to its **2048 floor**) and POSTed `/api/chat` a ~5000-token single message. Result: **HTTP 200**, `prompt_eval_count: 1027` — i.e. the input was **truncated to fit** the window, not rejected. Repeated with `num_ctx=256` and a larger message: same, 200 + clamped count.
+
+**Insight:** Whatever 0.30.9 introduced, it does **not** manifest for the `/api/chat` path we use on 0.32.1 — the long-standing silent-truncation behavior persists. So `check_context_overflow`'s "input may be truncated by Ollama" warning is **still accurate**, and there is no new error class to classify or retry-guard. This is why the enhancement plan front-loaded an empirical probe before writing any code: the changelog predicted a behavior change that the running binary doesn't exhibit on our path. (Untested edge: a message exceeding the model's *maximum* context, where no truncation is possible — not worth a 131K-token probe against live inference.)
+
+**Action taken:** None in code — the predicted gap doesn't exist. Recorded so nobody re-implements a guard for a non-occurring error. Part of the post-0.32.1 upgrade audit.
+
+---
+
 ### 2026-04-22 — Four-env-var combo makes 30B models at 131K ctx viable on 128 GB Macs
 
 **Evidence:** qwen3-coder:30b-agent at 131K ctx on an M4 Max 128 GB MacBook was failing every real Claude Code request with SIGKILL'd llama runners (`sys=9 string="signal: killed"`, `Post /completion: EOF`) during generation. Latencies climbed 19s → 281s before Jetsam killed the subprocess. Model fit at rest (31 GB ollama ps footprint) but KV growth during actual generation pushed system memory from ~90 GB in use to 127+ GB. Setting one knob at a time:

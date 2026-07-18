@@ -75,6 +75,20 @@ def test_vision_request_keeps_only_vision_models():
     assert ranked == ["gemma3:27b"]  # only the vision model survives
 
 
+def test_gemma4_is_a_vision_candidate():
+    """Gemma 4 (added to the catalog for Ollama 0.30.3+) is multimodal, so it
+    must be pickable for image requests — the whole point of cataloguing it."""
+    from fleet_manager.server.model_knowledge import is_vision_model
+
+    assert is_vision_model("gemma4:12b")
+    ranked = rank_candidates(
+        ["qwen3-coder:30b", "gemma4:12b", "gpt-oss:120b"],
+        "claude-sonnet-4-5",
+        want_vision=True,
+    )
+    assert ranked == ["gemma4:12b"]
+
+
 def test_empty_and_unusable_inputs():
     assert rank_candidates([], "claude-sonnet-4-5") == []
     assert rank_candidates([None, ""], "claude-sonnet-4-5") == []

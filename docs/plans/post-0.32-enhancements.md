@@ -1,18 +1,18 @@
 # Post-0.32.1 Enhancements — acting on the Ollama 0.24 → 0.32.1 audit
 
-**Status**: Planning
+**Status**: Phases 1 & 3 **IMPLEMENTED** 2026-07-17. Phase 2 **verified a non-issue** by probe (below) — no code needed. Phase 4 (native-MLX eval) is the only remaining work; it needs the held Ollama restart.
 **Date**: 2026-07-17
 **Prereq context**: [`ollama-0.32-upgrade-and-mlx-evaluation.md`](ollama-0.32-upgrade-and-mlx-evaluation.md) (the upgrade itself, EXECUTED) and [`../issues/ollama-native-mlx-runner.md`](../issues/ollama-native-mlx-runner.md) (the MLX-subsystem question).
 
 ## Why this plan exists
 
-Ollama moved 0.24.0 → 0.32.1 (skipping 0.25–0.29). An audit of the 15 intervening releases against the codebase found **two behavior changes** we should handle, **two opportunities** the upgrade unlocks, and several verified non-issues. This plan turns those findings into scoped, independently-shippable work.
+Ollama moved 0.24.0 → 0.32.1 (skipping 0.25–0.29). An audit of the 15 intervening releases against the codebase found **one candidate behavior change** (which a probe then showed doesn't affect us), **one accuracy change to record**, and **two opportunities** the upgrade unlocks. This plan turns those findings into scoped, independently-shippable work.
 
 The releases that touch a router/proxy like ours are a small subset — most of the changelog is `ollama launch`, the interactive agent, ChatGPT/Codex integrations, and Windows/CUDA fixes. The relevant items:
 
 | Ollama change | Release | Our exposure |
 |---|---|---|
-| Over-context single message now **errors** (was truncate) | 0.30.9 | OpenAI/Ollama routes have no prompt guard; retry classification unknown |
+| Over-context single message "now errors" per changelog | 0.30.9 | **Probed on 0.32.1: still truncates (200), doesn't error — non-issue** |
 | Token accounting **includes cached prompt tokens** | 0.30.2 | `prompt_eval_count` → traces → num_ctx sizing (now *more* accurate) |
 | Native MLX runner matured (MTP, spec-decode, cache-leak fix) | 0.30.11–0.32.1 | We bypass it with standalone `mlx_lm.server` |
 | Gemma 4 family shipped (multimodal, MoE, QAT) | 0.30.3–0.31.1 | Catalog stops at Gemma 3 |
@@ -33,7 +33,7 @@ This is a greenfield project. Two rules shaped the phases below after auditing t
 
 ---
 
-## Phase 1 — Model catalog: Gemma 4 + hygiene *(no restart; pure data + tests)*
+## Phase 1 — Model catalog: Gemma 4 + hygiene — ✅ IMPLEMENTED *(data + tests, no restart)*
 
 **Problem.** `model_knowledge.py` (50 models) stops at Gemma 3. Gemma 4 shipped across 0.30.3–0.31.1: `gemma4:12b` (multimodal), `gemma4:26b-a4b` (MoE), `gemma4:31b`, plus QAT variants (`e2b/e4b/12b/26b-a4b/31b-it-qat`). A pulled `gemma4:*` is scored by name-heuristic only, and — critically — it is **not offered as a vision candidate** by the auto-routing we just built, despite being "high-performance multimodal." Nemotron-3-Ultra and Command A / Cohere2Moe are also absent.
 
@@ -55,7 +55,11 @@ Separately, 0.32.0 added deprecation warnings for `qwen2.5(-coder)`, `llama3.x`,
 
 ---
 
-## Phase 2 — Over-context request handling (0.30.9) *(no restart; one careful probe)*
+## Phase 2 — Over-context request handling (0.30.9) — ✅ PROBED: NON-ISSUE, no code
+
+**Outcome (2026-07-17).** The probe ran and the predicted behavior change **does not manifest on our path**. Direct against the installed 0.32.1: `gemma3:4b` at `num_ctx=512` (clamped up to Ollama's 2048 floor), `/api/chat` with a ~5000-token single message → **HTTP 200**, `prompt_eval_count: 1027` (truncated to fit), *not* an error. So `check_context_overflow`'s "may be truncated" message is **still accurate**, there's no new error class to classify, and no code changes. Recorded in `docs/observations.md`. The analysis below is retained for the record — this is exactly why the plan front-loaded the probe.
+
+<details><summary>Original Phase 2 analysis (superseded by the probe)</summary>
 
 **Problem.**
 > "Ollama will now return an error if a single message is larger than the current context window."
@@ -75,9 +79,11 @@ Separately, 0.32.0 added deprecation warnings for `qwen2.5(-coder)`, `llama3.x`,
 
 **Risk.** Low, and lower than the first draft — no new route logic, no config surface. Steps 3–4 are a classifier + a string, both cloning patterns already in the file.
 
+</details>
+
 ---
 
-## Phase 3 — Token-accounting note (0.30.2) *(no restart; docs + a code comment)*
+## Phase 3 — Token-accounting note (0.30.2) — ✅ IMPLEMENTED *(docs + a code comment)*
 
 **Not a bug — an accuracy improvement to record.** `prompt_eval_count` ([streaming.py:650](../../src/fleet_manager/server/streaming.py:650)) now includes cached prompt tokens. Previously, on a prefix-cache hit Ollama reported only newly-evaluated tokens, **undercounting** the true prompt — so `context_optimizer`'s `total_p99` num_ctx sizing could size too small. Now it sees the full prompt: our dynamic num_ctx and the KV-sizing work from earlier today both run on better data.
 
@@ -115,10 +121,10 @@ Separately, 0.32.0 added deprecation warnings for `qwen2.5(-coder)`, `llama3.x`,
 
 | Phase | Restart? | Effort | Ship when |
 |---|---|---|---|
-| 1 — Gemma 4 + catalog hygiene | No | ~S | Now |
-| 2 — Over-context handling | No (1 probe) | ~S | Now (probe in quiet window) |
-| 3 — Token-accounting note | No | ~XS | Now |
-| 4 — Native MLX evaluation | **Yes** | ~M (measure) + separate plan if it wins | With the held restart |
+| 1 — Gemma 4 + catalog hygiene | No | ~S | ✅ Done |
+| 2 — Over-context handling | No | — | ✅ Probed: non-issue |
+| 3 — Token-accounting note | No | ~XS | ✅ Done |
+| 4 — Native MLX evaluation | **Yes** | ~M (measure) + separate plan if it wins | ⏳ Needs the restart |
 
 **Recommended:** land Phases 1 + 3 immediately (safe, no restart). Do Phase 2's probe and Phase 4's measurement together in the post-restart quiet window, since both want that window and the restart is already pending. Each phase is independently committable.
 

@@ -647,6 +647,13 @@ class StreamingProxy:
                         output_token_count += max(1, len(content_text) // 4)
 
                     if parsed.get("done", False):
+                        # prompt_eval_count is the LOGICAL prompt size (as of
+                        # Ollama 0.30.2 it INCLUDES cached prefix tokens), not
+                        # "tokens actually computed" — a prefix-cache hit doesn't
+                        # shrink it. Don't infer cache effectiveness from it; that
+                        # exact mistake produced the false "zero prefix-cache
+                        # reuse" report (see docs/issues/ollama-native-mlx-runner.md
+                        # Q3). It IS the right value for context sizing.
                         prompt_tok = parsed.get("prompt_eval_count")
                         completion_tok = parsed.get("eval_count")
                         done_reason = parsed.get("done_reason", "")
