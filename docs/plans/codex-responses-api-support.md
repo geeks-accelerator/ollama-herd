@@ -1,6 +1,6 @@
 # Codex support — an OpenAI Responses API (`/v1/responses`) shim
 
-**Status**: **VERIFIED END-TO-END 2026-07-18.** Phases 2–5 implemented and Phase 1/6 completed — a real `codex-cli 0.145.0-alpha.18` (bundled in ChatGPT.app) ran turns against the herd via `/v1/responses`, auto-routing `gpt-5.6-sol` → `qwen3-coder:30b`. The capture **confirmed the stateless assumption** (Codex sent the full conversation, `msgs=7`, no `previous_response_id`). Two real bugs the spec-built code could not have caught were found and fixed (see § Verification). MLX remains v2.
+**Status**: **VERIFIED END-TO-END 2026-07-18 — on both the Codex CLI and the Codex Desktop app.** Phases 2–5 implemented, Phases 1/6 complete. A real `codex-cli 0.145.0-alpha.18` and a real multi-turn Desktop-app conversation were both served entirely by the fleet via `/v1/responses`, auto-routing `gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5-codex` → `qwen3-coder:30b` with **no model map**. The capture **confirmed the stateless assumption**. Two real bugs the spec-built code could not have caught were found and fixed (see § Verification). Remaining gaps: the tool-call path is still client-unverified (every real turn had `tools=0`), and MLX is v2.
 **Date**: 2026-07-18
 **Motivation**: [`docs/research/`] investigation, 2026-07-17 — Codex CLI **removed Chat Completions support in Feb 2026** (`wire_api="chat"` is gone; `responses` is the only value). Codex now speaks *only* the Responses API. Herd exposes `/v1/chat/completions`, `/v1/models`, `/v1/messages` (Anthropic) — but **no `/v1/responses`**, so a Codex request 404s and Codex cannot use Herd at all. This plan adds the shim that makes it work, and makes the marketing site's Codex claim true again.
 
@@ -177,9 +177,45 @@ Shipping that without an MLX integration test would be exactly the debt this pro
 
 ## Verification (2026-07-18) — what the real client found
 
-Ran `codex exec` from the CLI bundled in ChatGPT.app against the live fleet.
+Verified against **both** Codex surfaces — the CLI *and* the Desktop app.
+
+### A. Codex CLI (`codex exec`)
+
+Ran the CLI bundled in ChatGPT.app against the live fleet.
 **Result: working end-to-end**, `provider: herd`, `x-fleet-served-model: qwen3-coder:30b`,
 traced with `original_format='responses'`.
+
+### B. Codex **Desktop app** — also working, no extra setup
+
+The Desktop app (ChatGPT.app) reads the **same `~/.codex/config.toml`**, so the one
+provider block serves both surfaces. A real multi-turn chat in the app was served
+entirely by the fleet:
+
+```
+21:26:36  qwen3-coder:30b  bb  completed  8201 prompt →  36 completion   8917ms
+21:26:38  qwen3-coder:30b  bb  completed  6209 prompt → 145 completion  10760ms
+21:26:42  qwen3-coder:30b  bb  completed  8579 prompt → 198 completion   3860ms
+```
+
+Findings unique to the Desktop app:
+- **It sends more than one model id.** `gpt-5.6-sol` for the conversation (matching the
+  in-app picker's "5.6 Sol Light") *and* `gpt-5.6-luna` fired alongside — evidently for
+  chat-title generation (the thread auto-titled itself). **Both auto-routed with no map**,
+  which is a good incidental proof that the resolver copes with whatever ids a client
+  invents. A hand-written model map would have had to guess `luna` existed.
+- **Stateless chaining re-confirmed across a real conversation** — `msgs` grew 5 → 7 → 10
+  as turns accumulated, i.e. the app resends the whole thread every time.
+- **The `/v1/models` picker-schema gap is confirmed cosmetic.** The app works fine despite
+  it, because it carries its own model list and never needed our response to populate.
+  This retires the concern rather than leaving it open.
+
+### Still unverified
+
+**Every real turn so far had `tools=0`.** The translator's tool-call path — `function_call`
+items, `call_id` threading, `response.function_call_arguments.*` events — has only been
+exercised by unit tests, never by the actual client. That is the one remaining piece where
+"spec-complete ≠ client-verified" still applies. A Codex turn that actually runs a command
+would close it.
 
 Confirmed from the capture:
 - **Stateless chaining** — Codex sent the whole conversation in `input` (`msgs=7`) and never
