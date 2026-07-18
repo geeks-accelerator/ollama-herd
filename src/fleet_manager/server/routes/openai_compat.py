@@ -85,6 +85,7 @@ async def list_models(request: Request):
             "max_output_tokens": 32768,
             "supported_reasoning_efforts": [],
             "supported_reasoning_levels": [],
+            "shell_type": "bash",
         }
         for m in sorted(models)
     ]

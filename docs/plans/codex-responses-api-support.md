@@ -1,6 +1,6 @@
 # Codex support — an OpenAI Responses API (`/v1/responses`) shim
 
-**Status**: **CHAT VERIFIED, AGENTIC CODING BLOCKED.** Phases 2–5 implemented; Phases 1/6 run against a real `codex-cli 0.145.0-alpha.18` (CLI *and* Desktop app) — transport, auto-routing, streaming and multi-turn all confirmed working. **But Codex cannot yet code against the herd**: it delivers its tool catalogue as an `additional_tools` *input item* (not the documented `tools` field), and its primary tool is a `custom`-type `exec` that runs JavaScript orchestration, which OpenAI/Ollama function-calling cannot express. See § Verification. MLX remains v2.
+**Status**: **AGENTIC CODING VERIFIED — 2/2 real tasks.** Codex (CLI + Desktop) runs genuine agentic sessions against the local fleet via `/v1/responses`: it runs pytest, reads sources, edits files with `apply_patch`, and re-runs to green. Verified 2026-07-18 on `codex-cli 0.145.0-alpha.18` + `qwen3-coder:30b`. **Required:** use a non-Lite model name (not `sol`/`terra`/`luna`) — upstream bug openai/codex#31894. Known behaviours: name the tool in the prompt, and don't trust the model's self-report. MLX remains v2.
 **Date**: 2026-07-18
 **Motivation**: [`docs/research/`] investigation, 2026-07-17 — Codex CLI **removed Chat Completions support in Feb 2026** (`wire_api="chat"` is gone; `responses` is the only value). Codex now speaks *only* the Responses API. Herd exposes `/v1/chat/completions`, `/v1/models`, `/v1/messages` (Anthropic) — but **no `/v1/responses`**, so a Codex request 404s and Codex cannot use Herd at all. This plan adds the shim that makes it work, and makes the marketing site's Codex claim true again.
 
@@ -274,3 +274,27 @@ what let the model pretend it had acted.
 Closing the gap is not more wire translation — it needs either a Codex build that emits standard
 function tools, or an `exec`-shim that presents a JS-orchestration contract a local model can
 actually satisfy. Both are open questions, not scheduled work.
+
+
+## Agentic verification results (2026-07-18)
+
+Two independent tasks, both green, entirely on local models:
+
+| Task | Before | After |
+|---|---|---|
+| `median()` even-length bug | `1 failed` | **`2 passed`** — correct odd/even branch written via `apply_patch` |
+| `apply_discount()` whole-percent bug | `2 failed` | **`3 passed`** — correct `pct / 100` fix |
+
+**What made it work:** naming the tool. "Diagnose the root cause and fix" wandered until budget-exhausted; the same task
+phrased "use the apply_patch command to fix X, then re-run pytest" converged both times.
+
+**Corrections to earlier conclusions in this document.** Two things I asserted were wrong:
+- *"Agentic coding is blocked upstream"* — **false.** `apply_patch` is not a tool; Codex injects it as a **binary** on the
+  sandbox PATH (`~/.codex/tmp/arg0/…/apply_patch`) and the prompt instructs the model to invoke it as a command. I had
+  grepped the tool array, found nothing, and stopped short of checking the prose or the PATH.
+- *"The `/v1/models` schema chain is cosmetic"* — **half right.** Completing it (`models`→`slug`→
+  `supported_reasoning_levels`→`shell_type`) does NOT unlock `apply_patch` or make Codex recognise the model (it uses its
+  own slug table), but it does eliminate a models-refresh error on **every turn**, which was actively obscuring debugging.
+
+**Caveat on the model's honesty:** in a run that produced a correct fix, the model claimed it "wasn't able to run pytest
+due to missing Python tools" — it had run pytest minutes earlier in the same session. Trust the diff, not the summary.
