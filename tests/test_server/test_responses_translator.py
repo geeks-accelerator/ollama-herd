@@ -4,10 +4,10 @@ Codex speaks only /v1/responses since Feb 2026. These pin both directions:
 Responses request → OpenAI-shaped body (which Ollama accepts natively), and
 Ollama NDJSON → the Responses object / SSE event sequence.
 
-NOTE: these are built against the *documented* Responses spec. Validating them
-against a real captured Codex request is Phase 1 of
-docs/plans/codex-responses-api-support.md and is NOT yet done — passing here
-means "matches the spec", not "verified against the client".
+Most were written against the *documented* spec; the `additional_tools` cases at
+the bottom come from a **real captured codex-cli 0.145 request** (2026-07-18),
+which revealed Codex ignores the documented top-level `tools` field entirely.
+That capture is why "spec-complete" and "client-verified" are different things.
 """
 
 from __future__ import annotations
@@ -278,3 +278,66 @@ def test_tool_only_response_still_completes():
     assert t[-1] == "response.completed"
     output = evts[-1]["response"]["output"]
     assert [i["type"] for i in output] == ["function_call"]
+
+
+# ---------------------------------------------------------------------------
+# Codex's real tool delivery — `additional_tools` inside `input`
+#
+# Captured from a real codex-cli 0.145 run (2026-07-18): Codex does NOT use the
+# documented top-level `tools` field. Dropping this item silently left the model
+# with no tools, so it narrated work it never did.
+# ---------------------------------------------------------------------------
+
+
+def test_tools_are_extracted_from_additional_tools_input_item():
+    from fleet_manager.server.responses_translator import collect_tools_from_input
+
+    inp = [
+        {"type": "additional_tools", "role": "developer", "tools": [
+            {"type": "function", "name": "wait", "parameters": {}},
+            {"type": "custom", "name": "exec", "format": {}},
+        ]},
+        {"role": "user", "content": "hi"},
+    ]
+    found = collect_tools_from_input(inp)
+    assert [(t["type"], t["name"]) for t in found] == [
+        ("function", "wait"), ("custom", "exec"),
+    ]
+
+
+def test_additional_tools_reach_the_model_and_are_not_a_message():
+    """The item must become tools, not conversation content."""
+    body = {
+        "model": "m",
+        "input": [
+            {"type": "additional_tools", "role": "developer", "tools": [
+                {"type": "function", "name": "wait", "parameters": {"type": "object"}},
+            ]},
+            {"role": "user", "content": "hi"},
+        ],
+    }
+    out = responses_to_openai_body(body)
+    assert [t["function"]["name"] for t in out["tools"]] == ["wait"]
+    # 'developer' tool item must NOT leak in as a message
+    assert [m["role"] for m in out["messages"]] == ["user"]
+
+
+def test_untranslatable_codex_tool_types_are_dropped_loudly(caplog):
+    """`custom`/`namespace` have no function-calling equivalent. Dropping them
+    is correct, but must be visible — silence is what let the model fake
+    success."""
+    import logging
+
+    body = {"model": "m", "input": [
+        {"type": "additional_tools", "tools": [
+            {"type": "custom", "name": "exec", "format": {}},
+            {"type": "namespace", "name": "collaboration", "tools": []},
+            {"type": "function", "name": "wait", "parameters": {}},
+        ]},
+        {"role": "user", "content": "go"},
+    ]}
+    with caplog.at_level(logging.WARNING):
+        out = responses_to_openai_body(body)
+    assert [t["function"]["name"] for t in out["tools"]] == ["wait"]
+    assert "dropped 2 untranslatable tool" in caplog.text
+    assert "custom:exec" in caplog.text

@@ -75,13 +75,17 @@ def _tools_to_openai(tools: list[dict] | None) -> list[dict] | None:
     if not tools:
         return None
     converted: list[dict] = []
+    dropped: list[str] = []
     for t in tools:
         if not isinstance(t, dict):
             continue
         if t.get("type") not in (None, "function"):
-            # Hosted tools (web_search, file_search, mcp, …) have no local
-            # equivalent — drop them rather than confusing the model.
-            logger.debug(f"Responses: dropping non-function tool type={t.get('type')!r}")
+            # No local equivalent: hosted tools (web_search, file_search, mcp)
+            # and — importantly — Codex's own `custom`/`namespace` types.  Its
+            # primary tool is a `custom` "exec" that runs JavaScript to
+            # orchestrate calls ("code mode"); OpenAI/Ollama function-calling
+            # cannot express that, so the model can't drive it.
+            dropped.append(f"{t.get('type')}:{t.get('name')}")
             continue
         # Already nested (defensive — some clients send the chat shape).
         if isinstance(t.get("function"), dict):
@@ -93,6 +97,15 @@ def _tools_to_openai(tools: list[dict] | None) -> list[dict] | None:
         if t.get("parameters") is not None:
             fn["parameters"] = t["parameters"]
         converted.append({"type": "function", "function": fn})
+    if dropped:
+        # WARNING, not debug: a silently-dropped tool catalogue is why a model
+        # with no way to act still reports success (observed 2026-07-18 — Codex
+        # "fixed" a bug it never read). Make the capability loss visible.
+        logger.warning(
+            f"Responses: dropped {len(dropped)} untranslatable tool(s) "
+            f"{dropped} — the model cannot call these, so agentic turns may "
+            f"narrate actions instead of performing them"
+        )
     return converted or None
 
 
@@ -161,6 +174,12 @@ def responses_input_to_messages(
             # Prior-turn model reasoning — not input for a local model.
             continue
 
+        if itype == "additional_tools":
+            # Not a message — Codex smuggles its tool catalogue in here rather
+            # than the top-level `tools` field.  Extracted by
+            # ``collect_tools_from_input``; skip it as conversation content.
+            continue
+
         role = item.get("role")
         if role:
             messages.append({
@@ -169,6 +188,30 @@ def responses_input_to_messages(
             })
 
     return messages
+
+
+def collect_tools_from_input(input_value: Any) -> list[dict]:
+    """Pull tool definitions out of ``additional_tools`` items in ``input``.
+
+    **Discovered by capturing a real Codex CLI request (2026-07-18).** Codex
+    does not use the documented top-level ``tools`` field at all — it sends
+    ``{"type":"additional_tools","role":"developer","tools":[…]}`` as an *input
+    item*.  Before this, the whole catalogue was silently dropped, so the model
+    received no tools, could not act, and (worse) confidently narrated work it
+    had never done.
+
+    Returns the raw tool dicts; ``_tools_to_openai`` decides which survive
+    translation.
+    """
+    if not isinstance(input_value, list):
+        return []
+    found: list[dict] = []
+    for item in input_value:
+        if isinstance(item, dict) and item.get("type") == "additional_tools":
+            for t in item.get("tools") or []:
+                if isinstance(t, dict):
+                    found.append(t)
+    return found
 
 
 def responses_to_openai_body(body: dict) -> dict:
@@ -186,7 +229,12 @@ def responses_to_openai_body(body: dict) -> dict:
         "messages": messages,
         "stream": bool(body.get("stream", False)),
     }
-    tools = _tools_to_openai(body.get("tools"))
+    # Tools may arrive top-level (per the docs) or inside an `additional_tools`
+    # input item (what Codex actually does). Take both.
+    raw_tools = list(body.get("tools") or []) + collect_tools_from_input(
+        body.get("input")
+    )
+    tools = _tools_to_openai(raw_tools)
     if tools:
         out["tools"] = tools
     if body.get("tool_choice") is not None:

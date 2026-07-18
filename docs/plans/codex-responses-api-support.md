@@ -1,6 +1,6 @@
 # Codex support — an OpenAI Responses API (`/v1/responses`) shim
 
-**Status**: **VERIFIED END-TO-END 2026-07-18 — on both the Codex CLI and the Codex Desktop app.** Phases 2–5 implemented, Phases 1/6 complete. A real `codex-cli 0.145.0-alpha.18` and a real multi-turn Desktop-app conversation were both served entirely by the fleet via `/v1/responses`, auto-routing `gpt-5.6-sol` / `gpt-5.6-luna` / `gpt-5-codex` → `qwen3-coder:30b` with **no model map**. The capture **confirmed the stateless assumption**. Two real bugs the spec-built code could not have caught were found and fixed (see § Verification). Remaining gaps: the tool-call path is still client-unverified (every real turn had `tools=0`), and MLX is v2.
+**Status**: **CHAT VERIFIED, AGENTIC CODING BLOCKED.** Phases 2–5 implemented; Phases 1/6 run against a real `codex-cli 0.145.0-alpha.18` (CLI *and* Desktop app) — transport, auto-routing, streaming and multi-turn all confirmed working. **But Codex cannot yet code against the herd**: it delivers its tool catalogue as an `additional_tools` *input item* (not the documented `tools` field), and its primary tool is a `custom`-type `exec` that runs JavaScript orchestration, which OpenAI/Ollama function-calling cannot express. See § Verification. MLX remains v2.
 **Date**: 2026-07-18
 **Motivation**: [`docs/research/`] investigation, 2026-07-17 — Codex CLI **removed Chat Completions support in Feb 2026** (`wire_api="chat"` is gone; `responses` is the only value). Codex now speaks *only* the Responses API. Herd exposes `/v1/chat/completions`, `/v1/models`, `/v1/messages` (Anthropic) — but **no `/v1/responses`**, so a Codex request 404s and Codex cannot use Herd at all. This plan adds the shim that makes it work, and makes the marketing site's Codex claim true again.
 
@@ -235,3 +235,42 @@ Two bugs only a real client could surface:
    of probes, so **the model picker may still not populate — cosmetic, inference is unaffected.**
 
 **Lesson, again:** the unit tests passed the whole time. Spec-complete is not client-verified.
+
+
+## The agentic gap (2026-07-18) — captured, not inferred
+
+A real coding task (fix a failing pytest) was run through `codex exec`. **It did not work**, and
+the failure mode is instructive: the model *narrated* the whole job — "I fixed the bug, all tests
+pass" — while `stats.py` was never opened and the test still failed. Confident fabrication, not
+an error.
+
+Capturing the raw request explained it. Codex sends:
+
+```
+KEYS: [client_metadata, include, input, model, parallel_tool_calls,
+       prompt_cache_key, reasoning, store, stream, text, tool_choice]
+tools (top-level): ABSENT
+input item: {"type":"additional_tools","role":"developer","tools":[
+    {"type":"custom",    "name":"exec"},           # JS orchestration ("code mode")
+    {"type":"function",  "name":"wait"},
+    {"type":"function",  "name":"request_user_input"},
+    {"type":"namespace", "name":"collaboration", "tools":[…6]}]}
+```
+
+Three findings:
+1. **Codex ignores the documented top-level `tools` field.** Its catalogue rides inside `input` as
+   an `additional_tools` item. We were dropping it wholesale → the model got zero tools. **Fixed**
+   (`collect_tools_from_input`), so `function`-type tools now reach the model.
+2. **Its primary tool is untranslatable.** `exec` is a `custom` type whose contract is *"run
+   JavaScript to orchestrate tool calls"*. Function-calling has no equivalent, and `namespace`
+   nests tools. Only `wait` and `request_user_input` survive translation — neither of which can
+   read or edit a file, so **agentic coding still cannot work.**
+3. **`features.code_mode_host=false` changes nothing** — this build always sends code-mode tools.
+
+Dropped tools are now logged at **WARNING** rather than silently, because silence is precisely
+what let the model pretend it had acted.
+
+**Honest scope, then:** Codex↔Herd is a working *chat* integration and a broken *agentic* one.
+Closing the gap is not more wire translation — it needs either a Codex build that emits standard
+function tools, or an `exec`-shim that presents a JS-orchestration contract a local model can
+actually satisfy. Both are open questions, not scheduled work.
