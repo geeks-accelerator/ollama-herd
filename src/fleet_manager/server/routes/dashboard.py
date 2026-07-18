@@ -257,6 +257,37 @@ async def dashboard_events(request: Request):
             # embedding + vision embedding).  These never go through queue_mgr
             # so they have no live pending/in-flight counts, but we show them
             # so the "Node Models" section covers every model receiving traffic.
+            # Loaded-but-idle Ollama models.  Queues are created lazily on the
+            # first request, so a model that is resident but hasn't been asked
+            # for anything yet has no queue — and therefore vanished from a
+            # section literally called "Node Models" while the node card above
+            # still listed it.  That mismatch is confusing (reported
+            # 2026-07-18: "why does HERD NODES show gpt-oss:120b but NODE
+            # MODELS doesn't?").  Synthesize a zeroed card so residency and the
+            # model list agree; real queue data overwrites it the moment
+            # traffic arrives.
+            for node in registry.get_all_nodes():
+                if node.status.value != "online" or not node.ollama:
+                    continue
+                for lm in node.ollama.models_loaded or []:
+                    key = f"{node.node_id}:{lm.name}"
+                    if key in queues:
+                        continue  # a real queue always wins
+                    queues[key] = {
+                        "node_id":        node.node_id,
+                        "model":          lm.name,
+                        "backend":        "ollama",
+                        "request_type":   "text",
+                        "idle":           True,
+                        "pending":        0,
+                        "in_flight":      0,
+                        "concurrency":    0,
+                        "completed":      0,
+                        "failed":         0,
+                        "stats_samples":  0,
+                        "avg_latency_ms": 0.0,
+                    }
+
             trace_store = getattr(request.app.state, "trace_store", None)
             if trace_store:
                 with contextlib.suppress(Exception):
