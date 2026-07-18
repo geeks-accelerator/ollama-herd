@@ -28,6 +28,17 @@ We already do exactly this shape of work for Claude Code: accept a foreign provi
 - **No new model-map surface.** Codex sends a model id (e.g. `gpt-5-codex` or a custom name); resolve it with the **same auto-routing** we built for Anthropic — if the id is a real local model, pass it through; otherwise route to the best loaded coding model. One resolution story across both foreign APIs.
 - **Reuse before build** (see the table above). The only genuinely new code is wire translation.
 
+## Competitive context — what the research says to build differently
+
+A mid-2026 competitive-marketing study (private repo: `docs/research/codex-claude-code-competitive-marketing-2026.md`) found the Codex-on-local space is **thin and barely contested**, and it changes *how* we should build and frame this — not just *that* we should:
+
+- **Codex-with-local is the uncontested wedge.** Claude Code local support is table-stakes (Ollama + LM Studio ship it natively). But LM Studio has **no Codex story**, Ollama's Codex path is documented-but-buggy (their own [ollama#16578](https://github.com/ollama/ollama/issues/16578) tracks a responses-wire compat bug for local models), and the only dual-CLI shims (opencodex, LocalCodeCli, csurong/codex-proxy) are single-node, self-marketed READMEs with no proof. **Dual-CLI + fleet routing is claimed by nobody.**
+- **Proof is the universal gap → make verification a shippable artifact, not just a test.** Every competitor *documents* Codex support; none show a *verified end-to-end* run — not even the market leader. So this plan adds an explicit **Phase 6 — prove it end-to-end** whose output is a shareable artifact backing the "verified, not just documented" positioning. This is also our own safeguard: #16578 shows the wire-compat is genuinely easy to get subtly wrong.
+- **Setup-simplicity is the bar.** Ollama's headline is *"no environment variables or config files needed."* Our best-loaded auto-routing already gets us there (no model map to hand-write) — the docs must lead with it (Phase 5).
+- **Prior-art shims are open source — study them, don't reinvent.** opencodex / LocalCodeCli / csurong-codex-proxy have already solved Responses↔chat translation edge cases; use them as a reference during Phases 1–3 (with our own capture as the oracle, not their code).
+
+**What the finished build must make claimable** (for the site copy): *dual-CLI (Claude Code **and** Codex) · protocol-current (`wire_api="responses"`) · fleet-routed · verified end-to-end.* No competitor combines these.
+
 ---
 
 ## The Responses API shape (reference for the translator)
@@ -77,6 +88,7 @@ The Anthropic translator was built against real Claude Code traffic; the over-co
 1. Point a real Codex CLI at a throwaway OpenAI-compatible endpoint that logs the raw request (a tiny local echo server, or Herd with a debug dump on `/v1/responses`), and run one real coding turn with a tool call.
 2. Capture: the exact `input` array shape, whether `instructions` is used, the `tools` schema, `stream` value, and **critically — `store` and `previous_response_id`**. This answers the one design fork below.
 3. Save the capture under `docs/reference/` as the translator's fixture and test oracle.
+4. **Cross-check against the open-source shims** — opencodex, LocalCodeCli, and csurong/codex-proxy already translate Codex Responses traffic; skim how they handle `input` items, `function_call_output` threading, and streaming events to anticipate edge cases. The capture is the oracle; their code is a hint, not a source of truth.
 
 **The fork this resolves — statefulness.** The Responses API allows two chaining modes:
 - **Stateless** — client resends the full `input` array (prior output items appended) every turn. A shim needs no storage; each request is self-contained. This is what a custom/local provider almost always gets.
@@ -115,9 +127,20 @@ New `responses_compat.py` (`@router.post("/v1/responses")`), mirroring `anthropi
 ## Phase 5 — Tests, docs, coordination
 
 - **Tests:** translator unit tests driven by the Phase-1 capture (request→messages, messages→response object, the full streaming event sequence for a text+tool-call turn), plus a route test through a stubbed pipeline. Mirror `test_anthropic_translator.py`.
-- **Docs:** a Codex integration guide (`docs/guides/codex-integration.md`) mirroring the Claude Code one — the `~/.codex/config.toml` `model_providers` block pointing `base_url` at `http://localhost:11435/v1`, and a note that auto-routing means no model map is needed.
+- **Docs — a dedicated per-CLI walkthrough** (`docs/guides/codex-integration.md`), because that's the format that ranks and converts (Ollama and LM Studio each ship a dedicated per-CLI page). Mirror the Claude Code guide. It must:
+  - **Lead with zero-config** to match Ollama's *"no env vars, no config files"* bar — the `~/.codex/config.toml` `model_providers` block pointing `base_url` at `http://localhost:11435/v1`, and *"auto-routing means no model map — pull a coding model and go."*
+  - **Signal protocol-currency explicitly** — show `wire_api = "responses"` in the config block. It's a trust signal that says "we know about the Feb-2026 change"; stale competitors implicitly admit they don't.
 - **`/v1/models`** already exists; confirm Codex's model-discovery hits it and is satisfied.
-- **Coordination:** once shipped + on PyPI, tell the site agent the Codex claim is true again (it's currently gated correctly — see the investigation). This closes the "self-correcting when Herd ships the Responses shim" loop.
+- **Coordination:** once shipped + on PyPI *and verified (Phase 6)*, tell the site agent the Codex claim is true again — and that it's now backed by an end-to-end proof artifact, not just docs. Closes the "self-correcting when Herd ships the Responses shim" loop and upgrades the claim from "documented" to "verified."
+
+## Phase 6 — Prove it end-to-end (the differentiator)
+
+The research's single sharpest finding: **everyone documents Codex-on-local; nobody proves it.** Not LM Studio (no Codex), not the market leader (open bug #16578), not the hobby shims (no benchmarks). So verification isn't cleanup here — it's the *product claim*.
+
+1. **Run a real Codex CLI session against the herd** — a genuine multi-turn coding task with tool calls, against a real local model on the fleet (not a stub). This is the same discipline as this week's over-context probe and the KV-sizing verification against the live fleet.
+2. **Capture the proof** using the existing observability: the trace rows (`original_format='responses'`), `X-Fleet-Served-Model` headers showing which fleet node/model answered, tok/s, and a clean run to completion. Reuse `BenchmarkRunner` / `benchmark_engine.send_request` where it fits, exactly as the post-0.32 MLX-eval plan does.
+3. **Produce a shareable artifact** — a short "verified: Codex running against an N-node local fleet" writeup with the trace/benchmark evidence, for the site. This is the thing no competitor has.
+4. **Guard against the #16578 class of bug** — confirm the streaming event sequence and tool-call round-trip actually satisfy Codex end-to-end, not just our unit tests. A unit test that matches our own translator isn't proof the *client* is happy (the Anthropic route taught us this — real Claude Code traffic surfaced issues fixtures didn't).
 
 ---
 
