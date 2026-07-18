@@ -105,7 +105,18 @@ async def list_models(request: Request):
             "shell_type": "default",
             "supports_tools": True,
             "supports_vision": False,
-            "visibility": "public",
+            # Another closed enum: `list` | `hide` | `none`. "public" is not a
+            # member, and Codex fails the WHOLE decode on it —
+            #   failed to decode models response: unknown variant `public`,
+            #   expected one of `list`, `hide`, `none`
+            # — which is what empties the model picker. `list` = show it.
+            "visibility": "list",
+            "supported_in_api": True,
+            "priority": 0,
+            "base_instructions": "",
+            "support_verbosity": False,
+            "supports_parallel_tool_calls": True,
+            "truncation_policy": {"mode": "tokens", "limit": 32768},
         }
         for m in sorted(models)
     ]

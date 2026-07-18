@@ -493,6 +493,15 @@ def redirect_apply_patch_call(
         return None
     patch = _patch_text_from_args(parsed)
     if not patch:
+        # Declining here means Codex gets the call verbatim and rejects it, so
+        # say why — a silent decline is indistinguishable from the redirect not
+        # existing, and that ambiguity cost a debugging round.
+        logger.warning(
+            f"Responses: model called 'apply_patch' with no recognisable patch "
+            f"envelope (keys={sorted(parsed)!r}) — passing through untouched, "
+            f"which Codex will reject. If this recurs, the shape needs handling "
+            f"in _patch_text_from_args."
+        )
         return None
     logger.warning(
         "Responses: model called 'apply_patch' as a tool — it is a binary on the "
