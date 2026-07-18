@@ -91,6 +91,57 @@ def _text_from_content(content: Any) -> str:
     return "".join(out)
 
 
+def _images_from_content(content: Any) -> list[str]:
+    """Base64 image data from a Responses content value, for Ollama's ``images``.
+
+    Responses carries images as ``input_image`` parts holding an ``image_url``
+    that is normally a ``data:image/...;base64,<data>`` URI. Ollama wants the
+    raw base64 in a sibling ``images: []`` list, which is exactly what
+    ``anthropic_translator`` already produces for Anthropic image blocks.
+
+    Remote ``http(s)`` URLs are skipped — Ollama cannot fetch them, and the
+    Anthropic path skips url-type images for the same reason.
+    """
+    if not isinstance(content, list):
+        return []
+    out: list[str] = []
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") not in (
+            "input_image", "image", "output_image",
+        ):
+            continue
+        url = part.get("image_url") or part.get("url") or ""
+        if isinstance(url, dict):  # some clients nest it as {"url": ...}
+            url = url.get("url", "")
+        if isinstance(url, str) and url.startswith("data:") and "base64," in url:
+            out.append(url.split("base64,", 1)[1])
+        elif isinstance(part.get("data"), str):
+            out.append(part["data"])
+        elif isinstance(url, str) and url:
+            logger.warning(
+                f"Responses: dropping a remote image URL ({url[:40]}…) — Ollama "
+                f"cannot fetch it, so the model would answer about an image it "
+                f"never saw. Send the image inline as a data: URI."
+            )
+    return out
+
+
+def input_has_images(input_value: Any) -> bool:
+    """True iff any input item carries an image.
+
+    Consumed by the route so auto-routing can prefer a vision-capable model —
+    the same ``has_images`` signal the Anthropic route already passes to
+    ``resolve_model``. Routing an image request to a text-only model produces a
+    confident answer about a picture the model never received.
+    """
+    if not isinstance(input_value, list):
+        return False
+    for item in input_value:
+        if isinstance(item, dict) and _images_from_content(item.get("content", "")):
+            return True
+    return False
+
+
 def _tools_to_openai(
     tools: list[dict] | None, custom_names: set[str] | None = None
 ) -> list[dict] | None:
@@ -326,10 +377,18 @@ def responses_input_to_messages(
 
         role = item.get("role")
         if role:
-            messages.append({
+            msg: dict[str, Any] = {
                 "role": role,
                 "content": _text_from_content(item.get("content", "")),
-            })
+            }
+            # Ollama takes images as a sibling base64 list, not inline content —
+            # same shape `anthropic_translator` produces for Anthropic image
+            # blocks. Without this the image is silently dropped and the model
+            # answers about a picture it never saw.
+            images = _images_from_content(item.get("content", ""))
+            if images:
+                msg["images"] = images
+            messages.append(msg)
         elif itype:
             # An input item we don't understand, with no role to fall back on —
             # so it is dropped and the model never sees it.  Silent drops are

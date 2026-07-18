@@ -674,3 +674,62 @@ def test_apply_patch_without_a_recognisable_patch_is_not_rewritten():
         input_tokens=1, output_tokens=1,
     )
     assert obj["output"][0]["name"] == "apply_patch"
+
+
+# ---------------------------------------------------------------------------
+# Images: don't drop them, and route them somewhere that can see
+# ---------------------------------------------------------------------------
+
+
+def test_input_image_reaches_the_model_as_ollama_images():
+    """Codex's `view_image` sends the picture back on the next turn. Dropping it
+    silently is why qwen3-coder described a 32x32 PNG as "1x1 pixel, #FF0000" —
+    it never received an image and wasn't told one went missing."""
+    from fleet_manager.server.responses_translator import responses_input_to_messages
+
+    msgs = responses_input_to_messages([
+        {"role": "user", "content": [
+            {"type": "input_text", "text": "what colour?"},
+            {"type": "input_image", "image_url": "data:image/png;base64,AAAB"},
+        ]},
+    ])
+    assert msgs[0]["content"] == "what colour?"
+    assert msgs[0]["images"] == ["AAAB"]        # Ollama's sibling list, not inline
+
+
+def test_remote_image_urls_are_dropped_loudly(caplog):
+    """Ollama can't fetch them — the Anthropic path skips url-type images too."""
+    import logging
+
+    from fleet_manager.server.responses_translator import responses_input_to_messages
+
+    with caplog.at_level(logging.WARNING):
+        msgs = responses_input_to_messages([
+            {"role": "user", "content": [
+                {"type": "input_image", "image_url": "https://example.com/a.png"},
+            ]},
+        ])
+    assert "images" not in msgs[0]
+    assert "remote image URL" in caplog.text
+
+
+def test_input_has_images_drives_vision_routing():
+    """The signal the route feeds to resolve_model(has_images=...), which already
+    knows how to prefer a vision-capable model."""
+    from fleet_manager.server.responses_translator import input_has_images
+
+    assert input_has_images([
+        {"role": "user", "content": [
+            {"type": "input_image", "image_url": "data:image/png;base64,AAAB"}]},
+    ])
+    assert not input_has_images([
+        {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+    ])
+    assert not input_has_images("plain string input")
+
+
+def test_text_only_messages_carry_no_images_key():
+    from fleet_manager.server.responses_translator import responses_input_to_messages
+
+    msgs = responses_input_to_messages([{"role": "user", "content": "hi"}])
+    assert "images" not in msgs[0]

@@ -31,6 +31,7 @@ from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.responses_translator import (
     ResponsesSSEState,
     accumulate_responses_object,
+    input_has_images,
     ollama_chunk_to_responses_events,
     responses_to_openai_body,
 )
@@ -98,8 +99,15 @@ async def responses(request: Request):
     # here needs an OpenAI-SSE → Responses front-end; see the plan's v2 note.
     loaded_names = {m for m in loaded_names if not m.startswith("mlx:")}
     ondisk_names = {m for m in ondisk_names if not m.startswith("mlx:")}
+    # Codex's `view_image` puts an image in the next request. Routing that to a
+    # text-only model gets a confident answer about a picture the model never
+    # received — measured: qwen3-coder reported a 32x32 PNG as "1x1 pixel,
+    # #FF0000". `resolve_model` already knows how to prefer a vision model; the
+    # Responses route just never told it.
+    has_images = input_has_images(body.get("input"))
     local_model, route_reason = resolve_model(
         requested_model, model_map, loaded_names, ondisk_names, auto_route=auto_route,
+        has_images=has_images,
     )
     if not local_model:
         return _error(
