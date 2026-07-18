@@ -290,6 +290,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         ollama_compat,
         openai_compat,
         platform,
+        responses_compat,
         transcription_compat,
     )
 
@@ -297,6 +298,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     app.include_router(openai_compat.router)
     app.include_router(ollama_compat.router)
     app.include_router(anthropic_compat.router)
+    app.include_router(responses_compat.router)
     app.include_router(image_compat.router)
     app.include_router(transcription_compat.router)
     app.include_router(embedding_compat.router)

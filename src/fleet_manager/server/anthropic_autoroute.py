@@ -21,6 +21,7 @@ running fleet.
 
 from __future__ import annotations
 
+from fleet_manager.models.request import normalize_model_name
 from fleet_manager.server.model_knowledge import (
     ModelCategory,
     classify_model,
@@ -99,16 +100,30 @@ def _tier_of(claude_model: str) -> str:
     return TIER_BALANCED  # sonnet, and anything unrecognised → the safe middle
 
 
-def _looks_local(model: str) -> bool:
-    """True if ``model`` is already a local model name, not a Claude alias.
+def _is_on_fleet(model: str, ondisk_names) -> bool:
+    """True if ``model`` names a model the fleet actually has.
 
-    Mirrors ``map_anthropic_model``'s passthrough heuristic: a caller may send a
-    real Ollama/MLX name (``qwen3-coder:30b``, ``mlx:...``) straight through the
-    Anthropic endpoint, and we must not rewrite it.
+    This is the passthrough gate: a caller may send a real Ollama/MLX name
+    (``qwen3-coder:30b``, ``mlx:...``) straight through a foreign-API endpoint,
+    and we must not rewrite it.
+
+    It replaces an older heuristic (``":" in model or not
+    model.startswith("claude")``) that asked "does this *look* local?" rather
+    than "is it *here*?".  That worked while Anthropic was the only foreign API
+    — a ``claude-*`` alias was the only non-local thing we saw — but it breaks
+    the moment another provider's ids arrive: Codex sends e.g. ``gpt-5-codex``,
+    which has no colon and doesn't start with ``claude``, so the old rule
+    passed it straight through to a guaranteed 404 instead of auto-routing.
+
+    Asking about presence instead is both correct and *less* provider-specific:
+    a name that's here passes through, a name that isn't (``claude-sonnet-4-5``,
+    ``gpt-5-codex``, or a typo) falls through to auto-routing.  Tag-tolerant,
+    since clients often omit the ``:latest`` Ollama always reports.
     """
     if not model:
         return False
-    return ":" in model or not model.startswith("claude")
+    names = set(ondisk_names or ())
+    return model in names or normalize_model_name(model) in names
 
 
 def _candidate_score(name: str, tier: str, *, want_vision: bool) -> float | None:
@@ -172,7 +187,7 @@ def rank_candidates(
 
 
 def resolve_model(
-    claude_model: str,
+    model: str,
     model_map: dict[str, str],
     loaded_names,
     ondisk_names,
@@ -199,21 +214,21 @@ def resolve_model(
     model_map = model_map or {}
 
     # 1. Explicit per-alias mapping — the override, honoured first.
-    explicit = model_map.get(claude_model)
+    explicit = model_map.get(model)
     if explicit:
         return explicit, "explicit-map"
 
     # 2. A real local model name sent straight through — never rewrite it.
-    if _looks_local(claude_model):
-        return claude_model, "passthrough"
+    if _is_on_fleet(model, ondisk_names):
+        return model, "passthrough"
 
     if auto_route:
         # 3. Best model already resident anywhere on the fleet — no cold load.
-        ranked = rank_candidates(loaded_names, claude_model, want_vision=has_images)
+        ranked = rank_candidates(loaded_names, model, want_vision=has_images)
         if ranked:
             return ranked[0], "auto-loaded"
         # 4. Nothing suitable loaded — best on-disk, accepting a cold load.
-        ranked = rank_candidates(ondisk_names, claude_model, want_vision=has_images)
+        ranked = rank_candidates(ondisk_names, model, want_vision=has_images)
         if ranked:
             return ranked[0], "auto-ondisk"
 

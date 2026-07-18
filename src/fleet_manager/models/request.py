@@ -13,6 +13,10 @@ class RequestFormat(StrEnum):
     OPENAI = "openai"
     OLLAMA = "ollama"
     ANTHROPIC = "anthropic"
+    # OpenAI Responses API (/v1/responses) — what Codex CLI speaks since it
+    # dropped chat/completions in Feb 2026.  Like ANTHROPIC, the route
+    # pre-translates into an Ollama-ready body and owns response translation.
+    RESPONSES = "responses"
 
 
 class RequestStatus(StrEnum):

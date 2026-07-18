@@ -1,6 +1,6 @@
 # Codex support — an OpenAI Responses API (`/v1/responses`) shim
 
-**Status**: Planning
+**Status**: Phases **2–5 IMPLEMENTED** 2026-07-18 (translator, route, tests, guide — 27 tests, suite 1169 green). **Phase 1 (capture) and Phase 6 (prove) are NOT done** — both need a real Codex CLI, which wasn't available. So the shim is **spec-complete, not client-verified**: it matches the documented Responses API, but no real Codex session has exercised it. Do not make the "verified" marketing claim until Phase 6 runs. MLX-backed models are deferred to v2 (see § v2).
 **Date**: 2026-07-18
 **Motivation**: [`docs/research/`] investigation, 2026-07-17 — Codex CLI **removed Chat Completions support in Feb 2026** (`wire_api="chat"` is gone; `responses` is the only value). Codex now speaks *only* the Responses API. Herd exposes `/v1/chat/completions`, `/v1/models`, `/v1/messages` (Anthropic) — but **no `/v1/responses`**, so a Codex request 404s and Codex cannot use Herd at all. This plan adds the shim that makes it work, and makes the marketing site's Codex claim true again.
 
@@ -161,6 +161,12 @@ The research's single sharpest finding: **everyone documents Codex-on-local; nob
 - **Reasoning items.** Codex may send/expect `reasoning` output items. For non-reasoning local models we can omit them; for thinking models (gpt-oss etc.) we may map our `thinking` channel → a `reasoning` output item. Confirm what Codex needs from the capture; ship without reasoning first if it's optional.
 - **Exact function_call representation** (top-level item vs content part) and `call_id` threading between a tool call and its later `function_call_output`. The capture nails this.
 - **Codex model id.** What id Codex actually sends to a custom provider decides the resolver default. Capture answers it.
+
+## v2 — MLX-backed models over `/v1/responses`
+
+Deferred deliberately. `mlx_lm.server` speaks **OpenAI SSE**, not Ollama NDJSON, so serving it here needs a *second* front-end feeding the same `ResponsesSSEState` — plus OpenAI-style fragmented tool-call argument accumulation (the messy part `mlx_proxy._MlxToolState` already solves for the Anthropic path). There's also a concrete trap: `mlx_proxy._to_openai_body` gates on `original_format == OPENAI`, so `RESPONSES` would fall to the Ollama-shaped branch and silently drop top-level params — that needs `RESPONSES` added to the `openai_native` check.
+
+Shipping that without an MLX integration test would be exactly the debt this project avoids, so v1 instead **filters `mlx:` out of Codex auto-routing** (Codex always lands on a working Ollama-backed model) and returns a precise `503` only if an operator *explicitly* maps a Codex alias to `mlx:`. Claude Code's `/v1/messages` still serves MLX normally.
 
 ## Out of scope (v1)
 - Stateful `previous_response_id` storage (only if Phase 1 proves it's required).
