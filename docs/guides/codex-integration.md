@@ -2,7 +2,7 @@
 
 Point [OpenAI Codex](https://github.com/openai/codex) at your own hardware — inference runs on your fleet, and Herd routes each request to the best node and model you have loaded.
 
-> **Agentic coding works** — verified 2026-07-18 against a real `codex-cli 0.145.0-alpha.18`: Codex ran `pytest`, read the source, wrote a correct fix with `apply_patch`, and re-ran the tests green, entirely on local models. **One required setting:** pick a model name that is *not* a `sol`/`terra`/`luna` slug (see [Model name matters](#model-name-matters-a-codex-bug)).
+> **Agentic coding works, with no configuration** — verified 2026-07-18 on a real `codex-cli 0.145.0-alpha.18`, both the **CLI and the Desktop app**. Codex ran `pytest`, read sources, wrote correct fixes with `apply_patch`, created new files, and executed shell commands — entirely on local models. Any model name works, including the Desktop app's default `gpt-5.6-sol`.
 
 ## Quick start
 
@@ -106,18 +106,35 @@ Smaller / non-coding-tuned models tend to drop tool calls or hallucinate argumen
 - **Codex won't recognise your model's metadata** — it keys off its own built-in table of OpenAI slugs, so you'll see `Model metadata for <name> not found. Defaulting to fallback metadata`. Harmless in practice: tool calling, editing and multi-turn all work anyway (verified). Herd emits the model-listing schema Codex asks for, which silences the per-turn refresh errors, but cannot make Codex *recognise* a non-OpenAI model name.
 - **Codex's model picker may not populate.** Codex's model manager decodes `/v1/models` against its own undocumented schema (not the OpenAI one) and logs `failed to refresh available models: ... missing field ...` on each refresh. We emit the fields it asked for as far as we could reverse-engineer them against codex-cli 0.145-alpha; the schema keeps demanding more. **This is cosmetic — inference is unaffected** and every turn routes normally. Specify the model with `-m` or `model_provider` config rather than the picker.
 
-## Model name matters (a Codex bug)
+## Two Codex tool protocols, both handled
 
-Codex hides its entire tool catalogue from any model whose slug it treats as "Responses-Lite" — the `sol` / `terra` / `luna` families. For those, tools are moved into an `additional_tools` input item and the top-level `tools` array is omitted, so **the model gets nothing callable and will narrate work it never did.** This is [openai/codex#31894](https://github.com/openai/codex/issues/31894) and reproduces against OpenAI's own hosted models — it is not specific to local models or to Herd.
+Codex sends its tools one of two ways depending on the model slug, and Herd translates both — you don't need to care which:
 
-**Use any non-Lite model name** and Codex sends a normal tool array:
+| Slug family | What Codex sends | What Herd does |
+|---|---|---|
+| `sol` / `terra` / `luna` ("Responses-Lite", incl. the Desktop default) | tools hidden in an `additional_tools` input item; the primary tool is a `custom`-typed `exec` taking raw JavaScript | extracts them, bridges `exec` to a function taking one string, converts the call back to a `custom_tool_call` |
+| everything else | a normal top-level `tools` array of ~12 plain functions (`exec_command`, `apply_patch`, …) | passes them straight through |
+
+The Lite shape is [openai/codex#31894](https://github.com/openai/codex/issues/31894) — it leaves the model with nothing callable even against OpenAI's own hosted models. Herd handles it so you don't hit that.
+
+## If Codex says it "cannot execute commands"
+
+**Start a new chat.** This is the most common failure and it is not a configuration problem.
+
+Once Codex claims it can't run commands, it conditions on its own prior statements and keeps re-deriving that conclusion — even with working tools sitting in front of it. Measured on the same app, same config, same day:
+
+| Conversation length | `exec` offered | Tools actually called |
+|---|---|---|
+| 43 messages (after earlier refusals) | ✅ | **0** — 741 tokens explaining why it can't |
+| 6 messages (fresh chat) | ✅ | **1** — ran the command |
+
+It also **confabulates specifics** — inventing detailed lists of "blocked operations" and "sandbox security policies" that don't exist. So its explanation is never evidence about your setup. Check the herd log instead:
 
 ```bash
-codex exec -m qwen3-coder:30b "..."     # 12 tools — works
-codex exec -m gpt-5.6-sol    "..."      # 2 tools  — model can't act
+grep 'Responses\[' ~/.fleet-manager/logs/herd.jsonl | tail -3
+#  tools=3 custom=['exec']  -> tools ARE reaching the model
+#  tools=0                  -> genuinely no tools; check your provider config
 ```
-
-Because Herd auto-routes, the name you give Codex doesn't have to be the model that serves it — any non-Lite name still lands on your best loaded local model.
 
 ## Common config mistake
 
