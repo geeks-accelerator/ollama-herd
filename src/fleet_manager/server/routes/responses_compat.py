@@ -115,6 +115,10 @@ async def responses(request: Request):
     # Translate to an OpenAI-shaped body — the pipeline treats it like a
     # /v1/chat/completions request from here on.
     openai_body = responses_to_openai_body({**body, "model": local_model})
+    # Which tools arrived as Responses `custom` tools. Pulled off the body so it
+    # never reaches Ollama; used below so their calls come back as
+    # `custom_tool_call` items, which is what Codex requires.
+    custom_tool_names = set(openai_body.pop("_custom_tool_names", []) or [])
     if not openai_body.get("messages"):
         return _error(400, "`input` produced no messages — nothing to send to the model")
 
@@ -136,6 +140,7 @@ async def responses(request: Request):
     logger.info(
         f"Responses[{rid}] request: model={requested_model} → {local_model} "
         f"stream={stream} tools={len(openai_body.get('tools') or [])}"
+        + (f" custom={sorted(custom_tool_names)}" if custom_tool_names else "")
         + (f"{[t['function']['name'] for t in openai_body['tools']]} "
            if openai_body.get("tools") else " ")
         + 
@@ -222,7 +227,9 @@ async def responses(request: Request):
 
     if stream:
         async def _sse_generator():
-            state = ResponsesSSEState(model=actual_model)
+            state = ResponsesSSEState(
+                model=actual_model, custom_names=custom_tool_names
+            )
             try:
                 async for line in ollama_stream:
                     for event in ollama_chunk_to_responses_events(line, state):
@@ -276,7 +283,9 @@ async def responses(request: Request):
         proxy.pop_token_counts(inference_req.request_id)
         proxy.pop_request_meta(inference_req.request_id)
 
-    response = accumulate_responses_object(chunks, model=actual_model)
+    response = accumulate_responses_object(
+        chunks, model=actual_model, custom_names=custom_tool_names
+    )
     usage = response.get("usage") or {}
     logger.info(
         f"Responses[{rid}] done: node={winner.node_id} "

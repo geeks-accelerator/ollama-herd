@@ -37,6 +37,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Parameter name used when bridging a Responses `custom` tool (freeform text
+# input) into an Ollama function tool (JSON-schema input). The model fills
+# this string; the response side unwraps it back to a `custom_tool_call`.
+CUSTOM_TOOL_ARG = "input"
+
 
 # ---------------------------------------------------------------------------
 # Request:  Responses  →  OpenAI-chat-shaped body (which Ollama accepts)
@@ -65,7 +70,9 @@ def _text_from_content(content: Any) -> str:
     return "".join(out)
 
 
-def _tools_to_openai(tools: list[dict] | None) -> list[dict] | None:
+def _tools_to_openai(
+    tools: list[dict] | None, custom_names: set[str] | None = None
+) -> list[dict] | None:
     """Responses tools (flat) → OpenAI chat tools (nested under ``function``).
 
     Responses: ``{"type":"function","name":…,"parameters":…,"description":…}``
@@ -74,18 +81,65 @@ def _tools_to_openai(tools: list[dict] | None) -> list[dict] | None:
     """
     if not tools:
         return None
+    custom_names = custom_names if custom_names is not None else set()
+    nested: list[str] = []
     converted: list[dict] = []
     dropped: list[str] = []
     for t in tools:
         if not isinstance(t, dict):
             continue
-        if t.get("type") not in (None, "function"):
-            # No local equivalent: hosted tools (web_search, file_search, mcp)
-            # and — importantly — Codex's own `custom`/`namespace` types.  Its
-            # primary tool is a `custom` "exec" that runs JavaScript to
-            # orchestrate calls ("code mode"); OpenAI/Ollama function-calling
-            # cannot express that, so the model can't drive it.
-            dropped.append(f"{t.get('type')}:{t.get('name')}")
+        ttype = t.get("type")
+
+        if ttype == "custom":
+            # Codex's primary tool (`exec`) is a `custom` tool: freeform text
+            # input, optionally constrained by a grammar, NOT a JSON schema.
+            # Ollama function-calling can't express that — but the shapes are
+            # close enough to bridge: expose it as a function with a single
+            # string parameter carrying the freeform text.  The model then
+            # emits a normal tool call, and the response side converts it back
+            # into a `custom_tool_call` item (see CUSTOM_TOOL_ARG).
+            #
+            # Without this the tool is dropped, the model has nothing that can
+            # run a command, and it rationalises the failure ("I'm facing
+            # limitations in this environment") rather than reporting it.
+            name = t.get("name", "")
+            desc = t.get("description", "")
+            fmt = t.get("format") or {}
+            if fmt.get("type") == "grammar":
+                desc += (
+                    f"\n\nProvide the raw {fmt.get('syntax', 'text')} source as the "
+                    f"`{CUSTOM_TOOL_ARG}` argument — plain text only, no JSON "
+                    f"wrapper and no markdown code fences."
+                )
+            custom_names.add(name)
+            converted.append({"type": "function", "function": {
+                "name": name,
+                "description": desc,
+                "parameters": {
+                    "type": "object",
+                    "properties": {CUSTOM_TOOL_ARG: {
+                        "type": "string",
+                        "description": "Raw source text for this tool.",
+                    }},
+                    "required": [CUSTOM_TOOL_ARG],
+                },
+            }})
+            continue
+
+        if ttype == "namespace":
+            # A namespace groups nested tools that are only reachable from
+            # inside `exec`'s sandbox (`await tools.<name>(...)`), so they are
+            # not independently callable. Recording rather than warning.
+            nested.extend(
+                f"{t.get('name')}.{n.get('name')}"
+                for n in (t.get("tools") or []) if isinstance(n, dict)
+            )
+            continue
+
+        if ttype not in (None, "function"):
+            # Hosted tools (web_search, file_search, mcp) have no local
+            # equivalent — genuinely nothing we can do.
+            dropped.append(f"{ttype}:{t.get('name')}")
             continue
         # Already nested (defensive — some clients send the chat shape).
         if isinstance(t.get("function"), dict):
@@ -97,14 +151,17 @@ def _tools_to_openai(tools: list[dict] | None) -> list[dict] | None:
         if t.get("parameters") is not None:
             fn["parameters"] = t["parameters"]
         converted.append({"type": "function", "function": fn})
+    if nested:
+        logger.debug(
+            f"Responses: {len(nested)} namespaced tool(s) reachable only from "
+            f"inside a custom tool's sandbox: {nested[:6]}"
+        )
     if dropped:
-        # WARNING, not debug: a silently-dropped tool catalogue is why a model
-        # with no way to act still reports success (observed 2026-07-18 — Codex
-        # "fixed" a bug it never read). Make the capability loss visible.
+        # WARNING, not debug: a silently-dropped tool is why a model with no way
+        # to act still reports success. Make the capability loss visible.
         logger.warning(
             f"Responses: dropped {len(dropped)} untranslatable tool(s) "
-            f"{dropped} — the model cannot call these, so agentic turns may "
-            f"narrate actions instead of performing them"
+            f"{dropped} — the model cannot call these"
         )
     return converted or None
 
@@ -183,6 +240,28 @@ def responses_input_to_messages(
             })
             continue
 
+        if itype == "custom_tool_call":
+            # Our own prior custom call, echoed back in history.
+            messages.append({
+                "role": "assistant", "content": "",
+                "tool_calls": [{
+                    "id": item.get("call_id") or item.get("id") or "",
+                    "type": "function",
+                    "function": {"name": item.get("name", ""),
+                                 "arguments": {CUSTOM_TOOL_ARG: item.get("input", "")}},
+                }],
+            })
+            continue
+
+        if itype == "custom_tool_call_output":
+            messages.append({
+                "role": "tool",
+                "tool_call_id": item.get("call_id") or item.get("id") or "",
+                "content": item.get("output", "") if isinstance(item.get("output"), str)
+                           else json.dumps(item.get("output")),
+            })
+            continue
+
         if itype == "reasoning":
             # Prior-turn model reasoning — not input for a local model.
             continue
@@ -247,7 +326,12 @@ def responses_to_openai_body(body: dict) -> dict:
     raw_tools = list(body.get("tools") or []) + collect_tools_from_input(
         body.get("input")
     )
-    tools = _tools_to_openai(raw_tools)
+    # `custom_names` records which tools arrived as Responses `custom` tools so
+    # the response side can emit `custom_tool_call` for them instead of
+    # `function_call` — Codex rejects the wrong item type.
+    custom_names: set[str] = set()
+    tools = _tools_to_openai(raw_tools, custom_names)
+    out_custom = custom_names
     if tools:
         out["tools"] = tools
     if body.get("tool_choice") is not None:
@@ -257,6 +341,9 @@ def responses_to_openai_body(body: dict) -> dict:
     # Responses names the output cap differently than chat-completions.
     if body.get("max_output_tokens") is not None:
         out["max_tokens"] = body["max_output_tokens"]
+    if out_custom:
+        # Consumed by the route; stripped before the body reaches Ollama.
+        out["_custom_tool_names"] = sorted(out_custom)
     return out
 
 
@@ -298,6 +385,25 @@ def _normalize_tool_args(name: str, args: Any) -> str:
         return "{}"
 
 
+def _unwrap_custom_input(args: str) -> str:
+    """Recover a custom tool's freeform text from our bridge parameter.
+
+    The model was handed a one-string-property function, so it returns
+    ``{"input": "<text>"}``. Codex wants just ``<text>``. Falls back to the raw
+    string if the model ignored the schema and emitted bare text.
+    """
+    try:
+        parsed = json.loads(args)
+    except (json.JSONDecodeError, TypeError):
+        return args
+    if isinstance(parsed, dict):
+        if CUSTOM_TOOL_ARG in parsed:
+            return str(parsed[CUSTOM_TOOL_ARG])
+        if len(parsed) == 1:
+            return str(next(iter(parsed.values())))
+    return args
+
+
 def _parse_ollama_chunk(line: str) -> dict | None:
     line = (line or "").strip()
     if not line:
@@ -322,6 +428,7 @@ def build_responses_object(
     model: str,
     text: str,
     tool_calls: list[dict],
+    custom_names: set[str] | None = None,
     input_tokens: int,
     output_tokens: int,
     done_reason: str = "",
@@ -343,15 +450,27 @@ def build_responses_object(
             "status": "completed",
             "content": [{"type": "output_text", "text": text, "annotations": []}],
         })
+    custom_names = custom_names or set()
     for tc in tool_calls:
         fn = tc.get("function") or {}
         name = fn.get("name", "")
+        args = _normalize_tool_args(name, fn.get("arguments"))
+        if name in custom_names:
+            output.append({
+                "type": "custom_tool_call",
+                "id": _new_id("ctc"),
+                "call_id": tc.get("id") or _new_id("call"),
+                "name": name,
+                "input": _unwrap_custom_input(args),
+                "status": "completed",
+            })
+            continue
         output.append({
             "type": "function_call",
             "id": _new_id("fc"),
             "call_id": tc.get("id") or _new_id("call"),
             "name": name,
-            "arguments": _normalize_tool_args(name, fn.get("arguments")),
+            "arguments": args,
             "status": "completed",
         })
     return {
@@ -370,7 +489,9 @@ def build_responses_object(
     }
 
 
-def accumulate_responses_object(chunks: list[str], model: str) -> dict:
+def accumulate_responses_object(
+    chunks: list[str], model: str, custom_names: set[str] | None = None
+) -> dict:
     """Collapse a full Ollama NDJSON stream into one Responses object."""
     text_parts: list[str] = []
     tool_calls: list[dict] = []
@@ -393,6 +514,7 @@ def accumulate_responses_object(chunks: list[str], model: str) -> dict:
         model=model,
         text="".join(text_parts),
         tool_calls=tool_calls,
+        custom_names=custom_names,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         done_reason=done_reason,
@@ -421,6 +543,7 @@ class ResponsesSSEState:
     text_parts: list[str] = field(default_factory=list)
     # completed items, for the final response.completed payload
     emitted_tools: list[dict] = field(default_factory=list)
+    custom_names: set[str] = field(default_factory=set)
     input_tokens: int = 0
     output_tokens: int = 0
     finished: bool = False
@@ -539,6 +662,35 @@ def ollama_chunk_to_responses_events(
             call_id = tc.get("id") or _new_id("call")
             idx = state.next_output_index
             state.next_output_index += 1
+            if name in state.custom_names:
+                # This began life as a Responses `custom` tool. Codex expects a
+                # `custom_tool_call` carrying freeform text — NOT a
+                # `function_call` with JSON arguments — and a different event
+                # family. Unwrap our bridge parameter back to the raw string.
+                text = _unwrap_custom_input(args)
+                item = {
+                    "type": "custom_tool_call",
+                    "id": item_id.replace("fc_", "ctc_", 1),
+                    "call_id": call_id,
+                    "name": name,
+                    "input": text,
+                    "status": "completed",
+                }
+                state.emitted_tools.append(item)
+                yield _ev(state, "response.output_item.added", {
+                    "output_index": idx,
+                    "item": {**item, "input": "", "status": "in_progress"},
+                })
+                yield _ev(state, "response.custom_tool_call_input.delta", {
+                    "item_id": item["id"], "output_index": idx, "delta": text,
+                })
+                yield _ev(state, "response.custom_tool_call_input.done", {
+                    "item_id": item["id"], "output_index": idx, "input": text,
+                })
+                yield _ev(state, "response.output_item.done", {
+                    "output_index": idx, "item": item,
+                })
+                continue
             item = {
                 "type": "function_call",
                 "id": item_id,

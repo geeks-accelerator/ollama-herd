@@ -332,16 +332,79 @@ def test_additional_tools_reach_the_model_and_are_not_a_message():
     assert [m["role"] for m in out["messages"]] == ["user"]
 
 
-def test_untranslatable_codex_tool_types_are_dropped_loudly(caplog):
-    """`custom`/`namespace` have no function-calling equivalent. Dropping them
-    is correct, but must be visible — silence is what let the model fake
-    success."""
-    import logging
-
+def test_custom_tool_is_bridged_not_dropped():
+    """Codex's primary tool (`exec`) is a `custom` tool. We used to drop it,
+    leaving the model with nothing that could run a command — it then
+    rationalised the failure instead of reporting it. Now it's exposed as a
+    function taking one freeform string."""
     body = {"model": "m", "input": [
         {"type": "additional_tools", "tools": [
-            {"type": "custom", "name": "exec", "format": {}},
-            {"type": "namespace", "name": "collaboration", "tools": []},
+            {"type": "custom", "name": "exec", "description": "Run JS",
+             "format": {"type": "grammar", "syntax": "lark", "definition": "x"}},
+            {"type": "function", "name": "wait", "parameters": {}},
+        ]},
+        {"role": "user", "content": "go"},
+    ]}
+    out = responses_to_openai_body(body)
+    assert [t["function"]["name"] for t in out["tools"]] == ["exec", "wait"]
+    assert out["_custom_tool_names"] == ["exec"]
+    params = out["tools"][0]["function"]["parameters"]
+    assert params["properties"] == {
+        "input": {"type": "string", "description": "Raw source text for this tool."}
+    }
+    # the grammar hint must tell the model to send raw text, not JSON
+    assert "no JSON" in out["tools"][0]["function"]["description"]
+
+
+def test_custom_tool_call_returns_as_custom_tool_call_item():
+    """Codex requires `custom_tool_call` with freeform `input` — NOT a
+    `function_call` with JSON arguments — and a distinct event family."""
+    line = json.dumps({"message": {"tool_calls": [
+        {"function": {"name": "exec", "arguments": {"input": "await tools.x()"}}}]}})
+    state = ResponsesSSEState(model="m", custom_names={"exec"})
+    types, items = [], []
+    for raw in ollama_chunk_to_responses_events(line, state):
+        types.append(raw.split("\n")[0].replace("event: ", ""))
+        items.append(json.loads(raw.split("data: ", 1)[1].strip()))
+    assert "response.custom_tool_call_input.delta" in types
+    assert "response.custom_tool_call_input.done" in types
+    assert "response.function_call_arguments.delta" not in types
+    done = [i for i in items if i["type"] == "response.output_item.done"][0]["item"]
+    assert done["type"] == "custom_tool_call"
+    assert done["input"] == "await tools.x()"   # unwrapped from {"input": ...}
+    assert done["call_id"] and done["id"].startswith("ctc_")
+
+
+def test_non_custom_tools_still_emit_function_call():
+    """Regression guard: the bridge must not hijack ordinary function tools."""
+    line = json.dumps({"message": {"tool_calls": [
+        {"function": {"name": "exec_command", "arguments": {"cmd": "ls"}}}]}})
+    state = ResponsesSSEState(model="m", custom_names={"exec"})
+    types = [r.split("\n")[0].replace("event: ", "")
+             for r in ollama_chunk_to_responses_events(line, state)]
+    assert "response.function_call_arguments.delta" in types
+    assert "response.custom_tool_call_input.delta" not in types
+
+
+def test_custom_tool_history_round_trips():
+    """Codex echoes our custom_tool_call and its output back on the next turn."""
+    msgs = responses_input_to_messages([
+        {"type": "custom_tool_call", "call_id": "c1", "name": "exec",
+         "input": "await tools.x()"},
+        {"type": "custom_tool_call_output", "call_id": "c1", "output": "done"},
+    ])
+    assert msgs[0]["tool_calls"][0]["function"]["name"] == "exec"
+    assert msgs[0]["tool_calls"][0]["function"]["arguments"] == {"input": "await tools.x()"}
+    assert msgs[1] == {"role": "tool", "tool_call_id": "c1", "content": "done"}
+
+
+def test_genuinely_untranslatable_tools_still_warn(caplog):
+    """Hosted tools (web_search etc.) have no local equivalent — still dropped,
+    still loudly."""
+    import logging
+    body = {"model": "m", "input": [
+        {"type": "additional_tools", "tools": [
+            {"type": "web_search"},
             {"type": "function", "name": "wait", "parameters": {}},
         ]},
         {"role": "user", "content": "go"},
@@ -349,5 +412,4 @@ def test_untranslatable_codex_tool_types_are_dropped_loudly(caplog):
     with caplog.at_level(logging.WARNING):
         out = responses_to_openai_body(body)
     assert [t["function"]["name"] for t in out["tools"]] == ["wait"]
-    assert "dropped 2 untranslatable tool" in caplog.text
-    assert "custom:exec" in caplog.text
+    assert "web_search" in caplog.text
