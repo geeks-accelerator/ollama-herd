@@ -621,3 +621,56 @@ def test_known_tool_names_are_exported_for_the_route():
     ]})
     assert out["_known_tool_names"] == ["exec", "wait"]
     assert out["_custom_tool_names"] == ["exec"]
+
+
+def test_apply_patch_tool_call_becomes_an_exec_command_heredoc():
+    """`apply_patch` is a BINARY Codex injects at the front of the sandbox PATH,
+    not a tool — verified live. Models read "Use the apply_patch tool to edit
+    files" and call it as a tool, which Codex rejects outright
+    (`error=unsupported call: apply_patch`), so the session reads and executes
+    fine but can never write."""
+    from fleet_manager.server.responses_translator import build_responses_object
+
+    patch = "*** Begin Patch\n*** Update File: a.py\n@@\n-x\n+y\n*** End Patch"
+    for shape in ({"command": ["apply_patch", patch]}, {"input": patch}, {"patch": patch}):
+        obj = build_responses_object(
+            model="m", text="",
+            tool_calls=[{"function": {"name": "apply_patch", "arguments": shape}}],
+            custom_names=set(), known_names={"exec_command", "wait"},
+            input_tokens=1, output_tokens=1,
+        )
+        item = obj["output"][0]
+        assert item["type"] == "function_call"
+        assert item["name"] == "exec_command"
+        cmd = json.loads(item["arguments"])["cmd"]
+        # Heredoc, so quotes/backslashes/$ in the patch body survive the shell.
+        assert cmd.startswith("apply_patch <<'CODEX_PATCH_EOF'")
+        assert patch in cmd
+        assert cmd.endswith("CODEX_PATCH_EOF")
+
+
+def test_apply_patch_is_left_alone_when_it_really_is_a_tool():
+    """If a future Codex offers apply_patch as a real tool, don't hijack it."""
+    from fleet_manager.server.responses_translator import build_responses_object
+
+    obj = build_responses_object(
+        model="m", text="",
+        tool_calls=[{"function": {"name": "apply_patch",
+                                  "arguments": {"input": "*** Begin Patch\n*** End Patch"}}}],
+        custom_names=set(), known_names={"apply_patch", "exec_command"},
+        input_tokens=1, output_tokens=1,
+    )
+    assert obj["output"][0]["name"] == "apply_patch"
+
+
+def test_apply_patch_without_a_recognisable_patch_is_not_rewritten():
+    """Don't guess. No patch envelope means we don't know what this is."""
+    from fleet_manager.server.responses_translator import build_responses_object
+
+    obj = build_responses_object(
+        model="m", text="",
+        tool_calls=[{"function": {"name": "apply_patch", "arguments": {"foo": "bar"}}}],
+        custom_names=set(), known_names={"exec_command"},
+        input_tokens=1, output_tokens=1,
+    )
+    assert obj["output"][0]["name"] == "apply_patch"

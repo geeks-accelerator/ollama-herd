@@ -437,6 +437,72 @@ def responses_to_openai_body(body: dict) -> dict:
     return out
 
 
+def _patch_text_from_args(parsed: dict) -> str | None:
+    """Pull the patch body out of whatever shape the model wrapped it in.
+
+    Codex documents the call as ``{"command": ["apply_patch", "*** Begin
+    Patch…"]}``, but models paraphrase — the body turns up under `input`,
+    `patch`, or `content` too. Anything that doesn't carry a recognisable patch
+    envelope is left alone rather than guessed at.
+    """
+    for key in ("input", "patch", "content", "text"):
+        v = parsed.get(key)
+        if isinstance(v, str) and "*** Begin Patch" in v:
+            return v
+    cmd = parsed.get("command")
+    if isinstance(cmd, list):
+        for part in cmd:
+            if isinstance(part, str) and "*** Begin Patch" in part:
+                return part
+    if isinstance(cmd, str) and "*** Begin Patch" in cmd:
+        return cmd
+    return None
+
+
+def redirect_apply_patch_call(
+    name: str, args: str, known_names: set[str]
+) -> tuple[str, str] | None:
+    """An `apply_patch` tool call → the `exec_command` call that actually runs it.
+
+    `apply_patch` is not a tool. It is a **binary** Codex injects at the front of
+    the sandbox PATH (verified live: `/Users/…/.codex/tmp/arg0/codex-arg0…/apply_patch`),
+    and Codex's own instructions describe invoking it as an argv array —
+    ``{"command": ["apply_patch", "*** Begin Patch…"]}``. Models read
+    "Use the `apply_patch` tool to edit files" and call it as a top-level tool,
+    which Codex's router rejects outright:
+
+        ERROR codex_core::tools::router: error=unsupported call: apply_patch
+
+    The run then reads and executes fine but can never write, so an agentic
+    coding session explores forever and edits nothing.
+
+    Rewritten as a heredoc so patch bodies containing quotes, backslashes, or
+    ``$`` survive the shell verbatim. Returns ``None`` — leaving the call
+    untouched — when `apply_patch` really was offered as a tool, when there is no
+    `exec_command` to route through, or when no patch envelope is recognisable.
+    """
+    if name != "apply_patch" or "apply_patch" in known_names:
+        return None
+    if "exec_command" not in known_names:
+        return None
+    try:
+        parsed = json.loads(args) if args else {}
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    patch = _patch_text_from_args(parsed)
+    if not patch:
+        return None
+    logger.warning(
+        "Responses: model called 'apply_patch' as a tool — it is a binary on the "
+        "sandbox PATH, not a tool, and Codex rejects the call outright. Rewriting "
+        "as an `exec_command` heredoc so the edit actually lands."
+    )
+    cmd = f"apply_patch <<'CODEX_PATCH_EOF'\n{patch}\nCODEX_PATCH_EOF"
+    return "exec_command", json.dumps({"cmd": cmd})
+
+
 def redirect_nested_tool_call(
     name: str,
     args: str,
@@ -639,6 +705,18 @@ def build_responses_object(
         fn = tc.get("function") or {}
         name = fn.get("name", "")
         args = _normalize_tool_args(name, fn.get("arguments"))
+        patch_call = redirect_apply_patch_call(name, args, known_names)
+        if patch_call:
+            name, args = patch_call
+            output.append({
+                "type": "function_call",
+                "id": _new_id("fc"),
+                "call_id": tc.get("id") or _new_id("call"),
+                "name": name,
+                "arguments": args,
+                "status": "completed",
+            })
+            continue
         redirect = redirect_nested_tool_call(name, args, custom_names, known_names)
         if redirect:
             host, js = redirect
@@ -861,6 +939,9 @@ def ollama_chunk_to_responses_events(
             call_id = tc.get("id") or _new_id("call")
             idx = state.next_output_index
             state.next_output_index += 1
+            patch_call = redirect_apply_patch_call(name, args, state.known_names)
+            if patch_call:
+                name, args = patch_call
             redirect = redirect_nested_tool_call(
                 name, args, state.custom_names, state.known_names
             )

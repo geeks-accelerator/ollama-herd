@@ -2,7 +2,18 @@
 
 Point [OpenAI Codex](https://github.com/openai/codex) at your own hardware — inference runs on your fleet, and Herd routes each request to the best node and model you have loaded.
 
-> **Agentic coding works, with no configuration** — verified 2026-07-18 on a real `codex-cli 0.145.0-alpha.18`, both the **CLI and the Desktop app**. Codex ran `pytest`, read sources, wrote correct fixes with `apply_patch`, created new files, and executed shell commands — entirely on local models. Any model name works, including the Desktop app's default `gpt-5.6-sol`.
+> **Agentic coding works, with no configuration** — end-to-end verified 2026-07-18 on a real `codex-cli 0.145.0-alpha.18` (`codex exec`, `qwen3-coder:30b`). Codex ran `pytest`, read the source, wrote a correct fix through `apply_patch`, and re-ran `pytest` to green — entirely on local hardware, no model map, no per-tool config. Any model name works, including the Desktop app's default `gpt-5.6-sol`.
+>
+> ```
+> $ python3 -m pytest -q
+> ..                                                       [100%]
+> 2 passed
+> ```
+>
+> Herd bridges two gaps to make this work, because Codex's tool *descriptions*
+> document an API its tool *schema* doesn't expose — and local models call what
+> the prose tells them to. Both are automatic; see
+> [Two Codex tool protocols](#two-codex-tool-protocols-both-handled).
 
 ## Quick start
 
@@ -83,15 +94,15 @@ sqlite3 ~/.fleet-manager/latency.db \
 
 ## Recommended models
 
-For the chat path that works today, any capable coding model is fine. (Tool-use quality would matter for agentic work — see [Limitations](#limitations-v1).)
+Tool-use quality is the thing that matters here — the loop only closes if the model reliably calls tools and edits files.
 
 | Model | Agentic coding | Notes |
 |---|---|---|
-| `qwen3-coder:30b` | ✅ verified (3/3 tasks) | Best general-purpose pick. ~19 GB, 256K context |
-| `gpt-oss:120b` | ✅ verified (1/1 task) | Reasoning model; also drove the loop successfully |
+| `qwen3-coder:30b` | ✅ verified end-to-end via `codex exec` | Best general-purpose pick. ~19 GB, 256K context |
+| `gpt-oss:120b` | ⚠️ drives the loop, weak at converging | Reasoning model. Sustained 40+ tool-calling turns but explored without landing an edit; prefer it for analysis, not editing |
 | `qwen3:32b` | untested | Strong reasoning, good tool use |
 
-Verified tasks: fix an even-length `median()` bug, fix a whole-percent discount bug, and **create a new module from scratch** to satisfy failing imports — each run ending with the model executing pytest itself and reaching green.
+Verified tasks: fix an even-length `median()` bug, fix a whole-percent discount bug, and **create a new module from scratch** to satisfy failing imports — each run ending with the model executing pytest itself and reaching green. The `median()` task was re-run end-to-end on 2026-07-18 against `codex exec`: Codex ran pytest, read the source, patched it via `apply_patch`, and re-ran pytest to `2 passed` — and went beyond the ask, adding an empty-sequence guard.
 
 Smaller / non-coding-tuned models tend to drop tool calls or hallucinate arguments.
 
@@ -99,7 +110,8 @@ Smaller / non-coding-tuned models tend to drop tool calls or hallucinate argumen
 
 - **MLX-backed models aren't served here yet.** Auto-routing skips `mlx:` models for Codex, so you'll get an Ollama-backed model automatically. An explicit `mlx:` mapping returns a clear `503`. (Claude Code's `/v1/messages` endpoint *does* serve MLX.)
 - **Stateful chaining isn't supported.** Herd doesn't persist responses, so `previous_response_id` is rejected with a `400`. Codex's default stateless mode — resending the conversation each turn — is what's supported.
-- **Name the tool in your prompt.** This is the single biggest quality lever. "Diagnose the root cause and fix it" made qwen3-coder:30b explore until it exhausted its budget; the *same task* with *"use the apply_patch command to fix X, then re-run pytest"* succeeded. Verified on two independent tasks (2/2 green).
+- **Name the tool in your prompt.** This is the single biggest quality lever. "Diagnose the root cause and fix it" made qwen3-coder:30b explore until it exhausted its budget; the *same task* with *"use the apply_patch command to fix X, then re-run pytest"* succeeded. Verified on two independent tasks (2/2 green), and again in the 2026-07-18 end-to-end run.
+- **Approval prompts depend on the model asking for them.** Codex escalation is model-initiated: the model must set `sandbox_permissions: "require_escalated"` plus a `justification` on the tool call. There is no approval item type in the protocol for Herd to synthesise. Local models do request escalation, but not always — if a sandboxed command fails with no prompt, that's why. Setting **Full Access** removes the need for the prompt, but it's a workaround, not a fix.
 - **Don't trust the model's self-report — check the diff.** In a run that produced a *correct* fix, the model also claimed *"I wasn't able to run pytest due to missing Python tools in the environment"* — it had run pytest successfully minutes earlier in that same session. The code was right; the narration was not.
 - **Budget for tokens.** A one-line fix cost ~109K tokens end-to-end. Agentic loops re-send the full conversation each turn, and Codex's system prompt alone is ~27KB.
 - **Hosted tools are dropped.** `web_search` / `file_search` / MCP items have no local equivalent.
@@ -113,9 +125,43 @@ Codex sends its tools one of two ways depending on the model slug, and Herd tran
 | Slug family | What Codex sends | What Herd does |
 |---|---|---|
 | `sol` / `terra` / `luna` ("Responses-Lite", incl. the Desktop default) | tools hidden in an `additional_tools` input item; the primary tool is a `custom`-typed `exec` taking raw JavaScript | extracts them, bridges `exec` to a function taking one string, converts the call back to a `custom_tool_call` |
-| everything else | a normal top-level `tools` array of ~12 plain functions (`exec_command`, `apply_patch`, …) | passes them straight through |
+| everything else | a normal top-level `tools` array of ~12 plain functions (`exec_command`, `write_stdin`, …) | passes them straight through |
 
 The Lite shape is [openai/codex#31894](https://github.com/openai/codex/issues/31894) — it leaves the model with nothing callable even against OpenAI's own hosted models. Herd handles it so you don't hit that.
+
+### Two calls Herd rewrites, and why
+
+Codex's tool *descriptions* document an API its tool *schema* doesn't expose.
+Frontier models are tuned around the discrepancy; local models read the prose and
+call exactly what it says. Both rewrites are automatic and logged at WARNING.
+
+**`exec_command` called as a top-level tool.** In code mode the only callable
+tool is `exec` — everything else lives behind `await tools.exec_command(…)`
+inside the JavaScript it evaluates. The `exec` description is ~14 KB and dense
+with `tools.exec_command(...)`, so models call that name directly. Measured on
+gpt-oss:120b: **4/4** calls went to a tool that was never offered. Codex receives
+a `function_call` it has no handler for, cannot execute it, and **the run stops
+with no error displayed** — the transcript just shows a tool call, then nothing.
+Herd rewrites it as a `custom_tool_call` on `exec` carrying the equivalent
+JavaScript.
+
+**`apply_patch` called as a tool.** `apply_patch` is a **binary**, not a tool —
+Codex injects it at the front of the sandbox PATH
+(`~/.codex/tmp/arg0/codex-arg0…/apply_patch`, confirmed with `which -a`), and its
+instructions describe an argv-array invocation while calling it "the `apply_patch`
+tool". Models call it as a tool and Codex rejects it outright:
+
+```
+ERROR codex_core::tools::router: error=unsupported call: apply_patch
+```
+
+The session then reads and executes fine but **can never write** — it explores
+forever and edits nothing. Herd rewrites it into an `exec_command` heredoc, so
+patch bodies containing quotes, backslashes or `$` reach the binary intact.
+
+Both rewrites decline to act when they'd be guessing: if the tool really was
+offered, or if no `*** Begin Patch` envelope is recognisable, the call passes
+through untouched.
 
 ## If Codex says it "cannot execute commands"
 
