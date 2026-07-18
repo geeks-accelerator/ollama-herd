@@ -119,6 +119,10 @@ async def responses(request: Request):
     # never reaches Ollama; used below so their calls come back as
     # `custom_tool_call` items, which is what Codex requires.
     custom_tool_names = set(openai_body.pop("_custom_tool_names", []) or [])
+    # Every tool we actually offered the model. A call to anything outside this
+    # set is a nested code-mode tool the model reached for directly — see
+    # `redirect_nested_tool_call`.
+    known_tool_names = set(openai_body.pop("_known_tool_names", []) or [])
     if not openai_body.get("messages"):
         return _error(400, "`input` produced no messages — nothing to send to the model")
 
@@ -228,7 +232,8 @@ async def responses(request: Request):
     if stream:
         async def _sse_generator():
             state = ResponsesSSEState(
-                model=actual_model, custom_names=custom_tool_names
+                model=actual_model, custom_names=custom_tool_names,
+                known_names=known_tool_names
             )
             try:
                 async for line in ollama_stream:
@@ -284,7 +289,8 @@ async def responses(request: Request):
         proxy.pop_request_meta(inference_req.request_id)
 
     response = accumulate_responses_object(
-        chunks, model=actual_model, custom_names=custom_tool_names
+        chunks, model=actual_model, custom_names=custom_tool_names,
+        known_names=known_tool_names
     )
     usage = response.get("usage") or {}
     logger.info(

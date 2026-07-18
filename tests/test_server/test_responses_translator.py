@@ -559,3 +559,65 @@ def test_no_tools_means_no_turn_guidance():
     )
     joined = " ".join(m.get("content", "") for m in out["messages"])
     assert TURN_COMPLETION_GUIDANCE.strip() not in joined
+
+
+def test_nested_code_mode_tool_call_is_redirected():
+    """In code mode the only callable tool is `exec`; `exec_command` lives behind
+    `await tools.exec_command(...)` inside the JavaScript. Models read the 14KB
+    `exec` description and call that name directly — measured 4/4 on
+    gpt-oss:120b. Passing it through stalls the loop: Codex gets a call for a
+    tool it never offered and cannot execute it."""
+    from fleet_manager.server.responses_translator import build_responses_object
+
+    obj = build_responses_object(
+        model="m", text="",
+        tool_calls=[{"function": {"name": "exec_command",
+                                  "arguments": {"cmd": "ls docs"}}}],
+        custom_names={"exec"}, known_names={"exec", "wait"},
+        input_tokens=1, output_tokens=1,
+    )
+    item = obj["output"][0]
+    assert item["type"] == "custom_tool_call"
+    assert item["name"] == "exec"          # routed to the host tool, not the nested one
+    assert item["input"] == 'await tools.exec_command({"cmd": "ls docs"})'
+
+
+def test_offered_tools_are_never_redirected():
+    """The critical regression — a legitimately offered tool must pass through."""
+    from fleet_manager.server.responses_translator import build_responses_object
+
+    obj = build_responses_object(
+        model="m", text="",
+        tool_calls=[{"function": {"name": "wait", "arguments": {"ms": 5}}}],
+        custom_names={"exec"}, known_names={"exec", "wait"},
+        input_tokens=1, output_tokens=1,
+    )
+    assert obj["output"][0]["type"] == "function_call"
+    assert obj["output"][0]["name"] == "wait"
+
+
+def test_unknown_offered_set_never_redirects():
+    """Empty known_names means 'we don't know what was offered' — not 'nothing
+    was offered'. Never redirect on absence of information."""
+    from fleet_manager.server.responses_translator import build_responses_object
+
+    obj = build_responses_object(
+        model="m", text="",
+        tool_calls=[{"function": {"name": "whatever", "arguments": {}}}],
+        custom_names={"exec"}, known_names=set(),
+        input_tokens=1, output_tokens=1,
+    )
+    assert obj["output"][0]["type"] == "function_call"
+
+
+def test_known_tool_names_are_exported_for_the_route():
+    out = responses_to_openai_body({"model": "m", "input": [
+        {"type": "additional_tools", "tools": [
+            {"type": "custom", "name": "exec", "description": "js",
+             "format": {"type": "grammar", "syntax": "lark", "definition": "x"}},
+            {"type": "function", "name": "wait", "parameters": {}},
+        ]},
+        {"role": "user", "content": "go"},
+    ]})
+    assert out["_known_tool_names"] == ["exec", "wait"]
+    assert out["_custom_tool_names"] == ["exec"]

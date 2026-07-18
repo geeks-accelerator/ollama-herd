@@ -430,7 +430,54 @@ def responses_to_openai_body(body: dict) -> dict:
     if out_custom:
         # Consumed by the route; stripped before the body reaches Ollama.
         out["_custom_tool_names"] = sorted(out_custom)
+    if tools:
+        # Also consumed by the route. Needed to spot a call to a tool we never
+        # offered — see `redirect_nested_tool_call`.
+        out["_known_tool_names"] = sorted(t["function"]["name"] for t in tools)
     return out
+
+
+def redirect_nested_tool_call(
+    name: str,
+    args: str,
+    custom_names: set[str],
+    known_names: set[str],
+) -> tuple[str, str] | None:
+    """A call to a *nested* code-mode tool → the code-mode tool that hosts it.
+
+    In code mode the only callable tool is `exec`; everything else
+    (`exec_command`, `apply_patch`, …) lives behind `await tools.<name>(…)`
+    inside the JavaScript it evaluates. Models read the 14 KB `exec` description
+    — which is dense with `tools.exec_command(...)` — and call that name
+    directly as a top-level function. Measured on gpt-oss:120b: 4/4 calls went
+    to `exec_command`, a tool that was never offered, with and without our own
+    guidance text, so this is the model reading Codex's description rather than
+    anything we added.
+
+    Passing it through is what stalls the loop: Codex gets a `function_call` for
+    a tool it doesn't have, cannot execute it, and the run stops with no error.
+    The intent is unambiguous, so express it the way the protocol allows.
+
+    Returns ``(code_mode_tool_name, javascript)`` or ``None`` when the call is a
+    legitimately offered tool and should be left alone.
+    """
+    # An empty `known_names` means "we don't know what was offered", not
+    # "nothing was offered" — never redirect on absence of information.
+    if not known_names or not custom_names or name in known_names:
+        return None
+    host = sorted(custom_names)[0]
+    try:
+        parsed = json.loads(args) if args else {}
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    logger.warning(
+        f"Responses: model called {name!r}, which was never offered — it is a "
+        f"nested tool of the code-mode {host!r} tool. Rewriting as "
+        f"`await tools.{name}(…)` so Codex can run it instead of stalling."
+    )
+    return host, f"await tools.{name}({json.dumps(parsed)})"
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +611,7 @@ def build_responses_object(
     text: str,
     tool_calls: list[dict],
     custom_names: set[str] | None = None,
+    known_names: set[str] | None = None,
     input_tokens: int,
     output_tokens: int,
     done_reason: str = "",
@@ -586,10 +634,23 @@ def build_responses_object(
             "content": [{"type": "output_text", "text": text, "annotations": []}],
         })
     custom_names = custom_names or set()
+    known_names = known_names or set()
     for tc in tool_calls:
         fn = tc.get("function") or {}
         name = fn.get("name", "")
         args = _normalize_tool_args(name, fn.get("arguments"))
+        redirect = redirect_nested_tool_call(name, args, custom_names, known_names)
+        if redirect:
+            host, js = redirect
+            output.append({
+                "type": "custom_tool_call",
+                "id": _new_id("ctc"),
+                "call_id": tc.get("id") or _new_id("call"),
+                "name": host,
+                "input": js,
+                "status": "completed",
+            })
+            continue
         if name in custom_names:
             output.append({
                 "type": "custom_tool_call",
@@ -625,7 +686,8 @@ def build_responses_object(
 
 
 def accumulate_responses_object(
-    chunks: list[str], model: str, custom_names: set[str] | None = None
+    chunks: list[str], model: str, custom_names: set[str] | None = None,
+    known_names: set[str] | None = None,
 ) -> dict:
     """Collapse a full Ollama NDJSON stream into one Responses object."""
     text_parts: list[str] = []
@@ -650,6 +712,7 @@ def accumulate_responses_object(
         text="".join(text_parts),
         tool_calls=tool_calls,
         custom_names=custom_names,
+        known_names=known_names,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         done_reason=done_reason,
@@ -679,6 +742,7 @@ class ResponsesSSEState:
     # completed items, for the final response.completed payload
     emitted_tools: list[dict] = field(default_factory=list)
     custom_names: set[str] = field(default_factory=set)
+    known_names: set[str] = field(default_factory=set)
     input_tokens: int = 0
     output_tokens: int = 0
     finished: bool = False
@@ -797,12 +861,19 @@ def ollama_chunk_to_responses_events(
             call_id = tc.get("id") or _new_id("call")
             idx = state.next_output_index
             state.next_output_index += 1
-            if name in state.custom_names:
-                # This began life as a Responses `custom` tool. Codex expects a
+            redirect = redirect_nested_tool_call(
+                name, args, state.custom_names, state.known_names
+            )
+            if redirect or name in state.custom_names:
+                # This began life as a Responses `custom` tool (or is a nested
+                # tool of one that the model called directly). Codex expects a
                 # `custom_tool_call` carrying freeform text — NOT a
                 # `function_call` with JSON arguments — and a different event
                 # family. Unwrap our bridge parameter back to the raw string.
-                text = _unwrap_custom_input(args, name)
+                if redirect:
+                    name, text = redirect
+                else:
+                    text = _unwrap_custom_input(args, name)
                 item = {
                     "type": "custom_tool_call",
                     "id": item_id.replace("fc_", "ctc_", 1),
