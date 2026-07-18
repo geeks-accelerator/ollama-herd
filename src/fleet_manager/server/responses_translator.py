@@ -166,6 +166,22 @@ def _tools_to_openai(
     return converted or None
 
 
+# Item types we've already warned about, so an unknown type costs one log line
+# per process rather than one per turn.
+_LOGGED_UNKNOWN_ITEM_TYPES: set[str] = set()
+
+
+def _log_unknown_item_type_once(itype: str) -> None:
+    if itype in _LOGGED_UNKNOWN_ITEM_TYPES:
+        return
+    _LOGGED_UNKNOWN_ITEM_TYPES.add(itype)
+    logger.warning(
+        f"Responses: dropping unrecognised input item type {itype!r} — the "
+        f"model will not see it. If Codex behaviour looks broken around this "
+        f"item (e.g. approvals never prompting), this is the first thing to check."
+    )
+
+
 def responses_input_to_messages(
     input_value: Any, instructions: str | None = None
 ) -> list[dict]:
@@ -278,6 +294,15 @@ def responses_input_to_messages(
                 "role": role,
                 "content": _text_from_content(item.get("content", "")),
             })
+        elif itype:
+            # An input item we don't understand, with no role to fall back on —
+            # so it is dropped and the model never sees it.  Silent drops are
+            # how three separate tool bugs hid today, so make this one audible.
+            # Suspected relevance: Codex's approval flow. With approvals set to
+            # "on request" (the Desktop default) commands fail rather than
+            # prompting; if the round-trip involves an item type listed here,
+            # this is why (reported 2026-07-18).
+            _log_unknown_item_type_once(itype)
 
     return messages
 
