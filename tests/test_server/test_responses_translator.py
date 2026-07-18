@@ -328,8 +328,12 @@ def test_additional_tools_reach_the_model_and_are_not_a_message():
     }
     out = responses_to_openai_body(body)
     assert [t["function"]["name"] for t in out["tools"]] == ["wait"]
-    # 'developer' tool item must NOT leak in as a message
-    assert [m["role"] for m in out["messages"]] == ["user"]
+    # 'developer' tool item must NOT leak in as a message. (A `system` message
+    # carrying the turn-completion guidance is expected whenever tools exist.)
+    roles = [m["role"] for m in out["messages"]]
+    assert "developer" not in roles
+    assert roles == ["system", "user"]
+    assert "wait" not in out["messages"][0]["content"]
 
 
 def test_custom_tool_is_bridged_not_dropped():
@@ -349,9 +353,8 @@ def test_custom_tool_is_bridged_not_dropped():
     assert [t["function"]["name"] for t in out["tools"]] == ["exec", "wait"]
     assert out["_custom_tool_names"] == ["exec"]
     params = out["tools"][0]["function"]["parameters"]
-    assert params["properties"] == {
-        "input": {"type": "string", "description": "Raw source text for this tool."}
-    }
+    assert list(params["properties"]) == ["input"]
+    assert params["properties"]["input"]["type"] == "string"
     # the grammar hint must tell the model to send raw text, not JSON
     assert "no JSON" in out["tools"][0]["function"]["description"]
 
@@ -413,3 +416,146 @@ def test_genuinely_untranslatable_tools_still_warn(caplog):
         out = responses_to_openai_body(body)
     assert [t["function"]["name"] for t in out["tools"]] == ["wait"]
     assert "web_search" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Code-mode: JSON-instead-of-JavaScript repair
+# see docs/plans/codex-code-mode-escalation.md
+# ---------------------------------------------------------------------------
+
+
+def test_json_exec_payload_is_repaired_to_a_javascript_call():
+    """Codex's code-mode `exec` takes raw JS; its grammar (`/[\\s\\S]+/`)
+    constrains nothing, so a JSON object passes through and then fails as a JS
+    program — silently losing any escalation the model requested."""
+    from fleet_manager.server.responses_translator import _unwrap_custom_input
+
+    out = _unwrap_custom_input(
+        '{"input": "{\\"cmd\\": \\"git pull\\", '
+        '\\"sandbox_permissions\\": \\"require_escalated\\"}"}'
+    )
+    assert out.startswith("await tools.exec_command(")
+    assert "require_escalated" in out
+    assert "git pull" in out
+
+
+def test_single_key_exec_payload_repairs_instead_of_degrading():
+    """Regression: `{"cmd": "…"}` is a single key, so the len==1 fallback used
+    to unwrap it to the bare string `git pull` — not JavaScript either, but
+    plausible enough to fail unnoticed."""
+    from fleet_manager.server.responses_translator import _unwrap_custom_input
+
+    assert _unwrap_custom_input('{"cmd": "git pull"}') == (
+        'await tools.exec_command({"cmd": "git pull"})'
+    )
+
+
+def test_valid_javascript_passes_through_untouched():
+    """The critical regression — repair must never rewrite working source."""
+    from fleet_manager.server.responses_translator import _unwrap_custom_input
+
+    for src in (
+        'await tools.exec_command({cmd: "git pull"})',
+        "const r = await tools.exec_command({cmd: 'ls'}); return r;",
+    ):
+        assert _unwrap_custom_input(src) == src
+
+
+def test_bridge_unwrap_behaviour_is_unchanged():
+    from fleet_manager.server.responses_translator import _unwrap_custom_input
+
+    assert _unwrap_custom_input('{"input": "await tools.x()"}') == "await tools.x()"
+    assert _unwrap_custom_input("bare text") == "bare text"
+
+
+def test_json_object_without_cmd_is_left_alone():
+    from fleet_manager.server.responses_translator import _unwrap_custom_input
+
+    src = '{"foo": "bar", "baz": 1}'
+    assert _unwrap_custom_input(src) == src
+
+
+def test_unknown_sibling_keys_are_preserved():
+    """Which keys `exec_command` accepts is Codex's business, not ours."""
+    import json
+
+    from fleet_manager.server.responses_translator import _unwrap_custom_input
+
+    out = _unwrap_custom_input(
+        '{"cmd": "git pull", "justification": "needs network", '
+        '"prefix_rule": ["git", "pull"], "timeout_ms": 5000}'
+    )
+    inner = json.loads(out[len("await tools.exec_command(") : -1])
+    assert inner == {
+        "cmd": "git pull",
+        "justification": "needs network",
+        "prefix_rule": ["git", "pull"],
+        "timeout_ms": 5000,
+    }
+
+
+def test_repair_is_audible_once_per_tool(caplog):
+    import logging
+
+    from fleet_manager.server import responses_translator as rt
+
+    rt._LOGGED_JSON_CALL_REPAIRS.clear()
+    with caplog.at_level(logging.WARNING):
+        rt._unwrap_custom_input('{"cmd": "ls"}', "exec")
+        rt._unwrap_custom_input('{"cmd": "pwd"}', "exec")
+    assert caplog.text.count("instead of 'exec' source") == 1
+
+
+def test_grammar_tool_description_shows_the_call_shape():
+    """Telling the model 'no JSON' without showing the call shape is what
+    produced the JSON payloads in the first place."""
+    from fleet_manager.server.responses_translator import _tools_to_openai
+
+    out = _tools_to_openai([{
+        "type": "custom", "name": "exec", "description": "Run JS",
+        "format": {"type": "grammar", "syntax": "lark", "definition": "start: x"},
+    }])
+    fn = out[0]["function"]
+    assert "await tools.exec_command" in fn["description"]
+    assert "require_escalated" in fn["description"]
+    assert "not JSON" in fn["parameters"]["properties"]["input"]["description"]
+
+
+def test_turn_completion_guidance_is_always_present():
+    """Codex tells the model to send a preamble before tool calls; local models
+    often send the preamble and stop, which reads as 'turn complete'. The
+    counter-instruction goes in unconditionally — Lite requests carry no
+    `instructions` at all, so anything keyed on Codex's wording would skip the
+    exact path where this was observed."""
+    from fleet_manager.server.responses_translator import TURN_COMPLETION_GUIDANCE
+
+    tool = {"type": "function", "name": "wait", "parameters": {}}
+
+    # No instructions from the client (the Lite shape) — a system message is
+    # created to carry the guidance.
+    out = responses_to_openai_body(
+        {"model": "m", "tools": [tool], "input": [{"role": "user", "content": "go"}]}
+    )
+    assert out["messages"][0]["role"] == "system"
+    assert TURN_COMPLETION_GUIDANCE.strip() in out["messages"][0]["content"]
+
+    # Client instructions are extended, not replaced, and no second system
+    # message is introduced.
+    out = responses_to_openai_body({
+        "model": "m", "tools": [tool], "instructions": "You are Codex.",
+        "input": [{"role": "user", "content": "go"}],
+    })
+    assert out["messages"][0]["content"].startswith("You are Codex.")
+    assert TURN_COMPLETION_GUIDANCE.strip() in out["messages"][0]["content"]
+    assert [m["role"] for m in out["messages"]] == ["system", "user"]
+
+
+def test_no_tools_means_no_turn_guidance():
+    """A plain chat turn has no tool call to withhold — don't add noise."""
+    from fleet_manager.server.responses_translator import TURN_COMPLETION_GUIDANCE
+
+    out = responses_to_openai_body(
+        {"model": "m", "input": [{"role": "user", "content": "hi"}]}
+    )
+    joined = " ".join(m.get("content", "") for m in out["messages"])
+    assert TURN_COMPLETION_GUIDANCE.strip() not in joined

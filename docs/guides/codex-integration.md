@@ -136,6 +136,28 @@ grep 'Responses\[' ~/.fleet-manager/logs/herd.jsonl | tail -3
 #  tools=0                  -> genuinely no tools; check your provider config
 ```
 
+## If commands fail sandboxed instead of asking for approval
+
+With approvals set to **On request** (the Desktop default), a command needing
+network or write access should raise a prompt. If it just fails — and the model
+then invents a "sandbox security policy" to explain it — the cause is that
+**Codex approvals are model-initiated**. There is no approval message type in
+the protocol; the model has to ask, by setting `sandbox_permissions:
+"require_escalated"` plus a `justification` on the tool call itself.
+
+Local models do request escalation — but on the Desktop app's code-mode path
+they often express it as JSON when the tool requires raw JavaScript, which is a
+syntax error, so the request never reaches Codex. Herd repairs that shape
+automatically. If you still see it:
+
+```bash
+grep 'emitted a JSON object instead of' ~/.fleet-manager/logs/herd.jsonl
+#  present -> the repair fired; escalation should now reach Codex
+```
+
+Setting **Full Access** also makes the symptom disappear, but only by removing
+the need for the prompt — it is a workaround, not a fix.
+
 ## Common config mistake
 
 If you're appending to an existing `~/.codex/config.toml`, `model_provider = "herd"` **must go above the first `[table]` header**. TOML assigns a bare key to whatever table precedes it, so putting it at the bottom silently makes it `desktop.model_provider` — Codex never sees it, no error is raised, and it quietly keeps using the default provider.

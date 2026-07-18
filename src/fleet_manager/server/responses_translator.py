@@ -42,6 +42,27 @@ logger = logging.getLogger(__name__)
 # this string; the response side unwraps it back to a `custom_tool_call`.
 CUSTOM_TOOL_ARG = "input"
 
+# Codex instructs the model to "send a brief preamble to the user explaining what
+# you're about to do" before each tool call. Frontier models satisfy that by
+# emitting the preamble *and* the tool call in one response; local models often
+# emit the preamble and stop. A text-only response means "turn complete" in the
+# Responses protocol, so Codex renders the preamble and the run ends mid-task —
+# looking like the client hung when the model simply quit.
+#
+# Measured on qwen3-coder:30b against Codex's real captured tool schema, 15
+# trials each: 15/15 turns called a tool with no preamble instruction, 7/15 with
+# it, and 15/15 with this counter-instruction appended.
+#
+# Appended unconditionally rather than keyed on the preamble text: the Lite
+# requests (`sol`/`terra`/`luna`, the Desktop default — where this was actually
+# observed) carry no `instructions` at all, so any conditional keyed on Codex's
+# wording would skip the exact path that fails.
+TURN_COMPLETION_GUIDANCE = (
+    "\n\nIMPORTANT: a preamble is never a complete turn. If you describe an "
+    "action you are about to take, emit the tool call in the SAME response. "
+    "Never end your turn immediately after saying what you are about to do."
+)
+
 
 # ---------------------------------------------------------------------------
 # Request:  Responses  →  OpenAI-chat-shaped body (which Ollama accepts)
@@ -105,11 +126,25 @@ def _tools_to_openai(
             name = t.get("name", "")
             desc = t.get("description", "")
             fmt = t.get("format") or {}
+            arg_desc = "Raw source text for this tool."
             if fmt.get("type") == "grammar":
+                # Telling the model what NOT to emit isn't enough — it needs the
+                # call shape. Without an exemplar it emits `{"cmd": "…"}`, which
+                # is a SyntaxError as a JS program, so `tools.exec_command` is
+                # never called and any `sandbox_permissions` it set never
+                # reaches Codex as an approval request.
                 desc += (
                     f"\n\nProvide the raw {fmt.get('syntax', 'text')} source as the "
                     f"`{CUSTOM_TOOL_ARG}` argument — plain text only, no JSON "
-                    f"wrapper and no markdown code fences."
+                    f"wrapper and no markdown code fences. For example:\n"
+                    f'  await tools.exec_command({{cmd: "git pull"}})\n'
+                    f"To run a command the sandbox would otherwise block, add "
+                    f'`sandbox_permissions: "require_escalated"` and a '
+                    f"one-sentence `justification`."
+                )
+                arg_desc = (
+                    f"Raw {fmt.get('syntax', 'text')} source, e.g. "
+                    f'await tools.exec_command({{cmd: "git pull"}}) — not JSON.'
                 )
             custom_names.add(name)
             converted.append({"type": "function", "function": {
@@ -119,7 +154,7 @@ def _tools_to_openai(
                     "type": "object",
                     "properties": {CUSTOM_TOOL_ARG: {
                         "type": "string",
-                        "description": "Raw source text for this tool.",
+                        "description": arg_desc,
                     }},
                     "required": [CUSTOM_TOOL_ARG],
                 },
@@ -169,6 +204,7 @@ def _tools_to_openai(
 # Item types we've already warned about, so an unknown type costs one log line
 # per process rather than one per turn.
 _LOGGED_UNKNOWN_ITEM_TYPES: set[str] = set()
+_LOGGED_JSON_CALL_REPAIRS: set[str] = set()
 
 
 def _log_unknown_item_type_once(itype: str) -> None:
@@ -178,7 +214,7 @@ def _log_unknown_item_type_once(itype: str) -> None:
     logger.warning(
         f"Responses: dropping unrecognised input item type {itype!r} — the "
         f"model will not see it. If Codex behaviour looks broken around this "
-        f"item (e.g. approvals never prompting), this is the first thing to check."
+        f"item, this is the first thing to check."
     )
 
 
@@ -298,10 +334,17 @@ def responses_input_to_messages(
             # An input item we don't understand, with no role to fall back on —
             # so it is dropped and the model never sees it.  Silent drops are
             # how three separate tool bugs hid today, so make this one audible.
-            # Suspected relevance: Codex's approval flow. With approvals set to
-            # "on request" (the Desktop default) commands fail rather than
-            # prompting; if the round-trip involves an item type listed here,
-            # this is why (reported 2026-07-18).
+            #
+            # NOT the approval flow — that guess (commit d13c18d) was wrong.
+            # Approvals are model-initiated through tool *arguments*
+            # (`sandbox_permissions`); the Responses API has no approval item
+            # type at all, only `mcp_approval_request`/`_response` for remote
+            # MCP. See docs/plans/codex-code-mode-escalation.md.
+            #
+            # Still worth watching: `ResponseInputItemParam` has 32 members and
+            # we handle ~9, including first-class `shell_call` /
+            # `apply_patch_call` surfaces. No capture shows Codex 0.145 sending
+            # them, but the captures are all short and first-turn.
             _log_unknown_item_type_once(itype)
 
     return messages
@@ -329,6 +372,21 @@ def collect_tools_from_input(input_value: Any) -> list[dict]:
                 if isinstance(t, dict):
                     found.append(t)
     return found
+
+
+def _append_turn_completion_guidance(messages: list[dict]) -> None:
+    """Append the preamble counter-instruction to the system message in place.
+
+    Extends an existing system message rather than adding a second one, so the
+    message sequence a model sees is unchanged in shape.
+    """
+    for m in messages:
+        if m.get("role") == "system":
+            m["content"] = f"{m.get('content', '')}{TURN_COMPLETION_GUIDANCE}"
+            return
+    messages.insert(
+        0, {"role": "system", "content": TURN_COMPLETION_GUIDANCE.strip()}
+    )
 
 
 def responses_to_openai_body(body: dict) -> dict:
@@ -359,6 +417,9 @@ def responses_to_openai_body(body: dict) -> dict:
     out_custom = custom_names
     if tools:
         out["tools"] = tools
+        # Only meaningful when the model has something to call — a plain chat
+        # turn has no tool call to withhold, so the guidance would be noise.
+        _append_turn_completion_guidance(messages)
     if body.get("tool_choice") is not None:
         out["tool_choice"] = body["tool_choice"]
     if body.get("temperature") is not None:
@@ -410,22 +471,71 @@ def _normalize_tool_args(name: str, args: Any) -> str:
         return "{}"
 
 
-def _unwrap_custom_input(args: str) -> str:
+def _log_json_call_repair_once(name: str) -> None:
+    if name in _LOGGED_JSON_CALL_REPAIRS:
+        return
+    _LOGGED_JSON_CALL_REPAIRS.add(name)
+    logger.warning(
+        f"Responses: model emitted a JSON object instead of {name!r} source — "
+        f"rewriting it as an `await tools.exec_command({{…}})` call. Codex's "
+        f"code-mode tool takes raw JavaScript, so the JSON form is a "
+        f"SyntaxError and any escalation it requested would be lost."
+    )
+
+
+def _repair_if_json_exec(text: str, name: str) -> str:
+    """A JSON ``exec_command`` payload → the JavaScript call Codex expects.
+
+    Codex's code-mode `exec` tool takes *raw JavaScript* ("not JSON, quoted
+    strings, or markdown code fences") and its Lark grammar — ``SOURCE:
+    /[\\s\\S]+/`` — constrains nothing, so a JSON object sails through and then
+    fails as a JS program. Local models emit that form often enough to matter,
+    and the cost is silent: `tools.exec_command` is never invoked, so a
+    ``sandbox_permissions: "require_escalated"`` the model *did* set never
+    becomes an approval request and the user just sees a sandbox failure.
+
+    Sibling keys are preserved verbatim rather than allow-listed — which keys
+    `exec_command` accepts is Codex's business, not ours. Anything that isn't a
+    JSON object with a ``cmd`` key is returned untouched, so valid JavaScript
+    never round-trips through here.
+    """
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return text
+    if not isinstance(parsed, dict) or "cmd" not in parsed:
+        return text
+    _log_json_call_repair_once(name)
+    # `cmd` is a string in Codex's schema ("Shell command to execute.") — pass
+    # it through as-is. `prefix_rule` is the array-typed field, not this one.
+    return f"await tools.exec_command({json.dumps(parsed)})"
+
+
+def _unwrap_custom_input(args: str, name: str = "exec") -> str:
     """Recover a custom tool's freeform text from our bridge parameter.
 
     The model was handed a one-string-property function, so it returns
     ``{"input": "<text>"}``. Codex wants just ``<text>``. Falls back to the raw
     string if the model ignored the schema and emitted bare text.
+
+    Whichever path produced the text, it gets one repair pass — the model may
+    put a JSON payload *inside* the bridge parameter (the common case) or skip
+    the parameter and emit the payload as the whole argument object.
     """
     try:
         parsed = json.loads(args)
     except (json.JSONDecodeError, TypeError):
-        return args
+        return _repair_if_json_exec(args, name)
     if isinstance(parsed, dict):
         if CUSTOM_TOOL_ARG in parsed:
-            return str(parsed[CUSTOM_TOOL_ARG])
+            return _repair_if_json_exec(str(parsed[CUSTOM_TOOL_ARG]), name)
+        # Ahead of the single-key fallback: `{"cmd": "git pull"}` is one key, and
+        # unwrapping it would yield the bare string `git pull` — not JavaScript
+        # either, but plausible enough to fail unnoticed.
+        if "cmd" in parsed:
+            return _repair_if_json_exec(args, name)
         if len(parsed) == 1:
-            return str(next(iter(parsed.values())))
+            return _repair_if_json_exec(str(next(iter(parsed.values()))), name)
     return args
 
 
@@ -486,7 +596,7 @@ def build_responses_object(
                 "id": _new_id("ctc"),
                 "call_id": tc.get("id") or _new_id("call"),
                 "name": name,
-                "input": _unwrap_custom_input(args),
+                "input": _unwrap_custom_input(args, name),
                 "status": "completed",
             })
             continue
@@ -692,7 +802,7 @@ def ollama_chunk_to_responses_events(
                 # `custom_tool_call` carrying freeform text — NOT a
                 # `function_call` with JSON arguments — and a different event
                 # family. Unwrap our bridge parameter back to the raw string.
-                text = _unwrap_custom_input(args)
+                text = _unwrap_custom_input(args, name)
                 item = {
                     "type": "custom_tool_call",
                     "id": item_id.replace("fc_", "ctc_", 1),
