@@ -2,7 +2,7 @@
 
 Point [OpenAI Codex](https://github.com/openai/codex) at your own hardware — inference runs on your fleet, and Herd routes each request to the best node and model you have loaded.
 
-> **Scope today: this is a working *chat* integration, not an agentic one.** Conversation, streaming and multi-turn all work against local models. **Codex's tool-driven coding does not** — its primary tool is a `custom`-type `exec` (JavaScript "code mode") that function-calling can't express, so it never reaches the model. Details and the failure mode to watch for are in [Limitations](#limitations-v1). Verified against a real `codex-cli 0.145.0-alpha.18`, 2026-07-18.
+> **Agentic coding works** — verified 2026-07-18 against a real `codex-cli 0.145.0-alpha.18`: Codex ran `pytest`, read the source, wrote a correct fix with `apply_patch`, and re-ran the tests green, entirely on local models. **One required setting:** pick a model name that is *not* a `sol`/`terra`/`luna` slug (see [Model name matters](#model-name-matters-a-codex-bug)).
 
 ## Quick start
 
@@ -97,9 +97,22 @@ Smaller / non-coding-tuned models tend to drop tool calls or hallucinate argumen
 
 - **MLX-backed models aren't served here yet.** Auto-routing skips `mlx:` models for Codex, so you'll get an Ollama-backed model automatically. An explicit `mlx:` mapping returns a clear `503`. (Claude Code's `/v1/messages` endpoint *does* serve MLX.)
 - **Stateful chaining isn't supported.** Herd doesn't persist responses, so `previous_response_id` is rejected with a `400`. Codex's default stateless mode — resending the conversation each turn — is what's supported.
-- **Agentic coding does not work yet — Codex against Herd is a chat integration.** Codex's main tool is a `custom`-type `exec` that runs JavaScript to orchestrate calls ("code mode"), which OpenAI/Ollama function-calling cannot express, so it never reaches the model. Only `function`-type tools survive translation. **Watch for this failure mode:** with no usable tools the model may *narrate* edits it never made ("fixed it, tests pass") — verify before believing. We log a WARNING listing every dropped tool.
+- **Local models need more explicit steering than frontier models.** A vague "fix the bug" prompt made qwen3-coder:30b explore until it ran out of budget; adding *"use the apply_patch command to edit the file"* made it converge. Expect higher token counts too — a one-line fix cost ~109K tokens end-to-end.
 - **Hosted tools are dropped.** `web_search` / `file_search` / MCP items have no local equivalent.
 - **Codex's model picker may not populate.** Codex's model manager decodes `/v1/models` against its own undocumented schema (not the OpenAI one) and logs `failed to refresh available models: ... missing field ...` on each refresh. We emit the fields it asked for as far as we could reverse-engineer them against codex-cli 0.145-alpha; the schema keeps demanding more. **This is cosmetic — inference is unaffected** and every turn routes normally. Specify the model with `-m` or `model_provider` config rather than the picker.
+
+## Model name matters (a Codex bug)
+
+Codex hides its entire tool catalogue from any model whose slug it treats as "Responses-Lite" — the `sol` / `terra` / `luna` families. For those, tools are moved into an `additional_tools` input item and the top-level `tools` array is omitted, so **the model gets nothing callable and will narrate work it never did.** This is [openai/codex#31894](https://github.com/openai/codex/issues/31894) and reproduces against OpenAI's own hosted models — it is not specific to local models or to Herd.
+
+**Use any non-Lite model name** and Codex sends a normal tool array:
+
+```bash
+codex exec -m qwen3-coder:30b "..."     # 12 tools — works
+codex exec -m gpt-5.6-sol    "..."      # 2 tools  — model can't act
+```
+
+Because Herd auto-routes, the name you give Codex doesn't have to be the model that serves it — any non-Lite name still lands on your best loaded local model.
 
 ## Common config mistake
 
@@ -121,7 +134,7 @@ model_provider = "herd"     # ← first line, before ANY [section]
 
 **Codex errors about the wire protocol** — confirm `wire_api = "responses"` in `~/.codex/config.toml`. `wire_api = "chat"` was removed from Codex in Feb 2026.
 
-**Codex narrates actions instead of performing them** ("I fixed the bug, tests pass" — but nothing changed). This is the known agentic gap, *not* a model-quality problem: Codex's `exec` tool can't be translated, so the model has nothing to call and improvises. Check the herd log for `dropped N untranslatable tool(s)`. Don't trust reported edits without verifying the files.
+**Codex narrates actions instead of performing them** ("I fixed the bug, tests pass" — but nothing changed). Almost always the Lite-slug bug above: check the herd log for `tools=0` or `tools=2`. If it says `tools=12`, tools are reaching the model and the issue is steering — be explicit ("use the apply_patch command"). Either way, verify the files before trusting a success report.
 
 ## See also
 

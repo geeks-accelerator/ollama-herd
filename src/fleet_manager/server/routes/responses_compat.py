@@ -135,7 +135,10 @@ async def responses(request: Request):
 
     logger.info(
         f"Responses[{rid}] request: model={requested_model} → {local_model} "
-        f"stream={stream} tools={len(openai_body.get('tools') or [])} "
+        f"stream={stream} tools={len(openai_body.get('tools') or [])}"
+        + (f"{[t['function']['name'] for t in openai_body['tools']]} "
+           if openai_body.get("tools") else " ")
+        + 
         f"msgs={len(openai_body['messages'])} from={client_host or '?'}"
         + (f" tags={tags}" if tags else "")
     )
