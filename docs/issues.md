@@ -889,6 +889,26 @@ Open questions the design has to answer:
 - **Interaction with `OLLAMA_NUM_PARALLEL`.** Ollama has its own admission limit (currently 4 on this fleet). Herd handing 8 workers to a backend that runs 4 means the extra just queue inside Ollama, where herd cannot see or reorder them. The two limits should be reconciled, and the node already reports its cap in the heartbeat.
 - **Multi-model contention is the actual case.** The glm collapse was caused by *other models'* traffic, so a per-queue cap alone does not solve it. A node-level bandwidth budget shared across queues is the more correct model, and considerably more invasive.
 
+### Controlled sweep (2026-07-19, glm-4.7-flash, idle fleet, ~1.5K prompt, 300 tok out)
+
+| N | per-stream tok/s | aggregate tok/s |
+|---|---|---|
+| 1 | 74.7 | 63.0 |
+| 2 | 56.4 | 91.6 |
+| 3 | 43.7 | 125.8 |
+| **4** | 35.5 | **137.5** |
+| 6 | 42.6 | 127.8 |
+| 8 | 35.3 | 137.8 |
+
+**Aggregate saturates at N=4 and never improves.** Per-stream halves from 1→4. So slots 5-8 buy *nothing* in throughput and cost latency — herd's current ceiling of 8 is strictly worse than 4 on this hardware, under any policy.
+
+**But the plateau is almost certainly not the bandwidth knee — it is `OLLAMA_NUM_PARALLEL=4`.** Ollama admits 4; requests 5-8 queue *inside* Ollama where herd cannot see, reorder or reject them. That fully explains why N=6 and N=8 match N=4 aggregate, and it makes the N=6 per-stream reading (42.6, higher than N=4's 35.5) measurement noise from uneven queue draining rather than signal.
+
+Two consequences:
+
+1. **The cheapest correct fix is not a bandwidth model at all** — it is to stop handing a backend more concurrent work than it will admit. The node already reports its cap in the heartbeat (`OllamaMetrics.max_loaded_models` exists; `num_parallel` should join it), and `hot_model_cap_for(node)` is the established pattern for consuming such a value. Capping queue concurrency at the backend's own parallelism converts invisible in-Ollama queueing into visible herd queueing, which is schedulable.
+2. **The real bandwidth knee is still unmeasured.** Finding it requires sweeping `OLLAMA_NUM_PARALLEL` itself (1, 2, 4, 8) with an Ollama restart per step, and repeating per model class. Until then, any bandwidth formula would be fitted to a curve that is really an admission limit.
+
 ### Do not start by writing code
 
 Start by reproducing the curve deliberately: drive N concurrent streams at fixed N against one model on an idle fleet, record per-request and aggregate tok/s, and find the knee. The numbers above are observational — gathered from production traffic that happened to vary — not a controlled sweep. A controlled sweep is what tells you whether the knee is at 2, 3, or 4, and whether it moves with model size.
