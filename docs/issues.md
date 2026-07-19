@@ -909,6 +909,44 @@ Two consequences:
 1. **The cheapest correct fix is not a bandwidth model at all** — it is to stop handing a backend more concurrent work than it will admit. The node already reports its cap in the heartbeat (`OllamaMetrics.max_loaded_models` exists; `num_parallel` should join it), and `hot_model_cap_for(node)` is the established pattern for consuming such a value. Capping queue concurrency at the backend's own parallelism converts invisible in-Ollama queueing into visible herd queueing, which is schedulable.
 2. **The real bandwidth knee is still unmeasured.** Finding it requires sweeping `OLLAMA_NUM_PARALLEL` itself (1, 2, 4, 8) with an Ollama restart per step, and repeating per model class. Until then, any bandwidth formula would be fitted to a curve that is really an admission limit.
 
+### Research findings (2026-07-19) — and they argue against leading with a cap
+
+**MoE batching does not amortise like dense, which is the whole story.** Dense decode reads the weight set once per step regardless of batch, so batching is near-free throughput. With top-k-of-N routing, batching B streams activates the *union* of their experts — expected unique experts `N·(1-(1-k/N)^B)` — so weight bytes grow with B. A two-term model (dense bytes once + expert bytes by that fan-out) fitted on **only** our B=2 point predicted B=4 within **3.8%** (219 predicted vs 211 observed). A dense 30B would have gone 107→214→428; we got 211. Roughly half the dense benefit, and the tax is expert fan-out.
+
+**Decode across llama.cpp slots IS genuinely batched.** Our own aggregate rising 107→160→211 proves it behaviourally — pure interleaving would have stayed flat at ~107. So concurrency is a real throughput win here, just a sharply diminishing one. (Source-level confirmation of a single `llama_decode` over a multi-slot batch: unverified.)
+
+**Apple Silicon offers no hardware lever.** Verified from the macOS SDK headers: `MTLCommandQueue` exposes only `label` and `device`; the sole `priority` in Metal is `MTLIOPriority` on *asset-loading* queues. No MPS/MIG equivalent, no GPU compute QoS. Any budget must be enforced by admission control above the runtime — which makes the router the only possible enforcement point.
+
+**A node-level bandwidth budget across model queues is novel in LLM serving, but has strong precedent in datacenter QoS.** Checked Clockwork, AlpaServe, MuxServe, Prism, ServerlessLLM, Salus — all budget capacity and/or compute time; none budget bandwidth. MuxServe is closest and partitions SMs, after measuring that decode latency is flat from 30%→100% SM allocation (i.e. it detects decode is bandwidth-bound, then budgets the resource that isn't the bottleneck). The template to copy is **Heracles** (ISCA'15), which had the same problem for DRAM — no hardware mechanism existed, so it measured aggregate bandwidth and throttled the co-runner's *concurrency*. That validates concurrency as the actuator even when bandwidth is the resource.
+
+### The metric: TPOT, validated on our own traces
+
+```
+TPOT = (latency_ms - time_to_first_token_ms) / (completion_tokens - 1)
+```
+
+TTFT absorbs queue wait and prefill; the remainder is near-pure decode, so TPOT degrades if and only if decode is genuinely contended. Every column already exists. Measured across 10,686 completed traces, bucketed by node-wide overlapping requests:
+
+| node-wide concurrency | n | median TPOT | implied tok/s |
+|---|---|---|---|
+| 1–2 | 4,330 | 19.6 ms | 51.1 |
+| 3–5 | 4,483 | 31.0 ms | 32.2 |
+| 6–10 | 1,625 | 44.8 ms | 22.3 |
+| 11–25 | 234 | 36.3 ms | 27.6 |
+| 26+ | 14 | 87.3 ms | 11.5 |
+
+Monotonic apart from the 11–25 bucket (n=234 against 1,625 — likely sampling, not signal). **Control against p99 TPOT, not a memory number.**
+
+### Counter-evidence: capping is probably not the highest-value lever
+
+Three lines of published work address the same latency degradation *without* sacrificing throughput, and they should be evaluated before a cap ships:
+
+- **Prefill stalls, not decode batching** — Sarathi-Serve (OSDI'24) attributes much of the damage to prefill iterations interrupting ongoing decodes, and fixes it with chunked prefill: 2.6× capacity for Mistral-7B on 1×A100 under tail-latency constraints. **Cheap diagnostic for us:** check whether inter-token latency spikes coincide with *new request arrivals* (long prompts landing mid-generation) rather than with steady queue depth. Must be measured per-backend — llama.cpp and `mlx_lm.server` schedule differently.
+- **Head-of-line blocking** — FCFS is the default everywhere and causes HOL blocking; SJF-approximating schedulers recover latency at *zero* throughput cost (NeurIPS'24 learning-to-rank shows relative rank is predictable even though exact output length isn't). **Reordering costs nothing; capping costs throughput by construction.**
+- **Fit the USL before picking a number** — `X(N) = γN / (1 + α(N−1) + βN(N−1))`, `N_max = √((1−α)/β)`. Fitting α (contention) and β (coherency) to fleet data gives a *derived* cap and, more importantly, distinguishes a plateau (α-dominated: a cap trades throughput for latency) from genuinely retrograde throughput (β>0: a cap recovers both). Our sweep plateaus rather than going retrograde — which weakens the case for capping as a throughput measure.
+
+The strongest pro-capping number in the literature is Clockwork's (OSDI'20): concurrency bought ≤25% throughput while inflating tail latency **100×**, and its whole design is "execute one request at a time." Worth citing for the *mechanism* — but it is 2020-era fixed-shape DNN inference with no KV cache, and transferring the magnitude to autoregressive decode would be folklore.
+
 ### Do not start by writing code
 
 Start by reproducing the curve deliberately: drive N concurrent streams at fixed N against one model on an idle fleet, record per-request and aggregate tok/s, and find the knee. The numbers above are observational — gathered from production traffic that happened to vary — not a controlled sweep. A controlled sweep is what tells you whether the knee is at 2, 3, or 4, and whether it moves with model size.
