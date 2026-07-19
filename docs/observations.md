@@ -757,3 +757,26 @@ Codex needed two rewrites shipped the same day before it could edit a file: a to
 **Insight**: the difference isn't model capability — it's the same model on both sides. It's **protocol surface area**. Anthropic's Messages API has one way to call a tool: a `tool_use` block with a JSON schema. Codex's Responses surface has a `custom`-typed tool carrying grammar-constrained freeform JavaScript, a nested tool namespace reachable only from inside that JavaScript, a patch utility that is a PATH binary rather than a tool, and a preamble convention that interacts badly with "text-only response means turn complete". Every one of those is a place where a local model can be *locally reasonable* and *globally wrong* — and every Codex bug found today lived in exactly that gap, not in the model.
 
 Practical consequence for the shim: when a client offers several ways to express one intent, the least-structured one is where local models fail, and it is the shim's job to normalise them. Corollary for evaluation: **testing two clients against the same model isolates protocol cost from model cost.** That comparison was more informative than any single-client benchmark run today, and it is cheap — same task, same model, two endpoints.
+
+---
+
+## 2026-07-19 — The install test only tells you anything on a machine that has never installed
+
+**Evidence**: 0.9.0 shipped to PyPI, GitHub, and the Homebrew tap. The formula bump was verified the careful way — `brew uninstall` then `brew install` from the edited formula, plus an import check inside the produced virtualenv, plus `herd --help`. All green, and the release was reported complete.
+
+Then step 15 ran the *fresh-user* path — `uninstall` + **`untap`** + `tap` + `install` — and it failed immediately:
+
+```
+Error: Refusing to load formula geeks-accelerator/ollama-herd/ollama-herd
+       from untrusted tap geeks-accelerator/ollama-herd.
+```
+
+Homebrew 6.x requires `brew trust` for third-party taps. Neither README mentioned it. Every new user following the documented instructions would install nothing.
+
+**Why the earlier test passed**: this machine's tap predated the trust gate, so the trust was already recorded locally. `brew install` therefore worked, the formula looked healthy, and *every* signal available without untapping said the release was fine. The trust record is invisible state living outside both the formula and the repo.
+
+**Insight**: a verification step that runs on the machine that did the work is measuring that machine, not the artifact. The `untap` in step 15 exists precisely to destroy the accumulated local state — trust records, caches, a previously-resolved dependency graph — that makes a broken distribution look healthy. It had previously been treated as a formality; it is the entire point of the step, and it is what separates "the formula parses and installs *here*" from "a stranger can install this."
+
+Generalises past Homebrew to every distribution surface with per-machine state: a Docker layer cache, a warm `~/.m2`, an npm lockfile resolved against a registry mirror, a pip cache holding a wheel the index no longer serves. The release gate has to run somewhere that has never seen the project — or must actively delete the state that would let it cheat. Related, and the same lesson one layer up: [2026-04-25 — A bumped Homebrew tap is *described*, not *tested*](#2026-04-25--a-bumped-homebrew-tap-is-described-not-tested).
+
+**Also corrected**: the checklist's "~5 min" install estimate. Homebrew runs `pip --no-binary :all:`, so all 39 resources build from source including a Rust compile of `pydantic-core` — the real figure is **~25 minutes**. An operator budgeting 5 would kill it and conclude the formula had hung, which is its own false failure.

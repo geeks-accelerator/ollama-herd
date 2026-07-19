@@ -187,7 +187,7 @@ Cheap insurance against squatting the moment we announce; independent of full co
 ## Gotchas & mechanics
 
 - **PyPI can't rename** — new name + deprecate old; download history splits. Plan the alias so `pip install ollama-herd` doesn't dead-end mid-window.
-- **Homebrew tap is a separate repo** — its own commit + the non-negotiable end-to-end install test (uninstall + untap + retap + install + import).
+- **Homebrew tap is a separate repo** — its own commit + the non-negotiable end-to-end install test (uninstall + untap + retap + **trust** + install + import). The `brew trust` step is required on Homebrew 6.x for any third-party tap; without it a fresh install stops at "untrusted tap". A renamed tap starts untrusted even if the old one was trusted.
 - **SEO reset is partial, not total** — we keep `herd`, so herd-based recognition survives. Mitigate the rest with the GitHub redirect, PyPI alias, dated announcement, and "formerly ollama-herd" in the README for a few releases.
 - **Skills reference the old name** — the 37 ClawHub skills need a sweep: `grep -rn "ollama-herd" skills/` (mirror the existing `grep -rn "1077 tests"` maintenance pattern).
 - **Don't silently cut over** — a quiet rename reads as a *different, abandoned* project. Announce it, date it, cross-link old↔new.

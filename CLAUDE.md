@@ -74,8 +74,8 @@ EOF
     brew uninstall ollama-herd  # if previously installed
     brew untap geeks-accelerator/ollama-herd  # forces a fresh tap clone
     brew tap geeks-accelerator/ollama-herd
-    brew install ollama-herd  # ~5 min for a Python-virtualenv formula
-    brew trust geeks-accelerator/ollama-herd   # Homebrew 6.x gate — REQUIRED after a fresh tap
+    brew trust geeks-accelerator/ollama-herd  # Homebrew 6.x gate — REQUIRED after a fresh tap,
+                                              # or install stops at "untrusted tap" and does nothing
     brew install ollama-herd  # ~25 min: every dep builds from source, incl. a Rust pydantic-core
     /opt/homebrew/Cellar/ollama-herd/X.Y.Z/libexec/bin/python -c "import fleet_manager; from fleet_manager.server.app import create_app; print('ok')"
     /opt/homebrew/bin/herd --help
