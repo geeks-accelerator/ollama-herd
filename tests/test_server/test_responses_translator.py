@@ -733,3 +733,28 @@ def test_text_only_messages_carry_no_images_key():
 
     msgs = responses_input_to_messages([{"role": "user", "content": "hi"}])
     assert "images" not in msgs[0]
+
+
+def test_abandoned_preamble_detection():
+    """A turn that announces an action then ends without taking it. Measured at
+    ~3% on qwen3-coder:30b with the real Codex instructions — flat across history
+    depth 0-8 (31/32 acted in every condition), so it is stochastic, not a
+    depth effect. Invisible server-side otherwise: the request *succeeded*."""
+    from fleet_manager.server.responses_translator import looks_like_abandoned_preamble
+
+    # The real observed stall.
+    assert looks_like_abandoned_preamble(
+        "Now I understand the issue. Let me run pytest first to confirm the "
+        "tests fail, then fix the function.", 0, 12)
+    assert looks_like_abandoned_preamble("Let me check the docs directory:", 0, 3)
+    assert looks_like_abandoned_preamble("I'll run the tests now.", 0, 12)
+
+    # A tool WAS called — the preamble did its job.
+    assert not looks_like_abandoned_preamble("Let me check:", 1, 12)
+    # No tools offered — a plain chat turn has nothing to abandon.
+    assert not looks_like_abandoned_preamble("Let me explain:", 0, 0)
+    # A genuine final report: long, and not an announcement.
+    assert not looks_like_abandoned_preamble(
+        "Fixed apply_discount to compute price * (1 - pct/100). Both tests pass "
+        "now, and I added a guard for an empty sequence while I was there.", 0, 12)
+    assert not looks_like_abandoned_preamble("", 0, 12)

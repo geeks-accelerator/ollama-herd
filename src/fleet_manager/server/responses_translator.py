@@ -433,6 +433,40 @@ def collect_tools_from_input(input_value: Any) -> list[dict]:
     return found
 
 
+_PREAMBLE_TAILS = (":", "…", "...")
+_PREAMBLE_OPENERS = (
+    "let me", "let's", "lets ", "i'll", "i will", "now i", "next, i",
+    "first, ", "now let", "i'm going to", "i am going to",
+)
+
+
+def looks_like_abandoned_preamble(text: str, tool_calls: int, tools_offered: int) -> bool:
+    """True when a turn announced an action and then ended without taking it.
+
+    Codex instructs the model to "send a brief preamble … before making tool
+    calls". Frontier models emit the preamble *and* the call together; local
+    models sometimes emit only the preamble, and a text-only response means
+    "turn complete" in the Responses protocol — so the agentic loop ends
+    mid-task and the client looks hung.
+
+    Measured on qwen3-coder:30b with the real 21KB Codex instructions and tool
+    schema: ~3% of turns, flat across history depth 0-8 and across the number of
+    prior text-only turns (31/32 acted in every condition). Rare, stochastic, and
+    invisible server-side without this check — the request *succeeded*.
+
+    Deliberately narrow: only fires when tools were available to call, none were
+    called, and the text both is short and reads as an announcement rather than a
+    report. A genuine final answer is longer and doesn't end on a colon.
+    """
+    if tools_offered <= 0 or tool_calls > 0:
+        return False
+    stripped = (text or "").strip()
+    if not stripped or len(stripped) > 400:
+        return False
+    lowered = stripped.lower()
+    return stripped.endswith(_PREAMBLE_TAILS) or lowered.startswith(_PREAMBLE_OPENERS)
+
+
 def _append_turn_completion_guidance(messages: list[dict]) -> None:
     """Append the preamble counter-instruction to the system message in place.
 

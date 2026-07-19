@@ -32,6 +32,7 @@ from fleet_manager.server.responses_translator import (
     ResponsesSSEState,
     accumulate_responses_object,
     input_has_images,
+    looks_like_abandoned_preamble,
     ollama_chunk_to_responses_events,
     responses_to_openai_body,
 )
@@ -273,6 +274,18 @@ async def responses(request: Request):
                     f"out_tok={state.output_tokens} "
                     f"elapsed_ms={(time.time() - t_start) * 1000:.0f}"
                 )
+                if looks_like_abandoned_preamble(
+                    "".join(state.text_parts), len(state.emitted_tools),
+                    len(openai_body.get("tools") or []),
+                ):
+                    # The turn succeeded by every server-side measure; it is the
+                    # agentic loop that ended early. Nothing else surfaces this.
+                    logger.warning(
+                        f"Responses[{rid}] ABANDONED PREAMBLE: the model announced "
+                        f"an action and ended the turn without calling a tool, so "
+                        f"Codex will stop here. Text: "
+                        f"{''.join(state.text_parts).strip()[:120]!r}"
+                    )
 
         return StreamingResponse(
             _sse_generator(), media_type="text/event-stream", headers=headers,
@@ -300,6 +313,23 @@ async def responses(request: Request):
         chunks, model=actual_model, custom_names=custom_tool_names,
         known_names=known_tool_names
     )
+    _text = "".join(
+        c.get("text", "")
+        for o in (response.get("output") or []) if o.get("type") == "message"
+        for c in (o.get("content") or [])
+    )
+    _calls = sum(
+        1 for o in (response.get("output") or [])
+        if o.get("type") in ("function_call", "custom_tool_call")
+    )
+    if looks_like_abandoned_preamble(
+        _text, _calls, len(openai_body.get("tools") or [])
+    ):
+        logger.warning(
+            f"Responses[{rid}] ABANDONED PREAMBLE: the model announced an action "
+            f"and ended the turn without calling a tool, so Codex will stop here. "
+            f"Text: {_text.strip()[:120]!r}"
+        )
     usage = response.get("usage") or {}
     logger.info(
         f"Responses[{rid}] done: node={winner.node_id} "
