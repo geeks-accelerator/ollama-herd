@@ -5,9 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status:** the latest release on PyPI and git tags is **`0.7.0`**. Everything below it — `0.9.0` and the `0.8.x` milestones it supersedes — is developed and soaked on the local fleet but **not yet published**, and will ship together as **`0.9.0`**. The dated `0.8.x` headers mark when each milestone was cut on `main`, not a PyPI release.
+> **Release status:** `0.9.0` is the current release on PyPI and git tags. It is the first release since **`0.7.0`** — the `0.8.x` milestones below were never published separately and ship inside it. Those dated `0.8.x` headers mark when each milestone was cut on `main`, not a PyPI release.
 
-## [0.9.0] - Unreleased
+## [Unreleased]
+
+## [0.9.0] - 2026-07-19
 
 **The first release since `0.7.0`, and it contains breaking changes.** Nothing between `0.7.0` and this was ever published, so upgrading from `0.7.0` lands **all** of `0.8.0`, `0.8.1`, and `0.8.2` at once — see those sections below for the full detail. This section is the upgrade guide: what breaks, and what's new enough to matter.
 
@@ -25,6 +27,15 @@ Versioned `0.9.0` rather than `0.8.2` deliberately: a `0.7.0 → 0.8.2` jump rea
 
 ### Headline features
 
+- **OpenAI Codex support — a native Responses API at `/v1/responses`.** Codex removed Chat Completions in Feb 2026 (`wire_api = "chat"` is gone), so this is the only endpoint current Codex can speak. Agentic coding is **verified end-to-end** against a real `codex-cli 0.145.0-alpha.18`: it ran pytest, read sources, created a module from scratch, patched files via `apply_patch`, and reached green on its own. Zero configuration — a `gpt-5-codex`/`gpt-5.6-sol` id auto-routes to the best coding model you have loaded, the same resolver Claude Code uses. See `docs/guides/codex-integration.md`.
+
+  Getting there meant bridging a gap that only appears with local models: **Codex's tool *descriptions* document an API its tool *schema* doesn't expose**, and local models call what the prose names. Herd now normalises three cases automatically, each logged at WARNING:
+  - Tools hidden inside an `additional_tools` input item (the `sol`/`terra`/`luna` "Responses-Lite" slugs, including the ChatGPT Desktop default) are extracted, and the grammar-constrained `custom` `exec` tool is bridged to something Ollama function-calling can express. Without this the model has nothing callable and rationalises the failure — [openai/codex#31894](https://github.com/openai/codex/issues/31894).
+  - A top-level `exec_command` call — a *nested* tool only reachable from inside code-mode JavaScript — is rewritten as a `custom_tool_call` on its host tool. Passing it through makes Codex stop with no error displayed.
+  - An `apply_patch` **tool** call is rewritten as an `exec_command` heredoc. `apply_patch` is a binary Codex injects on the sandbox PATH, not a tool; calling it as one returns `unsupported call: apply_patch`, and the session can then read and execute but never write.
+
+- **Images route to a model that can see them, on every endpoint.** An image-bearing request auto-selects a vision-capable model even when the conversation's model is a code-tuned one, and image content now reaches Ollama as its `images` list instead of being silently dropped in translation. A dropped image is worse than a dropped tool call: it produces a fluent, specific, wrong answer while every server-side metric reports success.
+
 - **Distributed MLX inference** — run one model across multiple Macs via `mlx.launch` (`ring` over LAN today; `jaccl`/Thunderbolt 5 targeted). The herd sees one endpoint whether one Mac or four are behind it.
 - **Fleet control API** — `GET /fleet/limits`, `POST /fleet/pin` (with `wait` for readiness), `DELETE /fleet/pin/{model}`.
 - **`mlx:` models reachable over the OpenAI endpoint**, not just Anthropic — OpenAI-only clients get the fast backend instead of a slow fallback.
@@ -34,6 +45,10 @@ Versioned `0.9.0` rather than `0.8.2` deliberately: a `0.7.0 → 0.8.2` jump rea
 
 ### Notable fixes
 
+- **`finish_reason` is recorded on every trace**, so a turn that ends mid-task is distinguishable from one that exhausted its token budget without eyeballing `completion_tokens`.
+- **A `num_ctx` override that cannot apply now says so, once, instead of logging like it worked.** `FLEET_NUM_CTX_OVERRIDES` sets the context a *cold* load comes up with; it cannot shrink a resident model without forcing an unload/reload. Previously it logged an "injected" line and a "stripped" line per request — 393 pairs in nine hours — which read as a working feature doing nothing.
+- **OpenAI function calling was dropped in both directions** on `/v1/chat/completions`; tool calls now survive the round trip.
+- **`/v1/models` emits the schema Codex actually decodes.** Codex validates against its own undocumented, strictly-typed schema and fails the *whole* decode on the first problem — `visibility: "public"` alone (not in its `list`/`hide`/`none` enum) emptied the model picker, which pushes ChatGPT Desktop onto its Lite slugs. `supports_vision` is now reported per model rather than hardcoded `false`. The field set is not converged; see `docs/issues.md`.
 - **Image requests are never answered by a blind model** (the 2026-04-23 incident class — see below).
 - **Failed-request traces no longer vanish**, so the dashboard's success rate stops hiding failures.
 - **Model sizes come from Ollama's real `/api/tags` data** instead of being guessed from the name — the guess called a 290 GB model "10 GB" and defeated the memory gate.
