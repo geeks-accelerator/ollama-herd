@@ -797,35 +797,98 @@ requiring another debugging round.
 
 ---
 
-## OPEN — `glm-4.7-flash` decodes at ~7 tok/s under load, then pile-up drives requests to failure
+## RESOLVED (not a bug) — `glm-4.7-flash` slowness is contention, not the model or its context
 
-**Severity:** Medium — one model unusable for its caller; no impact on other models or on routing
-**Found:** 2026-07-19 during a post-release soak review
-**Not** the fixed `glm4moelite` prefill issue — see `glm-4.7-flash-ollama-glm4moelite-slow.md`, which this is often mistaken for.
+**Severity:** none for herd — the behaviour is a scheduling consequence, not a defect
+**Found:** 2026-07-19 · **Root-caused:** 2026-07-19
 
-**Symptom:** requests to `glm-4.7-flash:latest` on `/v1/chat/completions` take 500–640s, then degrade to outright failure at 1,204–5,205s.
+**Symptom:** requests to `glm-4.7-flash:latest` took 500–640s, then failed at 1,204–5,205s.
 
-**Where the time goes** — from `time_to_first_token_ms`, which separates the two phases:
+**Answer:** decode throughput tracks concurrent fleet traffic almost monotonically. Measured across 22 production calls by counting requests that overlapped each one:
 
-| | TTFT (prefill) | decode | total |
-|---|---|---|---|
-| completed | 13–24s | **489–623s** | 509–637s |
-| failed | 13–35s | **1,170–5,192s** | 1,204–5,205s |
+| overlapping non-glm requests | glm decode |
+|---|---|
+| 0 | **45.3 tok/s** |
+| 2–9 | 34.8–35.9 |
+| 15–22 | 22.7–32.0 |
+| 27–34 | 10.0–17.7 |
+| 38–66 | **6.4–7.8** |
 
-Prefill is healthy and stable, *including on the failures*. All degradation is decode: ~3,500 output tokens in ~520s is **~7 tok/s**, against **78.5 tok/s measured on the same box in isolation** — a 10× gap.
+A clean ~7× dose-response curve. These MoE models are memory-bandwidth-bound on Apple Silicon, and bandwidth is shared.
 
-**The failures are a pile-up, not four slow requests.** All four share timestamp `14:21:56` with decode times forming a ~600s ladder (1,170 / 3,981 / 4,587 / 5,192). An external caller polls this model about every 10 minutes; once one call exceeds the poll interval, the next queues behind it and each subsequent one stretches by another period until they fail together.
+**Two wrong theories, and how they died** — worth recording because both were plausible and one nearly got "confirmed":
 
-**Ruled out:**
-- *Prefill* — the obvious suspect given the model's history; the TTFT column disproves it.
-- *CPU offload* — `/api/ps` reports 100% on GPU.
-- *Memory pressure* — 185 GB available, pressure `normal`.
-- *General fleet contention* — `gpt-oss:120b` served 377 requests at 11s average in the same window.
+1. *Prefill regression* (this model has a **fixed** prefill issue on record, so it is the natural suspect). Killed by `time_to_first_token_ms`: prefill is a healthy 13–35s even on the failures; all degradation is decode.
+2. *Residency at ctx=202752 / 63.2 GB, with the 32768 override never applied.* Killed by reproducing the **exact** production shape (14,322-token prompt → 3,365 generated) in isolation **at that same residency**: **105 seconds**, versus 500–640s in production. Same context, same model, 5–6× faster with an idle fleet.
 
-**Prime remaining suspect:** the model is resident at **ctx=202752 / 63.2 GB** while `FLEET_NUM_CTX_OVERRIDES` asks for 32768. The override only applies on a *cold* load (by design — shrinking a resident model forces an unload/reload), and glm has not cold-loaded since it was last brought up at the larger context.
+   The proposed fix was to unload the model so it would cold-load at 32768. That would have appeared to work — the unload also drains the queued backlog — and the recovery would have been credited to the context change. A fix that works for the wrong reason is worse than no fix.
 
-**Next test, one command, settles it:**
-```bash
-curl -s localhost:11434/api/generate -d '{"model":"glm-4.7-flash:latest","keep_alive":0}'
+**A measurement error worth not repeating:** the "78.5 tok/s in isolation" figure that framed this whole investigation used a **40-token prompt**. At the real ~14K prompt it is **32 tok/s**; decode degrades with used context (79.9 → 40.2 → 31.9 as the prompt grows). Benchmark the workload's shape, not a convenient one.
+
+**Why it escalates to failure:** an external caller polls this model about every 10 minutes. Under load a call takes 8–10 minutes, which exceeds the interval, so the next request stacks behind it — and each queued request slows the others further. Self-reinforcing. The four failures share one timestamp with decode times in a ~600s ladder (1,170 / 3,981 / 4,587 / 5,192), which is one pile-up, not four slow requests.
+
+**Mitigations** (caller-side or scheduler-side, not model-side):
+- Cap per-model concurrency so requests queue cleanly instead of degrading each other — see the bandwidth-aware concurrency issue below.
+- Lengthen the poll interval past p99-under-load (~15 min) so calls cannot overlap.
+- Reduce output length; 3,500–5,000 tokens at a 10-minute cadence is the real driver.
+
+---
+
+## OPEN — `compute_concurrency` sizes queues by memory capacity, but the bottleneck is memory bandwidth
+
+**Severity:** Medium — costs latency under load on every large-model queue; no correctness impact
+**Found:** 2026-07-19, root-causing the `glm-4.7-flash` slowdown above
+**Files:** `server/queue_manager.py` (`compute_concurrency`, `_compute_queue_concurrency`), `server/hardware_lookup.py`, `server/scorer.py`
+
+### The mismatch
+
+```python
+# server/queue_manager.py
+def compute_concurrency(available_memory_gb: float, model_size_gb: float) -> int:
+    headroom = available_memory_gb - model_size_gb
+    slots = int(headroom / _KV_CACHE_PER_REQUEST_GB)
+    return max(_MIN_CONCURRENCY, min(_MAX_CONCURRENCY, slots))   # [1, 8]
 ```
-Unloading applies the 32768 override on the next request *and* clears the backlog. If decode returns to ~78 tok/s under the same polling load, residency at 202752 was the cause. **Destructive to in-flight requests** — it will kill whatever is queued, which is why it hasn't been run.
+
+Purely capacity-driven: "how many KV caches fit in RAM?" On a 512 GB M3 Ultra the headroom is always vast, so it returns the ceiling of **8** for every queue — confirmed live on both `bb:gpt-oss:120b` and `bb:qwen3-coder:30b`.
+
+But nothing about this hardware is capacity-limited during inference. MoE decode on Apple Silicon is **memory-bandwidth-bound**, and bandwidth is shared across every concurrently-decoding model. Admitting 8 concurrent requests doesn't use idle capacity; it splits a fixed bandwidth budget 8 ways.
+
+### Evidence
+
+Measured on this fleet (see the glm entry above): decode throughput vs. overlapping requests — 45.3 tok/s at zero overlap, 6.4 tok/s at 38–66. A ~7× swing driven entirely by concurrency.
+
+And from the 0.32.1 upgrade research, per-request vs aggregate on qwen3-coder:
+
+| concurrent | tok/s per request | aggregate |
+|---|---|---|
+| 1 | 107.3 | 107 |
+| 2 | 80.2 | 160 |
+| 4 | 52.7 | 211 |
+
+Aggregate genuinely rises, so this is a **latency/throughput trade, not free loss** — an earlier claim that concurrency bought "only ~10% aggregate" came from contention-polluted traces and was wrong. The point is that the trade is currently being made *blind*: nothing in the decision knows bandwidth exists.
+
+### Why this is cheap to fix
+
+The data is already present and already trusted elsewhere. `hardware_lookup.resolve_bandwidth()` returns 819 GB/s for this node's `Apple M3 Ultra`, it is populated on the live heartbeat (`node.hardware.memory_bandwidth_gbps`), and `scorer.py` already consumes it for signals 3/4/5. `compute_concurrency` is the one place that ignores it.
+
+### Prototype sketch
+
+Derive slots from bandwidth per in-flight stream rather than RAM per KV cache, keeping capacity as an upper bound:
+
+```
+bytes_per_token ≈ active_params × bytes_per_weight        # MoE: active experts, not total
+streams_at_target ≈ (bandwidth_gbps × utilisation) / (bytes_per_token × target_tok_s)
+slots = clamp(min(capacity_slots, streams_at_target), 1, 8)
+```
+
+Open questions the design has to answer:
+- **What is the target?** A fleet tuned for interactive coding wants per-request latency; a batch benchmark wants aggregate. This probably needs to be a policy knob, not a constant — and per-model, since a compaction model and an interactive model want opposite answers.
+- **Where does `active_params` come from?** `model_knowledge` has expert counts for some models; Ollama's `/api/show` exposes `expert_used_count` and `expert_count`. Prefer measured over declared, consistent with how KV cost per token is already learned from heartbeat data.
+- **Does it need to be adaptive?** The honest version measures achieved tok/s per queue from the trace store (that data exists) and closes the loop, rather than predicting from a static table.
+- **Interaction with `OLLAMA_NUM_PARALLEL`.** Ollama has its own admission limit (currently 4 on this fleet). Herd handing 8 workers to a backend that runs 4 means the extra just queue inside Ollama, where herd cannot see or reorder them. The two limits should be reconciled, and the node already reports its cap in the heartbeat.
+- **Multi-model contention is the actual case.** The glm collapse was caused by *other models'* traffic, so a per-queue cap alone does not solve it. A node-level bandwidth budget shared across queues is the more correct model, and considerably more invasive.
+
+### Do not start by writing code
+
+Start by reproducing the curve deliberately: drive N concurrent streams at fixed N against one model on an idle fleet, record per-request and aggregate tok/s, and find the knee. The numbers above are observational — gathered from production traffic that happened to vary — not a controlled sweep. A controlled sweep is what tells you whether the knee is at 2, 3, or 4, and whether it moves with model size.
