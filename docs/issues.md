@@ -834,7 +834,7 @@ A clean ~7× dose-response curve. These MoE models are memory-bandwidth-bound on
 
 ---
 
-## OPEN — `compute_concurrency` sizes queues by memory capacity, but the bottleneck is memory bandwidth
+## OPEN — `compute_concurrency` sizes queues by memory capacity, and the bottleneck is neither capacity nor bandwidth
 
 **Severity:** Medium — costs latency under load on every large-model queue; no correctness impact
 **Found:** 2026-07-19, root-causing the `glm-4.7-flash` slowdown above
@@ -909,6 +909,43 @@ Two consequences:
 1. **The cheapest correct fix is not a bandwidth model at all** — it is to stop handing a backend more concurrent work than it will admit. The node already reports its cap in the heartbeat (`OllamaMetrics.max_loaded_models` exists; `num_parallel` should join it), and `hot_model_cap_for(node)` is the established pattern for consuming such a value. Capping queue concurrency at the backend's own parallelism converts invisible in-Ollama queueing into visible herd queueing, which is schedulable.
 2. **The real bandwidth knee is still unmeasured.** Finding it requires sweeping `OLLAMA_NUM_PARALLEL` itself (1, 2, 4, 8) with an Ollama restart per step, and repeating per model class. Until then, any bandwidth formula would be fitted to a curve that is really an admission limit.
 
+### ⚠️ Premise correction (2026-07-19, later) — it is NOT bandwidth-bound
+
+This issue was opened as "bandwidth-aware concurrency." **That framing is wrong**, and the evidence needs no byte estimates:
+
+- **gpt-oss-20b decodes at 116.08 t/s on M2 Ultra and 115.52 t/s on M3 Ultra** — flat, despite the Ultra's extra bandwidth ([llama.cpp #15396](https://github.com/ggml-org/llama.cpp/discussions/15396), maintainer's own numbers).
+- **Qwen3-30B-A3B q4 hits 113.33 t/s on a 546 GB/s M4 Max**, versus our ~107 t/s on an **819 GB/s** M3 Ultra.
+
+More bandwidth buys nothing at batch 1. Arithmetic on achieved traffic agrees: a single stream reaches only **~25%** of 819 GB/s on qwen3-coder and **~10–18%** on glm-4.7-flash.
+
+**The likely real constraint is GPU occupancy.** At decode, `mul_mat_id` dispatches a grid of `n_expert_used × n_tokens` independent *small* mat-vecs — each too small to fill an 80-core GPU. That explains why the wider Ultra gains nothing over the Max. (Structural cost read from [`ggml-metal-ops.cpp`](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-metal/ggml-metal-ops.cpp); no maintainer asserts it is *the* measured bottleneck, and there is **no upstream issue tracking MoE decode on Metal** — a GitHub search for issues titled `metal`+`moe` returns zero.)
+
+Also worth knowing: **`mul_mat_id` has no scattered row-gather at decode** — it does pointer arithmetic into a contiguous expert block, then a dense mat-vec. The "uncoalesced reads" hypothesis does not describe the implementation. And every merged Metal MoE optimisation PR (#12612, #13388, #15541) improves **prefill only**; none claims a decode win.
+
+### The number that should drive `OLLAMA_NUM_PARALLEL`
+
+From `llama-batched-bench` on M2 Ultra, gpt-oss-20b, npp=1024/ntg=32 ([#18308](https://github.com/ggml-org/llama.cpp/discussions/18308)):
+
+| B | prefill t/s | decode aggregate | per-stream |
+|---|---|---|---|
+| 1 | 2361 | 128.8 | 128.8 |
+| 4 | 2409 | 211.1 | 52.8 |
+| 8 | 2420 | 245.7 | 30.7 |
+| 24 | 2420 | 361.1 | 15.0 |
+
+**Prefill throughput is dead flat at every batch size.** It is already compute-saturated at B=1. For agentic coding — high prompt:generation ratio — *total* throughput moves only **1.41×** across the entire B=1→32 sweep. Batching helps decode and does nothing for the phase that dominates our traffic.
+
+Corroborating on Ollama specifically: with the default `num_parallel=1`, aggregate is flat from concurrency 1→8; setting 4 raises aggregate ~1.8× **but is slower at concurrency 1** (18.4 vs 21.7 t/s). Enabling slots costs single-stream latency.
+
+### What the literature does (and does not) do
+
+Two independent audits of ~20 SLO-aware serving systems (vLLM, SGLang, Dynamo, SCORPIO, SOLA, TaiChi, BucketServe, VoltanaLLM, CONCUR, SLOs-Serve, …):
+
+- **Nobody targets p99 as a *control objective*.** Percentiles appear only as evaluation statistics. Every system uses per-request deadlines aggregated to a fraction-satisfied rate.
+- **Nobody measures memory bandwidth as a live signal.** Several invoke memory-boundedness rhetorically, then substitute analytical proxies — token counts, KV lengths, batch sizes. Confirmed by full-text search on the three most likely candidates.
+- **The dominant pattern is certainty-equivalence feedforward:** predict latency → solve a constraint → set the knob, with no corrective path for prediction error. `vLLM`'s `max_num_seqs` and `max_num_batched_tokens` are confirmed **static config**.
+- The technique we want — sample completed-request latency, estimate safe concurrency, shed — **exists and is mature outside LLM serving**: Envoy's adaptive concurrency filter, Netflix's gradient concurrency-limits. Nobody has adapted it to TPOT as the controlled variable. That is the actual gap.
+
 ### Research findings (2026-07-19) — and they argue against leading with a cap
 
 **MoE batching does not amortise like dense, which is the whole story.** Dense decode reads the weight set once per step regardless of batch, so batching is near-free throughput. With top-k-of-N routing, batching B streams activates the *union* of their experts — expected unique experts `N·(1-(1-k/N)^B)` — so weight bytes grow with B. A two-term model (dense bytes once + expert bytes by that fan-out) fitted on **only** our B=2 point predicted B=4 within **3.8%** (219 predicted vs 211 observed). A dense 30B would have gone 107→214→428; we got 211. Roughly half the dense benefit, and the tax is expert fan-out.
@@ -950,3 +987,44 @@ The strongest pro-capping number in the literature is Clockwork's (OSDI'20): con
 ### Do not start by writing code
 
 Start by reproducing the curve deliberately: drive N concurrent streams at fixed N against one model on an idle fleet, record per-request and aggregate tok/s, and find the knee. The numbers above are observational — gathered from production traffic that happened to vary — not a controlled sweep. A controlled sweep is what tells you whether the knee is at 2, 3, or 4, and whether it moves with model size.
+
+---
+
+## OPEN — the MLX compactor's `--draft-model` silently disables batching
+
+**Severity:** Medium — every compaction request serialises; invisible from config
+**Found:** 2026-07-19, verified locally against the installed mlx-lm
+**Files:** `~/.fleet-manager/env` (`FLEET_NODE_MLX_SERVERS`), `CLAUDE.md` (MLX gotchas)
+
+`mlx_lm/server.py:371` (v0.31.3, installed):
+
+```python
+is_batchable = draft_model is None
+```
+
+Unconditional. Our port-11441 compactor is configured with
+`"draft_model":"mlx-community/Qwen3-1.7B-4bit"`, so **`is_batchable` is `False` for
+every request** — continuous batching (default `--decode-concurrency 32`, added in
+mlx-lm 0.28.4) never engages, and concurrent compaction requests serialise.
+
+This is a genuine either/or that our docs present as a pure win. CLAUDE.md
+describes the draft model as giving "~94 tok/s on M3 Ultra" for the compactor; it
+does, **for one request at a time**. Maintainer-measured batching on comparable
+hardware (M2 Ultra, Qwen 30B/3B 4-bit, mlx-lm PR #626) gives batch 1 → 89 t/s,
+batch 2 → 141, batch 4 → 204. So the trade is roughly *94 t/s serialised* versus
+*~204 t/s aggregate across 4 concurrent requests, at ~51 t/s each*.
+
+Which is correct depends on whether compaction requests arrive concurrently. With
+a single Claude Code session they do not, and speculative decoding wins. With
+several sessions compacting at once, the draft model is actively harmful.
+
+**Not yet measured on our hardware.** The numbers above are from mlx-lm's PR
+thread on M2 Ultra, not this fleet. The A/B is cheap and non-destructive:
+`mlx-lm`'s own `benchmarks/server_benchmark.py --concurrency N` against 11441 as
+configured, then again with `draft_model` removed.
+
+Two related facts worth recording while here:
+- Requests that set a `seed` are also non-batchable and force a batch drain.
+- mlx-lm #965 (KV-cache cross-contamination between concurrent requests on M3
+  Ultra at 16+ concurrency) was fixed in v0.31.2 — we run 0.31.3, so we have the
+  fix. Worth knowing before raising concurrency anywhere near that range.
