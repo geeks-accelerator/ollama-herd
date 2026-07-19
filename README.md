@@ -28,8 +28,11 @@ Or with Homebrew (macOS/Linux):
 
 ```bash
 brew tap geeks-accelerator/ollama-herd
+brew trust geeks-accelerator/ollama-herd   # Homebrew 6.x requires this for third-party taps
 brew install ollama-herd
 ```
+
+> Without the `brew trust` line, Homebrew 6.0+ stops with *"Refusing to load formula … from untrusted tap"*. Older Homebrew doesn't need it and ignores it harmlessly. The install builds every dependency from source (Homebrew runs `pip --no-binary :all:`), including a Rust compile of `pydantic-core` — budget **~25 minutes**, not the couple of minutes a bottled formula takes.
 
 **On your router machine:**
 

@@ -75,6 +75,8 @@ EOF
     brew untap geeks-accelerator/ollama-herd  # forces a fresh tap clone
     brew tap geeks-accelerator/ollama-herd
     brew install ollama-herd  # ~5 min for a Python-virtualenv formula
+    brew trust geeks-accelerator/ollama-herd   # Homebrew 6.x gate — REQUIRED after a fresh tap
+    brew install ollama-herd  # ~25 min: every dep builds from source, incl. a Rust pydantic-core
     /opt/homebrew/Cellar/ollama-herd/X.Y.Z/libexec/bin/python -c "import fleet_manager; from fleet_manager.server.app import create_app; print('ok')"
     /opt/homebrew/bin/herd --help
     ```
@@ -294,3 +296,4 @@ Reinforced: simple retry logic with exponential backoff beats complex recovery.
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 ```
+- **`brew tap` + `brew install` is no longer enough — Homebrew 6.x requires `brew trust` for third-party taps.** A fresh user who follows a tap-then-install README hits `Refusing to load formula … from untrusted tap` and gets nothing installed. This is invisible on a machine where the tap was added before the gate existed (the trust is already recorded), which is exactly how it survived a release: the 0.9.0 install "passed" locally, then failed the moment step 15 untapped and retapped. **Step 15 is what catches this class of bug — the untap is the whole point, not a formality.** Both READMEs (main repo and tap repo) now carry the `brew trust` line.
