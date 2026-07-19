@@ -187,6 +187,61 @@ List all models across the fleet — LLM, image, and embedding models (loaded + 
 
 ---
 
+### `POST /v1/responses`
+
+The **OpenAI Responses API** — what OpenAI Codex speaks. Codex removed
+Chat Completions support in Feb 2026 (`wire_api = "chat"` is gone), so this is
+the only endpoint current Codex can use. Setup: [`guides/codex-integration.md`](guides/codex-integration.md).
+
+**Request:**
+
+```json
+{
+  "model": "gpt-5-codex",
+  "input": [
+    {"role": "user", "content": [{"type": "input_text", "text": "fix the bug"}]}
+  ],
+  "tools": [{"type": "function", "name": "bash", "parameters": {}}],
+  "stream": true
+}
+```
+
+`input` accepts a plain string or a list of items: `message`, `function_call`,
+`function_call_output`, `custom_tool_call`, `custom_tool_call_output`,
+`reasoning`, and `additional_tools`. Unrecognised item types are dropped and
+logged once per type.
+
+**Model selection** — `model` may be any id. Resolution order: an explicit
+`FLEET_ANTHROPIC_MODEL_MAP` entry, then a real local model name, then
+best-loaded auto-routing, then `404`. Requests carrying an image auto-route to a
+vision-capable model.
+
+**Tools** — two shapes are accepted and both are translated:
+- a top-level `tools` array of plain functions, and
+- Codex's `additional_tools` input item, whose primary tool is a `custom`-typed
+  `exec` taking raw JavaScript ("code mode").
+
+Herd also rewrites two calls models reliably get wrong, because Codex's tool
+*descriptions* document an API its tool *schema* doesn't expose: a top-level
+`exec_command` call becomes a `custom_tool_call` on `exec`, and an `apply_patch`
+tool call becomes an `exec_command` heredoc (`apply_patch` is a binary on the
+sandbox PATH, not a tool). Both are logged at WARNING.
+
+**Response** (non-streaming) is a Responses object whose `output` is a list of
+items — an assistant `message` plus one `function_call` / `custom_tool_call` per
+tool call. Streaming emits the Responses SSE event sequence
+(`response.output_item.added` → `…arguments.delta` → `response.completed`).
+
+**Not supported:** `previous_response_id` (server-side conversation state) —
+rejected with `400`. Codex's default stateless mode resends the full `input`
+each turn, which is what Herd implements. `mlx:` models are skipped for this
+endpoint.
+
+**Response headers:** same `X-Fleet-*` set as every other route, including
+`X-Fleet-Served-Model`.
+
+---
+
 ## Ollama-Compatible Endpoints
 
 ### `POST /api/chat`

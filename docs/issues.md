@@ -732,3 +732,65 @@ So setting `OLLAMA_MAX_LOADED_MODELS=-1` (a common "I want unlimited" pattern th
 **Proposed fix in herd (already planned):** see `docs/plans/hot-fleet-health-checks.md` — adds six health checks that would surface this failure mode within one heartbeat interval instead of requiring trace DB archaeology. Specifically check #3 (`ollama_max_loaded_models_observed`) infers the effective cap from observed behavior rather than reading the unreliable env var.
 
 **Files (herd-side mitigation only):** `server/health_engine.py`, `node/collector.py` (optional: report observed cap in heartbeat payload)
+
+---
+
+## OPEN — Codex `/v1/models` schema is an unbounded decode chain
+
+**Severity:** low (cosmetic for the CLI; empties the Desktop model picker)
+**Found:** 2026-07-18 driving a real `codex-cli 0.145.0-alpha.18`
+
+Codex decodes `/v1/models` against its own **undocumented, strictly-typed**
+schema and fails the *entire* decode on the first problem. Each field added
+reveals exactly one more. We currently emit 20 fields discovered this way,
+including two closed enums (`shell_type`, `visibility`) and a nested
+`truncation_policy` struct. **Next known requirement:
+`experimental_supported_tools`.**
+
+Not converged, and treated as maintenance rather than a milestone. The CLI is
+unaffected (`-m` bypasses the picker), but an undecodable payload leaves the
+Desktop picker empty, which pushes Desktop onto its built-in `sol`/`luna`/`terra`
+Lite slugs — a materially different code path.
+
+**Discovery loop:** add the field → restart herd → run `codex exec` **three**
+times → `grep -o 'missing field \`[a-z_]*\`'`. A *single* run after a restart
+reports a false clean (the models refresh hasn't fired yet); so does a dead
+server (no response, no decode error). Assert liveness in the same breath.
+Wrong enum values are useful — the error names the valid variants.
+
+**Files:** `server/routes/openai_compat.py` (`list_models`)
+
+---
+
+## OPEN — `write_stdin` round-trips but local models can't drive it
+
+**Severity:** low
+**Found:** 2026-07-18
+
+The protocol path works — Codex accepts the call and returns output. But
+`qwen3-coder:30b` could not drive an interactive session: it started `python3 -i`
+via `exec_command`, sent input with `write_stdin`, received the echo rather than
+the evaluated result, retried several times with different framings, and gave
+up. In an earlier run it then *claimed* the session printed `42` — a
+confabulation (`6*7` is derivable without executing anything).
+
+No herd-side defect identified. Recorded so the next person doesn't re-derive
+it, and as a caution: verify interactive-session claims against the tool blocks,
+never the model's summary.
+
+---
+
+## OPEN — one `apply_patch` call bypassed the redirect, unreproduced
+
+**Severity:** low
+**Found:** 2026-07-18
+
+During tool-coverage testing, `error=unsupported call: apply_patch` fired once
+while the redirect fired 4 times in the same window — so a single call had a
+shape `_patch_text_from_args` did not recognise. Not reproduced since.
+
+The decline path is now audible (`no recognisable patch envelope (keys=…)`),
+so a recurrence names the arg keys and is fixable in one pass instead of
+requiring another debugging round.
+
+**Files:** `server/responses_translator.py` (`_patch_text_from_args`)

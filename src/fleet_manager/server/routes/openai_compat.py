@@ -20,6 +20,7 @@ from fleet_manager.server.mlx_proxy import (
     record_trace_mlx,
     strip_mlx_prefix,
 )
+from fleet_manager.server.model_knowledge import is_vision_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.ollama_compat import _build_thinking_headers
 from fleet_manager.server.routes.routing import (
@@ -104,7 +105,11 @@ async def list_models(request: Request):
             # models-refresh error on every turn.
             "shell_type": "default",
             "supports_tools": True,
-            "supports_vision": False,
+            # Per-model, not a blanket False. This was hardcoded, which told
+            # Codex that gemma3 — a model we deliberately auto-route images to —
+            # cannot see, so a client honouring the field would never offer to
+            # send one.
+            "supports_vision": is_vision_model(m),
             # Another closed enum: `list` | `hide` | `none`. "public" is not a
             # member, and Codex fails the WHOLE decode on it —
             #   failed to decode models response: unknown variant `public`,
