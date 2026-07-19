@@ -743,3 +743,17 @@ Two independent causes, both ours. `_text_from_content` in `responses_translator
 Fixed by reusing both existing pieces: images now land in Ollama's sibling `images: []` list exactly as `anthropic_translator` already does for Anthropic image blocks, and the route passes `has_images`. Verified live — red, blue and green PNGs all identified correctly, served by `gemma3:27b`, with no filename in the prompt to guess from.
 
 **Insight**: a dropped *input* is far more dangerous than a dropped *output*. A missing tool call produces a visible stall; a missing image produces a fluent, specific, wrong answer, and every metric on the server side reports success. The tell was that the model's error was too precise — "1x1 pixel, #FF0000" is not the shape of a model hedging about a blurry image, it's the shape of a model with no image at all reasoning from a filename. **When output is confidently specific but wrong, suspect that an input never arrived**, and check the translation layer before blaming the model. Corollary: any content type the shim doesn't recognise should be counted and logged, because "skipped unknown part types" is a forward-compat stance for *outputs* and a silent data-loss bug for *inputs*.
+
+---
+
+## 2026-07-18 — Claude Code clears the bar Codex needed two shims to reach
+
+**Evidence**: Same multi-file task run through both clients against the same fleet and model (`qwen3-coder:30b`): a repo whose suite didn't collect, requiring a module created from scratch, an accumulate bug fixed, and a `ValueError` guard added. Both reached `6 passed`. What differed is what it took to get there.
+
+Claude Code (`claude` 2.1.68 headless, 14 turns): **12/14 turns called a tool**, six distinct tools exercised in one run (`Bash`, `Edit`, `Glob`, `Read`, `Write`, `TodoWrite`), both `end_turn`s legitimate, **zero abandoned preambles**, and no herd-side translation defects surfaced at all.
+
+Codex needed two rewrites shipped the same day before it could edit a file: a top-level `exec_command` call redirected into the code-mode `exec` tool, and an `apply_patch` tool call rewritten as an `exec_command` heredoc. Plus a ~3% per-turn stall where the model announces an action and ends the turn.
+
+**Insight**: the difference isn't model capability — it's the same model on both sides. It's **protocol surface area**. Anthropic's Messages API has one way to call a tool: a `tool_use` block with a JSON schema. Codex's Responses surface has a `custom`-typed tool carrying grammar-constrained freeform JavaScript, a nested tool namespace reachable only from inside that JavaScript, a patch utility that is a PATH binary rather than a tool, and a preamble convention that interacts badly with "text-only response means turn complete". Every one of those is a place where a local model can be *locally reasonable* and *globally wrong* — and every Codex bug found today lived in exactly that gap, not in the model.
+
+Practical consequence for the shim: when a client offers several ways to express one intent, the least-structured one is where local models fail, and it is the shim's job to normalise them. Corollary for evaluation: **testing two clients against the same model isolates protocol cost from model cost.** That comparison was more informative than any single-client benchmark run today, and it is cheap — same task, same model, two endpoints.

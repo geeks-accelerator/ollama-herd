@@ -4,6 +4,19 @@ Run [Claude Code](https://claude.com/claude-code) against your local fleet. Same
 
 This works because ollama-herd exposes a native **Anthropic Messages API** (`/v1/messages`), so Claude Code's `ANTHROPIC_BASE_URL` can point straight at the herd router — no LiteLLM sidecar, no OpenAI-format proxy.
 
+> **Agentic coding verified end-to-end** — 2026-07-18, `claude` 2.1.68 headless (`claude -p`) against `qwen3-coder:30b` on a local fleet. Given a repo whose test suite didn't even collect, Claude Code created a module from scratch, fixed two logic bugs, and reached `6 passed` on its own.
+>
+> | measure | result |
+> |---|---|
+> | turns | 14 |
+> | tool-calling turns | **12 / 14** (`tool_use` ×12, `end_turn` ×2 — both legitimate) |
+> | distinct tools exercised | `Bash`, `Edit`, `Glob`, `Read`, `Write`, `TodoWrite` |
+> | max prompt | ~22K tokens |
+>
+> The fix was checked against inputs the test suite never exercises (three successive adds; removal to exactly zero; removal past zero) to confirm the model fixed the *logic* rather than shaping code to the assertions.
+>
+> Protocol-level checks also pass: tool use, `tool_result` round-trip, the full SSE sequence (`message_start` → `content_block_delta` → `message_stop`), and `/v1/messages/count_tokens`.
+
 ## TL;DR
 
 ```bash
@@ -244,12 +257,13 @@ Then Claude Code clients must set `ANTHROPIC_AUTH_TOKEN=sk-local-something-long`
 These are honest tradeoffs, not bugs:
 
 - **Tool quality varies by model.** `qwen3-coder:30b` and `qwen3:32b` handle Claude Code's agentic loops well; smaller / non-coding-tuned models drop tool calls or hallucinate args. Prefer the recommended list above.
-- **Ollama caps at 3 concurrently-loaded models on macOS.** Unconfigurable via env vars as of Ollama 0.20.4 — see `docs/issues.md`. If `FLEET_ANTHROPIC_MODEL_MAP` references >3 distinct models, some will be evicted and Claude Code requests will silently fall back to whatever model *is* hot. Symptom: Claude Code's tool calls start coming back as plain-text JSON instead of `tool_use` blocks. Detection: check the `X-Fleet-Fallback` response header (present means fallback fired) or `SELECT original_model, model FROM request_traces WHERE original_model != model` in `~/.fleet-manager/latency.db`.
+- **Watch how many distinct models your map references.** The old "Ollama hard-caps at 3 loaded models" claim was **disproven 2026-07-17 on Ollama 0.32.1** — with `OLLAMA_MAX_LOADED_MODELS=10` we observed 4 concurrent residents, and nodes now report their own cap in the heartbeat. There is still *a* cap (memory, and whatever the node reports), so if `FLEET_ANTHROPIC_MODEL_MAP` references >3 distinct models, some will be evicted and Claude Code requests will silently fall back to whatever model *is* hot. Symptom: Claude Code's tool calls start coming back as plain-text JSON instead of `tool_use` blocks. Detection: check the `X-Fleet-Fallback` response header (present means fallback fired) or `SELECT original_model, model FROM request_traces WHERE original_model != model` in `~/.fleet-manager/latency.db`.
 - **No extended thinking.** Anthropic `thinking` content blocks are returned as plain text. Reasoning models (qwen3 thinking variants) emit reasoning into `content` rather than a separate block. Claude Code still works — it just can't show you the thinking pane.
-- **No prompt caching.** Every request is a full re-encode. Long Claude Code sessions are slower than against real Claude. Workaround: run a model with a large warm KV cache (`OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=-1`).
+- **Prompt caching is weaker than hosted Claude.** Ollama 0.32.1 does have working prefix caching, so a long session is no longer a full re-encode every turn — but there is no `cache_control`, so you don't get Anthropic's explicit cache breakpoints. Keep models resident (`OLLAMA_KEEP_ALIVE=-1`) so the prefix cache survives between turns.
 - **Token counts are estimates.** `usage.input_tokens` / `output_tokens` come from tiktoken (`cl100k`) and Ollama's `eval_count` respectively. Use them for budgeting, not billing.
-- **Vision needs a vision model.** Code-tuned models like `qwen3-coder` don't see images. If you point Claude Code at an image, map to `gemma3:27b` or `llava:13b` instead.
+- **Vision needs a vision model — but routing handles it for you.** Code-tuned models like `qwen3-coder` can't see images, so an image-bearing request auto-routes to a vision-capable model (`gemma3`, …) even mid-conversation. You only need to intervene if your fleet has no vision model loaded at all: `ollama pull gemma3:4b` (~6 GB) is the cheap fix.
 - **`tool_choice: any` / `tool: <name>` are best-effort.** Ollama has no native forcing mechanism, so we append a system-prompt instruction. The model usually complies but isn't guaranteed.
+- **Your prompts land in the local log by default.** `FLEET_LOG_LEVEL` defaults to `DEBUG` for the JSONL file, and the Anthropic route logs a *truncated* request-body preview per request — so the head of your system prompt and messages is written to `~/.fleet-manager/logs/herd.jsonl`. It's bounded (about 1.3% of log volume in a real session, not a disk problem) and it stays on your machine, but if that's not what you want, set `FLEET_LOG_LEVEL=INFO`.
 - **No `cache_control` / Files / Computer Use / Code Execution betas.** These Anthropic-specific betas are accepted-and-ignored or 501'd. Out of scope for local-model parity.
 
 ## What you get
