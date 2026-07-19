@@ -794,3 +794,38 @@ so a recurrence names the arg keys and is fixable in one pass instead of
 requiring another debugging round.
 
 **Files:** `server/responses_translator.py` (`_patch_text_from_args`)
+
+---
+
+## OPEN — `glm-4.7-flash` decodes at ~7 tok/s under load, then pile-up drives requests to failure
+
+**Severity:** Medium — one model unusable for its caller; no impact on other models or on routing
+**Found:** 2026-07-19 during a post-release soak review
+**Not** the fixed `glm4moelite` prefill issue — see `glm-4.7-flash-ollama-glm4moelite-slow.md`, which this is often mistaken for.
+
+**Symptom:** requests to `glm-4.7-flash:latest` on `/v1/chat/completions` take 500–640s, then degrade to outright failure at 1,204–5,205s.
+
+**Where the time goes** — from `time_to_first_token_ms`, which separates the two phases:
+
+| | TTFT (prefill) | decode | total |
+|---|---|---|---|
+| completed | 13–24s | **489–623s** | 509–637s |
+| failed | 13–35s | **1,170–5,192s** | 1,204–5,205s |
+
+Prefill is healthy and stable, *including on the failures*. All degradation is decode: ~3,500 output tokens in ~520s is **~7 tok/s**, against **78.5 tok/s measured on the same box in isolation** — a 10× gap.
+
+**The failures are a pile-up, not four slow requests.** All four share timestamp `14:21:56` with decode times forming a ~600s ladder (1,170 / 3,981 / 4,587 / 5,192). An external caller polls this model about every 10 minutes; once one call exceeds the poll interval, the next queues behind it and each subsequent one stretches by another period until they fail together.
+
+**Ruled out:**
+- *Prefill* — the obvious suspect given the model's history; the TTFT column disproves it.
+- *CPU offload* — `/api/ps` reports 100% on GPU.
+- *Memory pressure* — 185 GB available, pressure `normal`.
+- *General fleet contention* — `gpt-oss:120b` served 377 requests at 11s average in the same window.
+
+**Prime remaining suspect:** the model is resident at **ctx=202752 / 63.2 GB** while `FLEET_NUM_CTX_OVERRIDES` asks for 32768. The override only applies on a *cold* load (by design — shrinking a resident model forces an unload/reload), and glm has not cold-loaded since it was last brought up at the larger context.
+
+**Next test, one command, settles it:**
+```bash
+curl -s localhost:11434/api/generate -d '{"model":"glm-4.7-flash:latest","keep_alive":0}'
+```
+Unloading applies the 32768 override on the next request *and* clears the backlog. If decode returns to ~78 tok/s under the same polling load, residency at 202752 was the cause. **Destructive to in-flight requests** — it will kill whatever is queued, which is why it hasn't been run.
