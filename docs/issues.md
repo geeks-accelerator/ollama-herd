@@ -1022,6 +1022,32 @@ so it excludes prefill and queue wait. `OLLAMA_NUM_PARALLEL=4`.
 3. **Per-stream decode is flat from N=2 onward** (26.2 / 27.1 / 28.9). The cost of going concurrent is a one-time ~25% hit at N=1→2, not a progressive collapse. The 7× degradation seen in production traces is therefore *not* decode contention within one model — it is cross-model contention plus queue wait, which is why per-request `tok/s` misleads and TPOT does not.
 4. **Dense scales worse than MoE here, which is the opposite of the theory.** gemma3:27b flattens at ~18 t/s aggregate while per-stream collapses 21.3 → 6.6 (3.2×); gpt-oss holds per-stream flat and doubles aggregate. The expert-fan-out model predicted MoE should batch *worse*. It doesn't — at least not for these two models. Confounded by different model sizes and quantisations, so treat as a strong hint rather than a result, but it is direct evidence against the mechanism this issue previously leaned on.
 
+### Three levers evaluated and closed (2026-07-19)
+
+**Chunked prefill — already optimal, nothing to build.** The premise that llama.cpp naively stalls decode for prefill is **false**. `update_slots()` assembles decode tokens first, unconditionally, then fills remaining budget with prompt chunks capped at `n_batch` — structurally Sarathi-Serve's hybrid batch. A generating slot is never denied admission by a prefill. And Ollama sets `NumBatch=512`, landing exactly on Sarathi's recommended 256–512 chunk size. **Confirmed live on this fleet: `-b 512 -ub 512` in the running llama-server args.** We already have near-optimal chunking and did not choose it.
+
+What chunking *does not* do is make prefill free — it spreads the cost across `ceil(P/n_batch)` inflated inter-token gaps rather than one long stall. Total interference is unchanged.
+
+**Queue reordering (SJF) — measured no-op, do not build.** Reordering pending work can only help when pending depth exceeds what the backend admits concurrently. Measured on this fleet:
+
+| enqueue depth | median | p90 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| observed | 1 | 3 | 4 | 4 | 4 |
+
+**Zero of 91 enqueues ever exceeded depth 4.** With `OLLAMA_NUM_PARALLEL=4`, reordering is the identity function on every request this fleet has ever seen. It is also structurally wrong for the workload: an agentic session issues a *serial chain* of dependent requests, so there is rarely more than one in the queue, and request-level SJF can actively harm session completion time by letting short requests from one session repeatedly jump a long generation from another.
+
+**USL — cannot be fitted here, and the alternative is better anyway.** A 3-parameter model needs points either side of the throughput peak; `OLLAMA_NUM_PARALLEL=4` gives exactly four achievable concurrency values. Raising it to generate data would change `-c = num_ctx × num_parallel` and therefore the thing being measured. Also flagged as folklore: no peer-reviewed application of USL to LLM decode exists, and β (coherency) has no physical referent on a single Metal device — a positive β here would most plausibly be **thermal drift aliased in by a monotonic N ramp**.
+
+Fit **step time linear in N** instead: `step_time(N) = a + b·N`, two parameters, ordinary least squares, both interpretable. `a ≈ W / BW_effective` — so with the model's quantised size known, **`a` is a live effective-memory-bandwidth measurement derived from traces we already collect**, which is precisely the signal no serving system measures.
+
+### The one lever worth building: session affinity
+
+Not concurrency at all. llama.cpp skips already-cached prompt tokens via `get_common_prefix` — so turn N+1 of a coding session, which shares nearly all of turn N's prompt, can cost ~200 tokens of prefill instead of 30,000. Since prefill is the *sole* source of decode interference (above), pinning a session to the node holding its warm prefix **eliminates** the interference term rather than redistributing it.
+
+**Status on this fleet: a real gap, currently latent.** The scorer's `affinity` signal is `_score_role_affinity` — model size ↔ node capability. There is no session or conversation stickiness anywhere in the routing path. It costs nothing today because only one node is online (70,748 of 70,775 recent requests went to `bb`), but a returning second node makes multi-turn sessions bounce and re-prefill from cold.
+
+Prior art: Continuum/CacheTTL attaches a `program_id` and orders by program arrival; SMetric routes a session's *first* request for load balance and all follow-ups cache-aware. HexAGenT reports workflow-level FCFS beating per-call FCFS by 23–31% on tail SLO — i.e. **preserving session order beats reordering it**.
+
 ### Do not start by writing code
 
 Start by reproducing the curve deliberately: drive N concurrent streams at fixed N against one model on an idle fleet, record per-request and aggregate tok/s, and find the knee. The numbers above are observational — gathered from production traffic that happened to vary — not a controlled sweep. A controlled sweep is what tells you whether the knee is at 2, 3, or 4, and whether it moves with model size.
