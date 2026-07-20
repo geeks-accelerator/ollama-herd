@@ -996,7 +996,7 @@ Start by reproducing the curve deliberately: drive N concurrent streams at fixed
 
 ---
 
-## OPEN — the MLX compactor's `--draft-model` silently disables batching
+## RESOLVED (keep the draft model) — the MLX compactor's `--draft-model` disables batching, and that is the right trade here
 
 **Severity:** Medium — every compaction request serialises; invisible from config
 **Found:** 2026-07-19, verified locally against the installed mlx-lm
@@ -1024,10 +1024,27 @@ Which is correct depends on whether compaction requests arrive concurrently. Wit
 a single Claude Code session they do not, and speculative decoding wins. With
 several sessions compacting at once, the draft model is actively harmful.
 
-**Not yet measured on our hardware.** The numbers above are from mlx-lm's PR
-thread on M2 Ultra, not this fleet. The A/B is cheap and non-destructive:
-`mlx-lm`'s own `benchmarks/server_benchmark.py --concurrency N` against 11441 as
-configured, then again with `draft_model` removed.
+### Decision (2026-07-19): keep it — measured, not assumed
+
+The trade only matters if compactions overlap. **They essentially never do:
+84 of 2,813 mlx-routed requests on record ever overlapped another — 3%.**
+Compaction is a serial workload by nature; one coding session compacts at a
+time, spaced by whole conversations. The 97% case is precisely where
+speculative decoding wins, so the current config is correct.
+
+A live A/B across the two MLX servers is directionally consistent — the
+batching-enabled server's aggregate keeps climbing with concurrency (33 → 93 →
+101 t/s at N=1/2/4) while the draft-model server peaks at N=2 and then declines
+(33 → 74 → 63.5) — but it is **confounded**: different models on each port
+(Qwen3-Coder-30B vs GLM-4.7-Flash). It is corroboration, not proof. A decisive
+test needs the same model with and without the flag, which costs a duplicate
+~19GB resident and is not worth it given the overlap rate.
+
+**Revisit if** the fleet ever serves several concurrent coding sessions — the
+overlap rate is the trigger, and it is one query:
+`SELECT COUNT(*) FROM request_traces WHERE model LIKE 'mlx:%'` with an overlap
+join. At meaningful overlap the trade inverts and the draft model becomes a
+liability.
 
 Two related facts worth recording while here:
 - Requests that set a `seed` are also non-batchable and force a batch drain.
