@@ -17,13 +17,21 @@ WARM_WINDOW_SECONDS = 1800  # 30 minutes
 
 
 class ScoringEngine:
-    def __init__(self, settings: ServerSettings, registry: NodeRegistry, latency_store=None):
+    def __init__(
+        self, settings: ServerSettings, registry: NodeRegistry, latency_store=None,
+        sessions=None,
+    ):
         self._s = settings
         self._registry = registry
         self._latency_store = latency_store
+        # SessionAffinityTracker, or None to disable signal 8 entirely — which
+        # is what every existing caller that doesn't pass one gets, so the
+        # scorer behaves exactly as before unless a session is threaded through.
+        self._sessions = sessions
 
     def score_request(
-        self, model: str, queue_depths: dict[str, int], estimated_tokens: int = 0
+        self, model: str, queue_depths: dict[str, int], estimated_tokens: int = 0,
+        session_key: str = "",
     ) -> list[RoutingResult]:
         """
         Score all candidate nodes for a model request.
@@ -60,7 +68,10 @@ class ScoringEngine:
             s7 = self._score_context_fit(node, model, estimated_tokens)
             breakdown["context_fit"] = s7
 
-            total = s1 + s2 + s3 + s4 + s5 + s6 + s7
+            s8 = self._score_session_affinity(node, session_key)
+            breakdown["session_affinity"] = s8
+
+            total = s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8
             breakdown["total"] = total
 
             results.append(
@@ -85,7 +96,17 @@ class ScoringEngine:
                 f"wait={winner.scores_breakdown.get('wait_time', 0):.0f}, "
                 f"affinity={winner.scores_breakdown.get('role_affinity', 0):.0f}, "
                 f"avail={winner.scores_breakdown.get('availability_trend', 0):.0f}, "
-                f"ctx={winner.scores_breakdown.get('context_fit', 0):.0f})"
+                f"ctx={winner.scores_breakdown.get('context_fit', 0):.0f}"
+                # Only shown when non-zero — most requests have no session, and
+                # a permanent "session=0" would be noise. But it must appear
+                # whenever it fires, or the printed signals won't sum to the
+                # total and the line becomes actively misleading.
+                + (
+                    f", session={winner.scores_breakdown['session_affinity']:.0f}"
+                    if winner.scores_breakdown.get("session_affinity", 0)
+                    else ""
+                )
+                + ")"
             )
 
         return results
@@ -354,6 +375,33 @@ class ScoringEngine:
         est_wait_s = (depth * p75_ms) / 1000.0
         penalty = min(self._s.score_wait_time_max_penalty, est_wait_s / 10.0)
         return -penalty
+
+    # Sized to outweigh ordinary jitter between comparable nodes without
+    # overpowering a real health signal.  Thermal alone contributes up to 50, so
+    # a hot or memory-pressured node still loses to a cool one — which is
+    # correct: a warm prefix cache is worth a lot, but not worth routing into a
+    # node that is about to throttle.
+    SESSION_AFFINITY_BONUS = 20.0
+
+    def _score_session_affinity(self, node: NodeState, session_key: str) -> float:
+        """Signal 8: keep a conversation on the node holding its warm prefix.
+
+        llama.cpp skips already-processed prompt tokens, so a returning turn can
+        cost a few hundred tokens of prefill instead of tens of thousands.  Since
+        prefill is the only thing that stalls other requests' decode, this both
+        speeds up the session and removes the interference it would otherwise
+        inflict on everything else on that node.
+
+        Zero when there is no session, no pin, or the pin has expired — so a
+        first turn, a stateless call, and a stale conversation all score exactly
+        as they did before this signal existed.
+        """
+        if not session_key or self._sessions is None:
+            return 0.0
+        preferred = self._sessions.preferred_node(session_key)
+        if preferred and preferred == node.node_id:
+            return self.SESSION_AFFINITY_BONUS
+        return 0.0
 
     def _score_role_affinity(self, node: NodeState, model: str) -> float:
         """Signal 5: Match model size to node capability.

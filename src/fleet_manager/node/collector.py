@@ -5,10 +5,10 @@ from __future__ import annotations
 import functools
 import logging
 import os
-import sys
 import platform
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from typing import TypeVar

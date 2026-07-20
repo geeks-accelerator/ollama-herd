@@ -14,6 +14,7 @@ from fleet_manager.models.request import InferenceRequest, RoutingResult
 from fleet_manager.server.model_knowledge import classify_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.scorer import ScoringEngine
+from fleet_manager.server.session_affinity import session_key_for
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,20 @@ def parse_allow_fallback(body: dict, headers=None) -> bool | None:
     return None
 
 
+def _remember_session_node(scorer, session_key: str, results) -> None:
+    """Pin this conversation to whichever node actually won.
+
+    Recorded here rather than in each route so every surface — OpenAI, Ollama,
+    Anthropic, Responses — gets affinity without repeating itself, and so the
+    pin always reflects the node that was *really* chosen (after fallbacks,
+    pulls and upgrades), not the one first considered.
+    """
+    tracker = getattr(scorer, "_sessions", None)
+    if tracker is None or not session_key or not results:
+        return
+    tracker.remember(session_key, results[0].node_id)
+
+
 async def score_with_fallbacks(
     inference_req: InferenceRequest,
     scorer,
@@ -193,9 +208,15 @@ async def score_with_fallbacks(
     # --- First pass: try all models, check if any are HOT ---
     cold_results: tuple[list[RoutingResult], str] | None = None
     queue_depths = queue_mgr.get_queue_depths()
+    # Conversation identity, so a returning turn prefers the node that still
+    # holds its prefix. Empty for stateless callers — signal 8 then scores 0 and
+    # routing is unchanged.
+    session_key = session_key_for(inference_req)
 
     for model in models_to_try:
-        results = scorer.score_request(model, queue_depths, estimated_tokens)
+        results = scorer.score_request(
+            model, queue_depths, estimated_tokens, session_key=session_key
+        )
         if results:
             winner = results[0]
             hot_threshold = settings.score_model_hot if settings else 50.0
@@ -206,6 +227,7 @@ async def score_with_fallbacks(
                         f"Fallback: '{inference_req.model}' unavailable, "
                         f"using '{model}' instead"
                     )
+                _remember_session_node(scorer, session_key, results)
                 return results, model
             # Model scored but only COLD/WARM — save as fallback
             if cold_results is None:
@@ -217,10 +239,12 @@ async def score_with_fallbacks(
             inference_req, scorer, queue_depths, estimated_tokens, models_to_try,
         )
         if fallback_result:
+            _remember_session_node(scorer, session_key, fallback_result[0])
             return fallback_result
 
     # --- Return cold results if available (will trigger cold load) ---
     if cold_results is not None:
+        _remember_session_node(scorer, session_key, cold_results[0])
         return cold_results
 
     # --- Holding queue: model exists but no node available ---
@@ -229,13 +253,16 @@ async def score_with_fallbacks(
     while time.time() < deadline:
         for model in models_to_try:
             queue_depths = queue_mgr.get_queue_depths()
-            results = scorer.score_request(model, queue_depths, estimated_tokens)
+            results = scorer.score_request(
+            model, queue_depths, estimated_tokens, session_key=session_key
+        )
             if results:
                 if model != inference_req.model:
                     logger.info(
                         f"Fallback: '{inference_req.model}' unavailable, "
                         f"using '{model}' instead"
                     )
+                _remember_session_node(scorer, session_key, results)
                 return results, model
 
         # Check if ANY of the models exist on any node
@@ -276,6 +303,7 @@ async def score_with_fallbacks(
             estimated_tokens,
         )
         if pulled_model:
+            _remember_session_node(scorer, session_key, pulled_model[0])
             return pulled_model
 
     return [], ""
@@ -453,6 +481,8 @@ async def _try_auto_pull(
             await asyncio.sleep(2.0)
         # Retry scoring — model should now be available
         queue_depths = queue_mgr.get_queue_depths()
+        # No session_key: this is the VRAM-fallback path, choosing a different
+        # model entirely, so no node holds a warm prefix for it.
         results = scorer.score_request(model, queue_depths, estimated_tokens)
         if results:
             return results, model
@@ -483,6 +513,9 @@ async def _try_auto_pull(
             node.ollama.models_available.append(model)
 
         queue_depths = queue_mgr.get_queue_depths()
+        # No session_key here: _try_auto_pull runs after a cold pull, so no node
+        # holds a warm prefix to prefer. score_with_fallbacks records the pin
+        # for whichever node this returns.
         results = scorer.score_request(model, queue_depths, estimated_tokens)
         if results:
             return results, model

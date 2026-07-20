@@ -25,7 +25,7 @@ def _mock_scorer(model_results: dict[str, list[RoutingResult]]):
     """Create a mock scorer that returns specific results per model."""
     scorer = MagicMock()
 
-    def score_fn(model, queue_depths, estimated_tokens=0):
+    def score_fn(model, queue_depths, estimated_tokens=0, **kwargs):
         return model_results.get(model, [])
 
     scorer.score_request.side_effect = score_fn
@@ -120,7 +120,7 @@ class TestScoreWithFallbacks:
         """Models are tried in order: primary, then fallbacks left-to-right."""
         call_order = []
 
-        def tracking_score(model, depths, estimated_tokens=0):
+        def tracking_score(model, depths, estimated_tokens=0, **kwargs):
             call_order.append(model)
             if model == "fallback-2:latest":
                 return [
@@ -174,7 +174,7 @@ class TestAutoPull:
         """When model doesn't exist and auto_pull is on, pull and route."""
         call_count = 0
 
-        def score_fn(model, queue_depths, estimated_tokens=0):
+        def score_fn(model, queue_depths, estimated_tokens=0, **kwargs):
             nonlocal call_count
             call_count += 1
             # Need > 2 because: first pass (1 call) + holding queue (1 call)
@@ -246,7 +246,7 @@ class TestAutoPull:
     async def test_auto_pull_no_node_fits(self):
         """When no node has enough memory, skip pull."""
         scorer = MagicMock()
-        scorer.score_request.side_effect = lambda m, d, e=0: []
+        scorer.score_request.side_effect = lambda m, d, e=0, **kw: []
         scorer._estimate_model_size.return_value = 40.0  # needs 40GB
         queue_mgr = _mock_queue_mgr()
         # Node with only 5GB free
@@ -274,7 +274,7 @@ class TestAutoPull:
     async def test_auto_pull_failure_returns_empty(self):
         """When pull fails, return empty results."""
         scorer = MagicMock()
-        scorer.score_request.side_effect = lambda m, d, e=0: []
+        scorer.score_request.side_effect = lambda m, d, e=0, **kw: []
         scorer._estimate_model_size.return_value = 5.0
         queue_mgr = _mock_queue_mgr()
         node = make_node(

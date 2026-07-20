@@ -20,6 +20,7 @@ from fleet_manager.server.queue_manager import QueueManager
 from fleet_manager.server.rebalancer import Rebalancer
 from fleet_manager.server.registry import NodeRegistry
 from fleet_manager.server.scorer import ScoringEngine
+from fleet_manager.server.session_affinity import SessionAffinityTracker
 from fleet_manager.server.streaming import StreamingProxy
 from fleet_manager.server.trace_store import TraceStore
 
@@ -40,7 +41,11 @@ async def lifespan(app: FastAPI):
     await latency_store.initialize()
     trace_store = TraceStore(settings.data_dir)
     await trace_store.initialize()
-    scorer = ScoringEngine(settings, registry, latency_store)
+    # Keeps a conversation on the node holding its warm prefix cache — see
+    # server/session_affinity.py for why that matters more than it looks.
+    sessions = SessionAffinityTracker()
+    scorer = ScoringEngine(settings, registry, latency_store, sessions=sessions)
+    app.state.sessions = sessions
     queue_mgr = QueueManager(registry=registry, settings=settings)
     streaming_proxy = StreamingProxy(registry, latency_store, trace_store, settings=settings)
     rebalancer = Rebalancer(settings, registry, scorer, queue_mgr, streaming_proxy)

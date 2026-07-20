@@ -496,3 +496,66 @@ class TestZombieReaperCheck:
         assert reaper[0].severity == Severity.CRITICAL
 
         _reaper_events.clear()
+
+
+class TestDecodeDegraded:
+    """The failure mode where every existing signal reports success.
+
+    2026-07-19: glm-4.7-flash decode collapsed ~7x for hours. Requests
+    completed, streams finished, status was 'completed', no errors. The first
+    visible symptom was a pile-up, by which point the cause was hours upstream.
+    """
+
+    def _engine(self):
+        from fleet_manager.server.health_engine import HealthEngine
+        return HealthEngine()
+
+    def test_fires_when_decode_slows_against_own_baseline(self):
+        recs = self._engine()._check_decode_degraded([{
+            "node_id": "bb", "model": "glm-4.7-flash:latest",
+            "recent_p99": 150.0, "baseline_p99": 21.0, "recent_n": 40,
+        }])
+        assert len(recs) == 1
+        assert recs[0].check_id == "decode_degraded"
+        assert recs[0].data["ratio"] == 7.14
+        # The fix text must point at contention, not at the model.
+        assert "contention" in recs[0].fix.lower()
+
+    def test_absolute_speed_is_not_the_signal(self):
+        """30 ms/token is healthy for a 120B and alarming for a 4B, so the
+        comparison has to be against the model's own baseline."""
+        engine = self._engine()
+        # Slow in absolute terms, but normal for this model → silent.
+        assert engine._check_decode_degraded([{
+            "node_id": "bb", "model": "big:120b",
+            "recent_p99": 90.0, "baseline_p99": 85.0, "recent_n": 50,
+        }]) == []
+        # Fast in absolute terms, but 5x its own baseline → fires.
+        assert len(engine._check_decode_degraded([{
+            "node_id": "bb", "model": "small:4b",
+            "recent_p99": 25.0, "baseline_p99": 5.0, "recent_n": 50,
+        }])) == 1
+
+    def test_no_recent_traffic_is_not_an_improvement(self):
+        """A model with no recent requests has recent_p99 == 0, which must not
+        read as an enormous speed-up — nor produce a divide-by-zero."""
+        engine = self._engine()
+        assert engine._check_decode_degraded([{
+            "node_id": "bb", "model": "idle:7b",
+            "recent_p99": 0.0, "baseline_p99": 30.0, "recent_n": 0,
+        }]) == []
+
+    def test_thin_samples_are_ignored(self):
+        """Below the sample floor a 'p99' is one unlucky request."""
+        engine = self._engine()
+        assert engine._check_decode_degraded([{
+            "node_id": "bb", "model": "m:1b",
+            "recent_p99": 500.0, "baseline_p99": 20.0, "recent_n": 3,
+        }]) == []
+
+    def test_improvement_is_silent(self):
+        engine = self._engine()
+        assert engine._check_decode_degraded([{
+            "node_id": "bb", "model": "m:1b",
+            "recent_p99": 10.0, "baseline_p99": 40.0, "recent_n": 100,
+        }]) == []

@@ -686,6 +686,57 @@ class TraceStore:
             failed += row[2]
         return {"total": total, "failed": failed, "by_model": by_model}
 
+    async def get_decode_latency_stats(
+        self, recent_s: int = 1800, baseline_s: int = 86400
+    ) -> list[dict]:
+        """Per ``node:model`` p99 TPOT, recent window vs its own baseline.
+
+        TPOT — time per output token — is ``(latency - ttft) / (completion_tokens
+        - 1)``.  Subtracting TTFT removes queue wait *and* prefill, so what
+        remains is close to pure decode: it degrades if and only if generation
+        itself is contended.  That is the distinction that makes it useful here.
+        Per-request tok/s conflates all three and will happily blame a model for
+        time it spent waiting in a queue — which is exactly how the 2026-07-19
+        `glm-4.7-flash` investigation lost several hours.
+
+        Compared against each model's *own* recent baseline rather than a fixed
+        threshold, because absolute TPOT is meaningless across model sizes: 30
+        ms/token is healthy for a 120B and terrible for a 4B.
+        """
+        if not self._db:
+            return []
+        now = time.time()
+        sql = """
+            SELECT node_id, model,
+                   (latency_ms - time_to_first_token_ms) * 1.0
+                       / (completion_tokens - 1) AS tpot
+            FROM request_traces
+            WHERE timestamp >= ?
+              AND status = 'completed'
+              AND time_to_first_token_ms IS NOT NULL
+              AND completion_tokens > 20
+              AND latency_ms > time_to_first_token_ms
+            ORDER BY node_id, model
+        """
+        out: dict[tuple[str, str], dict] = {}
+        for window, key in ((recent_s, "recent"), (baseline_s, "baseline")):
+            cursor = await self._read_db.execute(sql, (now - window,))
+            rows = await cursor.fetchall()
+            await cursor.close()
+            buckets: dict[tuple[str, str], list[float]] = {}
+            for node_id, model, tpot in rows:
+                if tpot and tpot > 0:
+                    buckets.setdefault((node_id, model), []).append(tpot)
+            for k, vals in buckets.items():
+                vals.sort()
+                entry = out.setdefault(
+                    k, {"node_id": k[0], "model": k[1]}
+                )
+                entry[f"{key}_p99"] = vals[min(int(len(vals) * 0.99), len(vals) - 1)]
+                entry[f"{key}_median"] = vals[len(vals) // 2]
+                entry[f"{key}_n"] = len(vals)
+        return list(out.values())
+
     async def get_error_rates_24h(self, lookback_s: int = 86400) -> list[dict]:
         """Per-node error rates for the given window (default 24h)."""
         if not self._db:

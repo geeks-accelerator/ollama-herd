@@ -107,6 +107,10 @@ class HealthEngine:
         # Trace-based checks (async, queries SQLite)
         if trace_store:
             recommendations.extend(await self._check_embed_error_rate(trace_store))
+            decode_stats = await trace_store.get_decode_latency_stats(
+                recent_s=self.RECENT_WINDOW_S
+            )
+            recommendations.extend(self._check_decode_degraded(decode_stats))
             cold_loads = await trace_store.get_cold_loads_24h()
             error_rates = await trace_store.get_error_rates_24h()
             retry_stats = await trace_store.get_retry_stats_24h()
@@ -1341,6 +1345,80 @@ class HealthEngine:
                     "native_port": node.text_embedding_port,
                 },
             ))
+        return recs
+
+    # A model's own p99 TPOT must exceed this multiple of its recent baseline
+    # before we call it degraded.  Decode genuinely varies with used context and
+    # batch size, so a tight threshold would fire constantly; 2x is well clear of
+    # that noise while still catching the 7x collapse observed 2026-07-19.
+    DECODE_DEGRADED_RATIO = 2.0
+    # Below this many recent samples the p99 is not a p99.  Also guards the
+    # degenerate case: a model with no recent traffic has recent_p99 == 0, which
+    # would otherwise read as an enormous improvement.
+    DECODE_MIN_SAMPLES = 20
+
+    def _check_decode_degraded(self, decode_stats) -> list[Recommendation]:
+        """Detect decode slowing down while everything still reports success.
+
+        This is the failure mode that has cost the most investigation time on
+        this project.  When a model's generation is contended, requests still
+        complete: the stream finishes, tokens are produced, no error is logged,
+        and the trace status is `completed`.  Nothing in the fleet's existing
+        signals distinguishes "healthy" from "taking 10x longer per token", so
+        the first visible symptom is a pile-up — by which point requests are
+        already failing and the cause is hours upstream.
+
+        TPOT is the discriminating measure because it excludes TTFT, and TTFT is
+        where queue wait and prefill live.  A request that waited 8 minutes for a
+        slot and then generated at full speed has terrible latency and *fine*
+        TPOT; that distinction is the entire point.  Comparing each model against
+        its own baseline rather than an absolute threshold matters just as much —
+        30 ms/token is healthy for a 120B and alarming for a 4B.
+        """
+        recs: list[Recommendation] = []
+        for st in decode_stats or []:
+            recent_n = st.get("recent_n", 0)
+            recent = st.get("recent_p99", 0.0)
+            baseline = st.get("baseline_p99", 0.0)
+            if recent_n < self.DECODE_MIN_SAMPLES or recent <= 0 or baseline <= 0:
+                continue
+            ratio = recent / baseline
+            if ratio < self.DECODE_DEGRADED_RATIO:
+                continue
+            model = st.get("model", "?")
+            node_id = st.get("node_id", "?")
+            recs.append(
+                Recommendation(
+                    check_id="decode_degraded",
+                    severity=Severity.WARNING,
+                    title=f"Decode {ratio:.1f}x slower than usual: {model} on {node_id}",
+                    description=(
+                        f"Time per output token is {recent:.0f} ms (p99) against a "
+                        f"24h baseline of {baseline:.0f} ms — {ratio:.1f}x worse, "
+                        f"over {recent_n} recent requests. Requests are still "
+                        f"completing, so nothing else will report this: only "
+                        f"generation speed changed."
+                    ),
+                    fix=(
+                        "Usually contention rather than the model. Check what else "
+                        f"is running on {node_id} — TPOT excludes queue wait, so "
+                        "this is other work competing for the GPU during "
+                        "generation, not requests waiting for a slot. If a caller "
+                        "polls this model on a fixed interval, confirm the "
+                        "interval still exceeds p99 latency; once a call outlasts "
+                        "its own poll period, requests stack and each one slows "
+                        "the rest."
+                    ),
+                    node_id=node_id,
+                    data={
+                        "model": model,
+                        "recent_p99_ms": round(recent, 1),
+                        "baseline_p99_ms": round(baseline, 1),
+                        "ratio": round(ratio, 2),
+                        "samples": recent_n,
+                    },
+                )
+            )
         return recs
 
     def _check_trace_store_write_failures(
