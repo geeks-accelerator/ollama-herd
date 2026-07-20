@@ -990,6 +990,38 @@ Three lines of published work address the same latency degradation *without* sac
 
 The strongest pro-capping number in the literature is Clockwork's (OSDI'20): concurrency bought ≤25% throughput while inflating tail latency **100×**, and its whole design is "execute one request at a time." Worth citing for the *mechanism* — but it is 2020-era fixed-shape DNN inference with no KV cache, and transferring the magnitude to autoregressive decode would be folklore.
 
+### Measured on THIS fleet, 2026-07-19 — no published M3 Ultra multi-stream table exists
+
+Unique random prompts per stream (prefix caching defeated — a first attempt with
+near-identical prompts showed aggregate rising past the admission limit, which
+was cache hits, not scaling). `decode t/s` is from Ollama's own `eval_duration`,
+so it excludes prefill and queue wait. `OLLAMA_NUM_PARALLEL=4`.
+
+**MoE — gpt-oss:120b** (128 experts, 4 active), our production model:
+
+| N | decode t/s per stream | aggregate t/s |
+|---|---|---|
+| 1 | 36.2 | 28.9 |
+| 2 | 26.2 | 39.1 |
+| **4** | **27.1** | **60.7** |
+| 8 | 28.9 | 58.2 ← retrograde |
+
+**Dense — gemma3:27b**, same box, same session:
+
+| N | decode t/s per stream | aggregate t/s |
+|---|---|---|
+| 1 | 21.3 | 7.1 |
+| 2 | 13.6 | 16.1 |
+| 4 | 7.4 | 18.1 |
+| 8 | 6.6 | 18.3 |
+
+**Four conclusions, and one of them refutes an earlier recommendation in this issue.**
+
+1. **`NUM_PARALLEL=4` is a good setting; my suggestion to try 2 was wrong.** At N=4 both aggregate *and* per-stream beat N=2 (60.7 vs 39.1 aggregate; 27.1 vs 26.2 per stream). There is no latency argument for 2 here.
+2. **N=8 is genuinely retrograde** (58.2 < 60.7) — throughput *decreases* with added load, which is `β > 0` in USL terms and the strongest possible justification for a cap. The cap shipped in `075348e` lands exactly on the peak.
+3. **Per-stream decode is flat from N=2 onward** (26.2 / 27.1 / 28.9). The cost of going concurrent is a one-time ~25% hit at N=1→2, not a progressive collapse. The 7× degradation seen in production traces is therefore *not* decode contention within one model — it is cross-model contention plus queue wait, which is why per-request `tok/s` misleads and TPOT does not.
+4. **Dense scales worse than MoE here, which is the opposite of the theory.** gemma3:27b flattens at ~18 t/s aggregate while per-stream collapses 21.3 → 6.6 (3.2×); gpt-oss holds per-stream flat and doubles aggregate. The expert-fan-out model predicted MoE should batch *worse*. It doesn't — at least not for these two models. Confounded by different model sizes and quantisations, so treat as a strong hint rather than a result, but it is direct evidence against the mechanism this issue previously leaned on.
+
 ### Do not start by writing code
 
 Start by reproducing the curve deliberately: drive N concurrent streams at fixed N against one model on an idle fleet, record per-request and aggregate tok/s, and find the knee. The numbers above are observational — gathered from production traffic that happened to vary — not a controlled sweep. A controlled sweep is what tells you whether the knee is at 2, 3, or 4, and whether it moves with model size.
