@@ -22,6 +22,32 @@ from __future__ import annotations
 OLLAMA_HOT_MODEL_CAP = 3
 
 
+# Ollama's documented default for OLLAMA_NUM_PARALLEL.  It was auto-selected
+# (1/2/4 by available memory) until ollama PR #11330 removed auto-selection on
+# 2025-07-08; since then an unset value means exactly 1.  Deliberately
+# conservative: guessing high hands a backend more concurrent work than it will
+# admit, and the surplus queues *inside* Ollama where herd can't see it.
+OLLAMA_DEFAULT_NUM_PARALLEL = 1
+
+
+def decode_parallelism_for(node) -> int:
+    """How many requests this node's Ollama will actually decode at once.
+
+    Ollama admits ``OLLAMA_NUM_PARALLEL`` requests per model and queues the rest
+    internally.  Herd running more workers than that doesn't add throughput — it
+    just moves the queue somewhere herd can neither reorder nor reject, which is
+    how a slow model turns into a silent pile-up.
+
+    Measured 2026-07-19 on this fleet (glm-4.7-flash, idle, ~1.5K prompt):
+    aggregate throughput saturates at N=4 and is flat to N=8, and N=4 is exactly
+    the configured ``OLLAMA_NUM_PARALLEL`` — the plateau was the admission limit,
+    not the hardware.
+    """
+    ollama = getattr(node, "ollama", None) if node is not None else None
+    reported = getattr(ollama, "num_parallel", 0) or 0
+    return reported if reported > 0 else OLLAMA_DEFAULT_NUM_PARALLEL
+
+
 def hot_model_cap_for(node) -> int:
     """The node's real hot-model cap, or the documented default if unreported.
 

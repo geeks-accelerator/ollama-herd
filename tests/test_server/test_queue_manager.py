@@ -241,3 +241,34 @@ class TestQueueManager:
         assert "a:phi4:14b" in depths
         assert "b:llama3.3:70b" in depths
         await qm.shutdown()
+
+
+def test_concurrency_never_exceeds_backend_admission_limit():
+    """Ollama admits OLLAMA_NUM_PARALLEL requests per model and queues the rest
+    internally. Workers beyond that don't decode — they block inside Ollama,
+    invisible to the queue meant to be managing them. Measured 2026-07-19:
+    aggregate throughput saturated at exactly the configured value (4)."""
+    from fleet_manager.server.serializers import decode_parallelism_for
+
+    class _Ollama:
+        def __init__(self, np): self.num_parallel = np
+    class _Node:
+        def __init__(self, np): self.ollama = _Ollama(np)
+
+    assert decode_parallelism_for(_Node(4)) == 4
+    assert decode_parallelism_for(_Node(2)) == 2
+    # Unreported (older agent, or the var is unset) → Ollama's documented
+    # default of 1, not an optimistic guess.
+    assert decode_parallelism_for(_Node(0)) == 1
+    assert decode_parallelism_for(None) == 1
+
+
+def test_capacity_math_still_applies_when_it_is_the_tighter_bound():
+    """The backend cap is a ceiling, not a replacement — a memory-starved node
+    must still get fewer slots than the backend would allow."""
+    from fleet_manager.server.queue_manager import compute_concurrency
+
+    # Plenty of headroom → capacity math would allow many...
+    assert compute_concurrency(available_memory_gb=500.0, model_size_gb=20.0) == 8
+    # ...but no headroom still clamps to the floor regardless of the backend.
+    assert compute_concurrency(available_memory_gb=20.0, model_size_gb=20.0) == 1

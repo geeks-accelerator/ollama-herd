@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import logging
 import os
+import sys
 import platform
 import shutil
 import subprocess
@@ -93,6 +94,40 @@ def _make_lan_reachable_url(ollama_host: str, lan_ip: str) -> str:
         port = parsed.port or 11434
         return f"http://{lan_ip}:{port}"
     return ollama_host
+
+
+# Cache for launchctl lookups — the values can't change without restarting
+# Ollama, and shelling out on every heartbeat would be wasteful.
+_LAUNCHCTL_CACHE: dict[str, str] = {}
+
+
+def _ollama_env(name: str) -> str:
+    """Read an Ollama env var, falling back to launchctl on macOS.
+
+    Ollama.app is started by launchd, so its configuration is conventionally set
+    with ``launchctl setenv`` — which does **not** put the value in any shell's
+    environment.  A node agent started from a shell therefore can't see it, and
+    would silently report "unset" for a variable that is very much set for the
+    process it's describing.  (``OLLAMA_MAX_LOADED_MODELS`` avoided this on the
+    dev fleet only because it happened to also be in ``~/.fleet-manager/env``.)
+
+    Shell env still wins when present — it's what a non-launchd Ollama would use.
+    """
+    val = os.environ.get(name, "").strip()
+    if val or sys.platform != "darwin":
+        return val
+    if name in _LAUNCHCTL_CACHE:
+        return _LAUNCHCTL_CACHE[name]
+    found = ""
+    try:
+        out = subprocess.run(
+            ["launchctl", "getenv", name], capture_output=True, text=True, timeout=5
+        )
+        found = (out.stdout or "").strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug(f"launchctl getenv {name} failed: {type(exc).__name__}: {exc}")
+    _LAUNCHCTL_CACHE[name] = found
+    return found
 
 
 @functools.lru_cache(maxsize=1)
@@ -471,7 +506,7 @@ async def collect_heartbeat(
     # Ollama exposes no "what's your max_loaded_models" endpoint.  0 means
     # "unset/unknown"; the router then falls back to Ollama's documented default.
     max_loaded_models = 0
-    raw_cap = os.environ.get("OLLAMA_MAX_LOADED_MODELS", "").strip()
+    raw_cap = _ollama_env("OLLAMA_MAX_LOADED_MODELS")
     if raw_cap:
         try:
             parsed = int(raw_cap)
@@ -481,6 +516,19 @@ async def collect_heartbeat(
             max_loaded_models = parsed if parsed > 0 else 0
         except ValueError:
             logger.debug(f"OLLAMA_MAX_LOADED_MODELS not an int: {raw_cap!r}")
+
+    # Same story for OLLAMA_NUM_PARALLEL — Ollama's per-model decode
+    # concurrency.  Read from our own environment for the same reason: no
+    # endpoint exposes it, and the node agent shares an environment with the
+    # Ollama it manages.  0 = unset/unknown.
+    num_parallel = 0
+    raw_np = _ollama_env("OLLAMA_NUM_PARALLEL")
+    if raw_np:
+        try:
+            parsed_np = int(raw_np)
+            num_parallel = parsed_np if parsed_np > 0 else 0
+        except ValueError:
+            logger.debug(f"OLLAMA_NUM_PARALLEL not an int: {raw_np!r}")
 
     # MLX backend — the supervisor set drives heartbeat.mlx_servers; each
     # healthy server's model is added to models_available with an mlx: prefix.
@@ -559,6 +607,7 @@ async def collect_heartbeat(
             models_available=models_available,
             models_available_sizes=models_available_sizes,
             max_loaded_models=max_loaded_models,
+            num_parallel=num_parallel,
             requests_active=requests_active,
         ),
         ollama_host=_make_lan_reachable_url(ollama_host, lan_ip),

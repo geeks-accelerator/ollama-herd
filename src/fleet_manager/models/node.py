@@ -100,6 +100,12 @@ class OllamaMetrics(BaseModel):
     # concurrent residents, disproving the long-documented "hardcoded 3-model
     # cap on macOS" that `free_slots` was built on.
     max_loaded_models: int = 0
+    # The node's OLLAMA_NUM_PARALLEL — how many requests Ollama will decode
+    # concurrently for one model.  The router caps queue concurrency at this,
+    # because anything beyond it queues *inside* Ollama where herd can neither
+    # see, reorder nor reject it.  0 = not reported → fall back to Ollama's
+    # documented default of 1 rather than guessing high.
+    num_parallel: int = 0
     requests_active: int = 0
 
 

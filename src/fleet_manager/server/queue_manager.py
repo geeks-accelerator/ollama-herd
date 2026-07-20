@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 
 from fleet_manager.models.request import QueueEntry, RequestStatus
+from fleet_manager.server.serializers import decode_parallelism_for
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +249,17 @@ class QueueManager:
             available_gb = min(available_gb, node.capacity.ceiling_gb)
 
         concurrency = compute_concurrency(available_gb, model_size_gb)
-        return concurrency
+
+        # Never exceed what the backend will actually decode concurrently.
+        # `compute_concurrency` answers "how many KV caches fit in RAM?", which
+        # on a large-memory node is always the ceiling — but the binding limit
+        # is Ollama's own admission cap.  Workers beyond it don't decode; they
+        # block inside Ollama, invisible to the queue that is supposed to be
+        # managing them.
+        backend_limit = decode_parallelism_for(node)
+        if backend_limit > 0:
+            concurrency = min(concurrency, backend_limit)
+        return max(_MIN_CONCURRENCY, concurrency)
 
     def _ensure_workers(self, q: DeviceModelQueue, queue_key: str):
         """Ensure the right number of workers are running for a queue."""
