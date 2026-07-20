@@ -44,6 +44,43 @@ from fleet_manager.server.registry import NodeRegistry
 from fleet_manager.server.streaming import StreamingProxy
 from fleet_manager.server.trace_store import TraceStore
 
+# Pinned-model load failures, for the `pin_cannot_fit` health check.
+#
+# A pin the fleet can physically never satisfy retries forever: the refresh
+# cycle notices the model isn't resident, tries to load it, the memory gate
+# refuses, and ten minutes later it does the whole thing again.  Observed
+# 2026-07-19 — `llama4:maverick` (needs ~294GB) looped 56 times over 9.5 hours,
+# entirely at INFO, so it never surfaced in any error scan.  It was found only
+# by tracing what had evicted three unrelated models.
+#
+# `POST /fleet/pin` refuses impossible pins with a 409 since 0.8.2, but that
+# guards the *entry* point only: a pin made before that check existed, forced
+# with `"force": true`, or made when memory was free and later starved by other
+# residents, still ends up here.  A backstop at the door is not a substitute for
+# noticing that the instruction keeps failing.
+_pin_fit_failures: list[dict] = []
+
+
+def _record_pin_fit_failure(
+    model: str, node_id: str, needed_gb: float, available_gb: float
+) -> None:
+    _pin_fit_failures.append({
+        "timestamp": time.time(),
+        "model": model,
+        "node_id": node_id,
+        "needed_gb": needed_gb,
+        "available_gb": available_gb,
+    })
+    if len(_pin_fit_failures) > 200:
+        _pin_fit_failures.pop(0)
+
+
+def get_pin_fit_failures(hours: float = 24) -> list[dict]:
+    """Pinned-model load failures in the last N hours."""
+    cutoff = time.time() - (hours * 3600)
+    return [e for e in _pin_fit_failures if e["timestamp"] >= cutoff]
+
+
 logger = logging.getLogger(__name__)
 
 # Cache priority scores to avoid repeated DB queries
@@ -461,6 +498,12 @@ async def _load_model_on_best_node(
             f"Preloader: skipping {model} — needs ~{resident_gb:.0f}GB resident"
             f"{ctx_note} but only {available:.0f}GB free on {best.node_id} ({why})"
         )
+        # Only pinned models are worth surfacing.  An ordinary preload that
+        # doesn't fit is the gate working as intended; a *pin* that doesn't fit
+        # is a standing instruction the fleet cannot carry out, and it will be
+        # retried on every refresh until a human intervenes.
+        if "pinned" in (why or ""):
+            _record_pin_fit_failure(model, best.node_id, resident_gb, available)
         return False
     ctx_note = f" @ {num_ctx} ctx" if num_ctx else ""
     logger.info(

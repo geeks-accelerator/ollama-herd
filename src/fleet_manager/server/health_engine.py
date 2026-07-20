@@ -100,6 +100,8 @@ class HealthEngine:
         recommendations.extend(self._check_mapped_models_hot(nodes))
         recommendations.extend(self._check_anthropic_no_chat_model(nodes))
         recommendations.extend(self._check_trace_store_write_failures(trace_store))
+        # Needs no trace data — reads the preloader's own event ring.
+        recommendations.extend(self._check_pin_cannot_fit())
         recommendations.extend(self._check_text_embedding_backend_missing(nodes))
         recommendations.extend(self._check_text_embedding_ollama_bypass(nodes))
         recommendations.extend(self._check_nomic_loaded_in_ollama(nodes))
@@ -1356,6 +1358,72 @@ class HealthEngine:
     # degenerate case: a model with no recent traffic has recent_p99 == 0, which
     # would otherwise read as an enormous improvement.
     DECODE_MIN_SAMPLES = 20
+
+    # A pin that fails its fit test this many times in 24h isn't transient
+    # memory pressure — it's an instruction the fleet can't carry out.  Each
+    # refresh cycle is ~10 minutes, so 3 means it has been failing for roughly
+    # half an hour and will keep failing.
+    PIN_FIT_FAILURE_THRESHOLD = 3
+
+    def _check_pin_cannot_fit(self) -> list[Recommendation]:
+        """Surface a pinned model the fleet keeps failing to load.
+
+        The preloader retries pinned models every refresh.  When one can never
+        fit, that becomes an infinite loop of "notice it's evicted → try to load
+        → refuse → wait 10 minutes", logged entirely at INFO.  On 2026-07-19 a
+        pin needing ~294GB looped 56 times over 9.5 hours on this fleet without
+        producing a single WARNING, and was found only while tracing what had
+        evicted three unrelated models.
+
+        The interesting part isn't the wasted cycles — it's that a pin is a
+        promise the fleet is quietly failing to keep.  Anything relying on that
+        model being resident is getting cold loads or a fallback, and nothing
+        says so.
+        """
+        from fleet_manager.server.model_preloader import get_pin_fit_failures
+
+        by_model: dict[tuple[str, str], list[dict]] = {}
+        for ev in get_pin_fit_failures(hours=24):
+            by_model.setdefault((ev["model"], ev["node_id"]), []).append(ev)
+
+        recs: list[Recommendation] = []
+        for (model, node_id), events in by_model.items():
+            if len(events) < self.PIN_FIT_FAILURE_THRESHOLD:
+                continue
+            worst = max(events, key=lambda e: e["needed_gb"] - e["available_gb"])
+            recs.append(
+                Recommendation(
+                    check_id="pin_cannot_fit",
+                    severity=Severity.WARNING,
+                    title=f"Pinned model can't be loaded: {model} on {node_id}",
+                    description=(
+                        f"The preloader has failed to load pinned {model} "
+                        f"{len(events)} times in 24h — it needs "
+                        f"~{worst['needed_gb']:.0f}GB but only "
+                        f"{worst['available_gb']:.0f}GB was free. The pin is "
+                        f"retried every refresh, so this repeats indefinitely, "
+                        f"and anything expecting {model} to be resident is "
+                        f"silently getting a cold load or a fallback instead."
+                    ),
+                    fix=(
+                        f"If the pin is no longer needed: "
+                        f"DELETE /fleet/pin/{model}. If it is, free memory by "
+                        f"unpinning something else (GET /fleet/limits shows what "
+                        f"you're holding), or lower the model's context via "
+                        f"FLEET_NUM_CTX_OVERRIDES — KV scales with context, so a "
+                        f"smaller window can be the difference between fitting "
+                        f"and not."
+                    ),
+                    node_id=node_id,
+                    data={
+                        "model": model,
+                        "failures_24h": len(events),
+                        "needed_gb": round(worst["needed_gb"], 1),
+                        "available_gb": round(worst["available_gb"], 1),
+                    },
+                )
+            )
+        return recs
 
     def _check_decode_degraded(self, decode_stats) -> list[Recommendation]:
         """Detect decode slowing down while everything still reports success.

@@ -559,3 +559,58 @@ class TestDecodeDegraded:
             "node_id": "bb", "model": "m:1b",
             "recent_p99": 10.0, "baseline_p99": 40.0, "recent_n": 100,
         }]) == []
+
+
+class TestPinCannotFit:
+    """A pin the fleet can never satisfy retries forever, silently.
+
+    2026-07-19: llama4:maverick (needs ~294GB) looped 56 times over 9.5 hours
+    entirely at INFO — no error scan would ever surface it. Found only by
+    tracing what had evicted three unrelated models.
+    """
+
+    def _engine(self):
+        from fleet_manager.server.health_engine import HealthEngine
+        return HealthEngine()
+
+    def _seed(self, n, model="llama4:maverick"):
+        from fleet_manager.server import model_preloader as mp
+        mp._pin_fit_failures.clear()
+        for _ in range(n):
+            mp._record_pin_fit_failure(model, "bb", 294.0, 217.0)
+
+    def test_fires_after_repeated_failures(self):
+        self._seed(5)
+        recs = self._engine()._check_pin_cannot_fit()
+        assert len(recs) == 1
+        assert recs[0].check_id == "pin_cannot_fit"
+        assert recs[0].data["failures_24h"] == 5
+        # The fix must name the actual escape hatch.
+        assert "/fleet/pin/" in recs[0].fix
+
+    def test_transient_pressure_is_not_a_broken_pin(self):
+        """One or two failures is memory contention; it may resolve on its own."""
+        self._seed(2)
+        assert self._engine()._check_pin_cannot_fit() == []
+
+    def test_silent_when_no_pins_have_failed(self):
+        from fleet_manager.server import model_preloader as mp
+        mp._pin_fit_failures.clear()
+        assert self._engine()._check_pin_cannot_fit() == []
+
+    def test_reports_the_worst_shortfall(self):
+        """Memory fluctuates; the operator needs the worst case to size against."""
+        from fleet_manager.server import model_preloader as mp
+        mp._pin_fit_failures.clear()
+        mp._record_pin_fit_failure("m:70b", "bb", 100.0, 90.0)   # short by 10
+        mp._record_pin_fit_failure("m:70b", "bb", 100.0, 20.0)   # short by 80
+        mp._record_pin_fit_failure("m:70b", "bb", 100.0, 85.0)
+        rec = self._engine()._check_pin_cannot_fit()[0]
+        assert rec.data["available_gb"] == 20.0
+
+    def test_event_ring_is_bounded(self):
+        from fleet_manager.server import model_preloader as mp
+        mp._pin_fit_failures.clear()
+        for _ in range(500):
+            mp._record_pin_fit_failure("m:1b", "bb", 10.0, 5.0)
+        assert len(mp._pin_fit_failures) <= 200

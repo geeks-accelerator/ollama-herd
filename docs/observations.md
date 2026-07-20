@@ -802,3 +802,24 @@ What it actually was: `OLLAMA_NUM_PARALLEL=4`. The router was dispatching 8 work
 - The "78.5 tok/s in isolation" baseline that framed the whole investigation used a **40-token prompt**. At the real ~14K prompt the same model does 32 tok/s. Benchmark the workload's shape, not a convenient one.
 
 **What the research changed about the fix.** The literature review commissioned to support building a bandwidth-aware cap mostly argued against shipping one: no serving system targets p99 as a control objective or measures bandwidth live; llama.cpp already implements Sarathi-style chunked prefill and Ollama already sets the recommended chunk size; and queue reordering is a no-op below the admission limit — measured here as depth never exceeding 4 across 91 enqueues. The one lever it *did* endorse — session affinity — had nothing to do with concurrency at all.
+
+---
+
+## 2026-07-19 — A pin is a promise, and nothing noticed the fleet breaking it
+
+**Evidence**: Three models vanished from a 512GB fleet mid-conversation. Tracing what evicted them found `llama4:maverick` — pinned, needing ~294GB, and therefore unloadable — being retried by the preloader **56 times over 9.5 hours**:
+
+```
+Preloader refresh: pinned model llama4:maverick was evicted — reloading on bb
+Preloader: skipping llama4:maverick — needs ~294GB resident @ 32768 ctx but only 217GB free
+```
+
+Notice it's gone → try to load → memory gate refuses → wait ten minutes → repeat. Every line at **INFO**, so a `grep '"level": "ERROR"'` soak check — the exact command in this repo's release checklist — reported a perfectly clean fleet throughout.
+
+`POST /fleet/pin` has refused impossible pins with a `409` since 0.8.2. That check guards the **entry point only**. This pin predated it, and nothing re-evaluated the promise afterwards.
+
+**Insight**: a guard at the door doesn't cover the case where the world changes after entry. A pin is a *standing instruction* — "keep this resident" — and standing instructions need ongoing verification, not just admission-time validation. The same shape appears elsewhere in this codebase: `FLEET_NUM_CTX_OVERRIDES` is honoured on cold load and silently inapplicable to a resident model, and a health check now exists for that too. Both are cases where the system accepted an instruction it later couldn't carry out, and said nothing.
+
+The second-order cost is the one that actually hurt: anything relying on that model being resident was silently getting cold loads or a fallback. **A promise the system stops keeping is worse than one it refuses outright**, because the caller has no signal to adapt to.
+
+**On log levels.** The retry was arguably INFO-worthy in isolation — one failed preload is routine. What is not routine is the *56th*. Severity belongs to the pattern, not the event, which is why the new `pin_cannot_fit` check counts occurrences over 24h rather than reacting to any single failure. Same reasoning as `trace_store_write_failures`, which was added after 40,000 individually-unremarkable write failures went unnoticed for four days.
