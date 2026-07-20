@@ -780,3 +780,25 @@ Homebrew 6.x requires `brew trust` for third-party taps. Neither README mentione
 Generalises past Homebrew to every distribution surface with per-machine state: a Docker layer cache, a warm `~/.m2`, an npm lockfile resolved against a registry mirror, a pip cache holding a wheel the index no longer serves. The release gate has to run somewhere that has never seen the project — or must actively delete the state that would let it cheat. Related, and the same lesson one layer up: [2026-04-25 — A bumped Homebrew tap is *described*, not *tested*](#2026-04-25--a-bumped-homebrew-tap-is-described-not-tested).
 
 **Also corrected**: the checklist's "~5 min" install estimate. Homebrew runs `pip --no-binary :all:`, so all 39 resources build from source including a Rust compile of `pydantic-core` — the real figure is **~25 minutes**. An operator budgeting 5 would kill it and conclude the formula had hung, which is its own false failure.
+
+---
+
+## 2026-07-19 — The bottleneck was an admission limit wearing a hardware costume
+
+**Evidence**: A model decoding 7× slower under load looked like a bandwidth problem on a memory-bandwidth-bound workload, on hardware whose bandwidth is its headline spec. Every step of that reasoning was wrong, and each wrong step was disproved by a cheaper measurement than the one before.
+
+1. *Prefill regression* — the model had a **fixed** prefill bug on record, so it was the natural suspect. Killed by `time_to_first_token_ms`: prefill was a healthy 13–35s even on the failures.
+2. *Oversized resident context* (202,752 ctx / 63.2 GB while the configured override was 32,768). Killed by reproducing the exact production shape **at that same residency**: 105s isolated versus 500–640s in production.
+3. *Memory bandwidth* — the framing the whole investigation was named after. Killed without any byte estimates: gpt-oss-20b decodes at 116.08 t/s on M2 Ultra and 115.52 on M3 Ultra, flat despite more bandwidth; Qwen3-30B-A3B hits 113 t/s on a 546 GB/s M4 Max against ~107 on an 819 GB/s M3 Ultra. More bandwidth buys nothing at batch 1.
+
+What it actually was: `OLLAMA_NUM_PARALLEL=4`. The router was dispatching 8 workers per queue; Ollama admitted 4 and queued the rest internally, where the queue reporting depth 0 could not see them. A controlled sweep plateaued at exactly 4 — and the plateau sitting precisely on a configured value is the tell.
+
+**Insight**: **when a performance curve plateaus at exactly a configured number, suspect the configuration before the physics.** Hardware limits rarely land on round integers that also appear in your environment. The corollary is worse: a *hypothesis* named after hardware attracts hardware-shaped evidence — the issue was titled "bandwidth-aware concurrency" for hours after the bandwidth premise was dead, and the title kept steering the work. Name issues after the symptom, not the suspected cause.
+
+**The near-miss worth recording.** The proposed fix for hypothesis (2) was to unload the model so it would cold-load at the smaller context. That would have "worked" — unloading also drains the queued backlog — and the recovery would have been credited to the context change. A fix that works for the wrong reason is more dangerous than no fix, because it ends the investigation *and* writes the wrong cause into the docs.
+
+**Methodology notes, both self-inflicted:**
+- A first concurrency sweep reused near-identical prompts across streams and showed aggregate throughput rising past the admission limit. That was **prefix-cache hits**, not scaling. Identical prompts across concurrent streams is not a control, it is a confound.
+- The "78.5 tok/s in isolation" baseline that framed the whole investigation used a **40-token prompt**. At the real ~14K prompt the same model does 32 tok/s. Benchmark the workload's shape, not a convenient one.
+
+**What the research changed about the fix.** The literature review commissioned to support building a bandwidth-aware cap mostly argued against shipping one: no serving system targets p99 as a control objective or measures bandwidth live; llama.cpp already implements Sarathi-style chunked prefill and Ollama already sets the recommended chunk size; and queue reordering is a no-op below the admission limit — measured here as depth never exceeding 4 across 91 enqueues. The one lever it *did* endorse — session affinity — had nothing to do with concurrency at all.

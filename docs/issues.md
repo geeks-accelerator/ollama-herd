@@ -834,7 +834,7 @@ A clean ~7× dose-response curve. These MoE models are memory-bandwidth-bound on
 
 ---
 
-## OPEN — `compute_concurrency` sizes queues by memory capacity, and the bottleneck is neither capacity nor bandwidth
+## PARTLY RESOLVED — `compute_concurrency` sized queues by memory capacity, and the bottleneck is neither capacity nor bandwidth
 
 **Severity:** Medium — costs latency under load on every large-model queue; no correctness impact
 **Found:** 2026-07-19, root-causing the `glm-4.7-flash` slowdown above
@@ -908,6 +908,14 @@ Two consequences:
 
 1. **The cheapest correct fix is not a bandwidth model at all** — it is to stop handing a backend more concurrent work than it will admit. The node already reports its cap in the heartbeat (`OllamaMetrics.max_loaded_models` exists; `num_parallel` should join it), and `hot_model_cap_for(node)` is the established pattern for consuming such a value. Capping queue concurrency at the backend's own parallelism converts invisible in-Ollama queueing into visible herd queueing, which is schedulable.
 2. **The real bandwidth knee is still unmeasured.** Finding it requires sweeping `OLLAMA_NUM_PARALLEL` itself (1, 2, 4, 8) with an Ollama restart per step, and repeating per model class. Until then, any bandwidth formula would be fitted to a curve that is really an admission limit.
+
+### What shipped (2026-07-19)
+
+**Concurrency is now capped at the backend's admission limit** — `min(memory_slots, OLLAMA_NUM_PARALLEL)`, commit `075348e`. Queues on this fleet went 8 → 4, verified live. That is the change nothing in the research argued against, and the N=8 retrograde measurement below is its justification.
+
+**Not shipped, deliberately:** the bandwidth-aware model this issue was opened to build. The premise did not survive (see below). Also not shipped: queue reordering (measured no-op at this fleet's queue depths), chunked prefill (already optimal), and USL fitting (unfittable at `num_parallel=4`).
+
+**Still open:** whether a *node-level* budget shared across model queues is worth building. The original failure was cross-model contention, which a per-queue cap cannot see. Nothing in the LLM-serving literature does this; the template would be Heracles (ISCA'15), which enforced DRAM bandwidth indirectly by throttling the co-runner's concurrency.
 
 ### ⚠️ Premise correction (2026-07-19, later) — it is NOT bandwidth-bound
 

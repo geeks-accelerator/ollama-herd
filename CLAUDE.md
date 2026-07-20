@@ -18,7 +18,7 @@ The `--extra embedding` now also installs `fastembed` for the **native text embe
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 1204 tests (~40s)
+uv run pytest                    # run all 1224 tests (~40s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -157,7 +157,8 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 
 | Module | Purpose |
 |--------|---------|
-| `server/scorer.py` | 7-signal scoring: thermal, memory, queue, wait, affinity, availability, context fit — Signals 3/4/5 are bandwidth-aware when `memory_bandwidth_gbps` is populated |
+| `server/scorer.py` | 8-signal scoring: thermal, memory, queue, wait, role affinity, availability, context fit, session affinity — Signals 3/4/5 are bandwidth-aware when `memory_bandwidth_gbps` is populated |
+| `server/session_affinity.py` | Pins a conversation to the node holding its warm prefix cache — turn N+1 costs ~hundreds of prefill tokens instead of ~30K, which also removes the decode interference that prefill inflicts on co-resident streams |
 | `server/hardware_lookup.py` | Chip → memory bandwidth table (Apple Silicon + discrete GPUs) powering device-aware scoring |
 | `server/queue_manager.py` | Per `node:model` queues with dynamic concurrency + zombie reaper |
 | `server/streaming.py` | httpx proxy to Ollama + NDJSON↔SSE + auto-retry + context protection + thinking model inflate |
@@ -265,7 +266,7 @@ Silent failures are dishonest. Fail fast, fail loud.
 - **Fleet:** Neons-Mac-Studio (512GB M3 Ultra) + Lucass-MacBook-Pro-2 (128GB M4 Max). Mac Studio runs two MLX servers: `mlx:Qwen3-Coder-Next-4bit` on :11440 for coding (no draft — Qwen3-Next's hybrid linear-attn architecture builds a non-trimmable `ArraysCache` and still hits mlx-lm#1081) + `mlx:Qwen3-Coder-30B-A3B-Instruct-4bit` on :11441 as dedicated compactor with `--draft-model mlx-community/Qwen3-1.7B-4bit --num-draft-tokens 4` for speculative decoding (~94 tok/s on M3 Ultra). Plus `gpt-oss:120b` via Ollama + `nomic-embed-text` via native fastembed server (:11439).
 - **Ollama:** **`0.32.1`** (upgraded from `0.24.0` on 2026-07-17 — we had been documenting `0.20.4` while running `0.24.0`, 8 versions behind). `OLLAMA_NUM_PARALLEL=4`, `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=10` (in `~/.zshrc` **and** `launchctl setenv` — Ollama is the Mac app launched by launchd, so it reads launchctl; **`brew upgrade ollama` does nothing** — a stale brew formula sits at 0.16.3). **Include the Ollama version in soak checks** (`curl -s localhost:11434/api/version`) so this can't drift silently again. 0.32.1 brought glm 13.7→77.8 tok/s, gpt-oss 50.9→74.5, and working prefix caching — all via llama.cpp. **`OLLAMA_NEW_ENGINE` no longer exists** — Ollama deleted both CGO engines (`runner/ollamarunner`, `runner/llamarunner`) in PR #16031 (2026-05-29, −430K lines) and now shells out to upstream `llama-server` for every GGUF model; the env var is absent from `envconfig/config.go`. The Go engine was reborn as `x/mlxrunner` for Apple Silicon MLX, selected **per-model** by `req.model.IsMLX()` — not by any flag — and it ignores `OLLAMA_NUM_PARALLEL` entirely. So there is no switch to flip: a GGUF model cannot use MLX. See `docs/plans/ollama-0.32-upgrade-and-mlx-evaluation.md`.
 - **Skills:** 37 on ClawHub across `skills/`. When updating code: `grep -rn "1006 tests\|36 checks" skills/`
-- **Health:** 38 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
+- **Health:** 39 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
 
 ## Conventions
 

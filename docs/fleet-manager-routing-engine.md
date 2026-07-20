@@ -5,7 +5,7 @@
 
 ## Overview
 
-The routing engine is the brain of Fleet Manager. Every incoming request passes through a five-stage pipeline that eliminates unsuitable candidates, scores the survivors across seven weighted signals, selects a winner, and then triggers background processes to keep the fleet ahead of future demand.
+The routing engine is the brain of Fleet Manager. Every incoming request passes through a five-stage pipeline that eliminates unsuitable candidates, scores the survivors across eight weighted signals, selects a winner, and then triggers background processes to keep the fleet ahead of future demand.
 
 The goal of every routing decision is to minimize **total response time**:
 
@@ -24,7 +24,7 @@ Incoming Request
       ↓
 Stage 1: Hard Elimination    → removes nodes that physically cannot serve
       ↓
-Stage 2: Scoring             → ranks survivors across 7 weighted signals
+Stage 2: Scoring             → ranks survivors across 8 weighted signals
       ↓
 Stage 3: Final Decision      → highest score wins, request enters queue
       ↓
@@ -61,7 +61,7 @@ The request enters a **holding queue** rather than failing. The router retries e
 
 ## Stage 2 — Scoring
 
-Each surviving candidate receives a score composed of seven weighted signals. Higher total score wins. The signals are designed to be additive and independent — each captures a distinct dimension of routing quality.
+Each surviving candidate receives a score composed of eight weighted signals. Higher total score wins. The signals are designed to be additive and independent — each captures a distinct dimension of routing quality.
 
 ---
 
@@ -213,6 +213,28 @@ ratio > 8.0      +15  (massive headroom)
 ```
 
 Only applies to models that are already loaded (hot) with a known `context_length`. Returns 0 for cold models or when token count is unknown — avoiding cold loads remains the #1 priority.
+
+### Signal 8 — Session Affinity
+**Weight: 0 or +20 points**
+
+Keeps a conversation on the node that last served it, so its prefix cache stays warm.
+
+llama.cpp skips prompt tokens it has already processed — `get_common_prefix(slot.prompt.tokens, input_tokens)` — so turn N+1 of a coding session, which resends the entire conversation, can cost a few hundred tokens of prefill instead of thirty thousand.
+
+That matters more than a single session's latency. Prefill is the **only** thing that stalls other requests' generation: llama.cpp admits decode tokens first and fills the remaining batch budget with prompt chunks, so every co-resident stream loses roughly one decode step per prefill chunk. Cutting a session's prefill ~100× therefore also removes the interference it inflicts on everything else on that node.
+
+```
+session pinned to this node, pin still fresh   +20
+no session identity / no pin / expired pin       0
+```
+
+**Session identity** comes from an explicit `session:<id>` tag when the client provides one, otherwise `client_ip|model`. The fallback is right for the common case (one agentic session per client) and wrong in a way that costs only a cold prefill — two concurrent sessions from one IP on one model share a pin and may collide, which is still better than a cold prefill on *every* turn.
+
+**Why 20.** Enough to beat ordinary jitter between comparable nodes; deliberately less than Signal 1's 50, so a warm cache never routes traffic into a node that is about to throttle. Affinity is a preference, never a constraint — elimination runs first, so an offline, drained or over-full node is never chosen because a session once landed there.
+
+**Deliberately approximate.** The router cannot see Ollama's cache. A pin is a bet that the node still holds the prefix; the TTL (15 minutes) is how long that bet stays credible. `OLLAMA_NUM_PARALLEL` slots rotate, so even the right node may have evicted the conversation — but being wrong costs one cold prefill, exactly what would have happened without affinity, so the downside is bounded.
+
+On a single-node fleet this signal is inert. It matters the moment a second node joins, when a multi-turn session would otherwise bounce and re-prefill from cold on every turn.
 
 When estimated tokens exceed the context window on the winning node, the response includes an `X-Fleet-Context-Overflow` header warning the client that Ollama may truncate the input.
 
@@ -381,6 +403,7 @@ weights:
   role_affinity:    25           # max points for Signal 5 (bandwidth-aware)
   availability_trend: 10         # max points for Signal 6
   context_fit:      15           # max points for Signal 7
+  session_affinity: 20           # Signal 8 (constant, not tunable)
 
 # Device-aware scoring toggles
 device_aware_scoring:

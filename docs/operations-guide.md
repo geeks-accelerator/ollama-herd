@@ -346,6 +346,22 @@ headroom = (16 - 6) - 5 = 5 GB
 concurrency = 5 / 2 = 2
 ```
 
+### Capped at what the backend will actually decode
+
+The memory formula answers "how many KV caches fit in RAM?" — which on a large-memory node is always the ceiling. The **binding** limit is the backend's own admission cap: Ollama decodes `OLLAMA_NUM_PARALLEL` requests per model and queues the rest *internally*, where the router can neither see, reorder nor reject them.
+
+```
+concurrency = min(memory_slots, OLLAMA_NUM_PARALLEL)
+```
+
+So the 512GB example above resolves to **4**, not 8, on a fleet with `OLLAMA_NUM_PARALLEL=4`. The extra workers never decoded anything — they blocked inside Ollama while the queue that was supposed to be managing them reported depth 0.
+
+Measured on an M3 Ultra (glm-4.7-flash, idle, ~1.5K prompt): aggregate throughput saturates at N=4 and is flat to N=8, while per-stream halves from 74.7 to 35.5 tok/s. On gpt-oss:120b with unique prompts, N=8 is genuinely **retrograde** — 58.2 tok/s aggregate against 60.7 at N=4. Throughput *decreases* with added load past the admission limit.
+
+The node reports its own `OLLAMA_NUM_PARALLEL` in the heartbeat. Unreported falls back to **1** — Ollama's documented default since auto-selection was removed — deliberately conservative, since guessing high recreates the invisible queue this cap exists to prevent.
+
+> **macOS gotcha.** `OLLAMA_NUM_PARALLEL` is conventionally set with `launchctl setenv`, which puts nothing in any shell's environment — so a node agent started from a shell can't see it. The collector falls back to `launchctl getenv` on macOS, but if you're reading `num_parallel: 0` in `/fleet/status`, that's why, and the cap will be conservatively 1.
+
 Concurrency is recalculated each time work is enqueued, so it adapts as memory conditions change.
 
 ---
