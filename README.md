@@ -3,8 +3,11 @@
 [![PyPI version](https://img.shields.io/pypi/v/ollama-herd?color=00c853)](https://pypi.org/project/ollama-herd/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Website](https://img.shields.io/badge/website-ollamaherd.com-00c853)](https://ollamaherd.com)
 
 Turn all your devices into one local AI cluster. Ollama Herd is a smart inference router and load balancer that auto-discovers Ollama nodes via mDNS, routes LLMs, image generation, speech-to-text, and embeddings to the optimal device using intelligent scoring. OpenAI-compatible API. Zero config. Zero cost.
+
+**[ollamaherd.com](https://ollamaherd.com)** — full docs, guides, and the live dashboard walkthrough.
 
 <!-- TODO: Add dashboard screenshot here -->
 <!-- ![Ollama Herd Dashboard](docs/images/dashboard-screenshot.png) -->
