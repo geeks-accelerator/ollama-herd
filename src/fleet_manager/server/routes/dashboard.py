@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["dashboard"])
 
@@ -133,7 +136,14 @@ async def dashboard_events(request: Request):
     """SSE endpoint for real-time fleet state updates."""
 
     async def event_stream():
-        while True:
+        # A client that walks away without a clean close (a laptop sleeping, a
+        # browser tab backgrounded, a dropped Wi-Fi) leaves the TCP connection
+        # ESTABLISHED but dead.  Without an explicit disconnect check this
+        # generator loops forever, rebuilding full fleet state every 2s for a
+        # reader that will never read again — one such stuck stream per stale
+        # tab, accumulating.  `is_disconnected()` is how Starlette exposes that
+        # the peer has gone; check it before doing the work.
+        while not await request.is_disconnected():
             registry = request.app.state.registry
             queue_mgr = request.app.state.queue_mgr
             mlx_proxy = getattr(request.app.state, "mlx_proxy", None)
@@ -346,8 +356,25 @@ async def dashboard_events(request: Request):
             yield f"data: {json.dumps(data)}\n\n"
             await asyncio.sleep(2)
 
+    async def guarded_stream():
+        # One bad iteration must not take the connection — or, worse, propagate
+        # out through the ASGI layer where an unhandled generator exception can
+        # leave the transport in a half-open state.  A transient (a node
+        # dropping mid-serialisation, a stat dict momentarily the wrong shape)
+        # should end this one stream cleanly; the browser's EventSource
+        # reconnects on its own.  CancelledError is normal teardown and is
+        # re-raised untouched.
+        try:
+            async for chunk in event_stream():
+                yield chunk
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("dashboard SSE stream ended on an unexpected error")
+            return
+
     return StreamingResponse(
-        event_stream(),
+        guarded_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

@@ -1117,3 +1117,45 @@ Two related facts worth recording while here:
 - mlx-lm #965 (KV-cache cross-contamination between concurrent requests on M3
   Ultra at 16+ concurrency) was fixed in v0.31.2 — we run 0.31.3, so we have the
   fix. Worth knowing before raising concurrency anywhere near that range.
+
+---
+
+## OPEN — herd's HTTP accept path stalled for 206s under heavy load (root cause unproven)
+
+**Severity:** High when it happens — the router serves nothing — but observed once, cause not conclusively identified
+**Found:** 2026-07-25
+**Files:** `server/routes/dashboard.py` (SSE — a *contributing* defect fixed; not proven to be the trigger), `server/app.py` (lifespan / uvicorn)
+
+**Symptom:** `curl localhost:11435/*` returned connection-refused (`HTTP 000`, instant) while the herd process was alive at ~1% CPU. `lsof -iTCP:11435 -sTCP:LISTEN` showed **no listener**, but one **ESTABLISHED connection to Chrome** on the dashboard port lingered.
+
+**Evidence it was a real outage, not a misread:** heartbeats are HTTP POSTs *into* herd, so a gap in them means the accept path stopped. Normal cadence is 5s; there was a **206-second gap starting 02:59:19**, ending when the process was restarted ~03:02:45. The observed `HTTP 000` at 03:00:59 falls squarely inside it.
+
+**Why the general log looked healthy** (and briefly misled the diagnosis): the WAL-checkpoint loop and other `asyncio.create_task` background tasks kept running and logging every ~10s throughout — they don't depend on the listener. Total log activity had no gap; only the *inbound HTTP* did. **Lesson: to prove a listener outage, check a signal that requires the listener (heartbeats), not the process's self-generated chatter.**
+
+**Correlation:** it stalled during punishing load — `qwen3:235b`, `deepseek-r1:70b`, and thinking-model budgets inflated to **65,536 tokens** (`num_predict` ×4), with request latencies up to 286s. The listener stopped ~2.5 min after a 65,536-token generation was admitted.
+
+**The contributing defect that was fixed:** `/dashboard/events` had `while True` with **no `request.is_disconnected()` check** and **no exception guard**. A client that walked away without a clean close (sleeping laptop, backgrounded tab) left the generator looping forever, rebuilding full fleet state every 2s — one stuck stream per stale tab. The lingering Chrome ESTABLISHED connection fits. Fixed: loop now exits on disconnect, and a `guarded_stream` wrapper ends one bad iteration cleanly instead of letting it propagate through the ASGI transport. **This is a genuine bug regardless of whether it caused the incident** — a browser tab should never be able to accumulate work on the router.
+
+**Why root cause is not proven, and the process failure behind it:** the wedged process was **killed before a stack dump was taken**, destroying the one piece of evidence that would have been conclusive — with the loop alive but the listener dead, the blocking coroutine would have been visible in a dump. `uvicorn`'s stderr was also going to `/dev/null`, so any server-level crash left no trace.
+
+### Runbook — if `/*` returns connection-refused but the herd process is alive
+
+Do this **before** restarting, or the evidence is gone again:
+
+```bash
+HERD=$(pgrep -f "bin/herd$" | head -1)
+# 1. Is it the listener or the whole loop? Heartbeats prove the accept path:
+python3 - <<'PY'
+import json,datetime
+last=[datetime.datetime.fromisoformat(json.loads(l)["ts"]) for l in open('~/.fleet-manager/logs/herd.jsonl'.replace('~',__import__('os').path.expanduser('~'))) if '"Heartbeat from"' in l][-3:]
+print("last heartbeats:", [t.astimezone().strftime('%H:%M:%S') for t in last])
+PY
+# 2. THE decisive capture — what coroutine is blocking:
+uvx py-spy dump --pid $HERD          # native stack of every thread
+uvx py-spy dump --pid $HERD --locals # + local vars in each frame
+# 3. Only then recover, capturing stderr this time:
+pkill -9 -f "bin/herd|mlx_lm.server"
+nohup uv run herd >/tmp/herd.out 2>/tmp/herd.err & disown
+```
+
+**Still to do:** run the local fleet with `py-spy` available and stderr captured (done for the current process), and reproduce under a synthetic 65,536-token load with a stale SSE tab open, to determine whether the SSE fix alone prevents recurrence or whether there is a second event-loop-blocking path.
