@@ -547,3 +547,44 @@ class TestImageEdgeCases:
         ]
         tokens = ScoringEngine.estimate_tokens(messages)
         assert tokens >= ScoringEngine.IMAGE_TOKENS_PER_IMAGE
+
+
+class TestImageDetectionAcrossFormats:
+    """`_detect_images` gates the loud-fail guard that stops an image request
+    from being answered by a blind text model. A format it misses silently
+    disables that protection.
+
+    2026-07-27: 41 vision requests to gemma3:27b failed with Ollama 400s
+    ("Multimodal data provided, but model does not support multimodal") because
+    the images used a `type:"image"` content part that this detector missed, so
+    has_images was False, so the guard didn't fire and the request fell back to
+    gpt-oss. Ollama saw the images; herd didn't.
+    """
+
+    def _has(self, messages):
+        # exercise the real path — the model validator sets has_images
+        return InferenceRequest(model="m", messages=messages).has_images
+
+    def test_ollama_native_images_array(self):
+        assert self._has([{"role": "user", "content": "hi", "images": ["QUJD"]}])
+
+    def test_openai_image_url_part(self):
+        assert self._has([{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}]}])
+
+    def test_content_part_type_image(self):
+        """The shape that slipped through and caused the 2026-07-27 400s."""
+        assert self._has([{"role": "user", "content": [
+            {"type": "image", "source": {"data": "QUJD"}}]}])
+
+    def test_content_part_type_input_image(self):
+        assert self._has([{"role": "user", "content": [
+            {"type": "input_image", "image_url": "data:image/png;base64,QUJD"}]}])
+
+    def test_text_only_is_not_flagged(self):
+        assert not self._has([{"role": "user", "content": "just words"}])
+        assert not self._has([{"role": "user", "content": [{"type": "text", "text": "hi"}]}])
+
+    def test_explicit_has_images_is_not_overridden(self):
+        """A caller that already set has_images=True keeps it."""
+        assert InferenceRequest(model="m", messages=[], has_images=True).has_images

@@ -41,17 +41,30 @@ def normalize_model_name(name: str) -> str:
     return name
 
 
+# Content-part `type` values that carry an image, across the formats a client
+# might send to any of our routes. This detector gates the loud-fail guard that
+# stops an image request from being answered by a blind text model — so a type
+# it misses is not a cosmetic gap: it silently disables that protection.
+# 2026-07-27: `type:"image"` / `type:"input_image"` were absent here, so vision
+# requests carrying those shapes fell back to gpt-oss and 400'd, while the guard
+# that exists to prevent exactly that sat inert. Ollama recognised the images
+# (hence the 400); we didn't. Keep this superset of what the runtimes accept.
+_IMAGE_PART_TYPES = frozenset({"image_url", "image", "input_image"})
+
+
 def _detect_images(messages: list[dict]) -> bool:
-    """Check if any message contains image content."""
+    """Check if any message carries image content, across all client formats."""
     for msg in messages:
-        # Ollama format: images field is a list of base64 strings
+        if not isinstance(msg, dict):
+            continue
+        # Ollama format: a sibling `images` list of base64 strings.
         if msg.get("images"):
             return True
-        # OpenAI format: content is a list with image_url parts
+        # OpenAI / Anthropic / Responses: content is a list of typed parts.
         content = msg.get("content")
         if isinstance(content, list):
             for part in content:
-                if isinstance(part, dict) and part.get("type") == "image_url":
+                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES:
                     return True
     return False
 

@@ -1159,3 +1159,21 @@ nohup uv run herd >/tmp/herd.out 2>/tmp/herd.err & disown
 ```
 
 **Still to do:** run the local fleet with `py-spy` available and stderr captured (done for the current process), and reproduce under a synthetic 65,536-token load with a stale SSE tab open, to determine whether the SSE fix alone prevents recurrence or whether there is a second event-loop-blocking path.
+
+---
+
+## RESOLVED — image requests fell back to a blind text model and 400'd (detector gap)
+
+**Severity:** High — vision requests failed; the 0.9.0 loud-fail guard was silently bypassed
+**Found + fixed:** 2026-07-27
+
+**Symptom:** 41 requests to `gemma3:27b` failed over ~3 hours with Ollama 400s:
+`Multimodal data provided, but model does not support multimodal requests.`
+
+**Chain:** `gemma3:27b` (vision) was evicted by heavy-model benchmark churn → a vision request arrived → herd cross-category fell back to `gpt-oss:120b` (text) → Ollama rejected the multimodal payload with a 400.
+
+**Root cause — a hole in a guard, not a missing guard.** 0.9.0 added a check that refuses to fall an image request back onto a blind model (`routing.py`: `if inference_req.has_images and fallback_cat != "vision"`). It didn't fire because `has_images` was `False`. `_detect_images` recognised Ollama `images[]` and OpenAI `image_url` parts, but **not** `type:"image"` or `type:"input_image"` content parts — the shape these requests used. Ollama's own handler saw the images (hence the 400); herd's detector didn't, so the protection sat inert and the request fell through.
+
+**Fix:** `_detect_images` now matches a superset of image content-part types (`image_url`, `image`, `input_image`) plus the Ollama `images[]` sibling array, and skips non-dict messages defensively. Because this detector gates the guard, a type it misses silently disables the protection — so the set is deliberately broad. Verified end-to-end after the fix: a vision request now serves via `gemma3:27b` ("Red." on a red PNG) instead of falling back to gpt-oss.
+
+**Also, as immediate mitigation:** `gemma3:27b` pinned (`POST /fleet/pin`) so the benchmark churn stops evicting it. The eviction is what exposed the detector gap — with the vision model always warm, the fallback path isn't reached; the fix ensures that when it *is* reached, it fails cleanly rather than as a raw Ollama 400.
