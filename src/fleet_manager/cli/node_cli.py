@@ -87,13 +87,24 @@ def start(
     setup_logging(log_name="herd-node")
 
     settings_kwargs = {
-        "node_id": node_id,
         "ollama_host": ollama_host,
-        "router_url": router_url,
         "enable_capacity_learning": learn_capacity,
         "telemetry_local_summary": telemetry_local_summary,
         "telemetry_include_tags": telemetry_include_tags,
     }
+    # `node_id` and `router_url` default to "" on the CLI, meaning "not given —
+    # use the env var / auto-discovery". Passing that "" *explicitly* into
+    # NodeSettings shadows the env var, because an explicit kwarg always beats
+    # BaseSettings' env lookup. So only include them when the user actually set
+    # them on the command line; otherwise let FLEET_NODE_NODE_ID /
+    # FLEET_NODE_ROUTER_URL flow through. Without this, FLEET_NODE_NODE_ID could
+    # never take effect and the node fell back to the macOS hostname — which is
+    # network-derived when the static HostName is unset, so it silently changed
+    # ("bb" at home, "Neons-Mac-Studio" travelling) and orphaned pins.
+    if node_id:
+        settings_kwargs["node_id"] = node_id
+    if router_url:
+        settings_kwargs["router_url"] = router_url
     if platform_url:
         settings_kwargs["platform_url"] = platform_url
     if platform_token:

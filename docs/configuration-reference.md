@@ -269,7 +269,7 @@ See [docs/guides/claude-code-integration.md](guides/claude-code-integration.md) 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FLEET_NODE_NODE_ID` | *(hostname)* | Unique node identifier (auto-detected from hostname if empty) |
+| `FLEET_NODE_NODE_ID` | *(hostname)* | Stable node identifier. **Set this** — the hostname fallback is network-derived on macOS (unset static `HostName`), so it changes between networks and orphans pins. Overrides `--node-id`'s empty default correctly as of the 2026-07-28 CLI fix; before that, only the `--node-id` flag worked. |
 | `FLEET_NODE_OLLAMA_HOST` | `http://localhost:11434` | URL of the local Ollama instance |
 | `FLEET_NODE_ROUTER_URL` | *(auto-discover)* | Router URL; set to skip mDNS discovery |
 | `FLEET_NODE_HEARTBEAT_INTERVAL` | `5.0` | Seconds between heartbeats to the router |

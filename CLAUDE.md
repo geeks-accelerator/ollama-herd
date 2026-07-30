@@ -131,6 +131,7 @@ Both entry points auto-load `~/.fleet-manager/env` at startup (see `src/fleet_ma
 
 ### Gotchas
 
+- **Node identity drifts with the network unless pinned.** `node_id` falls back to `socket.gethostname()` when unset — and on macOS the hostname is *network-derived* when the static `HostName` is unset (`scutil --get HostName` → "(not set)"), so it silently changed from `bb` on the home network to `Neons-Mac-Studio` while travelling, which orphaned the `gemma3:27b` pin (pinned to `bb`, node re-registered under the hostname). **Set `FLEET_NODE_NODE_ID` in `~/.fleet-manager/env`** to make identity constant across reboots and networks. Note a since-fixed CLI bug that made this env var a no-op: `herd-node` passed its empty `--node-id` default *explicitly* into `NodeSettings`, and an explicit kwarg shadows the env lookup in pydantic — so before the fix, only `--node-id` on the command line worked. Same shadowing applied to `FLEET_NODE_ROUTER_URL`.
 - **`launchctl setenv` is overridden by `~/.zshrc`** — update both shell profile AND launchctl for macOS env vars. On Linux: `sudo systemctl edit ollama`. On Windows: `[System.Environment]::SetEnvironmentVariable()`
 - **`shutil.which()` can't find `uv tool` binaries** — `_which_extended()` in `collector.py` handles platform-aware fallback paths
 - **Thinking models eat `num_predict` budgets** — router auto-inflates by 4× for known thinking models. Add new ones to `is_thinking_model()` in `model_knowledge.py`
