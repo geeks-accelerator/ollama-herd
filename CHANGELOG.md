@@ -5,9 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status:** `0.9.0` is the current release on PyPI and git tags. It is the first release since **`0.7.0`** — the `0.8.x` milestones below were never published separately and ship inside it. Those dated `0.8.x` headers mark when each milestone was cut on `main`, not a PyPI release.
+> **Release status:** `0.9.1` is the current release on PyPI and git tags — a fixes-and-hardening patch on `0.9.0`. `0.9.0` was the first release since **`0.7.0`**; the `0.8.x` milestones below were never published separately and ship inside it. Those dated `0.8.x` headers mark when each milestone was cut on `main`, not a PyPI release.
 
 ## [Unreleased]
+
+## [0.9.1] - 2026-07-30
+
+A fixes-and-hardening release on top of `0.9.0` — no breaking changes, no new dependencies. Three reliability bugs found while operating the local fleet, plus a new routing signal and two health checks that came out of the same soak.
+
+### Added
+
+- **Session affinity — an 8th scoring signal.** A conversation is now pinned to the node already holding its warm prefix cache, so turn N+1 reuses the processed prompt (llama.cpp's `get_common_prefix` skips already-seen tokens) instead of re-prefilling ~30K tokens on a fresh node — which also removes the decode interference that a cold prefill inflicts on any stream co-resident on the new node. Keyed by an explicit `session:<id>` request tag when present, else `client_ip|model`; TTL 900s. The bonus (20) sits below thermal (50) so a hot node never wins on affinity alone. See `docs/fleet-manager-routing-engine.md` § Signal 8.
+- **`decode_degraded` health check (#39).** Watches per-model TPOT — `(latency − time_to_first_token) / (completion_tokens − 1)` — against each model's own rolling baseline, so it isolates genuine decode contention from queueing and prefill. Fires WARNING when decode slows against a node's own history rather than a fleet-wide constant.
+- **`pin_cannot_fit` health check (#40).** Surfaces a pinned model that can never load on its node because the pinned set can't physically co-reside, instead of letting the preloader retry it forever.
+
+### Changed
+
+- **Queue concurrency is capped at what the backend will actually decode.** Per-`node:model` concurrency is now `min(memory_slots, OLLAMA_NUM_PARALLEL)` — Ollama admits only `num_parallel` requests into decode at once, so provisioning more queue workers than that just built a second queue in front of the real one. Nodes report `num_parallel` in the heartbeat; the router mirrors it the same way it already mirrors the hot-model cap.
+
+### Fixed
+
+- **`FLEET_NODE_NODE_ID` now actually sets the node id.** `herd-node` passed its empty `--node-id` default *explicitly* into `NodeSettings`, and an explicit kwarg shadows pydantic-settings' env lookup — so the env var was inert and the node fell back to `socket.gethostname()`. On macOS the hostname is network-derived when the static `HostName` is unset, so it silently changed between networks (`bb` at home → `Neons-Mac-Studio` travelling) and orphaned every pin bound to the old id. The same shadowing affected `FLEET_NODE_ROUTER_URL`; both are fixed.
+- **Image requests carrying `image` / `input_image` content parts no longer fall back to a blind text model.** The image-detection guard only recognised `image_url`; requests using the other two shapes slipped past it, routed to `gpt-oss`, and 400'd — while the guard built to prevent exactly that sat inert. The detector now matches the full superset the runtimes accept and skips non-dict messages.
+- **A stale dashboard tab can no longer wedge the router.** The `/dashboard/events` SSE loop now checks `request.is_disconnected()` each iteration and wraps the stream so an exception is logged and returned rather than escaping, while `CancelledError` still propagates — a disconnected tab stops generating work instead of accumulating it on the event loop.
 
 ## [0.9.0] - 2026-07-19
 
