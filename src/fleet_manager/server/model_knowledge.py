@@ -550,6 +550,36 @@ MODEL_CATALOG: list[ModelSpec] = [
         notes="MoE, strong tool use, beats GPT-5 mini on function calling",
     ),
     ModelSpec(
+        ollama_name="qwen3.6:27b",
+        display_name="Qwen 3.6 27B",
+        family="qwen3.6",
+        params_b=27.0,
+        ram_gb=17.0,
+        size_class=ModelSize.LARGE,
+        category=ModelCategory.GENERAL,
+        secondary_categories=[ModelCategory.CODING, ModelCategory.REASONING],
+        context_length=262144,
+        benchmarks=ModelBenchmarks(),
+        notes="Dense all-rounder (Apr 2026), 256K context, thinking. Verified working on the "
+        "fleet via Ollama. Ships vision upstream, but image input is not wired in Ollama yet — "
+        "use qwen3-vl for vision.",
+    ),
+    ModelSpec(
+        ollama_name="qwen3.6:35b-a3b",
+        display_name="Qwen 3.6 35B-A3B (MoE)",
+        family="qwen3.6",
+        params_b=35.0,
+        active_params_b=3.0,
+        ram_gb=23.0,
+        size_class=ModelSize.LARGE,
+        category=ModelCategory.CODING,
+        secondary_categories=[ModelCategory.GENERAL],
+        context_length=262144,
+        benchmarks=ModelBenchmarks(),
+        notes="Agentic-coding MoE (3B active), Apache 2.0, fast. Verified working on the fleet "
+        "via Ollama.",
+    ),
+    ModelSpec(
         ollama_name="gpt-oss:120b",
         display_name="GPT-OSS 120B",
         family="gpt-oss",
@@ -602,6 +632,37 @@ MODEL_CATALOG: list[ModelSpec] = [
         notes="Frontier-class reasoning, needs server hardware",
     ),
     # ── VISION — image understanding (image → text) ───────────
+    ModelSpec(
+        ollama_name="qwen3-vl:32b",
+        display_name="Qwen3-VL 32B",
+        family="qwen3-vl",
+        params_b=32.0,
+        ram_gb=21.0,
+        size_class=ModelSize.LARGE,
+        category=ModelCategory.VISION,
+        secondary_categories=[ModelCategory.GENERAL],
+        context_length=262144,
+        benchmarks=ModelBenchmarks(),
+        notes="SoTA open vision-language model (Aug 2026). Strong OCR / document / grounding, "
+        "256K native context. Verified on the fleet: correctly described a test image end-to-end. "
+        "Runs on Ollama (≥0.12.7).",
+    ),
+    ModelSpec(
+        ollama_name="muse-glimmer:30b",
+        display_name="Muse Glimmer 30B",
+        family="muse-glimmer",
+        params_b=30.0,
+        ram_gb=18.0,
+        size_class=ModelSize.LARGE,
+        category=ModelCategory.VISION,
+        secondary_categories=[ModelCategory.GENERAL, ModelCategory.REASONING],
+        context_length=131072,
+        benchmarks=ModelBenchmarks(),
+        notes="Meta agentic multimodal model (Aug 2026), Apache 2.0, dedicated perception "
+        "encoder for screenshots/charts/docs. Thinking model — needs Ollama >=0.32.7. Verified "
+        "on the fleet: text + vision both correct (see is_thinking_model — budget inflation "
+        "required or small-budget requests return empty).",
+    ),
     ModelSpec(
         ollama_name="moondream:1.8b",
         display_name="Moondream 1.8B",
@@ -847,6 +908,11 @@ def is_thinking_model(name: str) -> bool:
     thinking_patterns = (
         "deepseek-r1", "gpt-oss", "qwq", "phi-4-reasoning",
         "phi4-reasoning", "reasoning",
+        # muse-glimmer emits a `thinking` field and eats the num_predict budget
+        # on reasoning — verified 2026-08-14: a 50-token budget returned empty,
+        # 300 tokens produced the answer. Without this it never gets the 4x
+        # inflation and small-budget requests come back blank.
+        "muse-glimmer",
     )
     return any(p in lower for p in thinking_patterns)
 
