@@ -75,6 +75,25 @@ ALLOWED_PAYLOAD_KEYS = frozenset(
 MAX_ENTRIES = 200
 MAX_AGENT_VERSION_LEN = 32
 MAX_NICKNAME_LEN = 30
+# The server accepts letters, numbers, spaces, - _ . only, and 422s the WHOLE
+# payload otherwise.  A nickname is cosmetic; a day's usage data is not, so an
+# unusable name is dropped rather than allowed to take the rollup down with it.
+_NICKNAME_ALLOWED = set(" -_.")
+
+
+def sanitize_nickname(value: str) -> str:
+    """Return the nickname if the server would accept it, else ""."""
+    value = (value or "").strip()[:MAX_NICKNAME_LEN]
+    if not value:
+        return ""
+    if all(c.isalnum() or c in _NICKNAME_ALLOWED for c in value):
+        return value
+    logger.warning(
+        "herd nickname %r contains characters the telemetry service rejects "
+        "(letters, numbers, spaces, - _ . only); sending anonymously instead",
+        value,
+    )
+    return ""
 
 
 async def build_anonymous_rollup(
@@ -212,7 +231,8 @@ async def build_anonymous_rollup(
     # The server derives them from devices[] and now rejects the scalars, so a
     # caller passing them would 422 the entire payload -- keeping the
     # parameters around as no-ops would just be a loaded gun.
-    if nickname:
-        payload["nickname"] = nickname[:MAX_NICKNAME_LEN]
+    clean_nickname = sanitize_nickname(nickname)
+    if clean_nickname:
+        payload["nickname"] = clean_nickname
 
     return payload

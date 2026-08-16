@@ -5425,6 +5425,12 @@ function setAnonymous(anon) {
 function saveNickname() {
   var v = (document.getElementById('tele-nick').value || '').trim();
   if (!v) { showToast('Enter a name, or switch anonymous back on'); return; }
+  // Mirror the server's charset. Without this the name saves happily, then the
+  // daily payload 422s and the herd is silently anonymous forever.
+  if (!/^[A-Za-z0-9 ._-]+$/.test(v)) {
+    showToast('Use letters, numbers, spaces, - _ . only');
+    return;
+  }
   telemetryEditing = false;
   postTelemetry({herd_nickname: v}, 'Herd name saved');
 }

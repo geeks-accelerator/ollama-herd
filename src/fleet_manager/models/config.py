@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings
 
 
@@ -333,10 +333,30 @@ class ServerSettings(BaseSettings):
     # knows a fleet is one fleet.  Node-level sending made a 3-Mac herd look
     # like 3 installs and made fleet totals unfixably wrong.
     # Default ON with a one-line opt-out; contract at ollamaherd.com/telemetry.
-    telemetry: bool = True
-    telemetry_url: str = "https://ollamaherd.com/api/v1/telemetry"
+    # NOTE the aliases.  The sender moved from the node to the router in v2,
+    # but the opt-out documented at ollamaherd.com/telemetry is
+    # FLEET_NODE_TELEMETRY and the dashboard writes FLEET_NODE_HERD_NICKNAME.
+    # Without these, ``env_prefix="FLEET_"`` would make the router read
+    # FLEET_TELEMETRY instead -- so a user who opted out exactly as documented
+    # would keep being counted, silently, because ``False`` and "unset" look
+    # identical to a bool default.  A published opt-out that does nothing is
+    # the worst bug this feature can have; the page is the contract, so the
+    # code moves to match it rather than the other way round.
+    telemetry: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("FLEET_NODE_TELEMETRY", "FLEET_TELEMETRY"),
+    )
+    telemetry_url: str = Field(
+        default="https://ollamaherd.com/api/v1/telemetry",
+        validation_alias=AliasChoices("FLEET_NODE_TELEMETRY_URL", "FLEET_TELEMETRY_URL"),
+    )
     # Naming the herd is a SECOND opt-in: the only field ever made public.
-    herd_nickname: str = ""
+    herd_nickname: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "FLEET_NODE_HERD_NICKNAME", "FLEET_HERD_NICKNAME"
+        ),
+    )
 
 
 class NodeSettings(BaseSettings):
