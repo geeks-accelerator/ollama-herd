@@ -246,11 +246,35 @@ async def send_once(
         return False
 
 
-async def run_scheduler(settings, registry, agent_version: str) -> None:
-    """Daily loop on the router.  Exits immediately when telemetry is off."""
+async def run_scheduler(
+    settings, registry, agent_version: str, startup_catchup: bool = True
+) -> None:
+    """Daily loop on the router.  Exits immediately when telemetry is off.
+
+    ``startup_catchup`` sends any missed day immediately instead of sleeping
+    straight to the next window -- the same behaviour ``telemetry_scheduler``
+    has had all along, which this scheduler should have matched from the start.
+
+    Without it, the wall-clock schedule means **start time of day decides
+    whether you report at all**: a router started at 00:10 UTC waits 23h55m for
+    its first send, and one restarted daily after 00:05 UTC never sends. Both
+    look identical to "nobody uses this" from the receiving end, which is the
+    worst possible failure for a feature whose whole purpose is measurement.
+    Our own fleet ran 12 hours without a single automatic send because of it.
+
+    Safe to run unconditionally: ``send_once`` skips a day already recorded in
+    the state file, and the server upserts rather than summing, so a duplicate
+    is a no-op rather than double-counting.
+    """
     if not getattr(settings, "telemetry", True):
         logger.debug("community telemetry disabled; scheduler not started")
         return
+
+    if startup_catchup:
+        try:
+            await send_once(settings, registry, agent_version)
+        except Exception as exc:  # noqa: BLE001 - never block startup
+            logger.debug("community telemetry startup catch-up failed: %s", exc)
 
     while True:
         try:

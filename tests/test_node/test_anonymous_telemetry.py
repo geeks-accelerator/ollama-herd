@@ -176,3 +176,103 @@ class TestSchedule:
         _save_last_sent_day("2026-08-14", state)
         assert _load_last_sent_day(state) == "2026-08-14"
         assert json.loads(state.read_text())["last_sent_day"] == "2026-08-14"
+
+
+class TestStartupCatchUp:
+    """Without this, start time of day decides whether an install ever reports.
+
+    The wall-clock schedule fires at 00:05 UTC, so a router started at 00:10
+    waits 23h55m for its first send, and one restarted daily after 00:05 never
+    sends at all. Both are indistinguishable from "nobody uses this" on the
+    receiving end. Our own fleet ran 12 hours with zero automatic sends before
+    this existed -- and the account-side scheduler had already solved it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_catch_up_sends_before_sleeping(self, state, tmp_path, monkeypatch):
+        import asyncio
+
+        from fleet_manager.server import community_telemetry as ct
+
+        sent = []
+
+        async def fake_send(settings, registry, agent_version, state_file=None):
+            sent.append(agent_version)
+            return True
+
+        # A sleep long enough that anything sent must have come from catch-up.
+        monkeypatch.setattr(ct, "send_once", fake_send)
+        monkeypatch.setattr(ct, "_seconds_until_next_run", lambda *a, **k: 3600)
+
+        task = asyncio.create_task(
+            ct.run_scheduler(FakeSettings(data_dir=str(tmp_path)), object(), "0.9.2")
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        assert sent == ["0.9.2"], "startup catch-up did not fire before the sleep"
+
+    @pytest.mark.asyncio
+    async def test_catch_up_can_be_disabled(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from fleet_manager.server import community_telemetry as ct
+
+        sent = []
+
+        async def fake_send(*a, **k):
+            sent.append(1)
+            return True
+
+        monkeypatch.setattr(ct, "send_once", fake_send)
+        monkeypatch.setattr(ct, "_seconds_until_next_run", lambda *a, **k: 3600)
+
+        task = asyncio.create_task(
+            ct.run_scheduler(
+                FakeSettings(data_dir=str(tmp_path)), object(), "0.9.2",
+                startup_catchup=False,
+            )
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        assert sent == []
+
+    @pytest.mark.asyncio
+    async def test_opt_out_still_wins_over_catch_up(self, tmp_path, monkeypatch):
+        """A disabled install must not send on startup either."""
+        import asyncio
+
+        from fleet_manager.server import community_telemetry as ct
+
+        sent = []
+
+        async def fake_send(*a, **k):
+            sent.append(1)
+            return True
+
+        monkeypatch.setattr(ct, "send_once", fake_send)
+        task = asyncio.create_task(
+            ct.run_scheduler(
+                FakeSettings(telemetry=False, data_dir=str(tmp_path)), object(), "0.9.2"
+            )
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        assert sent == []
+
+    @pytest.mark.asyncio
+    async def test_catch_up_failure_does_not_stop_the_scheduler(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from fleet_manager.server import community_telemetry as ct
+
+        async def boom(*a, **k):
+            raise RuntimeError("network down at boot")
+
+        monkeypatch.setattr(ct, "send_once", boom)
+        monkeypatch.setattr(ct, "_seconds_until_next_run", lambda *a, **k: 3600)
+        task = asyncio.create_task(
+            ct.run_scheduler(FakeSettings(data_dir=str(tmp_path)), object(), "0.9.2")
+        )
+        await asyncio.sleep(0.05)
+        assert not task.done(), "a failed catch-up must not kill the daily loop"
+        task.cancel()
