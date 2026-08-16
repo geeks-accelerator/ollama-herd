@@ -61,8 +61,12 @@ ALLOWED_PAYLOAD_KEYS = frozenset(
         "errors",
         # Present only when the operator separately opted in to a public name.
         "nickname",
-        "fleet_node_count",
-        "fleet_memory_gb",
+        # Added by the router-side herd builder (server/community_telemetry.py).
+        # Fleet node count and memory are DERIVED from this server-side rather
+        # than sent as scalars: one source of truth, and a total that cannot
+        # disagree with its parts.  v1 sent them as scalars from each node,
+        # which multiplied the fleet's totals by the number of nodes.
+        "devices",
     }
 )
 

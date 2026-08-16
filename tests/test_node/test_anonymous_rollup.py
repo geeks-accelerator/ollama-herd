@@ -33,8 +33,7 @@ SERVER_PAYLOAD_FIELDS = {
     "entries",
     "errors",
     "nickname",
-    "fleet_node_count",
-    "fleet_memory_gb",
+    "devices",
 }
 SERVER_ENTRY_FIELDS = {
     "model",
@@ -92,23 +91,6 @@ class TestPrivacy:
             INSTALL_ID, "0.9.1", data_dir=str(tmp_path), day="2026-08-10"
         )
         assert "nickname" not in payload
-        assert "fleet_node_count" not in payload
-        assert "fleet_memory_gb" not in payload
-
-    @pytest.mark.asyncio
-    async def test_fleet_shape_requires_a_nickname(self, tmp_path):
-        """Fleet specs are only public alongside a name; never on their own."""
-        payload = await build_anonymous_rollup(
-            INSTALL_ID,
-            "0.9.1",
-            data_dir=str(tmp_path),
-            day="2026-08-10",
-            nickname="",
-            fleet_node_count=4,
-            fleet_memory_gb=640,
-        )
-        assert "fleet_node_count" not in payload
-        assert "fleet_memory_gb" not in payload
 
     @pytest.mark.asyncio
     async def test_nickname_opt_in_includes_fleet_shape(self, tmp_path):
@@ -118,11 +100,8 @@ class TestPrivacy:
             data_dir=str(tmp_path),
             day="2026-08-10",
             nickname="NeonHerd",
-            fleet_node_count=2,
-            fleet_memory_gb=640,
         )
         assert payload["nickname"] == "NeonHerd"
-        assert payload["fleet_node_count"] == 2
 
 
 class TestServerBounds:

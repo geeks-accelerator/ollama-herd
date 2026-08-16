@@ -328,6 +328,17 @@ class ServerSettings(BaseSettings):
     model_config = {"env_prefix": "FLEET_"}
 
 
+    # ── Anonymous community telemetry (herd-level) ───────────────────────
+    # The ROUTER sends this, not each node: it is the only component that
+    # knows a fleet is one fleet.  Node-level sending made a 3-Mac herd look
+    # like 3 installs and made fleet totals unfixably wrong.
+    # Default ON with a one-line opt-out; contract at ollamaherd.com/telemetry.
+    telemetry: bool = True
+    telemetry_url: str = "https://ollamaherd.com/api/v1/telemetry"
+    # Naming the herd is a SECOND opt-in: the only field ever made public.
+    herd_nickname: str = ""
+
+
 class NodeSettings(BaseSettings):
     node_id: str = ""
     ollama_host: str = "http://localhost:11434"

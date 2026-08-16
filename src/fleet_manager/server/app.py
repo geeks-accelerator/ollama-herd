@@ -242,6 +242,19 @@ async def lifespan(app: FastAPI):
             except Exception as exc:  # noqa: BLE001 — never let this task die
                 logger.warning(f"wal_checkpoint_loop tick failed: {exc}")
 
+    # Anonymous community telemetry — one payload per HERD per day, sent from
+    # here because the router is the only component that knows the fleet is one
+    # fleet.  Default on with FLEET_TELEMETRY=false; run_scheduler returns
+    # immediately when disabled.  See server/community_telemetry.py.
+    from fleet_manager import __version__ as _fleet_version
+    from fleet_manager.server.community_telemetry import (
+        run_scheduler as _run_community_telemetry,
+    )
+
+    community_telemetry_task = asyncio.create_task(
+        _run_community_telemetry(settings, registry, _fleet_version)
+    )
+
     checkpoint_task = asyncio.create_task(_wal_checkpoint_loop())
 
     logger.info(f"Ollama Herd ready on port {settings.port}")
@@ -253,6 +266,7 @@ async def lifespan(app: FastAPI):
     rebalancer_task.cancel()
     optimizer_task.cancel()
     preload_task.cancel()
+    community_telemetry_task.cancel()
     checkpoint_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await monitor_task
