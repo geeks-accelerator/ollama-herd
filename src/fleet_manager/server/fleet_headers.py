@@ -91,3 +91,28 @@ def affinity_from_breakdown(breakdown: dict | None) -> str | None:
     if not breakdown:
         return None
     return "matched" if breakdown.get("session_affinity", 0) else "new"
+
+
+def usage_with_cached_tokens(usage: dict, cached_tokens: int | None) -> dict:
+    """Add ``prompt_tokens_details.cached_tokens`` only when it is real.
+
+    ``cached_tokens`` is a genuine OpenAI-compatible convention -- llama.cpp,
+    ``mlx_lm.server``, vLLM and SGLang all emit it -- but it carries a trap
+    that two of those shipped as bugs: **omit the field when the number is
+    unknown, never send ``0``.**
+
+    Zero means "the backend measured, and nothing was reused".  Absent means
+    "we cannot measure".  Those are different facts, and this fleet is
+    routinely in the second case: MLX reports real cached tokens, while Ollama
+    folds llama.cpp's ``cache_n`` back into ``prompt_n`` on purpose
+    (ollama/ollama#16428) so no hit ratio exists to report.  Emitting ``0``
+    there would quietly claim every Ollama request was a cache miss.
+
+    vLLM shipped exactly this conflation (fixed in #44383) and SGLang still
+    has it.  Returning ``usage`` untouched is the honest answer.
+    """
+    if cached_tokens is None:
+        return usage
+    usage = dict(usage)
+    usage["prompt_tokens_details"] = {"cached_tokens": int(cached_tokens)}
+    return usage

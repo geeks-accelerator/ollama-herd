@@ -136,3 +136,40 @@ class TestAffinityDecaysUnderLoad:
         assert engine._score_session_affinity(self._Node(), "s", -5) == (
             engine.SESSION_AFFINITY_BONUS
         )
+
+
+class TestCachedTokensIsOmittedNotZeroed:
+    """`0` means measured-and-missed. Absent means cannot-measure. Conflating
+    them is the bug vLLM shipped (#44383) and SGLang still has -- and this
+    fleet is routinely in the second case, because Ollama folds llama.cpp's
+    cache_n back into prompt_n on purpose (ollama/ollama#16428)."""
+
+    BASE = {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}
+
+    def _usage(self, cached):
+        from fleet_manager.server.fleet_headers import usage_with_cached_tokens
+
+        return usage_with_cached_tokens(self.BASE, cached)
+
+    def test_unmeasurable_backend_omits_the_field(self):
+        """The Ollama case -- the one that must never claim a miss."""
+        assert "prompt_tokens_details" not in self._usage(None)
+
+    def test_a_real_zero_is_still_reported(self):
+        """MLX measured and genuinely reused nothing. That is a fact, keep it."""
+        assert self._usage(0)["prompt_tokens_details"] == {"cached_tokens": 0}
+
+    def test_a_real_hit_is_reported(self):
+        assert self._usage(80)["prompt_tokens_details"] == {"cached_tokens": 80}
+
+    def test_the_original_usage_is_not_mutated(self):
+        before = dict(self.BASE)
+        self._usage(80)
+        assert before == self.BASE
+
+    def test_core_usage_fields_survive(self):
+        for cached in (None, 0, 80):
+            usage = self._usage(cached)
+            assert usage["prompt_tokens"] == 100
+            assert usage["completion_tokens"] == 10
+            assert usage["total_tokens"] == 110

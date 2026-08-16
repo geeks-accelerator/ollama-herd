@@ -12,7 +12,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
-from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
+from fleet_manager.server.fleet_headers import (
+    affinity_from_breakdown,
+    fleet_headers,
+    usage_with_cached_tokens,
+)
 from fleet_manager.server.mlx_proxy import (
     MlxModelMissingError,
     MlxQueueFullError,
@@ -425,12 +429,14 @@ async def chat_completions(request: Request):
             raise
 
         # Retrieve real token counts extracted from Ollama response
-        tokens = proxy.pop_token_counts(
-            inference_req.request_id,
-            affinity=affinity_from_breakdown(winner.scores_breakdown),
-        )
+        tokens = proxy.pop_token_counts(inference_req.request_id)
         prompt_tok = tokens[0] or 0
         completion_tok = tokens[1] or 0
+        # StreamingProxy (Ollama) returns a 2-tuple; only MlxProxy adds
+        # cached_tokens as a third element.  Ollama cannot measure cache reuse
+        # at all (ollama/ollama#16428), so None here is the correct, honest
+        # value and usage_with_cached_tokens omits the field entirely.
+        cached_tok = tokens[2] if len(tokens) > 2 else None
 
         # Add thinking-aware headers
         headers.update(_build_thinking_headers(proxy, inference_req.request_id))
@@ -458,11 +464,17 @@ async def chat_completions(request: Request):
                         ),
                     }
                 ],
-                "usage": {
-                    "prompt_tokens": prompt_tok,
-                    "completion_tokens": completion_tok,
-                    "total_tokens": prompt_tok + completion_tok,
-                },
+                # cached_tokens is present only when the backend actually
+                # measured it (MLX does; Ollama structurally cannot).  See
+                # usage_with_cached_tokens -- omitting beats reporting 0.
+                "usage": usage_with_cached_tokens(
+                    {
+                        "prompt_tokens": prompt_tok,
+                        "completion_tokens": completion_tok,
+                        "total_tokens": prompt_tok + completion_tok,
+                    },
+                    cached_tok,
+                ),
             },
             headers=headers,
         )
