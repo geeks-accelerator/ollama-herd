@@ -352,6 +352,27 @@ class NodeSettings(BaseSettings):
     telemetry_local_summary: bool = False
     telemetry_include_tags: bool = False
 
+    # ── Anonymous community telemetry ────────────────────────────────────
+    # A SEPARATE pipeline from the two opt-ins above, and the distinction
+    # matters: those send an *account's* usage to the platform and need a
+    # connection + token.  This one has no account, no token, and no auth --
+    # it POSTs a pseudonymous daily rollup keyed by a random ``install_id``.
+    # Do not merge the two.  The platform's account tables are FK'd to
+    # ``auth.users``; anonymous installs have no such row, which is why the
+    # receiving service has its own tables and its own endpoint.
+    #
+    # Default ON with a documented one-line opt-out.  The published contract
+    # at ollamaherd.com/telemetry is the spec for what may be sent and must be
+    # kept in sync with ``daily_rollup.ALLOWED_*`` -- if they ever disagree,
+    # the published page wins and the code is the bug.
+    telemetry: bool = True
+    telemetry_url: str = "https://ollamaherd.com/api/v1/telemetry"
+
+    # Naming the herd is a SECOND, separate opt-in on top of telemetry: a
+    # nickname is the only field that is ever published publicly.  Empty means
+    # this install stays anonymous and only feeds global totals.
+    herd_nickname: str = ""
+
     # MLX backend — when enabled, the node agent spawns + supervises one
     # `mlx_lm.server` subprocess per FLEET_NODE_MLX_SERVERS entry and merges
     # their models into the heartbeat alongside Ollama's.  Each MLX model shows

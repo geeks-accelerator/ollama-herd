@@ -1129,6 +1129,46 @@ async def dashboard_recommendations_data(request: Request, refresh: int = 0):
     return {**result, "generated_at": now}
 
 
+def _read_node_telemetry_state() -> dict:
+    """Read node-scoped telemetry settings from ~/.fleet-manager/env.
+
+    Deliberately reads the file rather than ``os.environ``: the dashboard
+    writes there, the node reads it on next start, and this process's environ
+    is a stale snapshot from boot.  A shell export still wins at load time, so
+    ``shell_override`` tells the UI when a change here would have no effect.
+    """
+    import os
+
+    from fleet_manager.common.env_writer import DEFAULT_ENV_FILE
+
+    enabled, nickname = True, ""
+    try:
+        if DEFAULT_ENV_FILE.exists():
+            for raw in DEFAULT_ENV_FILE.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):].lstrip()
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip().strip('"').strip("'")
+                if key == "FLEET_NODE_TELEMETRY":
+                    enabled = value.lower() not in ("false", "0", "no", "off")
+                elif key == "FLEET_NODE_HERD_NICKNAME":
+                    nickname = value
+    except OSError:
+        pass
+
+    return {
+        "enabled": enabled,
+        "nickname": nickname,
+        "anonymous": nickname == "",
+        "shell_override": any(
+            k in os.environ for k in ("FLEET_NODE_TELEMETRY", "FLEET_NODE_HERD_NICKNAME")
+        ),
+    }
+
+
 @router.get("/dashboard/api/settings")
 async def dashboard_settings_data(request: Request):
     """Current configuration values and node list for the settings page."""
@@ -1140,7 +1180,14 @@ async def dashboard_settings_data(request: Request):
     registry = request.app.state.registry
     hostname = socket.gethostname().split(".")[0]
 
+    # Telemetry lives on NodeSettings in the *node* process, so the router has
+    # no in-memory copy to read.  Read the persisted file instead of
+    # os.environ: the node picks changes up on restart, and the UI must show
+    # what is actually saved rather than what this process booted with.
+    telemetry_state = _read_node_telemetry_state()
+
     config = {
+        "telemetry": telemetry_state,
         "toggles": {
             "auto_pull": settings.auto_pull,
             "vram_fallback": settings.vram_fallback,
@@ -1253,17 +1300,54 @@ async def dashboard_settings_update(request: Request):
     body = await request.json()
     settings = request.app.state.settings
 
+    from fleet_manager.common.env_writer import set_env_var, unset_env_var
+
     mutable_fields = {
         "auto_pull", "vram_fallback", "image_generation", "transcription",
         "dynamic_num_ctx", "num_ctx_auto_calculate", "fleet_intelligence",
     }
+    # Node-scoped settings.  These live on NodeSettings in the *node* process,
+    # so there is nothing local to mutate -- we persist them and the node picks
+    # them up on its next start.  Reported back as ``restart_required`` so the
+    # UI can say so instead of implying an immediate effect.
+    node_bool_fields = {"telemetry"}
+    node_str_fields = {"herd_nickname"}
+
     updated = {}
+    not_persisted = []
+    restart_required = []
 
     for field in mutable_fields:
         if field in body:
             value = bool(body[field])
             setattr(settings, field, value)
             updated[field] = value
+            # Persist, or the change silently reverts on restart.  Every toggle
+            # behaved that way before 0.9.2, which is merely annoying for
+            # auto_pull and a broken promise for a telemetry opt-out.
+            if not set_env_var(f"FLEET_{field.upper()}", value):
+                not_persisted.append(field)
+
+    for field in node_bool_fields:
+        if field in body:
+            value = bool(body[field])
+            updated[field] = value
+            restart_required.append(field)
+            if not set_env_var(f"FLEET_NODE_{field.upper()}", value):
+                not_persisted.append(field)
+
+    for field in node_str_fields:
+        if field in body:
+            value = str(body[field]).strip()
+            updated[field] = value
+            restart_required.append(field)
+            env_key = f"FLEET_NODE_{field.upper()}"
+            # Empty means "no nickname" -- remove the key entirely so the code
+            # default applies, rather than persisting an empty string that
+            # reads like a deliberate blank name.
+            ok = unset_env_var(env_key) if value == "" else set_env_var(env_key, value)
+            if not ok:
+                not_persisted.append(field)
 
     # Handle num_ctx_overrides separately (dict, not bool)
     if "num_ctx_overrides" in body:
@@ -1277,7 +1361,16 @@ async def dashboard_settings_update(request: Request):
     if not updated:
         return {"status": "no_change", "message": "No mutable fields provided"}
 
-    return {"status": "updated", "updated": updated}
+    return {
+        "status": "updated",
+        "updated": updated,
+        # Written to ~/.fleet-manager/env unless listed here.  Surfaced rather
+        # than swallowed: a toggle that will silently revert on restart is
+        # worse than one that says it could not be saved.
+        "not_persisted": not_persisted,
+        # Node-scoped values take effect when herd-node next starts.
+        "restart_required": restart_required,
+    }
 
 
 @router.get("/dashboard/api/image-stats")
@@ -5041,6 +5134,12 @@ _SETTINGS_BODY = """
 .section-label { font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-dim); margin-bottom:12px; margin-top:28px; }
 .section-label:first-of-type { margin-top:0; }
 
+.tele-sub { padding:14px 18px; background:var(--card); border:1px solid var(--border); border-top:none; border-radius:0 0 10px 10px; margin-top:-9px; margin-bottom:8px; }
+.tele-input { width:100%; padding:8px 10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:13px; box-sizing:border-box; }
+.tele-warn { font-size:12px; color:#f59e0b; margin-top:8px; line-height:1.5; }
+.tele-note { font-size:11px; color:var(--text-dim); margin-top:10px; line-height:1.5; }
+.tele-save { margin-top:10px; padding:7px 16px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; }
+.tele-save:disabled { opacity:0.5; cursor:default; }
 .toggle-container { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; background:var(--card); border:1px solid var(--border); border-radius:10px; margin-bottom:8px; }
 .toggle-info { flex:1; }
 .toggle-label { font-size:14px; font-weight:500; }
@@ -5074,17 +5173,6 @@ _SETTINGS_BODY = """
 .toast { position:fixed; bottom:24px; right:24px; background:var(--card); border:1px solid var(--accent); color:var(--text); padding:12px 20px; border-radius:10px; font-size:13px; font-weight:500; z-index:1000; opacity:0; transform:translateY(10px); transition:opacity .2s, transform .2s; pointer-events:none; }
 .toast.show { opacity:1; transform:translateY(0); }
 
-.platform-card { background:var(--card); border:1px solid var(--border); border-radius:10px; margin-bottom:16px; }
-.platform-card-inner { padding:18px 20px; }
-.platform-title { font-size:15px; font-weight:600; margin-bottom:8px; }
-.platform-desc { font-size:13px; color:var(--text-dim); line-height:1.5; margin-bottom:14px; }
-.platform-desc code { font-family:'SF Mono','Fira Code',monospace; font-size:12px; background:var(--bg); padding:1px 6px; border-radius:3px; color:var(--text); }
-.platform-form { display:flex; gap:8px; align-items:stretch; }
-.platform-btn { padding:8px 18px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; font-weight:500; white-space:nowrap; }
-.platform-btn:hover { opacity:0.9; }
-.platform-btn-secondary { background:var(--border); color:var(--text); }
-.platform-error { color:#ef4444; font-size:12px; margin-top:8px; min-height:16px; }
-.platform-note { font-size:11px; color:var(--text-dim); margin-top:12px; line-height:1.5; font-style:italic; }
 
 @media (max-width:768px) { .nodes-grid{grid-template-columns:1fr;} .config-table{font-size:12px;} }
 </style>
@@ -5095,8 +5183,8 @@ _SETTINGS_BODY = """
     <div class="version-info">Router <span id="router-version">...</span> on <span id="router-hostname">...</span></div>
   </div>
 
-  <div class="section-label">Platform Connection</div>
-  <div id="platform-card" class="platform-card">
+  <div class="section-label">Community Telemetry</div>
+  <div id="telemetry-container">
     <div style="text-align:center;padding:20px;color:var(--text-dim)">Loading...</div>
   </div>
 
@@ -5159,6 +5247,8 @@ function statusDotHtml(status) {
 function renderSettings(data) {
   document.getElementById('router-version').textContent = 'v' + data.router_version;
   document.getElementById('router-hostname').textContent = data.router_hostname;
+
+  renderTelemetry(data.config.telemetry || {});
 
   // Toggles
   var tc = document.getElementById('toggles-container');
@@ -5232,6 +5322,111 @@ function renderSettings(data) {
     tablesHtml += '</tbody></table>';
   }
   ct.innerHTML = tablesHtml;
+}
+
+var telemetryEditing = false;
+
+function renderTelemetry(t) {
+  var el = document.getElementById('telemetry-container');
+  if (!el) return;
+  // The page polls loadSettings() every 15s. Re-rendering mid-edit would wipe
+  // a half-typed herd name and silently flip the toggle back, so an unsaved
+  // edit wins until the user saves or cancels it.
+  if (telemetryEditing && document.getElementById('tele-nick')) return;
+  var on = t.enabled !== false;
+  var anon = t.anonymous !== false;
+
+  var html = '';
+  // Master switch.
+  html += '<div class="toggle-container">' +
+    '<div class="toggle-info">' +
+      '<div class="toggle-label">Share anonymous usage</div>' +
+      '<div class="toggle-desc">One summary a day: models used, request counts, error categories. ' +
+        'Never prompts, never your hostname. ' +
+        '<a href="https://ollamaherd.com/telemetry" target="_blank" style="color:var(--accent)">See every field</a>.</div>' +
+      '<div class="toggle-env">FLEET_NODE_TELEMETRY</div>' +
+    '</div>' +
+    '<label class="toggle-switch">' +
+      '<input type="checkbox" ' + (on ? 'checked' : '') + ' onchange="setTelemetry(this.checked)">' +
+      '<span class="toggle-slider"></span>' +
+    '</label>' +
+  '</div>';
+
+  if (on) {
+    // Anonymity switch. On (default) = a number in a total, nothing public.
+    html += '<div class="toggle-container">' +
+      '<div class="toggle-info">' +
+        '<div class="toggle-label">Stay anonymous</div>' +
+        '<div class="toggle-desc">' + (anon
+            ? 'Your herd is counted in the totals only. Nothing identifies it publicly.'
+            : 'Turned off: your herd appears on the public leaderboard under the name below.') +
+        '</div>' +
+        '<div class="toggle-env">FLEET_NODE_HERD_NICKNAME</div>' +
+      '</div>' +
+      '<label class="toggle-switch">' +
+        '<input type="checkbox" ' + (anon ? 'checked' : '') + ' onchange="setAnonymous(this.checked)">' +
+        '<span class="toggle-slider"></span>' +
+      '</label>' +
+    '</div>';
+
+    if (!anon) {
+      var nick = (t.nickname || '').replace(/"/g, '&quot;');
+      html += '<div class="tele-sub">' +
+        '<input id="tele-nick" class="tele-input" maxlength="30" placeholder="Name your herd" value="' + nick + '">' +
+        '<div class="tele-warn">This name is public. It appears on the leaderboard once approved.</div>' +
+        '<button class="tele-save" onclick="saveNickname()">Save name</button>' +
+      '</div>';
+    }
+  }
+
+  html += '<div class="tele-note">Changes are saved to ~/.fleet-manager/env and take effect when herd-node restarts.' +
+    (t.shell_override ? ' <b>A shell export is currently overriding this file, so changes here will not apply until you unset it.</b>' : '') +
+    '</div>';
+
+  el.innerHTML = html;
+}
+
+async function postTelemetry(body, msg) {
+  try {
+    var resp = await fetch('/dashboard/api/settings', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    var r = await resp.json();
+    if (r.status === 'updated') {
+      if (r.not_persisted && r.not_persisted.length) {
+        showToast('Could not save - check permissions on ~/.fleet-manager/env');
+      } else {
+        showToast(msg + ' - restart herd-node to apply');
+      }
+    }
+  } catch (err) { console.error(err); }
+  loadSettings();
+}
+
+function setTelemetry(on) {
+  postTelemetry({telemetry: on}, on ? 'Telemetry enabled' : 'Telemetry disabled');
+}
+
+function setAnonymous(anon) {
+  // Anonymity is expressed by the absence of a nickname, so turning it back on
+  // clears the name rather than keeping a hidden one we might publish later.
+  if (anon) {
+    telemetryEditing = false;
+    postTelemetry({herd_nickname: ''}, 'Now anonymous');
+  } else {
+    telemetryEditing = true;
+    renderTelemetry({enabled: true, anonymous: false, nickname: ''});
+    var f = document.getElementById('tele-nick');
+    if (f) f.focus();
+  }
+}
+
+function saveNickname() {
+  var v = (document.getElementById('tele-nick').value || '').trim();
+  if (!v) { showToast('Enter a name, or switch anonymous back on'); return; }
+  telemetryEditing = false;
+  postTelemetry({herd_nickname: v}, 'Herd name saved');
 }
 
 async function toggleSetting(field, value) {
@@ -5318,139 +5513,11 @@ async function loadSettings() {
   } catch (err) {
     console.error('Settings load error:', err);
   }
-  loadPlatformStatus();
 }
 
 // ─────────────────────────────────────────────────────────────
 // Platform connection card
 // ─────────────────────────────────────────────────────────────
-
-async function loadPlatformStatus() {
-  try {
-    var resp = await fetch('/api/platform/status');
-    var data = await resp.json();
-    renderPlatformCard(data);
-  } catch (err) {
-    console.error('Platform status error:', err);
-    document.getElementById('platform-card').innerHTML =
-      '<div style="padding:16px;color:var(--text-dim)">Platform status unavailable.</div>';
-  }
-}
-
-function renderPlatformCard(data) {
-  var el = document.getElementById('platform-card');
-  if (!el) return;
-
-  if (data.state === 'not_connected') {
-    el.innerHTML =
-      '<div class="platform-card-inner">' +
-        '<div class="platform-title">Not connected</div>' +
-        '<div class="platform-desc">' +
-          'Connect this node to <b>gotomy.ai</b> to earn credits ' +
-          'for serving peers, see historical usage on the dashboard, and ' +
-          'participate in the network.<br><br>' +
-          'You keep your fleet private by default — nothing leaves this machine ' +
-          'until you explicitly enable a feature.<br><br>' +
-          'Get an operator token at <a href="https://gotomy.ai/web/" target="_blank" ' +
-          'style="color:var(--accent)">gotomy.ai/web/</a>' +
-        '</div>' +
-        '<div class="platform-form">' +
-          '<input id="platform-token-input" type="password" placeholder="herd_..." ' +
-          '       style="flex:1;padding:8px 12px;background:var(--bg);border:1px solid var(--border);' +
-          '       border-radius:6px;color:var(--text);font-family:SF Mono,monospace;font-size:13px">' +
-          '<button onclick="platformConnect()" class="platform-btn">Connect</button>' +
-        '</div>' +
-        '<div id="platform-error" class="platform-error"></div>' +
-      '</div>';
-  } else if (data.state === 'connecting') {
-    el.innerHTML =
-      '<div class="platform-card-inner">' +
-        '<div class="platform-title">Connecting…</div>' +
-        '<div class="platform-desc">Validating token, running benchmark, registering node.</div>' +
-      '</div>';
-  } else if (data.state === 'connected' && data.connected) {
-    var c = data.connected;
-    var name = c.user_display_name || c.user_email || 'connected';
-    var when = c.connected_at ? new Date(c.connected_at).toLocaleDateString() : '';
-    el.innerHTML =
-      '<div class="platform-card-inner">' +
-        '<div class="platform-title">' +
-          '<span style="color:var(--green,#00c853)">✓</span> Connected as ' + name +
-          (when ? ' <span style="color:var(--text-dim);font-weight:400">· since ' + when + '</span>' : '') +
-        '</div>' +
-        '<div class="platform-desc">' +
-          '<div>Node: <code>' + (c.node_id || '?').substring(0, 8) + '…</code></div>' +
-          '<div>Platform: <code>' + (data.platform_url || '?') + '</code></div>' +
-        '</div>' +
-        '<button onclick="platformDisconnect()" class="platform-btn platform-btn-secondary">' +
-          'Disconnect' +
-        '</button>' +
-        '<div class="platform-note">' +
-          'Disconnecting stops this node from communicating with the platform. ' +
-          'Your earnings and node history remain on the platform. To fully remove ' +
-          'your node, visit <a href="https://gotomy.ai/web/" target="_blank" ' +
-          'style="color:var(--accent)">gotomy.ai/web/</a> and deregister it there.' +
-        '</div>' +
-      '</div>';
-  } else {
-    el.innerHTML =
-      '<div class="platform-card-inner"><div class="platform-title">' +
-      'Error: ' + (data.error || 'Unknown state') + '</div></div>';
-  }
-}
-
-async function platformConnect() {
-  var input = document.getElementById('platform-token-input');
-  var errEl = document.getElementById('platform-error');
-  if (!input) return;
-  var token = input.value.trim();
-  if (!token) {
-    errEl.textContent = 'Enter an operator token (starts with herd_).';
-    return;
-  }
-  errEl.textContent = '';
-
-  // Show "connecting" state immediately
-  renderPlatformCard({state: 'connecting'});
-
-  try {
-    var resp = await fetch('/api/platform/connect', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({operator_token: token}),
-    });
-    var data = await resp.json();
-    if (resp.ok) {
-      showToast('Connected to platform successfully');
-      loadPlatformStatus();
-    } else {
-      renderPlatformCard({state: 'not_connected'});
-      setTimeout(function() {
-        var e = document.getElementById('platform-error');
-        if (e) e.textContent = data.error || 'Connection failed';
-      }, 50);
-    }
-  } catch (err) {
-    renderPlatformCard({state: 'not_connected'});
-    setTimeout(function() {
-      var e = document.getElementById('platform-error');
-      if (e) e.textContent = 'Network error: ' + err.message;
-    }, 50);
-  }
-}
-
-async function platformDisconnect() {
-  if (!confirm('Disconnect from platform? Your earnings history on the platform is preserved.')) {
-    return;
-  }
-  try {
-    await fetch('/api/platform/disconnect', {method: 'POST'});
-    showToast('Disconnected from platform');
-    loadPlatformStatus();
-  } catch (err) {
-    console.error('Disconnect error:', err);
-  }
-}
 
 window.addEventListener('DOMContentLoaded', function() {
   var dot = document.getElementById('sse-dot');

@@ -128,6 +128,15 @@ def start(
         typer.echo(f"  Platform: {url} (token supplied via flag)")
     typer.echo("")
 
+    # Shown once, before the agent starts and therefore before anything could
+    # ever be sent. ollamaherd.com/telemetry promises both of those, and that
+    # the opt-out works "including the first run" -- which is why this is a
+    # visible typer.echo and not a log line, and why it is gated on
+    # settings.telemetry rather than shown unconditionally.
+    from fleet_manager.common.telemetry_notice import show_first_run_notice_if_needed
+
+    show_first_run_notice_if_needed(settings.telemetry, echo=typer.echo)
+
     asyncio.run(agent.start())
 
 
