@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.anthropic_autoroute import resolve_model
-from fleet_manager.server.fleet_headers import fleet_headers
+from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
 from fleet_manager.server.mlx_proxy import is_mlx_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.responses_translator import (
@@ -235,6 +235,7 @@ async def responses(request: Request):
         backend="mlx" if actual_model.startswith("mlx:") else "ollama",
         score=winner.score,
         retries=entry.retry_count,
+        affinity=affinity_from_breakdown(winner.scores_breakdown),
         extra=_extra,
     ))
 

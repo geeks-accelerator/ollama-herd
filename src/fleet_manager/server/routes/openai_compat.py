@@ -12,7 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
-from fleet_manager.server.fleet_headers import fleet_headers
+from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
 from fleet_manager.server.mlx_proxy import (
     MlxModelMissingError,
     MlxQueueFullError,
@@ -374,6 +374,7 @@ async def chat_completions(request: Request):
         backend="mlx" if actual_model.startswith("mlx:") else "ollama",
         score=winner.score,
         retries=entry.retry_count,
+        affinity=affinity_from_breakdown(winner.scores_breakdown),
         extra=check_context_overflow(winner, inference_req, registry),
     ))
 

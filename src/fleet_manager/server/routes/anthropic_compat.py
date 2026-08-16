@@ -39,7 +39,7 @@ from fleet_manager.server.anthropic_translator import (
     flatten_text_for_count,
     ollama_chunk_to_anthropic_events,
 )
-from fleet_manager.server.fleet_headers import fleet_headers
+from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
 from fleet_manager.server.mlx_proxy import (
     MlxModelMissingError,
     MlxQueueFullError,
@@ -1052,6 +1052,7 @@ async def messages(
         backend="mlx" if actual_model.startswith("mlx:") else "ollama",
         score=winner.score,
         retries=entry.retry_count,
+        affinity=affinity_from_breakdown(winner.scores_breakdown),
         extra=_extra,
     ))
 
