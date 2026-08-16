@@ -21,9 +21,18 @@ Deliberately *approximate*, and the limits are worth stating plainly:
 * We cannot see Ollama's cache.  A pin is a bet that the node still holds the
   prefix, and the TTL is how long that bet stays good.  Too long and we pin to a
   cold slot; too short and we lose the benefit on slow-turning sessions.
-* ``OLLAMA_NUM_PARALLEL`` slots rotate, so even the right node may have evicted
-  the conversation.  Being wrong costs one cold prefill — exactly what would
-  have happened anyway without affinity — so the downside is bounded.
+* Slots do **not** rotate blindly — an earlier version of this note had that
+  backwards.  llama.cpp selects the slot whose cached tokens share the longest
+  common prefix with the incoming request (ggml-org/llama.cpp#13606), so a node
+  with ``OLLAMA_NUM_PARALLEL=4`` holds *four* warm conversations at once and
+  finds the right one.  The pin is a better bet than the TTL implies.
+
+  That makes the real limit a **capacity** one, not a time one: past N
+  concurrent conversations per node, a pin is a claim the backend cannot back.
+  ``mlx_lm.server`` is the same shape with ``--prompt-cache-size`` (we set 10).
+  The TTL below remains a coarse safety net rather than the true bound.
+  Being wrong costs one cold prefill — exactly what would have happened anyway
+  without affinity — so the downside is bounded either way.
 * The bonus is a *preference*, never a constraint.  Elimination still runs
   first, so an offline, drained or over-full node is never chosen because a
   session once landed there.

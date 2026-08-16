@@ -78,3 +78,61 @@ class TestEmission:
         )
         assert set(base).issubset(set(with_aff))
         assert set(with_aff) - set(base) == {"X-Fleet-Affinity"}
+
+
+class TestAffinityDecaysUnderLoad:
+    """A flat bonus is the naive version: a warm but saturated node keeps
+    winning while an idle peer sits free.  That is the bug vLLM's
+    production-stack shipped `loadaware` routing to fix, and every production
+    router (Dynamo, Ray Serve, SGLang) decays the cache bonus by load."""
+
+    def _engine(self):
+        from fleet_manager.models.config import ServerSettings
+        from fleet_manager.server.scorer import ScoringEngine
+
+        class Sessions:
+            def preferred_node(self, key):
+                return "bb"
+
+        return ScoringEngine(ServerSettings(), registry=None, sessions=Sessions())
+
+    class _Node:
+        node_id = "bb"
+
+    def test_full_bonus_on_an_idle_node(self):
+        engine = self._engine()
+        assert engine._score_session_affinity(self._Node(), "s", 0) == (
+            engine.SESSION_AFFINITY_BONUS
+        )
+
+    def test_bonus_shrinks_as_the_queue_grows(self):
+        engine = self._engine()
+        scores = [engine._score_session_affinity(self._Node(), "s", d) for d in (0, 1, 2, 4, 8)]
+        assert scores == sorted(scores, reverse=True), scores
+        assert scores[-1] < scores[0] / 4
+
+    def test_decay_never_exceeds_the_ceiling(self):
+        """Decay may only shrink, so the deliberate 20-vs-thermal-50 gap holds."""
+        engine = self._engine()
+        for depth in range(0, 20):
+            assert 0 < engine._score_session_affinity(self._Node(), "s", depth) <= (
+                engine.SESSION_AFFINITY_BONUS
+            )
+
+    def test_no_pin_scores_zero_regardless_of_depth(self):
+        from fleet_manager.models.config import ServerSettings
+        from fleet_manager.server.scorer import ScoringEngine
+
+        class NoPin:
+            def preferred_node(self, key):
+                return None
+
+        engine = ScoringEngine(ServerSettings(), registry=None, sessions=NoPin())
+        for depth in (0, 5, 50):
+            assert engine._score_session_affinity(self._Node(), "s", depth) == 0.0
+
+    def test_negative_depth_is_clamped(self):
+        engine = self._engine()
+        assert engine._score_session_affinity(self._Node(), "s", -5) == (
+            engine.SESSION_AFFINITY_BONUS
+        )

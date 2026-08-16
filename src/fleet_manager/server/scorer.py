@@ -68,7 +68,7 @@ class ScoringEngine:
             s7 = self._score_context_fit(node, model, estimated_tokens)
             breakdown["context_fit"] = s7
 
-            s8 = self._score_session_affinity(node, session_key)
+            s8 = self._score_session_affinity(node, session_key, depth)
             breakdown["session_affinity"] = s8
 
             total = s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8
@@ -383,7 +383,16 @@ class ScoringEngine:
     # node that is about to throttle.
     SESSION_AFFINITY_BONUS = 20.0
 
-    def _score_session_affinity(self, node: NodeState, session_key: str) -> float:
+    # How fast the affinity bonus decays as the pinned node's queue grows.
+    # factor = 1 / (1 + depth / SCALE), so depth 0 -> full bonus, depth 2 ->
+    # half, depth 4 -> a third.  Tuned against the queue concurrency cap
+    # (min(memory_slots, OLLAMA_NUM_PARALLEL), commonly 4): by the time a node
+    # is genuinely saturated the bonus is small enough that an idle peer wins.
+    SESSION_AFFINITY_DECAY_SCALE = 2.0
+
+    def _score_session_affinity(
+        self, node: NodeState, session_key: str, depth: int = 0
+    ) -> float:
         """Signal 8: keep a conversation on the node holding its warm prefix.
 
         llama.cpp skips already-processed prompt tokens, so a returning turn can
@@ -399,9 +408,21 @@ class ScoringEngine:
         if not session_key or self._sessions is None:
             return 0.0
         preferred = self._sessions.preferred_node(session_key)
-        if preferred and preferred == node.node_id:
-            return self.SESSION_AFFINITY_BONUS
-        return 0.0
+        if not preferred or preferred != node.node_id:
+            return 0.0
+
+        # Decay by queue depth.  Signal 3 already prices congestion, so this is
+        # NOT a second penalty -- it shrinks the *bonus*, so a warm but
+        # saturated node stops winning on affinity alone while an idle peer
+        # sits free.  Every production router does this (NVIDIA Dynamo's
+        # overlap_score_credit_decay_factor, Ray Serve's imbalanced_threshold,
+        # SGLang's balance thresholds); a flat bonus is the naive version and
+        # is the bug vLLM's production-stack shipped `loadaware` routing to fix.
+        #
+        # Decay can only shrink, never grow, so the deliberate ceiling below
+        # thermal's 50 holds by construction.
+        factor = 1.0 / (1.0 + max(0, depth) / self.SESSION_AFFINITY_DECAY_SCALE)
+        return self.SESSION_AFFINITY_BONUS * factor
 
     def _score_role_affinity(self, node: NodeState, model: str) -> float:
         """Signal 5: Match model size to node capability.
