@@ -131,6 +131,32 @@ def _ollama_env(name: str) -> str:
 
 
 @functools.lru_cache(maxsize=1)
+def _detect_mlx_version() -> str:
+    """Installed mlx-lm version, or "" when not installed.
+
+    Reads the ``*.dist-info`` directory name rather than shelling out to the
+    pinned ``uv tool`` interpreter: this runs on every heartbeat, and a
+    subprocess per beat to answer a value that cannot change without a
+    reinstall is the kind of cost that only shows up under load.  Cached for
+    the agent's lifetime for the same reason.
+    """
+    import glob
+    import os
+    import re
+
+    patterns = [
+        os.path.expanduser("~/.local/share/uv/tools/mlx-lm/lib/*/site-packages/mlx_lm-*.dist-info"),
+        os.path.expanduser("~/.local/pipx/venvs/mlx-lm/lib/*/site-packages/mlx_lm-*.dist-info"),
+    ]
+    for pattern in patterns:
+        for path in glob.glob(pattern):
+            match = re.search(r"mlx_lm-([0-9][^-/]*)\.dist-info", path)
+            if match:
+                return match.group(1)
+    return ""
+
+
+@functools.lru_cache(maxsize=1)
 def _detect_chip() -> str:
     """Return the CPU / SoC name as a best-effort human-readable string.
 
@@ -626,6 +652,7 @@ async def collect_heartbeat(
         lan_ip=lan_ip,
         capacity=capacity,
         agent_version=__version__,
+        mlx_version=_detect_mlx_version(),
         image=image,
         transcription=transcription,
         vision_embedding=vision_embedding,

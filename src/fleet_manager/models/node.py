@@ -230,6 +230,10 @@ class HeartbeatPayload(BaseModel):
     draining: bool = False
     capacity: CapacityMetrics | None = None
     agent_version: str = ""
+    # Installed mlx-lm version, empty when MLX isn't in use.  Reported so the
+    # fleet can see which MLX runtimes are out there before a model that needs
+    # a newer one lands -- the same question ollama_version answers for GGUF.
+    mlx_version: str = ""
     image: ImageMetrics | None = None
     image_port: int = 0
     transcription: TranscriptionMetrics | None = None
@@ -299,6 +303,10 @@ class NodeState(BaseModel):
     capacity: CapacityMetrics | None = None
     # Software version reported by the node agent
     agent_version: str = ""
+    # Installed mlx-lm version, empty when MLX isn't in use.  Reported so the
+    # fleet can see which MLX runtimes are out there before a model that needs
+    # a newer one lands -- the same question ollama_version answers for GGUF.
+    mlx_version: str = ""
     # Image generation capabilities
     image: ImageMetrics | None = None
     # Port for image generation server on this node

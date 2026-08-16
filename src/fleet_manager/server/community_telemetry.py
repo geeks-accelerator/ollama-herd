@@ -125,6 +125,7 @@ def build_devices(registry, herd_install_id: str, requests_by_node: dict) -> lis
                 "cores": int(getattr(hw, "cores_physical", 0) or 0),
                 "agent_version": (getattr(node, "agent_version", "") or "")[:32],
                 "ollama_version": (getattr(ollama, "version", "") or "")[:32],
+                "mlx_version": (getattr(node, "mlx_version", "") or "")[:32],
                 "requests": int(requests_by_node.get(node.node_id, 0)),
             }
         )
