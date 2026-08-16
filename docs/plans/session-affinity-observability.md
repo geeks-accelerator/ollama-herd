@@ -1,7 +1,11 @@
 # Plan: make session-affinity routing observable
 
 **Created:** 2026-08-16
-**Status:** 📋 PLAN — nothing built.
+**Status:** ✅ **SHIPPED in v0.9.2** (2026-08-16). Items 1-5 implemented; item 6 (opaque session token) deliberately deferred as an upgrade to a documented tradeoff rather than a defect.
+
+What landed: `X-Fleet-Affinity: matched|new` on all four scored routes; `usage.prompt_tokens_details.cached_tokens` populated on MLX and **omitted** on Ollama; per-request cache logging split by routing decision; `--prompt-cache-size` raised 4 -> 10 to match upstream; the affinity bonus decayed by queue depth; and the inverted slot-rotation docstring corrected.
+
+**Still true and unchanged by shipping:** affinity has never altered a routing decision on the dev fleet (one online node), so the TTFT demo below remains unproven. Two nodes and a controlled A/B before any benchmark claim.
 **Why:** A router is invisible. A request goes in, a response comes out, and it looks identical to a single machine. Session affinity is the signal most worth demonstrating and the only one a user currently cannot observe at all.
 
 The precedent is `X-Cache: HIT/MISS` — a header no RFC ever specified, adopted by every CDN because legibility won — and Turborepo's `>>> FULL TURBO`, which made cache reuse legible with one line of stdout.
