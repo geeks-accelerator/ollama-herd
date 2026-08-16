@@ -421,7 +421,8 @@ class NodeSettings(BaseSettings):
     #   model       (str)   — HF repo id or local path (required)
     #   port        (int)   — listen port (required, must be unique)
     #   kv_bits     (int)   — 0 / 4 / 8 (optional, default 0)
-    #   prompt_cache_size  (int) — optional, default 4
+    #   prompt_cache_size  (int) — optional, default 10 (mlx_lm.server's
+    #                      own default; how many conversations stay warm)
     #   prompt_cache_bytes (int) — optional, default 16 GiB
     #   draft_model (str)   — optional speculative-decoding draft
     #

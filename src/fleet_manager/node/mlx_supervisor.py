@@ -76,7 +76,15 @@ class MlxServerSpec:
     model: str                          # HF repo id or local path
     port: int                           # unique per-node
     kv_bits: int = 0                    # 0 / 4 / 8
-    prompt_cache_size: int = 4
+    # Matches mlx_lm.server's own default.  We previously set 4 with no
+    # recorded reason, which silently halved how many conversations could stay
+    # warm: mlx_lm.server keeps N independent prompt caches and selects among
+    # them by longest common prefix, so this is directly "how many concurrent
+    # sessions keep their KV cache".  Session affinity pins a conversation to a
+    # node, but the node can only honour that for as many sessions as it has
+    # caches -- past N, a pin is a claim the backend cannot back.  Raise it
+    # further on large-memory machines; each cache costs KV for its prefix.
+    prompt_cache_size: int = 10
     prompt_cache_bytes: int = 17_179_869_184  # 16 GiB
     draft_model: str = ""
     num_draft_tokens: int = 4
@@ -144,7 +152,7 @@ class MlxServerSpec:
             model=model,
             port=port,
             kv_bits=int(data.get("kv_bits", 0)),
-            prompt_cache_size=int(data.get("prompt_cache_size", 4)),
+            prompt_cache_size=int(data.get("prompt_cache_size", 10)),
             prompt_cache_bytes=int(data.get("prompt_cache_bytes", 17_179_869_184)),
             draft_model=str(data.get("draft_model", "")),
             num_draft_tokens=int(data.get("num_draft_tokens", 4)),
@@ -344,7 +352,7 @@ class MlxSupervisor:
         port: int = 11440,
         host: str = "127.0.0.1",
         kv_bits: int = 0,
-        prompt_cache_size: int = 4,
+        prompt_cache_size: int = 10,
         prompt_cache_bytes: int = 17_179_869_184,
         draft_model: str = "",
         num_draft_tokens: int = 4,

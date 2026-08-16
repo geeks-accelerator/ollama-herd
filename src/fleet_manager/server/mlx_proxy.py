@@ -572,13 +572,24 @@ class MlxProxy:
             return []
 
     def pop_token_counts(
-        self, request_id: str
+        self, request_id: str, affinity: str | None = None
     ) -> tuple[int | None, int | None, int | None]:
         """Drain captured token counts for a finished request.
 
         Returns (prompt_tokens, completion_tokens, cached_tokens).  Any
         component may be None if mlx_lm.server didn't report it (older
         versions don't expose ``prompt_tokens_details.cached_tokens``).
+
+        ``affinity`` is the routing decision for this request (``"matched"`` /
+        ``"new"`` / ``None`` when it did not apply).  Passing it logs the cache
+        outcome split by that decision, which is the **only** place in the
+        fleet where the value of session affinity can actually be measured
+        rather than assumed: MLX reports real cached tokens, and Ollama cannot
+        (it folds llama.cpp's ``cache_n`` back into ``prompt_n`` on purpose --
+        ollama/ollama#16428).
+
+        Optional so the 15 existing call sites keep working unchanged; the ones
+        that have the routing result in scope pass it.
 
         Side effect: also folds the cache_hit observation into the
         per-model rolling stats so the dashboard can show hit rate.
@@ -587,6 +598,14 @@ class MlxProxy:
         prompt, _completion, cached = result
         if prompt is not None and cached is not None:
             self._record_cache_observation(prompt, cached)
+            if affinity:
+                # INFO, not DEBUG: this is the evidence behind the affinity
+                # claim, and it is worthless if nobody can find it later.
+                logger.info(
+                    "affinity=%s cached_tokens=%d prompt_tokens=%d reuse=%.1f%%",
+                    affinity, cached, prompt,
+                    (100.0 * cached / prompt) if prompt else 0.0,
+                )
         return result
 
     def _record_cache_observation(self, prompt_tokens: int, cached_tokens: int) -> None:

@@ -425,7 +425,10 @@ async def chat_completions(request: Request):
             raise
 
         # Retrieve real token counts extracted from Ollama response
-        tokens = proxy.pop_token_counts(inference_req.request_id)
+        tokens = proxy.pop_token_counts(
+            inference_req.request_id,
+            affinity=affinity_from_breakdown(winner.scores_breakdown),
+        )
         prompt_tok = tokens[0] or 0
         completion_tok = tokens[1] or 0
 
