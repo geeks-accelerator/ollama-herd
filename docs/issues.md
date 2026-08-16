@@ -8,6 +8,27 @@ Identified via code review of the full codebase. Organized by priority.
 
 ## Routing Safety
 
+### MLX proxy records failed requests with an empty `error_message` `OPEN`
+
+**Severity:** low (observability), but it degrades two things at once.
+
+A request that fails on the MLX path is written to `request_traces` with
+`status='failed'` and an **empty** `error_message`. Found via telemetry: the
+first real community payload carried `errors: {"unknown": 1}`, and `unknown` is
+what `_categorize_error()` returns for a falsy message. Tracked back to the
+GLM-5 load that was SIGKILLed on 2026-08-15 — the trace recorded the failure but
+not the reason.
+
+Impact: the dashboard shows a failure with no cause, and the anonymous telemetry
+error histogram gets an `unknown` bucket that hides what actually broke. A
+persistent `unknown` in the published community stats would look like a
+categorisation gap when it is really a missing message at the source.
+
+**Fix:** record a reason wherever `mlx_proxy` marks a request failed — even
+`"process exited"` or `"connection closed"` beats an empty string. Then confirm
+`_categorize_error()` has a bucket for it rather than falling through to
+`unknown`.
+
 ### Ollama watchdog cascade-restarted `ollama serve` and wiped pinned models `FIXED` (removed)
 
 **File:** `src/fleet_manager/node/ollama_watchdog.py` (deleted 2026-04-23)

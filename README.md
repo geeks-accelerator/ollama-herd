@@ -292,6 +292,27 @@ Questions? Open a [Discussion](https://github.com/geeks-accelerator/ollama-herd/
 
 **If Ollama Herd is useful to you, [star the repo](https://github.com/geeks-accelerator/ollama-herd)** — it helps others discover the project and keeps the herd growing.
 
+## Anonymous usage stats
+
+Ollama Herd sends one anonymous summary a day: which models ran, request and
+token counts, latency percentiles, and error counts by category. It helps decide
+what to fix and which models to test against.
+
+**Never sent:** prompts, completions, raw error text, file paths, your hostname,
+or any account details — there are no accounts. Identity is a random UUID stored
+at `~/.fleet-manager/install_id`; delete it and you are a new install.
+
+Turn it off any time:
+
+```bash
+FLEET_NODE_TELEMETRY=false
+```
+
+Every field that can be sent is listed at
+**<https://ollamaherd.com/telemetry>**. Naming your herd for the public
+leaderboard is a separate opt-in — left alone, your install is a number in a
+total, with nothing identifying it.
+
 ## Requirements
 
 - Python 3.11+

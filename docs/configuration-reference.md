@@ -332,3 +332,25 @@ export FLEET_NODE_ROUTER_URL=http://macstudio.local:11435
 export FLEET_NODE_ENABLE_CAPACITY_LEARNING=true
 uv run herd-node
 ```
+
+
+## Anonymous community telemetry
+
+Sent by the **router**, once a day, on by default. Everything that can be sent is
+published at <https://ollamaherd.com/telemetry> — that page is the contract.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `FLEET_NODE_TELEMETRY` | `true` | Set `false` to disable. Honoured on the **first** run: a node that has opted out writes no files at all, not even the identifier. Also accepted as `FLEET_TELEMETRY`. |
+| `FLEET_NODE_HERD_NICKNAME` | *(empty)* | A **second, separate** opt-in. Empty = anonymous, counted only in global totals. Setting it publishes the name on the leaderboard. Max 30 chars; letters, numbers, spaces, `-` `_` `.` only. |
+| `FLEET_NODE_TELEMETRY_URL` | `https://ollamaherd.com/api/v1/telemetry` | Override the endpoint (testing / self-hosting). |
+
+**Both are read by `ServerSettings` despite the `FLEET_NODE_` prefix.** The sender
+moved from the node to the router, and these names are what the published page
+documents and what the dashboard writes, so `ServerSettings` reads them via
+`validation_alias`. Do not "tidy" that to `FLEET_*` — it silently breaks the
+documented opt-out, because "off" and "unset" look identical in a bool default.
+See `tests/test_models/test_telemetry_env_contract.py`.
+
+Identity is a random UUID at `~/.fleet-manager/install_id`, never derived from the
+machine. Delete it and you are a new install; delete it and opt out and you are gone.

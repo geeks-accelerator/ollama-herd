@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Anonymous community telemetry, on by default.** The router sends one summary a day: which models ran, request and token counts, latency percentiles, and error counts by category. Never prompts, never completions, never raw error text, never your hostname. Opt out with **`FLEET_NODE_TELEMETRY=false`**, or from the dashboard's new Community Telemetry section. A one-time notice is printed the first time `herd-node` starts, before anything is ever sent, and the opt-out is honoured on that first run — a node that has opted out writes no files at all, not even the identifier. Every field that can be sent is published at [ollamaherd.com/telemetry](https://ollamaherd.com/telemetry); that page is the contract, and the payload builder mirrors it under tests that fail the build if the two drift.
+
+  Identity is a random `install_id` UUID stored in `~/.fleet-manager/install_id` — delete it and you are a new install, delete it and opt out and you are gone. It is never derived from anything about the machine; tests assert it is neither the hostname in any form nor a hash of it, so it cannot be turned into a stable fingerprint later.
+
+  Reporting is **per herd, not per machine**. The router is the only component that knows a fleet is one fleet, so it sends one payload containing a `devices[]` row per node (chip, memory, cores, agent and Ollama version, that node's request share). Fleet totals are derived from those rows server-side rather than sent as scalars, so a total can never disagree with its parts. Each device carries a `device_id` derived from its `node_id` but hashed and salted with the herd's `install_id`: stable enough to aggregate across days, and impossible to reverse to a hostname or correlate across herds.
+
+- **Name your herd for the public leaderboard** — a second, separate opt-in on top of telemetry. Set it in the dashboard or via `FLEET_NODE_HERD_NICKNAME`. Telemetry alone is never public; a nickname is the only field that is, and the UI says so before you set one. Names are limited to 30 characters of letters, numbers, spaces, `-`, `_`, `.`, validated where they are typed rather than only in the browser.
+
+- **The Ollama version is collected in the heartbeat** and surfaced to the router, so a fleet can answer "which runtimes are actually out there?" before a version-gated model or a changed default lands.
+
+### Fixed
+
+- **Dashboard toggles now survive a restart.** `POST /dashboard/api/settings` only mutated settings in memory, so every Feature Toggle silently reverted on the next start. They are now written to `~/.fleet-manager/env` with a line-based writer that preserves the comments and hand edits in that file, and the response reports `not_persisted` / `restart_required` instead of implying an effect it cannot deliver. Merely annoying for `auto_pull`; it would have been a broken promise for a telemetry opt-out.
+
+- **The gotomy.ai platform panel is removed from Settings** — that service is shut down.
+
+### Removed
+
+- The account-based platform telemetry opt-ins are untouched, but the dashboard's platform-connection UI is gone along with the service it targeted.
+
 ## [0.9.1] - 2026-07-30
 
 A fixes-and-hardening release on top of `0.9.0` — no breaking changes, no new dependencies. Three reliability bugs found while operating the local fleet, plus a new routing signal and two health checks that came out of the same soak.
