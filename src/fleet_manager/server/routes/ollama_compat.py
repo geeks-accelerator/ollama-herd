@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fleet_manager.models.node import NodeStatus
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
-from fleet_manager.server.fleet_headers import fleet_headers
+from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
 from fleet_manager.server.model_knowledge import is_image_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.routing import (
@@ -710,6 +710,7 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         backend="mlx" if actual_model.startswith("mlx:") else "ollama",
         score=winner.score,
         retries=entry.retry_count,
+        affinity=affinity_from_breakdown(winner.scores_breakdown),
         extra=check_context_overflow(winner, inference_req, registry),
     )
 
