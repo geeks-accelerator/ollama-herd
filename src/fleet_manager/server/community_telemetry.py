@@ -47,6 +47,24 @@ _TIMEOUT = httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
 
 MAX_DEVICES = 100
 
+# Mirrors the receiving service's per-device schema, which validates with
+# extra="forbid": an unknown key 422s the WHOLE payload, not just the device.
+# Learned the hard way -- an "mlx_servers" count invented here (the plan said
+# mlx_version) rejected every send until it was removed.  Keep this in step
+# with telemetry/app/schemas.py.
+DEVICE_FIELDS = frozenset(
+    {
+        "device_id",
+        "chip",
+        "memory_gb",
+        "cores",
+        "agent_version",
+        "ollama_version",
+        "mlx_version",
+        "requests",
+    }
+)
+
 
 def device_id_for(herd_install_id: str, node_id: str) -> str:
     """Stable, non-reversible per-herd device identifier derived from node_id.
@@ -107,7 +125,6 @@ def build_devices(registry, herd_install_id: str, requests_by_node: dict) -> lis
                 "cores": int(getattr(hw, "cores_physical", 0) or 0),
                 "agent_version": (getattr(node, "agent_version", "") or "")[:32],
                 "ollama_version": (getattr(ollama, "version", "") or "")[:32],
-                "mlx_servers": len(getattr(node, "mlx_servers", []) or []),
                 "requests": int(requests_by_node.get(node.node_id, 0)),
             }
         )

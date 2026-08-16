@@ -83,8 +83,6 @@ async def build_anonymous_rollup(
     data_dir: str = "~/.fleet-manager",
     day: str | None = None,
     nickname: str = "",
-    fleet_node_count: int | None = None,
-    fleet_memory_gb: int | None = None,
 ) -> dict:
     """Build one day's anonymous rollup.  Returns a dict ready to POST.
 
@@ -207,14 +205,14 @@ async def build_anonymous_rollup(
         "errors": errors,
     }
 
-    # Nickname + fleet shape are the *second* opt-in: they are the only fields
-    # that can ever appear publicly, so they are omitted entirely rather than
-    # sent as null when the operator has not named their herd.
+    # The nickname is the *second* opt-in and the only field that can ever
+    # appear publicly, so it is omitted entirely rather than sent as null.
+    #
+    # Fleet node count / memory are deliberately NOT accepted here any more.
+    # The server derives them from devices[] and now rejects the scalars, so a
+    # caller passing them would 422 the entire payload -- keeping the
+    # parameters around as no-ops would just be a loaded gun.
     if nickname:
         payload["nickname"] = nickname[:MAX_NICKNAME_LEN]
-        if fleet_node_count is not None:
-            payload["fleet_node_count"] = fleet_node_count
-        if fleet_memory_gb is not None:
-            payload["fleet_memory_gb"] = fleet_memory_gb
 
     return payload

@@ -136,3 +136,45 @@ class TestServerBounds:
         assert payload["errors"] == {}
         assert payload["install_id"] == INSTALL_ID
         assert payload["day"] == "2026-08-10"
+
+
+class TestDeviceContract:
+    """The device shape drifted once and only prod caught it (a 422 on every
+    send). Pin it here so the next drift fails the build instead."""
+
+    def test_device_fields_match_server_schema(self):
+        from fleet_manager.server.community_telemetry import DEVICE_FIELDS
+
+        assert DEVICE_FIELDS == {
+            "device_id",
+            "chip",
+            "memory_gb",
+            "cores",
+            "agent_version",
+            "ollama_version",
+            "mlx_version",
+            "requests",
+        }
+
+    def test_built_devices_emit_only_known_fields(self):
+        from fleet_manager.server.community_telemetry import DEVICE_FIELDS, build_devices
+
+        class HW:
+            chip, memory_total_gb, cores_physical = "Apple M3 Ultra", 512.0, 32
+
+        class N:
+            node_id, hardware, ollama, agent_version = "bb", HW(), None, "0.9.1"
+
+        class Reg:
+            _nodes = {"bb": N()}
+
+        for dev in build_devices(Reg(), "herd-1", {"bb": 5}):
+            assert set(dev) <= DEVICE_FIELDS, f"unknown device field: {set(dev) - DEVICE_FIELDS}"
+
+    def test_device_id_matches_the_enforced_pattern(self):
+        """Server enforces ^[0-9a-f]{16}$ so a raw node_id cannot slip through."""
+        import re
+
+        from fleet_manager.server.community_telemetry import device_id_for
+
+        assert re.fullmatch(r"[0-9a-f]{16}", device_id_for("herd-1", "johns-macbook"))
