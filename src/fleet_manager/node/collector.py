@@ -488,6 +488,17 @@ async def collect_heartbeat(
         models_available = []
         requests_active = 0
 
+    # Version probe is deliberately isolated: it is diagnostic metadata, so a
+    # failure here must not cost us the model lists above.  Folding it into
+    # that try block made an unrelated probe failure empty models_available --
+    # caught by the mlx_client tests, which is exactly the blast radius this
+    # separation prevents.
+    ollama_version = ""
+    try:
+        ollama_version = await ollama.get_version()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"Ollama version unavailable: {type(e).__name__}: {e}")
+
     # Real on-disk sizes so the server never has to guess from the name (see
     # OllamaMetrics.models_available_sizes).  Deliberately its OWN try block:
     # sizes are best-effort enrichment, and a failure here must never wipe the
@@ -609,6 +620,7 @@ async def collect_heartbeat(
             max_loaded_models=max_loaded_models,
             num_parallel=num_parallel,
             requests_active=requests_active,
+            version=ollama_version,
         ),
         ollama_host=_make_lan_reachable_url(ollama_host, lan_ip),
         lan_ip=lan_ip,

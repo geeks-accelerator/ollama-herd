@@ -77,6 +77,22 @@ class OllamaClient:
             logger.debug(f"Failed to get available models: {type(e).__name__}: {e}")
             return []
 
+    async def get_version(self) -> str:
+        """GET /api/version — Ollama's own version, or "" if unavailable.
+
+        Reported in the heartbeat so the fleet knows which runtimes are in use
+        before a version-gated model or a changed default lands.  Returns ""
+        rather than raising: a heartbeat must never fail because a version
+        probe did.
+        """
+        try:
+            resp = await self._client.get("/api/version")
+            resp.raise_for_status()
+            return str(resp.json().get("version", ""))
+        except Exception as e:
+            logger.debug(f"Failed to get Ollama version: {type(e).__name__}: {e}")
+            return ""
+
     async def get_available_model_sizes(self) -> dict[str, float]:
         """GET /api/tags — ``{model_name: on-disk size in GB}``.
 

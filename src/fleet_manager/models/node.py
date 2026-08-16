@@ -107,6 +107,12 @@ class OllamaMetrics(BaseModel):
     # documented default of 1 rather than guessing high.
     num_parallel: int = 0
     requests_active: int = 0
+    # Ollama's own version, from /api/version.  Reported so the fleet can
+    # answer "which runtimes are out there?" before a version-gated model or a
+    # behaviour change lands -- e.g. muse-glimmer:30b needs >= 0.32.7, and
+    # 0.32.10 changed the default repeat_penalty.  Empty = not reported (older
+    # agent, or Ollama unreachable at collection time).
+    version: str = ""
 
 
 class CapacityMetrics(BaseModel):
