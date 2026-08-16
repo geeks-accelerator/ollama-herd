@@ -1339,6 +1339,38 @@ async def dashboard_settings_update(request: Request):
     for field in node_str_fields:
         if field in body:
             value = str(body[field]).strip()
+            if field == "herd_nickname" and value:
+                # Enforce here, not only in the browser: the API is reachable
+                # directly, and the server's truncation is a safety net rather
+                # than a UX.  Someone typing a 40-character name should learn
+                # that now, not discover a shortened one on the leaderboard.
+                from fleet_manager.node.anonymous_rollup import (
+                    MAX_NICKNAME_LEN,
+                    sanitize_nickname,
+                )
+
+                if len(value) > MAX_NICKNAME_LEN:
+                    return JSONResponse(
+                        status_code=400,
+                        content={
+                            "status": "error",
+                            "message": (
+                                f"Herd name must be {MAX_NICKNAME_LEN} characters "
+                                f"or fewer (got {len(value)})."
+                            ),
+                        },
+                    )
+                if not sanitize_nickname(value):
+                    return JSONResponse(
+                        status_code=400,
+                        content={
+                            "status": "error",
+                            "message": (
+                                "Herd name may contain letters, numbers, spaces, "
+                                "- _ . only."
+                            ),
+                        },
+                    )
             updated[field] = value
             restart_required.append(field)
             env_key = f"FLEET_NODE_{field.upper()}"

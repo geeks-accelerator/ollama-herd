@@ -218,6 +218,15 @@ async def send_once(
 
         if response.status_code in (200, 201, 202):
             _save_last_sent_day(yesterday, state_file)
+            # The service returns `warnings` when it had to adjust something it
+            # accepted -- a truncated nickname, a clipped chip string.  Logged
+            # at INFO because it is the only explanation for the name on the
+            # leaderboard differing from the one someone set days earlier.
+            try:
+                for warning in (response.json() or {}).get("warnings") or []:
+                    logger.info("telemetry service adjusted the payload: %s", warning)
+            except Exception:  # noqa: BLE001 - a nicety, never load-bearing
+                pass
             logger.debug("community telemetry sent for %s", yesterday)
             return True
 
