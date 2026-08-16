@@ -185,6 +185,21 @@ class NodeAgent:
         # Start telemetry scheduler if opted in (requires platform connection)
         self._telemetry_task = await self._ensure_telemetry_scheduler()
 
+        # Anonymous community telemetry — a separate pipeline from the account
+        # one above: no platform connection, no token, default on with the
+        # FLEET_NODE_TELEMETRY opt-out.  run_scheduler() returns immediately
+        # when disabled, so no task is left running for an opted-out node.
+        self._anonymous_telemetry_task = None
+        if getattr(self.settings, "telemetry", False):
+            from fleet_manager import __version__
+            from fleet_manager.node.anonymous_telemetry import (
+                run_scheduler as run_anonymous_telemetry,
+            )
+
+            self._anonymous_telemetry_task = asyncio.create_task(
+                run_anonymous_telemetry(self.settings, __version__)
+            )
+
         # Start platform heartbeat sender if connected — sends every 60s
         self._platform_heartbeat_task = await self._ensure_platform_heartbeat()
 
