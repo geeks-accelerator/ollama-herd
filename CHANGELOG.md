@@ -21,9 +21,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Name your herd for the public leaderboard** — a second, separate opt-in on top of telemetry. Set it in the dashboard or via `FLEET_NODE_HERD_NICKNAME`. Telemetry alone is never public; a nickname is the only field that is, and the UI says so before you set one. Names are limited to 30 characters of letters, numbers, spaces, `-`, `_`, `.`, validated where they are typed rather than only in the browser.
 
-- **The Ollama version is collected in the heartbeat** and surfaced to the router, so a fleet can answer "which runtimes are actually out there?" before a version-gated model or a changed default lands.
+- **`X-Fleet-Affinity` makes session routing visible.** Every scored endpoint now reports `matched` when a request went back to the node already holding that conversation, or `new` when it did not — and omits the header entirely on routes that never score, because "did not apply" and "missed" are different facts.
+
+  It reports the **routing decision, not a cache hit**, and deliberately so: Ollama folds llama.cpp's `cache_n` back into `prompt_n` ([ollama/ollama#16428](https://github.com/ollama/ollama/pull/16428)), so `prompt_eval_count` cannot yield a hit ratio and inferring one from it produced a false "zero prefix-cache reuse" report here once already. Time-to-first-token is the honest proof: a matched turn shows a large drop.
+
+- **`usage.prompt_tokens_details.cached_tokens`** is reported on backends that actually measure it (MLX), and **omitted — never zeroed — on backends that cannot** (Ollama). Zero means "measured, nothing reused"; absent means "cannot measure". Conflating them is a bug vLLM shipped and SGLang still has.
+
+- **The Ollama and mlx-lm versions are collected in the heartbeat** and surfaced to the router, so a fleet can answer "which runtimes are actually out there?" before a version-gated model or a changed default lands.
+
+### Changed
+
+- **Session affinity now decays with queue depth.** A pinned node contributes the full bonus when idle and progressively less as its queue grows, so a warm but saturated node stops winning while an idle peer sits free. Every production router does this — NVIDIA Dynamo, Ray Serve, SGLang — and a flat bonus is the bug vLLM's production-stack shipped `loadaware` routing to fix. Signal 3 already prices congestion, so this shrinks the *bonus* rather than adding a second penalty, and because decay can only shrink, affinity still never outweighs a thermal warning.
+
+- **MLX prompt cache raised from 4 to 10**, matching `mlx_lm.server`'s own default. The previous value had no recorded rationale and sat *below* upstream, silently halving how many conversations could keep their KV cache warm — which is the actual limit on how many sessions affinity can honour.
 
 ### Fixed
+
+- **Telemetry now sends a missed day on startup instead of sleeping past it.** The scheduler slept until the next 00:05 UTC before its first send, so *start time of day* decided whether an install reported at all: a router started at 00:10 UTC waited 23h55m, and one restarted daily after 00:05 never sent. Both are indistinguishable from "nobody uses this" on the receiving end. Found because our own fleet ran 12 hours of clean uptime with zero automatic sends.
+
+- **The published telemetry opt-out worked in name only.** Moving the sender from the node to the router silently repointed which environment variables it read (`ServerSettings` carries a different prefix), so `FLEET_NODE_TELEMETRY=false` — the opt-out documented on the website — stopped disabling anything, with no error anywhere, because "off" and "unset" are indistinguishable in a boolean default. Both that and `FLEET_NODE_HERD_NICKNAME` are now read correctly, with tests pinning the names as a published contract.
 
 - **Dashboard toggles now survive a restart.** `POST /dashboard/api/settings` only mutated settings in memory, so every Feature Toggle silently reverted on the next start. They are now written to `~/.fleet-manager/env` with a line-based writer that preserves the comments and hand edits in that file, and the response reports `not_persisted` / `restart_required` instead of implying an effect it cannot deliver. Merely annoying for `auto_pull`; it would have been a broken promise for a telemetry opt-out.
 
