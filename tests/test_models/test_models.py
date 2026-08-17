@@ -79,7 +79,10 @@ class TestNodeModels:
             ollama=OllamaMetrics(),
         )
         assert hb.node_id == "studio"
-        assert hb.arch == "apple_silicon"
+        # Was "apple_silicon" -- the default that made every Linux/NVIDIA node
+        # report Apple hardware (issue #1).  The payload no longer guesses; the
+        # collector detects it and "unknown" is the honest fallback.
+        assert hb.arch == "unknown"
         assert hb.draining is False
         assert hb.timestamp > 0
 

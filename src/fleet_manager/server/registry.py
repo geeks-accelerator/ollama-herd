@@ -35,7 +35,7 @@ class NodeRegistry:
                     node_id=payload.node_id,
                     hardware=HardwareProfile(
                         node_id=payload.node_id,
-                        arch=payload.arch or "apple_silicon",
+                        arch=payload.arch or "unknown",
                         chip=payload.chip,
                         memory_total_gb=payload.memory.total_gb,
                         cores_physical=payload.cpu.cores_physical,
@@ -231,7 +231,9 @@ class NodeRegistry:
         If the node is on the same machine as the router (heartbeat from localhost),
         use localhost directly — more reliable than going through the LAN IP since
         it avoids network stack issues (firewall, IP changes, macOS quirks).
-        For remote nodes, construct URL from the node's LAN IP.
+        For remote nodes the order is: an explicitly-configured non-loopback
+        ollama_host, then the IP the heartbeat arrived from (reachable by
+        construction), then the self-reported lan_ip as a last resort.
         """
         from urllib.parse import urlparse
 
@@ -245,8 +247,28 @@ class NodeRegistry:
             port = parsed.port or 11434
             return f"http://localhost:{port}"
 
+        # An operator who set a non-loopback ollama_host knows their topology
+        # better than we can infer it.  The node's collector only rewrites
+        # ollama_host when it points at loopback, so a non-loopback value here
+        # is either a deliberate FLEET_NODE_OLLAMA_HOST or an address the node
+        # already believes is reachable.  Respect it.
+        #
+        # Discarding it was a real outage for Docker deployments (issue #1):
+        # inside a container lan_ip is the bridge address (172.17.0.x), which
+        # the router cannot reach, so every routed request failed with
+        # ConnectError even though FLEET_NODE_OLLAMA_HOST was set correctly.
+        parsed = urlparse(payload.ollama_host)
+        if parsed.hostname and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+            return payload.ollama_host
+
+        port = parsed.port or 11434
+
+        # Otherwise prefer the address the heartbeat actually arrived from.
+        # It is reachable by construction -- the packet got here -- whereas
+        # lan_ip is self-reported and wrong inside any NAT'd network namespace.
+        if request_ip and request_ip not in ("127.0.0.1", "::1"):
+            return f"http://{request_ip}:{port}"
+
         if payload.lan_ip and payload.lan_ip != "127.0.0.1":
-            parsed = urlparse(payload.ollama_host)
-            port = parsed.port or 11434
             return f"http://{payload.lan_ip}:{port}"
         return payload.ollama_host

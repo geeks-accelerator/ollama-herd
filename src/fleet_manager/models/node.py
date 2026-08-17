@@ -215,7 +215,11 @@ class MlxServerInfo(BaseModel):
 
 class HeartbeatPayload(BaseModel):
     node_id: str
-    arch: str = "apple_silicon"
+    # Detected by the node (see collector._detect_arch).  Defaulted to
+    # "apple_silicon" historically, which meant every Linux/NVIDIA node
+    # reported Apple hardware because nothing ever set it (issue #1).
+    # "unknown" is honest; a wrong arch feeds device-aware scoring.
+    arch: str = "unknown"
     timestamp: float = Field(default_factory=time.time)
     cpu: CpuMetrics
     memory: MemoryMetrics
@@ -274,7 +278,11 @@ class HeartbeatPayload(BaseModel):
 
 class HardwareProfile(BaseModel):
     node_id: str
-    arch: str = "apple_silicon"
+    # Detected by the node (see collector._detect_arch).  Defaulted to
+    # "apple_silicon" historically, which meant every Linux/NVIDIA node
+    # reported Apple hardware because nothing ever set it (issue #1).
+    # "unknown" is honest; a wrong arch feeds device-aware scoring.
+    arch: str = "unknown"
     chip: str = ""
     cores_physical: int = 0
     memory_total_gb: float = 0.0

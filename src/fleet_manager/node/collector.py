@@ -131,6 +131,25 @@ def _ollama_env(name: str) -> str:
 
 
 @functools.lru_cache(maxsize=1)
+def _detect_arch() -> str:
+    """Best-effort machine architecture, e.g. "apple_silicon" / "x86_64" / "arm64".
+
+    Nothing set this before, so every node inherited the ``apple_silicon``
+    default -- including Linux and NVIDIA boxes, which reported Apple hardware
+    in ``/fleet/status`` (issue #1).  The router uses arch for device-aware
+    scoring, so a wrong value is not merely cosmetic.
+    """
+    machine = platform.machine().lower()
+    if platform.system() == "Darwin":
+        return "apple_silicon" if machine in ("arm64", "aarch64") else "x86_64"
+    if machine in ("x86_64", "amd64"):
+        return "x86_64"
+    if machine in ("arm64", "aarch64"):
+        return "arm64"
+    return machine or "unknown"
+
+
+@functools.lru_cache(maxsize=1)
 def _detect_mlx_version() -> str:
     """Installed mlx-lm version, or "" when not installed.
 
@@ -652,6 +671,7 @@ async def collect_heartbeat(
         lan_ip=lan_ip,
         capacity=capacity,
         agent_version=__version__,
+        arch=_detect_arch(),
         mlx_version=_detect_mlx_version(),
         image=image,
         transcription=transcription,

@@ -29,6 +29,18 @@ categorisation gap when it is really a missing message at the source.
 `_categorize_error()` has a bucket for it rather than falling through to
 `unknown`.
 
+### Docker nodes unreachable + every node reported `apple_silicon` `FIXED` (0.9.3)
+
+**Reported by an external user** ([issue #1](https://github.com/geeks-accelerator/ollama-herd/issues/1)), running `herd-node` in containers on Linux/NVIDIA hosts. Two independent bugs, both of which made the fleet unusable off Apple Silicon.
+
+**1. `FLEET_NODE_OLLAMA_HOST` was discarded.** `registry._build_ollama_url()` kept only the *port* from `ollama_host` and rebuilt the URL from `payload.lan_ip`. Inside a container that is the bridge address (`172.17.0.x`), which the router cannot reach, so every routed request failed `ConnectError` → HTTP 500 — while `/fleet/status` cheerfully displayed the unreachable URL.
+
+Fixed by ordering the sources by how much we actually trust them: an explicitly-configured non-loopback `ollama_host` wins (the operator knows their topology); then `request_ip`, which is reachable *by construction* because the heartbeat arrived from it; then self-reported `lan_ip` as a last resort. The middle step is the real insight — the router always had a proven-good address and was preferring a guess over it.
+
+**2. `arch` was hardcoded.** It defaulted to `"apple_silicon"` on both `HeartbeatPayload` and `HardwareProfile`, and `collect_heartbeat()` never set it, so *every* node claimed Apple hardware. The router uses `arch` for device-aware scoring, so this was not cosmetic. Now detected in `collector._detect_arch()`, with `"unknown"` as the honest fallback.
+
+**Why we never saw it:** the dev fleet is one Mac with the router and node co-located, so the `request_ip == 127.0.0.1` branch always ran and `lan_ip` was never consulted. Every non-Apple, non-co-located deployment hit this immediately. A test in `test_models.py` asserted `arch == "apple_silicon"` — it was codifying the bug.
+
 ### Ollama watchdog cascade-restarted `ollama serve` and wiped pinned models `FIXED` (removed)
 
 **File:** `src/fleet_manager/node/ollama_watchdog.py` (deleted 2026-04-23)
