@@ -5,9 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status:** `0.9.2` is the current release on PyPI and git tags — a fixes-and-hardening patch on `0.9.0`. `0.9.0` was the first release since **`0.7.0`**; the `0.8.x` milestones below were never published separately and ship inside it. Those dated `0.8.x` headers mark when each milestone was cut on `main`, not a PyPI release.
+> **Release status:** `0.9.3` is the current release on PyPI and git tags — a fixes-and-hardening patch on `0.9.0`. `0.9.0` was the first release since **`0.7.0`**; the `0.8.x` milestones below were never published separately and ship inside it. Those dated `0.8.x` headers mark when each milestone was cut on `main`, not a PyPI release.
 
 ## [Unreleased]
+
+## [0.9.3] - 2026-08-18
+
+A two-bug patch for non-Apple deployments, both reported by an external user running `herd-node` in Docker containers on Linux/NVIDIA hosts ([#1](https://github.com/geeks-accelerator/ollama-herd/issues/1)). Either one alone made the fleet unusable off Apple Silicon. No new dependencies.
+
+### Fixed
+
+- **`FLEET_NODE_OLLAMA_HOST` is respected again.** The router kept only the *port* from a node's reported `ollama_host` and rebuilt the URL from its self-reported `lan_ip` — which, inside a container, is the bridge address (`172.17.0.x`) the router cannot reach. Every routed request failed with `ConnectError` → HTTP 500, while `/fleet/status` displayed the unreachable URL as though it were fine.
+
+  Candidates are now ordered by how much they can actually be trusted: an explicitly-configured non-loopback `ollama_host` wins, because the operator knows their topology; otherwise the address the heartbeat *arrived from*, which is reachable by construction; and only then the self-reported `lan_ip`. The middle step was the gap — the router always had a proven-good address and was preferring a guess over it.
+
+- **Nodes report their real architecture.** `arch` defaulted to `"apple_silicon"` on both `HeartbeatPayload` and `HardwareProfile` and was never set by the collector, so *every* node claimed Apple hardware — including x86 and NVIDIA machines. Since `arch` feeds device-aware scoring, this was not cosmetic. It is now detected on the node, with `"unknown"` as an honest fallback rather than a guess.
+
+Neither bug could surface on a single co-located Mac, where the router and node share a machine and the loopback branch runs every time. A test that asserted `arch == "apple_silicon"` was codifying the bug and changed with the fix.
 
 ## [0.9.2] - 2026-08-16
 
