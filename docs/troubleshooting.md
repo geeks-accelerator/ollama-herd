@@ -214,6 +214,82 @@ Meeting detection is disabled by default — it only activates when `FLEET_NODE_
 
 ---
 
+## Fleet-wide throughput dropped and nothing in the dashboard explains it
+
+**Check this first — before tuning anything, and before suspecting an Ollama or
+llama.cpp upgrade.** herd's scheduler assumes it is the *only* client of its
+backends. Every signal it scores — queue depth, free slots, session affinity,
+context fit — is derived from what herd itself dispatched. If another process on
+the box talks to Ollama directly (`http://localhost:11434`), that traffic is not
+merely unmeasured: it silently invalidates the arithmetic. `QueueManager` caps a
+queue's concurrency to match llama-server's `-np`, so a co-tenant filling the same
+slots means herd's "concurrency 2" is really occupancy 3–4 at the backend.
+
+The symptom is distinctive: **herd's own numbers all look healthy** — no errors,
+no retries, no fallbacks, memory fine — while throughput is plainly down.
+
+**Reconcile backend-side work against router-side dispatch:**
+
+```bash
+# what the backend actually did
+grep -c "new prompt, n_ctx_slot" ~/.ollama/logs/server.log
+
+# what herd dispatched
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT date(timestamp,'unixepoch'), COUNT(*) FROM request_traces GROUP BY 1"
+```
+
+**Only a gap in one direction matters.** `backend > router` means work herd never
+dispatched — that is the co-tenant signal. `router > backend` is benign and common:
+the backend line is attributed by the nearest preceding `[GIN]` timestamp (approximate),
+the log rotates, and a fully-cached prompt may not emit a `new prompt` line at all.
+Treat this as a **rough tripwire, not an audit** — a sustained `backend > router`
+excess of tens of percent is the alarm; small gaps either way are noise. When it
+does trip, confirm with `lsof` below before concluding anything.
+
+**Identify the client.** herd and herd-node connect over IPv6 (`::1`); most other
+tools use IPv4 (`127.0.0.1`), so they separate at a glance:
+
+```bash
+lsof -nP -iTCP:11434 -sTCP:ESTABLISHED
+```
+
+Do **not** trust the process name — `ps` shows whatever `process.title` a Node
+daemon set, and its `cwd` may be `/`. Resolve the real identity from its file
+descriptors:
+
+```bash
+lsof -p <pid> | awk '$4=="txt"{print $NF}'    # actual executable
+lsof -p <pid> | grep -E '\.json$'             # config file it opened
+```
+
+A globally-installed CLI can share a name with an unrelated project folder — check
+the binary path, not the name.
+
+**Two other tells of a bypassing client:**
+
+- `ollama ps` shows a model at a larger `CONTEXT` than `FLEET_NUM_CTX_OVERRIDES`
+  specifies. A request that skips the router also skips `num_ctx` resolution, so
+  Ollama applies its own default.
+- Oversized prompts appear in the backend log that never appear in herd's traces:
+  ```bash
+  grep -oE "task\.n_tokens = [0-9]+" ~/.ollama/logs/server.log | sort -t= -k2 -n | tail
+  ```
+  herd's `prompt_tokens` records `prompt_eval_count`, which counts **cache misses,
+  not full context** — so a long-context request can look small in traces while
+  occupying a slot with a huge KV cache and starving co-resident decode.
+
+**Fix:** point the other client at the router (`:11435`) instead of the backend
+(`:11434`). herd is Ollama-API compatible, so this is usually a one-line change to
+an `OLLAMA_BASE_URL` / `OLLAMA_HOST` setting. Watch for tools that reach your fleet
+by *fallback* rather than by configuration — a cloud provider losing its API key
+can silently redirect an entire workload onto local hardware.
+
+**Measure with p25, not the mean.** This class of problem hits the tail far harder
+than the typical request. In the 2026-08-23 incident the median fell 6% while p25
+fell 44% — a mean-or-median dashboard hid it almost completely. Full case study in
+`docs/observations.md` (2026-08-23).
+
 ## High Latency or Slow Responses
 
 **Possible causes:**

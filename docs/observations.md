@@ -246,6 +246,113 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+## 2026-08-23: The 15% decode "regression" was a second client bypassing the router
+
+**Root cause: the globally-installed `openclaw` CLI daemon was configured to call `http://127.0.0.1:11434` directly, not herd.** It contributed **27% of Ollama's load that herd could not see**, and it only started doing so because of an *auth failure cascade*.
+
+**Identifying it took one wrong turn worth recording.** `ps` showed the client as `openclaw-gateway` — but that is a node `process.title`, not a path, and `cwd` was `/`. Asking the obvious owners was misleading: the `~/Desktop/projects/openclaw` and `news-community` projects genuinely do not call Ollama, and their maintainers correctly said so. The real identity came from the file descriptors:
+
+```bash
+lsof -p <pid> | awk '$4=="txt"{print $NF}'   # -> ~/.nvm/.../lib/node_modules/openclaw/...
+lsof -p <pid> | grep -E '\.json$'            # -> ~/.openclaw/openclaw.json
+```
+
+It was the **global npm package** (`~/.nvm/versions/node/v24.13.1/lib/node_modules/openclaw`) driven by `~/.openclaw/openclaw.json`, entirely separate from the same-named project folder. The offending line:
+
+```json
+"models": { "providers": { "ollama": { "baseUrl": "http://127.0.0.1:11434", "api": "ollama" } } }
+```
+
+**Why it started at the reboot — and this is the part worth generalising.** openclaw's own `gateway.err.log` shows the trigger:
+
+```
+model fallback decision: decision=candidate_failed requested=openai-codex/gpt-5.5
+  reason=auth next=ollama/gpt-oss:120b detail=No API key found for provider "openai-codex"
+model fallback decision: decision=candidate_succeeded requested=openai-codex/gpt-5.5
+  candidate=ollama/gpt-oss:120b
+```
+
+Its configured cloud model lost its credentials, and its **fallback chain silently redirected the entire workload onto the local fleet** — thousands of `ollama/gpt-oss:120b` calls, including 3,299 auth failures, 8,340 `error=503`, and 708 timeouts. Nobody chose to point that traffic at the herd; an auth error did. **When a neighbouring tool has a local model in its fallback chain, any upstream auth or quota failure becomes load on your fleet, with no announcement on either side.**
+
+Resolution: the daemon was stopped and its launch agent disabled (`launchctl bootout gui/$UID/ai.openclaw.gateway` + `launchctl disable`), since the project was no longer in use.
+
+**Symptom:** fleet decode on `gpt-oss:120b` fell ~69 → ~59 tok/s (−15%) and stayed there, arriving fully formed at the first traffic after the reboot.
+
+**The proof, on complete days only** — llama-server tasks (from `~/.ollama/logs/server.log`) versus herd's own trace count:
+
+| day | ollama tasks | herd traces | invisible | % of load |
+|-----|--------------|-------------|-----------|-----------|
+| 08-16 | 7821 | 7687 | +134 | +1.7% |
+| 08-17 | 7617 | 8018 | −401 | −5.3% |
+| 08-18 | 8113 | 7738 | +375 | +4.6% |
+| 08-19 | 8261 | 8011 | +250 | +3.0% |
+| 08-20 | 7832 | 8137 | −305 | −3.9% |
+| **08-22** | **8189** | **5959** | **+2230** | **+27.2%** |
+
+Before: zero within ±5% noise. After: a quarter of the machine's work is from a client herd never scheduled.
+
+**Confirmed live.** Watching `~/.ollama/logs/server.log` for an oversized task while sampling `lsof -nP -iTCP:11434 -sTCP:ESTABLISHED` caught it in the act at 13:48:56:
+
+```
+=== BIG TASK DETECTED 13:48:56 ===
+slot operator(): id 2 | task 2746195 | new prompt, task.n_tokens = 77088
+  node      pid=33999  127.0.0.1:61620 -> 127.0.0.1:11434   <-- openclaw-gateway
+  python3.1 pid=14841  [::1]:61284     -> [::1]:11434       <-- herd
+  python3.1 pid=14853  [::1]:61615     -> [::1]:11434       <-- herd-node
+```
+
+Handy fingerprint on this box: **herd connects over IPv6 (`::1`), the stray client over IPv4 (`127.0.0.1`)** — so `lsof -nP -iTCP:11434 -sTCP:ESTABLISHED` alone separates router traffic from bypass traffic at a glance. The job runs on a 30-minute cadence (12:18:53, 12:48:52, 13:18:55, 13:48:56).
+
+**Confirmed by removal.** openclaw was stopped and its launch agent disabled at 14:09. The next 30-minute oversized task (due ~14:18:54) never fired, and 25 minutes of clean production traffic (n=114) measured:
+
+| metric | healthy Aug 15–21 | broken Aug 22–23 | after removal |
+|--------|-------------------|------------------|---------------|
+| mean | 69.5 | 58.9 | **72.7** |
+| median | 76.2 | 71.7 | **74.7** |
+| **p25** | 74.2 | **41.7** | **74.2** |
+| p10 | — | 34.3 | **73.7** |
+| conc=3 | ~68 | ~50 | **74.6** |
+| conc=4 | ~51 | ~42 | **73.4** |
+
+p25 returned exactly to the healthy baseline and the concurrency cliff disappeared — conc=3 and conc=4 now match conc=1, which they never did even during the "healthy" period. That residual pre-existing tail (p10 ≈ 43 back then) is worth noting: some co-tenancy cost was present all along and simply below the threshold of notice. Caveat on this measurement: 25 minutes at a quieter concurrency mix than a full day, so treat a 24-hour comparison as the real confirmation.
+
+**Why it hurts so much more than 27% of extra requests should.** Two compounding effects:
+
+1. **herd's concurrency cap is computed against a slot count it does not exclusively own.** `QueueManager` caps `bb:gpt-oss:120b` at 4 to match llama-server's `-np 4`. With a second client also filling those same 4 slots, herd's "conc=2" is really occupancy 3–4 at the backend. Every scoring and queueing decision is made against a number that is now wrong. Measured effect: the share of traffic herd *observes* at conc≥3 went 23% → 44%, and per-request rate at conc=3 fell from ~68 to ~50 tok/s.
+2. **181 of the invisible requests carry 8K–77K token prompts that re-prefill from scratch.** Pre-reboot, in 51,099 tasks over 6.5 days, **not one** task exceeded 8K tokens. After: 181 over 8K, 103 over 30K, max 77,088. The log shows `restored context checkpoint (… n_past = 1)` — nothing reused — then 2048-token prefill chunks grinding for **80+ seconds** (30.09 s at only 48% progress). Chunked prefill monopolises the unified batch, so every co-resident slot's decode is starved for the duration. Total logged prefill time went from **25–84 s/day to 1,795–2,471 s/day — a 30–50× jump.** Requests within 60 s of one of these are over-represented in the slow quartile by **2.6×**; within 120 s they run at 43.8 vs 72.3 tok/s (−39%).
+
+**The regression is a tail effect, not a shift.** This is why the headline number misleads:
+
+| day | mean | median | **p25** | slowest-5% |
+|-----|------|--------|---------|------------|
+| Aug 15–21 | 69.5 | 76.2 | **74.2** | 35.0 |
+| Aug 22–23 | 58.9 | 71.7 | **41.7** | 24.7 |
+
+The typical request lost 6%. The **bottom quartile lost 44%** — the slow tail grew from ~10% of traffic to ~25%. Quoting the mean made this look like a uniform engine slowdown, which sent the investigation chasing the engine for hours.
+
+**Architectural lesson: herd's scheduler assumes it is the only client of its backends.** Every signal it scores — queue depth, free slots, session affinity, context fit — is derived from what herd itself dispatched. Direct-to-Ollama traffic is not merely unmeasured, it silently invalidates the scheduling math. Anything on the box configured with a bare `OLLAMA_BASE_URL`/`OLLAMA_HOST` default (`http://localhost:11434`) will do this. **Point such clients at the router (`:11435`) — herd is Ollama-API compatible, so it is usually a one-line env change.** A health check comparing llama-server's task count against herd's dispatch count would have caught this in minutes rather than hours; see `docs/issues.md`.
+
+**Wrong turns worth remembering — every one of these looked convincing:**
+
+1. **"It's the Ollama version."** The reboot moved 0.32.13 → 0.32.15, whose notes advertise a TTFT halving and "llama.cpp dependency updates" (b10380 → b10488), and our TTFT did improve 850 → 665 ms. Killed by extracting 0.32.13's *bundled* `llama-server` from its release zip and A/B-ing it against 0.32.15's on the real blob with identical flags — 82.65 vs 82.95 tok/s at conc=3, 16.04 vs 16.40 on a mixed workload. **A downgrade would have changed nothing.** (Also: 0.33.0-rc1/rc2 pin the same b10488 — check `LLAMA_CPP_VERSION` before assuming a release changes the engine.)
+2. **"It's upstream llama.cpp bug #27126/#27084."** Real, similar-sounding, and *not ours* — CPU/OpenMP-specific, fixed by #27133 before b10488.
+3. **"The workload is identical."** Concluded from *median* prompt tokens (858 → 866). The median was genuinely unchanged; the p99 went 4,724 → 12,454 and the max 7,651 → 77,088. **Medians cannot see a tail.**
+4. **"Requests are serialising."** A 100-second `/slots` poll showed never more than one slot busy. Firing 3 concurrent requests on purpose showed 2–4 busy. That poll had simply landed in a quiet window.
+5. **"Concurrency rose, so the clients changed."** Per-bot self-concurrency was flat (botbook 1.08→1.12, inbed 1.15→1.15) and Aug 17 served *more* traffic at better throughput. Observed concurrency was an *effect* — of invisible co-tenancy plus longer service times, which feed back into more overlap.
+6. **A single-stream benchmark reported 75 tok/s** — faster than the pre-regression fleet average — because one request alone never meets the invisible traffic.
+
+**Diagnostic that actually worked, and should be first next time:** compare backend-side task counts with router-side dispatch counts.
+
+```bash
+grep -c "new prompt, n_ctx_slot" ~/.ollama/logs/server.log     # what the backend really did
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT date(timestamp,'unixepoch'), COUNT(*) FROM request_traces GROUP BY 1"
+```
+
+If the **backend** count sustainedly exceeds the router count, stop tuning the engine and go find the other client. The reverse (`router > backend`) is benign — backend lines are dated by the nearest preceding `[GIN]` line, logs rotate, and fully-cached prompts may emit no line at all. This is a tripwire, not an audit; confirm any trip with `lsof -nP -iTCP:11434 -sTCP:ESTABLISHED` before drawing conclusions.
+
+---
+
 ## 2026-08-14: The newest MLX models don't run on a 512 GB box — and forcing one hard-crashed it
 
 **Context:** Evaluating whether to add the biggest 2026 open models to the fleet. Two — DeepSeek-V4-Flash and GLM-5 — are the leaderboard darlings. Neither runs on the M3 Ultra 512 GB, for two *different* reasons, and chasing the second one **hard-crashed the machine**.

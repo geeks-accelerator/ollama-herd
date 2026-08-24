@@ -6,6 +6,105 @@ Identified via code review of the full codebase. Organized by priority.
 
 ---
 
+## Performance
+
+### No health check detects a second client bypassing the router `OPEN`
+
+**Severity:** high — this class of problem is invisible to every existing check.
+
+On 2026-08-21 a co-located tool (the globally-installed `openclaw` CLI daemon,
+configured in `~/.openclaw/openclaw.json`) began sending ~27% of Ollama's total
+load straight to `http://127.0.0.1:11434`, bypassing herd. Nobody configured that
+deliberately: its cloud provider lost its credentials and its **model fallback
+chain silently redirected the workload onto the local fleet** (`reason=auth
+next=ollama/gpt-oss:120b`). Any neighbouring tool with a local model in its
+fallback chain can do this to a fleet at any time, without warning on either side.
+Fleet decode fell 15% and **nothing in the dashboard, health engine, or traces
+indicated why** — herd's own numbers all looked healthy because herd's own
+requests *were* healthy. It took hours to find, after wrongly suspecting the
+Ollama version, upstream llama.cpp, memory, thermals, and the clients.
+
+The failure is structural: every scoring signal (queue depth, free slots, session
+affinity, context fit) is derived from what herd itself dispatched. A second
+client does not merely go unmeasured — it silently invalidates the arithmetic.
+`QueueManager` caps `bb:gpt-oss:120b` at 4 to match `-np 4`, so a co-tenant
+filling the same slots means herd's "conc=2" is really occupancy 3–4.
+
+**Proposed fix:** a `backend_load_unaccounted` check. Ollama exposes no per-runner
+request counter, but llama-server's `/slots` does — poll it on the node and
+compare observed busy-slot occupancy against herd's own in-flight count for that
+`node:model`. A sustained gap (say >15% over 10 minutes) means another client is
+sharing the backend. Report it with the remediation: point that client at the
+router (`:11435`), since herd is Ollama-API compatible.
+
+Cheap manual version, worth running whenever throughput looks wrong:
+
+```bash
+grep -c "new prompt, n_ctx_slot" ~/.ollama/logs/server.log
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT date(timestamp,'unixepoch'), COUNT(*) FROM request_traces GROUP BY 1"
+```
+
+Full evidence and the six wrong turns are in `docs/observations.md` (2026-08-23).
+
+---
+
+### Long-context requests starve co-resident decode with no admission control `OPEN`
+
+**Severity:** medium-high (tail latency).
+
+The same incident surfaced a real scheduling gap. 181 requests carried 8K–77K
+token prompts that re-prefilled from scratch (`restored context checkpoint …
+n_past = 1`), chunking 2048 tokens at a time for **80+ seconds**. Chunked prefill
+monopolises llama-server's unified batch, so every co-resident slot's decode
+stalls for the duration. Measured: requests within 60 s of one are 2.6× over-
+represented in the slow quartile; within 120 s they run 43.8 vs 72.3 tok/s (−39%).
+Total prefill time on this box went from 25–84 s/day to 1,795–2,471 s/day.
+
+herd has no notion of prefill cost when admitting work. A 77K-token request and an
+850-token request both consume one queue slot. Worth considering: weight queue
+admission by estimated prefill tokens, or keep a separate lane for very-long-context
+requests so one of them cannot stall an entire fleet's decode.
+
+Note this hurt *tail* latency far more than typical latency — median fell 6% while
+p25 fell 44%. **Dashboards that show mean or median throughput hide this entirely;**
+p25/p10 would have shown it immediately.
+
+---
+
+### `FLEET_NUM_CTX_OVERRIDES` appeared not to apply to `gemma3:27b` `NOT A BUG` (2026-08-23)
+
+Filed when `ollama ps` showed `gemma3:27b` at `CONTEXT 131072` (~70 GB resident)
+despite `~/.fleet-manager/env` pinning it to 32768. **The override was fine.**
+
+The model had been loaded by a client that bypassed the router entirely (see the
+bypass issue above) — and a request that skips herd also skips `num_ctx`
+resolution, so Ollama applied its own default. Once that client was removed and
+herd loaded the model itself, it came back at `CONTEXT 32768` / 23 GB as configured.
+
+Keep as a symptom, not a defect: **an unexpectedly large `CONTEXT` in `ollama ps`
+is an early signal that something is loading models behind the router's back.**
+Whatever backend-load check gets built should compare loaded-model context sizes
+against `FLEET_NUM_CTX_OVERRIDES`, not just request counts — it is a cheaper
+signal than task-count reconciliation and needs no log parsing.
+
+---
+
+### Stray `homebrew.mxcl.ollama` launch agent flaps on every boot `OPEN`
+
+**Severity:** low (noise), but it corrupts diagnosis.
+
+A Homebrew ollama service is still registered with launchd (`homebrew.mxcl.ollama`,
+last exit status 1) alongside the Mac app. It races the app for port 11434 at boot —
+`~/.ollama/logs/server.log` opens with `bind: address already in use` — and respawns
+periodically, exiting immediately. Not a performance factor, but it puts a scary
+error at the top of the server log and leaves a second `ollama` binary
+(`/opt/homebrew/opt/ollama/bin/ollama`) that can be mistaken for the running one
+during version checks. Clear it with `launchctl bootout gui/$UID/homebrew.mxcl.ollama`
+and `brew services stop ollama`.
+
+---
+
 ## Routing Safety
 
 ### MLX proxy records failed requests with an empty `error_message` `OPEN`
