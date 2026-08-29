@@ -5385,12 +5385,14 @@ function renderTelemetry(t) {
   '</div>';
 
   if (on) {
-    // Anonymity switch. On (default) = a number in a total, nothing public.
+    // Anonymity switch. On (default) = pseudonymous: listed under a handle
+    // derived from install_id, never a name or hostname.  The wording here and
+    // in common/telemetry_notice.py must agree with ollamaherd.com/telemetry.
     html += '<div class="toggle-container">' +
       '<div class="toggle-info">' +
         '<div class="toggle-label">Stay anonymous</div>' +
         '<div class="toggle-desc">' + (anon
-            ? 'Your herd is counted in the totals only. Nothing identifies it publicly.'
+            ? 'Listed on the leaderboard as a random handle like &quot;herd-7f3a2b&quot; \u2014 never your name or hostname.'
             : 'Turned off: your herd appears on the public leaderboard under the name below.') +
         '</div>' +
         '<div class="toggle-env">FLEET_NODE_HERD_NICKNAME</div>' +
@@ -5445,7 +5447,7 @@ function setAnonymous(anon) {
   // clears the name rather than keeping a hidden one we might publish later.
   if (anon) {
     telemetryEditing = false;
-    postTelemetry({herd_nickname: ''}, 'Now anonymous');
+    postTelemetry({herd_nickname: ''}, 'Now anonymous \u2014 shown as a random handle');
   } else {
     telemetryEditing = true;
     renderTelemetry({enabled: true, anonymous: false, nickname: ''});

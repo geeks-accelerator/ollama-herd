@@ -5,9 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status:** `0.9.3` is the current release on PyPI and git tags — a fixes-and-hardening patch on `0.9.0`. `0.9.0` was the first release since **`0.7.0`**; the `0.8.x` milestones below were never published separately and ship inside it. Those dated `0.8.x` headers mark when each milestone was cut on `main`, not a PyPI release.
+> **Release status:** `0.9.4` is cut on `main` but **not yet published** — the site's pseudonymous-listing gate keys on it, so listing stays off until it ships (`docs/plans/pseudonymous-leaderboard.md`). `0.9.3` is the current release on PyPI and git tags — a fixes-and-hardening patch on `0.9.0`. `0.9.0` was the first release since **`0.7.0`**; the `0.8.x` milestones below were never published separately and ship inside it. Those dated `0.8.x` headers mark when each milestone was cut on `main`, not a PyPI release.
 
 ## [Unreleased]
+
+## [0.9.4] - 2026-08-26
+
+### Changed
+
+- **The first-run notice now names the leaderboard, and the dashboard says what "anonymous" actually means.** The leaderboard listed only herds that set `FLEET_NODE_HERD_NICKNAME` — one of them, ours, while four other herds reported in unnamed. That looked like operators declining to be named. They were not: the notice never mentioned that naming was possible, so nobody had a choice to decline. It now does, alongside the existing opt-out.
+
+  This is also the client half of pseudonymous leaderboard listing, where unnamed herds appear under a handle derived from their random `install_id` (`herd-7f3a2b`) rather than not at all. That makes "anonymous" mean *pseudonymous*, so the notice and the dashboard's anonymity toggle now say so plainly — the dashboard previously promised "counted in the totals only, nothing identifies it publicly", which would have become false the moment listing went live.
+
+  No wire-format change: `install_id` and `agent_version` are already in the payload. The site gates listing on `agent_version >= 0.9.4`, so only installs that have seen the disclosure are ever listed, and existing herds stay invisible until they upgrade and read it. `docs/plans/pseudonymous-leaderboard.md` carries the handle derivation, the required ordering (page before site, per the "the page is the contract" rule), and the one gap this leaves — "contribute but stay unlisted" now requires turning telemetry off entirely, which wants a `listed` field the server must accept before the client may send it.
+
 
 ## [0.9.3] - 2026-08-18
 

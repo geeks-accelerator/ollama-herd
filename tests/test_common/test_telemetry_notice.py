@@ -79,3 +79,20 @@ class TestResilience:
         )
         assert shown is True
         assert seen
+
+
+def test_notice_discloses_pseudonymous_leaderboard_listing():
+    """The notice must say listing happens.
+
+    Unnamed herds are listed publicly under a handle derived from ``install_id``
+    (see docs/plans/pseudonymous-leaderboard.md).  The site gates that listing on
+    ``agent_version``, so THIS text is the only thing that makes it consented.
+    Drop the disclosure and pseudonymous listing silently becomes the sneaky
+    default the whole notice exists to prevent.
+    """
+    from fleet_manager.common.telemetry_notice import NOTICE
+
+    assert "leaderboard" in NOTICE.lower()
+    assert "FLEET_NODE_HERD_NICKNAME" in NOTICE
+    # and the existing opt-out must survive any rewording
+    assert "FLEET_NODE_TELEMETRY=false" in NOTICE

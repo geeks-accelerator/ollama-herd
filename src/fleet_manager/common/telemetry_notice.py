@@ -9,6 +9,11 @@ of those two things, so treat this module as load-bearing:
   demoted to ``logger.debug`` -- a notice nobody sees is the definition of
   the sneaky default this design exists to avoid.
 - It is shown BEFORE anything is ever sent, on the run that would send first.
+- It names the leaderboard.  Unnamed herds are listed publicly under a handle
+  derived from ``install_id``, so "anonymous" means *pseudonymous*, not absent.
+  Disclosing that here is what keeps pseudonymous listing honest -- the site
+  gates listing on ``agent_version``, so only installs that saw THIS text are
+  ever listed.  If you change the wording, do not drop the leaderboard line.
 
 The marker file only records that the notice was displayed.  It deliberately
 does not gate sending: if a user deletes ``~/.fleet-manager`` they get the
@@ -26,12 +31,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_NOTICE_MARKER = Path.home() / ".fleet-manager" / "telemetry_notice_shown"
 
 NOTICE = """
-  ┌─ Anonymous usage stats ─────────────────────────────────────────────┐
-  │ Herd sends one anonymous summary a day: which models ran, how many  │
+  ┌─ Anonymous usage stats ──────────────────────────────────────────────┐
+  │ Herd sends one anonymous summary a day: which models ran, how many   │
   │ requests, and error categories. Never prompts, never your hostname.  │
   │ It is a random id, not you, and it helps decide what to fix next.    │
   │                                                                      │
-  │ Opt out any time:  FLEET_NODE_TELEMETRY=false                        │
+  │ That random id also gives you a spot on the public leaderboard, as a │
+  │ handle like "herd-7f3a2b". Want your own name shown there instead?   │
+  │   FLEET_NODE_HERD_NICKNAME="My Herd"   (or the dashboard Settings)   │
+  │                                                                      │
+  │ Opt out of all of it:  FLEET_NODE_TELEMETRY=false                    │
   │ Exactly what is sent:  https://ollamaherd.com/telemetry              │
   └──────────────────────────────────────────────────────────────────────┘
 """
