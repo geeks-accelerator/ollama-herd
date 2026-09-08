@@ -168,6 +168,82 @@ class TestONNXBackend:
         norms = np.linalg.norm(result, axis=1)
         np.testing.assert_allclose(norms, 1.0, atol=1e-5)
 
+    def _backend_with_input_shape(self, shape, per_call_output, model="dinov2-vit-s14"):
+        """Build an ONNXBackend over a mock session with a given input shape."""
+        from pathlib import Path
+
+        from fleet_manager.node.embedding_models import ONNXBackend
+
+        mock_input = MagicMock()
+        mock_input.name = "input"
+        mock_input.shape = shape
+
+        mock_session = MagicMock()
+        mock_session.get_inputs.return_value = [mock_input]
+        mock_session.run.return_value = [per_call_output]
+
+        with patch.object(Path, "exists", return_value=True):
+            with patch("onnxruntime.InferenceSession", return_value=mock_session):
+                with patch(
+                    "onnxruntime.get_available_providers",
+                    return_value=["CPUExecutionProvider"],
+                ):
+                    backend = ONNXBackend(Path("/fake/model"), model)
+        return backend, mock_session
+
+    def test_fixed_batch_model_runs_one_image_per_call(self):
+        """A [1, 3, 224, 224] input axis must not be fed a concatenated batch.
+
+        dinov2-vit-s14's ONNX export bakes the batch axis to 1.  Feeding it
+        three stacked images failed the whole request with INVALID_ARGUMENT
+        ("Got: 3 Expected: 1"), so batch requests 500'd while single-image
+        ones worked.
+        """
+        try:
+            import onnxruntime  # noqa: F401
+        except ImportError:
+            pytest.skip("onnxruntime not installed")
+
+        from PIL import Image
+
+        backend, session = self._backend_with_input_shape(
+            [1, 3, 224, 224], np.random.randn(1, 384).astype(np.float32)
+        )
+        assert backend._fixed_batch is True
+
+        images = [Image.new("RGB", (64, 64)) for _ in range(3)]
+        result = backend.embed(images)
+
+        # One session call per image, each fed exactly one image.
+        assert session.run.call_count == 3
+        for call in session.run.call_args_list:
+            assert call[0][1]["input"].shape == (1, 3, 224, 224)
+
+        assert result.shape == (3, 384)
+        np.testing.assert_allclose(np.linalg.norm(result, axis=1), 1.0, atol=1e-5)
+
+    def test_dynamic_batch_model_still_batches_in_one_call(self):
+        """A dynamic batch axis keeps the single-call fast path."""
+        try:
+            import onnxruntime  # noqa: F401
+        except ImportError:
+            pytest.skip("onnxruntime not installed")
+
+        from PIL import Image
+
+        backend, session = self._backend_with_input_shape(
+            ["batch", 3, 224, 224],
+            np.random.randn(3, 512).astype(np.float32),
+            model="clip-vit-b32",
+        )
+        assert backend._fixed_batch is False
+
+        result = backend.embed([Image.new("RGB", (64, 64)) for _ in range(3)])
+
+        assert session.run.call_count == 1
+        assert session.run.call_args[0][1]["input"].shape == (3, 3, 224, 224)
+        assert result.shape == (3, 512)
+
 
 # ---------------------------------------------------------------------------
 # Model classification
