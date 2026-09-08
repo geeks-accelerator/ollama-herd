@@ -244,7 +244,19 @@ class ONNXBackend:
             except Exception:
                 pass
         self.session = ort.InferenceSession(str(model_path), providers=providers)
-        self.input_name = self.session.get_inputs()[0].name
+        spec_input = self.session.get_inputs()[0]
+        self.input_name = spec_input.name
+        # Not every export leaves the batch axis dynamic.  dinov2-vit-s14's is
+        # baked to [1, 3, 224, 224], so feeding it a concatenated batch fails
+        # the whole request with INVALID_ARGUMENT ("Got: 3 Expected: 1") --
+        # and the caller has no way to tell that apart from a broken model.
+        # Detect it once at load and run those models one image per session
+        # call.  A dynamic axis reports a string ("batch") or None, so only an
+        # int 1 counts as fixed.
+        try:
+            self._fixed_batch = spec_input.shape[0] == 1
+        except (IndexError, TypeError):
+            self._fixed_batch = False
         self.dimensions = spec.get("dimensions", 512)
         self.input_size = spec.get("input_size", 224)
 
@@ -268,14 +280,20 @@ class ONNXBackend:
         """
         import numpy as np
 
-        pixels = np.concatenate(
-            [preprocess_image(img, self.input_size, self._mean, self._std)
-             for img in images],
-            axis=0,
-        )
-        outputs = self.session.run(None, {self.input_name: pixels})
-        embeddings = outputs[0]
-        # Some models return (1, seq_len, dims) — take [CLS] token
+        tensors = [
+            preprocess_image(img, self.input_size, self._mean, self._std)
+            for img in images
+        ]
+        if self._fixed_batch:
+            # One run per image — the graph refuses anything but batch size 1.
+            embeddings = np.concatenate(
+                [self.session.run(None, {self.input_name: t})[0] for t in tensors],
+                axis=0,
+            )
+        else:
+            pixels = np.concatenate(tensors, axis=0)
+            embeddings = self.session.run(None, {self.input_name: pixels})[0]
+        # Some models return (N, seq_len, dims) — take [CLS] token
         if embeddings.ndim == 3:
             embeddings = embeddings[:, 0, :]
         # L2 normalize
