@@ -132,7 +132,52 @@ EOF
 **Package:** `ollama-herd` on [PyPI](https://pypi.org/project/ollama-herd/) | **Build:** hatchling | **Version:** `pyproject.toml`
 **Homebrew tap:** `geeks-accelerator/homebrew-ollama-herd` (separate repo — formula bump is its own commit, no PyPI republish needed for tap-only fixes)
 
+### Autostart (launchd agents — installed 2026-09-28)
+
+Two user agents own the fleet, so a reboot or crash no longer needs a human:
+
+| Label | Runs | Log |
+|-------|------|-----|
+| `com.geeksaccelerator.ollama-herd.router` | `.venv/bin/herd` (:11435) | `~/.fleet-manager/logs/launchd-herd.{out,err}` |
+| `com.geeksaccelerator.ollama-herd.node` | `.venv/bin/herd-node` | `~/.fleet-manager/logs/launchd-herd-node.{out,err}` |
+
+`RunAtLoad` + `KeepAlive{SuccessfulExit:false}` — restarts on a crash, but a clean
+exit stays stopped. `ThrottleInterval 30` (verified: a `kill -9` respawned in 16s).
+Start order does not matter; `herd-node` retries the router and re-registered in 1s
+after a router restart. Plists carry an explicit `PATH` because launchd provides
+almost none and `MlxSupervisor` must find `mlx_lm.server` (`~/.local/bin`) and
+`mlx.launch` (`/opt/homebrew/bin`).
+
+**Logs must NOT go under `~/Desktop`** — macOS 26 TCC blocks launchd from *writing*
+there (this is why `bot-crons` was moved off `~/Desktop` on 2026-05-09). *Executing*
+from `~/Desktop` is fine, verified here. Hence logs in `~/.fleet-manager/logs/`.
+
+**This changes the restart recipe below.** With the agents loaded, `pkill` is no
+longer a stop — launchd respawns within ~30s, so a `pkill`-then-start sequence races
+itself. Use launchctl instead:
+
+```bash
+# restart both (picks up code changes)
+launchctl kickstart -k gui/$UID/com.geeksaccelerator.ollama-herd.router
+launchctl kickstart -k gui/$UID/com.geeksaccelerator.ollama-herd.node
+
+# genuinely stop (e.g. to restart Ollama without the node grabbing :11434)
+launchctl bootout gui/$UID/com.geeksaccelerator.ollama-herd.node
+# ...and bring it back
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.geeksaccelerator.ollama-herd.node.plist
+
+# state (3rd column is the LAST exit code; -9 just means someone killed it)
+launchctl list | grep ollama-herd
+```
+
+`mlx_lm.server` children are still spawned by `herd-node` with
+`start_new_session=True`, so they survive its death and must be reaped separately —
+`pkill -9 -f mlx_lm.server` — exactly as the manual recipe warns.
+
 ### Local deployment
+
+Still the right recipe when the agents are NOT loaded (fresh clone, another machine).
+With the agents loaded, prefer `launchctl kickstart -k` above.
 
 ```bash
 # Kill EVERYTHING herd-related, including any mlx_lm.server children that

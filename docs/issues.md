@@ -6,6 +6,54 @@ Identified via code review of the full codebase. Organized by priority.
 
 ---
 
+## Correctness
+
+### herd caches a model's loaded context and never notices when the backend reloads at a different size `OPEN`
+
+**Severity:** medium — silently wastes KV memory and defeats `FLEET_NUM_CTX_OVERRIDES`.
+
+Observed repeatedly on 2026-09-28. `gemma3:27b` is configured for 32768, and the
+router injects that correctly. But it intermittently ends up **resident at 131072**
+(the Ollama default), and once that happens the router does not self-correct:
+
+```
+Dynamic num_ctx: override num_ctx=32768 for gemma3:27b cannot apply
+  -- already resident at 32768. Shrinking would force an unload/reload...
+```
+
+while the backend is demonstrably at 131072:
+
+```
+ps -Ao args | grep llama-server   ->  -c 524288 -np 4   (= 131072 per slot)
+```
+
+So the router refuses to re-apply the override *because of a stale belief about the
+current value*. It stayed wrong across several requests, and cost 28 GB of
+unnecessary KV (139.3 GB resident vs 112.0 GB after a manual reload).
+
+**Two separate defects here:**
+
+1. **Something loads the model at the Ollama default.** The preloader passes
+   `num_ctx` correctly (`pre_warm` was verified to send it), and the streaming path
+   injects it — but some path still reaches Ollama without it, most likely a request
+   arriving for a cold model outside the dynamic-num_ctx injection path. Worth
+   instrumenting which caller wins the load.
+2. **The "already resident at X" check trusts a cached value.** It should compare
+   against what the node last actually reported, and the node should report the
+   *per-slot* context. Note `ollama ps` reports a number that has already been
+   divided differently than the launch args: gemma3 showed `CONTEXT 131072` while
+   running `-c 524288 -np 4`. **Verify per-slot context from the launch args, not
+   `ollama ps`** — see the `OLLAMA_CONTEXT_LENGTH` gotcha in CLAUDE.md.
+
+**Workaround until fixed:** `ollama stop <model>` then send one request through the
+router, which reloads it with the override applied. Confirm with the launch args.
+
+**Why it matters beyond memory:** an oversized resident model is exactly what made
+Ollama predict 341.7 GiB and deadlock on 2026-09-22. This bug can recreate the
+precondition for that hang on its own.
+
+---
+
 ## Performance
 
 ### No health check detects a second client bypassing the router `OPEN`

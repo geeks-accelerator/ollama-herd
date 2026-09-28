@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **launchd agents so the fleet survives a reboot.** `com.geeksaccelerator.ollama-herd.router` and `.node`, with `RunAtLoad` + `KeepAlive{SuccessfulExit:false}` — a crash restarts, a clean exit stays stopped. Three unattended outages in the previous month, one of them 21 hours, were all "nobody restarted herd after a reboot"; nothing noticed until someone asked. Verified by `kill -9` (respawned in 16s, node re-registered in 1s).
+
+  Logs go to `~/.fleet-manager/logs/launchd-*.{out,err}`, deliberately not the project directory: macOS 26 TCC blocks launchd from *writing* under `~/Desktop` (the reason `bot-crons` had to move off it). Executing from there is fine. The plists also set an explicit `PATH`, since launchd provides almost none and `MlxSupervisor` resolves `mlx_lm.server` and `mlx.launch` from it.
+
+  **This changes how to restart herd:** `pkill` is no longer a stop, because launchd respawns within ~30s and a pkill-then-start sequence races itself. Use `launchctl kickstart -k` to restart and `launchctl bootout` to genuinely stop. See CLAUDE.md § Autostart.
+
 ### Fixed
 
 - **`pre_warm` no longer aborts mid-load or fails silently.** Its timeout was `120.0`, but a cold load is dominated by reading weights off disk — `gpt-oss:120b` (65 GB) takes 45–60s with a warm page cache and minutes cold, and a backend that must evict first takes longer still. So the router abandoned loads that were progressing, logged them as failures, and its 12-minute preload loop retried against a backend still busy with the previous attempt. Now `PRE_WARM_TIMEOUT_S = 900`.
