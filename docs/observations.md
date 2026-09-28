@@ -246,6 +246,47 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+## 2026-09-28: `OLLAMA_CONTEXT_LENGTH` is not a fallback — it silently overrode a per-request `num_ctx` and cost 6x prefill
+
+**I caused this one.** On 2026-09-22 I set `OLLAMA_CONTEXT_LENGTH=32768` to stop a model-load deadlock. It worked, and it also quadrupled prefill latency on the model serving 99% of traffic. I verified the thing I fixed and did not measure the thing I might have broken.
+
+**What the var actually does.** Ollama launches llama-server with `-c NumCtx x OLLAMA_NUM_PARALLEL`. `OLLAMA_CONTEXT_LENGTH` sets `NumCtx`, and it is documented as "context length to use **unless otherwise specified**" — but in practice it won over the `num_ctx=131072` the router injects on every request. gpt-oss went from `-c 524288 -np 4` (131,072/slot) to `-c 131072 -np 4` (**32,768/slot**).
+
+**The damage, and the giveaway:**
+
+| | before | after |
+|---|---|---|
+| gpt-oss per-slot context | 131,072 | 32,768 |
+| prefix-cache hits in the Ollama log | **5,772** | **770** (over a longer window) |
+| TTFT | ~1,010 ms | ~6,300 ms |
+| total latency | ~5,300 ms | ~10,500 ms |
+| decode (conc=1) | 76.2 tok/s | 76.1 tok/s — **unchanged** |
+
+Decode was untouched, which is exactly why this hid: the fleet's mean latency doubled while every throughput number looked fine. The router was even logging the conflict every single request and losing:
+
+```
+Dynamic num_ctx: injected num_ctx=131072 for gpt-oss:120b
+Context protection: client wants num_ctx=131072 but gpt-oss:120b on bb only has context=32768
+```
+
+Shrinking the per-slot context collapsed prefix-cache reuse, so every request re-prefilled its full ~1,440-token prompt instead of reusing a warm prefix.
+
+**The fix is to pin the var to the largest per-slot context the fleet needs (131072 here), not to the smallest.** Per-model contexts belong in `FLEET_NUM_CTX_OVERRIDES`, which the router injects per request and which demonstrably works: after the revert, gpt-oss runs `-c 524288 -np 4` (131,072/slot) and gemma3 runs `-c 131072 -np 4` (32,768/slot), simultaneously.
+
+**And the deadlock I was originally chasing never needed this var.** It was Ollama predicting 341.7 GiB for a 16 GB model (`predicted_num_ctx=524288`), deciding it had to evict, being unable to (gpt-oss is `KEEP_ALIVE=-1`, `expires_at: 2319`), and then **hanging forever instead of erroring**. With the var reverted, gemma3 loads in 3.7 s and the scheduler reports `predicted="99.6 GiB" ... "fits alongside existing models"` — because the load request carries its own `num_ctx=32768`. The global cap was never the fix; a load request without `num_ctx` was the trigger.
+
+**Insight — the shape of this mistake generalises.** A config change that fixes a rare failure can pay for it continuously in the common path. The deadlock affected one model with ~12 requests/day; the cap taxed ~8,000 requests/day. **Before accepting a config workaround, ask which path pays for it and how often, then measure that path.** A one-line check (`TTFT` before vs after) would have caught this in minutes instead of six days.
+
+**Trap: an env var read by a GUI app needs the app restarted, not the child.** `launchctl setenv` only affects newly-launched processes. Killing `ollama serve` is not enough — the Electron parent (`Ollama.app/Contents/MacOS/Ollama`) inherited the old value at ITS launch and passes it to every child it respawns. The serve process came back with the stale `32768` twice before I killed the parent. Also kill orphaned `llama-server` processes (they reparent to launchd, `ppid=1`, and keep serving models at the old context).
+
+**Trap: the stray Homebrew ollama can win the port race and serve a 6-month-old build.** During one restart `/api/version` briefly reported `0.16.3` instead of `0.34.4`. `homebrew.mxcl.ollama` is now `bootout`'d and `disable`d. Always re-check the version after an Ollama restart — and note the brew CLI at `/opt/homebrew/opt/ollama/bin/ollama` reports its own stale client version, which is not what is serving.
+
+**Also fixed here (`server/streaming.py`):** `pre_warm` logged `f"... error: {e}"`, and httpx timeout exceptions stringify to `""` — producing the literal `"Pre-warm gemma3:27b on bb error: "`, a 12-minute retry loop that never said why. It now logs `type(e).__name__` too. Its `timeout=120.0` also aborted mid-load (a 65 GB cold load takes 45-60 s warm-cache, minutes cold), so a progressing load was logged as a failure and retried against a backend still busy with the previous attempt; now `PRE_WARM_TIMEOUT_S = 900`. Both pinned by tests in `tests/test_server/test_streaming_failures.py`.
+
+**Two retractions from this stretch, recorded so they are not re-derived:** the "transient `herd-node` at `up 00:00`" I flagged twice was my own `ps` invocation mixing `-A` with `-p` and printing an unrelated shell — there has only ever been one herd-node. And the earlier "pre-warm omits `num_ctx`" hypothesis was wrong; `pre_warm` passes it correctly.
+
+---
+
 ## 2026-08-23: The 15% decode "regression" was a second client bypassing the router
 
 **Root cause: the globally-installed `openclaw` CLI daemon was configured to call `http://127.0.0.1:11434` directly, not herd.** It contributed **27% of Ollama's load that herd could not see**, and it only started doing so because of an *auth failure cascade*.

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`pre_warm` no longer aborts mid-load or fails silently.** Its timeout was `120.0`, but a cold load is dominated by reading weights off disk — `gpt-oss:120b` (65 GB) takes 45–60s with a warm page cache and minutes cold, and a backend that must evict first takes longer still. So the router abandoned loads that were progressing, logged them as failures, and its 12-minute preload loop retried against a backend still busy with the previous attempt. Now `PRE_WARM_TIMEOUT_S = 900`.
+
+  Worse, the failure log was `f"... error: {e}"`, and httpx timeout exceptions stringify to the empty string — producing the literal `"Pre-warm gemma3:27b on bb error: "`, nothing after the colon, every 12 minutes. A retry loop that never says why cost hours of misdiagnosis on 2026-09-22. It now logs `type(e).__name__` alongside the message, and a test asserts the line can never end at the colon again.
+
+### Changed
+
+- **Documented that `OLLAMA_CONTEXT_LENGTH` overrides the router's per-request `num_ctx`.** Ollama launches llama-server with `-c NumCtx × OLLAMA_NUM_PARALLEL`, and this var sets `NumCtx` — in practice winning over the `num_ctx` the router injects, despite being documented as a fallback. Setting it below the fleet's largest per-slot context quartered `gpt-oss:120b` (131072 → 32768), collapsed llama.cpp prefix-cache reuse (5,772 → 770 cache hits), and took TTFT from ~1.0s to ~6.3s with decode completely unchanged — so every throughput metric looked healthy while mean latency doubled. Pin it to the largest context the fleet needs; per-model sizes belong in `FLEET_NUM_CTX_OVERRIDES`. See `CLAUDE.md` and `docs/observations.md` (2026-09-28).
+
+
 ## [0.9.4] - 2026-08-29
 
 ### Changed

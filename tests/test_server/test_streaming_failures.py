@@ -264,3 +264,74 @@ class TestNormalCompletion:
             pass
 
         assert entry.request.request_id not in proxy._request_tokens
+
+
+class TestPreWarmDiagnostics:
+    """Pre-warm must say WHY it failed, and must outlive a cold model load.
+
+    Both of these were real 2026-09-22 failures: httpx timeout exceptions
+    stringify to "", so the log line read "Pre-warm gemma3:27b on bb error: "
+    with nothing after the colon, and the 120s timeout aborted a load that was
+    still progressing — a 12-minute retry loop that never explained itself.
+    """
+
+    async def test_pre_warm_logs_exception_type_when_message_is_empty(self, caplog):
+        """An empty-stringifying exception must still name itself in the log."""
+        import logging
+
+        from fleet_manager.server.streaming import StreamingProxy
+
+        proxy = StreamingProxy.__new__(StreamingProxy)
+
+        class _EmptyMessageError(Exception):
+            def __str__(self) -> str:  # what httpx.ReadTimeout() does in practice
+                return ""
+
+        class _Client:
+            async def post(self, *a, **kw):
+                raise _EmptyMessageError()
+
+        proxy._get_client = lambda node_id: _Client()
+
+        with caplog.at_level(logging.WARNING):
+            await proxy.pre_warm("bb", "gemma3:27b", num_ctx=32768)
+
+        assert caplog.records, "pre-warm failure must be logged"
+        msg = caplog.records[-1].getMessage()
+        assert "_EmptyMessageError" in msg, f"exception type missing from: {msg!r}"
+        # the bug was a message that ended at the colon with nothing after it
+        assert not msg.rstrip().endswith("error:"), f"empty reason: {msg!r}"
+
+    def test_pre_warm_timeout_covers_a_cold_large_model_load(self):
+        """gpt-oss:120b (65 GB) takes 45-60s warm-cache and minutes cold."""
+        from fleet_manager.server.streaming import PRE_WARM_TIMEOUT_S
+
+        assert PRE_WARM_TIMEOUT_S >= 600, (
+            "pre-warm timeout must cover a cold multi-GB load; 120s aborted "
+            "mid-load and made a progressing load look like a failure"
+        )
+
+    async def test_pre_warm_sends_num_ctx_when_given(self):
+        """Warming without the override loads at the model's own default.
+
+        The router then either reloads at the right size (churn) or, worse,
+        strips num_ctx on every subsequent request because the resident context
+        is smaller than requested.
+        """
+        from fleet_manager.server.streaming import StreamingProxy
+
+        proxy = StreamingProxy.__new__(StreamingProxy)
+        captured: dict = {}
+
+        class _Resp:
+            status_code = 200
+
+        class _Client:
+            async def post(self, path, json=None, timeout=None):
+                captured["json"] = json
+                return _Resp()
+
+        proxy._get_client = lambda node_id: _Client()
+        await proxy.pre_warm("bb", "gpt-oss:120b", num_ctx=131072)
+
+        assert captured["json"]["options"]["num_ctx"] == 131072

@@ -83,6 +83,11 @@ def _create_logged_task(coro, *, name: str = "background"):
     return task
 
 
+# Pre-warm is a load-only request, so its timeout must cover a cold model load
+# off disk -- not a normal request's latency.  65 GB models routinely exceed 60s.
+PRE_WARM_TIMEOUT_S = 900.0
+
+
 class StreamingProxy:
     def __init__(self, registry: NodeRegistry, latency_store=None, trace_store=None, settings=None):
         self._registry = registry
@@ -721,14 +726,31 @@ class StreamingProxy:
             resp = await client.post(
                 "/api/generate",
                 json=body,
-                timeout=120.0,
+                # A cold load is dominated by reading weights off disk, not by
+                # anything we control: gpt-oss:120b (65 GB) takes 45-60s warm-cache
+                # and minutes cold, and a backend that has to evict first can take
+                # longer still.  120s used to abort mid-load, log a failure for a
+                # load that was actually progressing, and leave the 12-minute
+                # preload loop retrying against a backend already busy with the
+                # previous attempt.  See docs/observations.md (2026-09-28).
+                timeout=PRE_WARM_TIMEOUT_S,
             )
             if resp.status_code == 200:
                 logger.info(f"Pre-warmed {model} on {node_id}")
             else:
                 logger.warning(f"Pre-warm {model} on {node_id} failed: {resp.status_code}")
         except Exception as e:
-            logger.warning(f"Pre-warm {model} on {node_id} error: {e}")
+            # NEVER interpolate a bare exception here.  httpx timeout/read errors
+            # stringify to "", so `error: {e}` produced the literal
+            # "Pre-warm gemma3:27b on bb error: " -- a 12-minute retry loop that
+            # never said why, and cost hours of misdiagnosis on 2026-09-22.
+            logger.warning(
+                "Pre-warm %s on %s error: %s: %s",
+                model,
+                node_id,
+                type(e).__name__,
+                e or "(no detail)",
+            )
 
     async def pull_model(
         self,

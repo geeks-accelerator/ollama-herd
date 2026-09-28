@@ -90,19 +90,27 @@ signal than task-count reconciliation and needs no log parsing.
 
 ---
 
-### Stray `homebrew.mxcl.ollama` launch agent flaps on every boot `OPEN`
+### Stray `homebrew.mxcl.ollama` can win the port race and serve a stale Ollama `FIXED` (2026-09-28)
 
-**Severity:** low (noise), but it corrupts diagnosis.
+**Severity:** was filed as low/noise on 2026-08-23. It is not noise — on
+2026-09-28, during an Ollama restart, it grabbed `:11434` first and
+`/api/version` reported **`0.16.3`** instead of `0.34.4`. A six-month-old
+inference engine silently serving the fleet is a correctness and performance
+hazard, not a log annoyance.
+
+Resolved: `launchctl bootout gui/$UID/homebrew.mxcl.ollama` + `launchctl disable`,
+so it cannot return on boot. Kept here because the *class* of problem recurs —
+anything that can bind `:11434` before the Mac app does will be served
+transparently. **Always re-check `curl -s localhost:11434/api/version` after an
+Ollama restart** (the release checklist does this). Note `/opt/homebrew/opt/ollama/bin/ollama --version`
+reports its own stale client version and is NOT what is serving — check the API.
+
+Original symptom, for reference: it races the app for port 11434 at boot —
+`~/.ollama/logs/server.log` opens with `bind: address already in use`.
 
 A Homebrew ollama service is still registered with launchd (`homebrew.mxcl.ollama`,
 last exit status 1) alongside the Mac app. It races the app for port 11434 at boot —
 `~/.ollama/logs/server.log` opens with `bind: address already in use` — and respawns
-periodically, exiting immediately. Not a performance factor, but it puts a scary
-error at the top of the server log and leaves a second `ollama` binary
-(`/opt/homebrew/opt/ollama/bin/ollama`) that can be mistaken for the running one
-during version checks. Clear it with `launchctl bootout gui/$UID/homebrew.mxcl.ollama`
-and `brew services stop ollama`.
-
 ---
 
 ## Routing Safety
