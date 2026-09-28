@@ -90,6 +90,7 @@ class HealthEngine:
         recommendations.extend(self._check_vram_fallbacks())
         recommendations.extend(self._check_version_mismatch(nodes))
         recommendations.extend(self._check_context_protection())
+        recommendations.extend(self._check_num_ctx_override_inert(nodes))
         recommendations.extend(self._check_zombie_reaper())
         recommendations.extend(self._check_kv_cache_bloat(nodes))
         recommendations.extend(self._check_image_generation(nodes))
@@ -559,6 +560,106 @@ class HealthEngine:
                 )
             )
         return recs
+
+    def _check_num_ctx_override_inert(self, nodes) -> list[Recommendation]:
+        """A model resident at a context that differs from its configured override.
+
+        ``FLEET_NUM_CTX_OVERRIDES`` only takes effect on a *cold* load — shrinking a
+        resident model would force an unload/reload, which is the multi-minute hang
+        context protection exists to avoid.  So the router correctly defers, and then
+        nothing ever triggers that cold load: the fleet runs with the wrong KV
+        allocation indefinitely.
+
+        On 2026-09-28 ``gemma3:27b`` sat at 131072 instead of its configured 32768 —
+        4x the intended KV, 28 GB wasted — and the only signal was a single log line
+        emitted hours earlier with a by-then-wrong value.  An oversized resident model
+        also recreates the precondition for the Ollama scheduler hang of 2026-09-22,
+        where a 341.7 GiB prediction for a 16 GB model deadlocked against an
+        unevictable ``KEEP_ALIVE=-1`` peer, so this is worth surfacing, not tolerating.
+
+        Reads live node state rather than the event log: the question is "is this
+        true *now*", and an event only says it was true once.
+
+        Settings come from env, matching ``_check_anthropic_map_targets`` — the engine
+        is stateless by design (``analyze`` takes registry + trace_store as arguments)
+        and deliberately holds no settings reference.
+        """
+        import json as _json
+        import os
+
+        if os.environ.get("FLEET_DYNAMIC_NUM_CTX", "").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return []
+        raw = os.environ.get("FLEET_NUM_CTX_OVERRIDES", "")
+        if not raw:
+            return []
+        try:
+            overrides = _json.loads(raw)
+        except (_json.JSONDecodeError, ValueError, TypeError):
+            return []
+        if not isinstance(overrides, dict) or not overrides:
+            return []
+
+        mismatched: list[dict] = []
+        for node in nodes:
+            if not node.ollama:
+                continue
+            for loaded in node.ollama.models_loaded:
+                want = overrides.get(loaded.name, 0)
+                have = loaded.context_length or 0
+                if want > 0 and have > 0 and have != want:
+                    mismatched.append({
+                        "model": loaded.name,
+                        "node_id": node.node_id,
+                        "configured": want,
+                        "resident": have,
+                        "ratio": round(have / want, 1),
+                    })
+        if not mismatched:
+            return []
+
+        oversized = [m for m in mismatched if m["resident"] > m["configured"]]
+        lines = ", ".join(
+            f"{m['model']} on {m['node_id']} resident at {m['resident']} "
+            f"(configured {m['configured']}, {m['ratio']}x)"
+            for m in mismatched
+        )
+        unload_cmds = "; ".join(
+            f"ollama stop {name}"
+            for name in dict.fromkeys(entry["model"] for entry in mismatched)
+        )
+        return [
+            Recommendation(
+                check_id="num_ctx_override_inert",
+                # Oversized wastes KV and can wedge the Ollama scheduler.  Undersized
+                # is the milder direction: requests get less context than intended.
+                severity=Severity.WARNING if oversized else Severity.INFO,
+                title=f"num_ctx override not applied on {len(mismatched)} model(s)",
+                description=(
+                    f"{lines}. FLEET_NUM_CTX_OVERRIDES only applies on a cold load, so "
+                    f"these models keep the context they were loaded with"
+                    + (
+                        ". An oversized resident model wastes KV cache and inflates "
+                        "Ollama's memory prediction, which can make a later model load "
+                        "hang instead of fail."
+                        if oversized
+                        else "."
+                    )
+                ),
+                fix=(
+                    f"Unload so the override applies on the next load: {unload_cmds} — "
+                    f"then send one request through the router (:11435), which injects "
+                    f"the configured num_ctx. Verify with the launch args, not `ollama "
+                    f"ps`: ps -Ao args | grep llama-server | grep -oE '-c [0-9]+ -np "
+                    f"[0-9]+' (per-slot context = -c / -np)."
+                ),
+                data={"mismatched_models": mismatched},
+            )
+        ]
 
     def _check_context_protection(self) -> list[Recommendation]:
         """Surface context protection activity as health cards."""

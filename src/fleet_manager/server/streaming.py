@@ -108,7 +108,7 @@ class StreamingProxy:
         # trace path alone, mirroring _request_tokens.
         self._request_done_reason: dict[str, str] = {}
         # Models we've already warned about an inert num_ctx override for.
-        self._inert_override_logged: set[str] = set()
+        self._inert_override_logged: set[tuple[str, int]] = set()
 
     def pop_token_counts(
         self, request_id: str
@@ -1145,20 +1145,48 @@ class StreamingProxy:
             return best_candidate[0]  # Return model name
         return None
 
-    def _log_override_inert_once(self, model: str, override: int, loaded_ctx: int) -> None:
-        """Say once per model that its num_ctx override can't apply while resident.
+    def _log_override_inert_once(
+        self, model: str, override: int, loaded_ctx: int, node_id: str
+    ) -> None:
+        """Report that a num_ctx override can't apply while the model is resident.
 
-        Attributable and actionable, rather than silently doing nothing: the
-        override takes effect the next time the model cold-loads.
+        Deduped by ``(model, loaded_ctx)``, NOT by model alone.  Keying on the
+        model made this log actively misleading: it fired once when the model was
+        resident at the override, and then stayed silent when the model later
+        reloaded at a *different* context — so the only line in the log said
+        "already resident at 32768" while the backend had been running 131072 for
+        hours.  That cost real debugging time on 2026-09-28 and read like a stale
+        cache when it was really a log that had said its one piece and stopped.
+
+        Also records an event, because a log line is not a state: while the
+        override is inert the fleet runs with the wrong KV allocation
+        indefinitely, and nothing ever triggers the cold load that would fix it.
+        ``health_engine._check_num_ctx_override_inert`` turns this into a visible,
+        actionable card.
         """
-        if model in self._inert_override_logged:
+        key = (model, loaded_ctx)
+        if key in self._inert_override_logged:
             return
-        self._inert_override_logged.add(model)
+        self._inert_override_logged.add(key)
+        # A resident context LARGER than the override is the expensive case: the
+        # override exists to shrink KV, and every request runs oversized until
+        # something unloads the model.
+        oversized = loaded_ctx > override
         logger.warning(
             f"Dynamic num_ctx: override num_ctx={override} for {model} cannot apply — "
-            f"already resident at {loaded_ctx}. Shrinking would force an unload/reload, "
-            f"so the override is deferred to the next cold load. To apply it now, unload "
-            f"the model on {model!r}'s node."
+            f"already resident at {loaded_ctx}"
+            + (
+                f" ({loaded_ctx / override:.1f}x the configured context, so its KV "
+                f"cache is correspondingly oversized)"
+                if oversized and override > 0
+                else ""
+            )
+            + ". Shrinking would force an unload/reload, so the override is deferred "
+            f"to the next cold load. To apply it now: `ollama stop {model}` on "
+            f"{node_id}, then send one request through the router."
+        )
+        _record_context_protection(
+            "override_inert", model, node_id, override, loaded_ctx
         )
 
     def _apply_context_protection(self, body: dict, model: str, node_id: str) -> None:
@@ -1194,7 +1222,7 @@ class StreamingProxy:
                 if not options or "num_ctx" not in options:
                     already_loaded_ctx = self._get_loaded_context(model, node_id)
                     if already_loaded_ctx > 0 and override <= already_loaded_ctx:
-                        self._log_override_inert_once(model, override, already_loaded_ctx)
+                        self._log_override_inert_once(model, override, already_loaded_ctx, node_id)
                     else:
                         if "options" not in body:
                             body["options"] = {}

@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `num_ctx` override that can never apply is now visible instead of silent.** `FLEET_NUM_CTX_OVERRIDES` only takes effect on a cold load, so the router correctly refuses to shrink a resident model — and then nothing ever triggers that cold load, leaving the fleet on the wrong KV allocation indefinitely. `gemma3:27b` sat at 131072 instead of its configured 32768 for hours: 4× the intended KV, 28 GB wasted.
+
+  The only signal was one log line, deduped by model name, which had fired when the model genuinely was at 32768 and then gone permanently silent when it reloaded at 131072 — so the newest entry in the log reported a context that had not been true for hours. It now dedupes by `(model, loaded_ctx)`, quantifies the waste, and gives a remedy that works (`ollama stop <model>`, then one request through the router) instead of "deferred to the next cold load" with no way to cause one.
+
+  A log line is not a state, so this also adds the **`num_ctx_override_inert`** health check (41 distinct checks). It reads live node state, clears when corrected, and rates oversized as WARNING — an oversized resident model inflates Ollama's memory prediction, which is what made it predict 341.7 GiB for a 16 GB model and hang instead of erroring.
+
 - **`pre_warm` no longer aborts mid-load or fails silently.** Its timeout was `120.0`, but a cold load is dominated by reading weights off disk — `gpt-oss:120b` (65 GB) takes 45–60s with a warm page cache and minutes cold, and a backend that must evict first takes longer still. So the router abandoned loads that were progressing, logged them as failures, and its 12-minute preload loop retried against a backend still busy with the previous attempt. Now `PRE_WARM_TIMEOUT_S = 900`.
 
   Worse, the failure log was `f"... error: {e}"`, and httpx timeout exceptions stringify to the empty string — producing the literal `"Pre-warm gemma3:27b on bb error: "`, nothing after the colon, every 12 minutes. A retry loop that never says why cost hours of misdiagnosis on 2026-09-22. It now logs `type(e).__name__` alongside the message, and a test asserts the line can never end at the colon again.

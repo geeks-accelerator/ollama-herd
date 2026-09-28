@@ -8,7 +8,7 @@ Identified via code review of the full codebase. Organized by priority.
 
 ## Correctness
 
-### herd caches a model's loaded context and never notices when the backend reloads at a different size `OPEN`
+### A `num_ctx` override that can never apply is now visible instead of silent `FIXED` (2026-09-28)
 
 **Severity:** medium — silently wastes KV memory and defeats `FLEET_NUM_CTX_OVERRIDES`.
 
@@ -51,6 +51,35 @@ router, which reloads it with the override applied. Confirm with the launch args
 **Why it matters beyond memory:** an oversized resident model is exactly what made
 Ollama predict 341.7 GiB and deadlock on 2026-09-22. This bug can recreate the
 precondition for that hang on its own.
+
+**Resolution.** The diagnosis in the paragraph above was partly wrong and is corrected
+here for the record: there was no stale *cache*. `_get_loaded_context` reads the
+heartbeat, which was accurate. The misleading part was `_log_override_inert_once`
+deduping by **model name alone** — it fired once when the model genuinely was at 32768,
+then went permanently silent when the model later reloaded at 131072. The newest line
+in the log therefore reported a context that had not been true for hours, which reads
+exactly like a stale cache and cost real debugging time.
+
+Two changes:
+
+1. **`streaming.py`** — dedupe by `(model, loaded_ctx)`, so a context change produces a
+   fresh line with correct values. The message now quantifies the waste
+   (`4.0x the configured context`) and gives the actual remedy (`ollama stop <model>`,
+   then one request through the router) rather than "deferred to the next cold load"
+   with no way to cause one. It also records an `override_inert` event.
+2. **`health_engine.py`** — new `num_ctx_override_inert` check (41 distinct checks now).
+   A log line is not a state: while the override is inert the fleet runs with the wrong
+   KV allocation *indefinitely*, and nothing triggers the cold load that would fix it.
+   The check reads live node state so the card clears once corrected, and rates
+   oversized as WARNING (wastes KV, inflates Ollama's memory prediction, can wedge a
+   later load) versus undersized as INFO.
+
+Covered by `tests/test_server/test_num_ctx_override_inert.py`. Worth noting how the
+first version of those tests failed: they invented `_settings` and `_registry`
+attributes on `HealthEngine` and passed green while the production path raised
+`AttributeError` — the engine is stateless and `analyze()` takes registry and
+trace_store as arguments. 30 unrelated tests caught it. Settings now come from env,
+matching `_check_anthropic_map_targets`.
 
 ---
 

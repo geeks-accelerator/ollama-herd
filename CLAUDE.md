@@ -18,7 +18,7 @@ The `--extra embedding` now also installs `fastembed` for the **native text embe
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 1349 tests (~15s)
+uv run pytest                    # run all 1357 tests (~15s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -233,7 +233,7 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `server/hardware_lookup.py` | Chip → memory bandwidth table (Apple Silicon + discrete GPUs) powering device-aware scoring |
 | `server/queue_manager.py` | Per `node:model` queues with dynamic concurrency + zombie reaper |
 | `server/streaming.py` | httpx proxy to Ollama + NDJSON↔SSE + auto-retry + context protection + thinking model inflate |
-| `server/health_engine.py` | 18 health checks (offline, degraded, memory, KV bloat, context waste, thrashing, timeouts, errors, retries, disconnects, streams, version, protection, zombies, connection failures, priority models) |
+| `server/health_engine.py` | 41 health checks (offline, degraded, memory, KV bloat, context waste, thrashing, timeouts, errors, retries, disconnects, streams, version, protection, zombies, connection failures, priority models) |
 | `server/context_optimizer.py` | Dynamic num_ctx: analyzes token usage, auto-calculates optimal context, queues Ollama restarts via heartbeat commands |
 | `server/benchmark_engine.py` | Benchmark core: fleet discovery, multimodal request gen (LLM + embed + image), report building |
 | `server/benchmark_runner.py` | Server-side runner: smart mode (fill memory from disk/catalog), progress tracking, model type selection |
@@ -350,7 +350,7 @@ Silent failures are dishonest. Fail fast, fail loud.
   uv run pytest -q | tail -1                                                    # real test count
   grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l   # real check count
   ```
-- **Health:** 40 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
+- **Health:** 41 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
 
 ## Conventions
 
