@@ -410,6 +410,72 @@ See also: `docs/troubleshooting.md` → "Ollama llama runner killed by OS."
 
 ---
 
+## Process Lifecycle
+
+### Under launchd (recommended — see `docs/examples/launchd/`)
+
+Two user agents own the fleet so a reboot or crash needs no human:
+`com.geeksaccelerator.ollama-herd.router` and `.node`, both `RunAtLoad` +
+`KeepAlive{SuccessfulExit:false}` — a crash restarts, a clean exit stays stopped.
+
+```bash
+launchctl list | grep ollama-herd     # 3rd column = LAST exit code (-9 just means killed)
+launchctl kickstart -k gui/$UID/com.geeksaccelerator.ollama-herd.router
+launchctl bootout   gui/$UID/com.geeksaccelerator.ollama-herd.node
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.geeksaccelerator.ollama-herd.node.plist
+```
+
+Start order does not matter — `herd-node` retries the router and re-registers within
+a second of the router coming back, so restarting the router alone is safe.
+
+**`pkill` is not a stop once the agents are loaded.** `KeepAlive` respawns inside
+`ThrottleInterval` (30s), so the older `pkill`-then-start recipe races itself. Use
+`bootout` to genuinely stop.
+
+**`mlx_lm.server` children are not managed by launchd.** `MlxSupervisor` spawns them
+with `start_new_session=True` so they survive the node's death and reparent to
+launchd, holding ports 11440–11442. Reap them explicitly:
+
+```bash
+pkill -9 -f mlx_lm.server
+```
+
+### Without launchd (fresh clone, another machine)
+
+```bash
+pkill -9 -f "bin/herd|mlx_lm.server" && sleep 3
+uv sync --all-extras && uv run herd &>/dev/null & disown
+sleep 3 && uv run herd-node &>/dev/null & disown
+```
+
+`--all-extras` is not optional: a bare `uv sync` removes the `embedding` extras, and
+the next vision or `nomic-embed-text` request 500s.
+
+### Verifying a restart actually loaded your changes
+
+A running process keeps the code it started with. After editing, confirm the change
+is live rather than merely committed — checking the file on disk proves nothing:
+
+```bash
+ps -Ao pid,lstart,args | grep "bin/herd$" | grep -v grep   # when did it start?
+uv run python -c "from fleet_manager.server.streaming import PRE_WARM_TIMEOUT_S; print(PRE_WARM_TIMEOUT_S)"
+```
+
+Remember which process owns the code you changed: routing, scoring, queues,
+streaming and the dashboard live in **`herd`** (the router); heartbeats, Ollama
+management and the MLX supervisor live in **`herd-node`**. Restarting the wrong one
+leaves the fix inert.
+
+### Post-restart checklist
+
+```bash
+curl -s localhost:11435/fleet/status | python3 -m json.tool | head -20
+curl -s localhost:11435/fleet/queue
+curl -s localhost:11435/dashboard/api/health
+curl -s localhost:11434/api/version                  # a reboot self-updates the Mac app
+ps -Ao args | grep llama-server | grep -oE '\-c [0-9]+ \-np [0-9]+'   # per-slot context = -c / -np
+```
+
 ## Graceful Drain
 
 When a node agent receives SIGTERM or SIGINT:

@@ -225,7 +225,7 @@ This keeps the "one JSON array describes every MLX process on this node" model i
 - **Unit (no cluster required):** `_build_cmd` matrix (standalone / ring / jaccl × tensor / pipeline × kv_bits), `from_dict` validation, health-poll-host decoupling, shared binary discovery. These fully cover the command-construction logic, which is where the risk is.
 - **Integration (ring, LAN):** two Macs on the same subnet, passwordless SSH, identical `mlx_lm.server` path; bring up a pipeline-parallel server and hit `/v1/chat/completions` through the herd. No special hardware.
 - **Integration (jaccl):** deferred until TB5 mesh + macOS 26.2 hardware is available.
-- Keep the full suite green: `uv run pytest` (currently 1006 tests) and `uv run ruff check src/`.
+- Keep the full suite green: `uv run pytest` (currently 1349 tests) and `uv run ruff check src/`.
 
 ---
 

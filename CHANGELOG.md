@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status:** `0.9.4` is cut on `main` but **not yet published** — the site's pseudonymous-listing gate keys on it, so listing stays off until it ships (`docs/plans/pseudonymous-leaderboard.md`). `0.9.3` is the current release on PyPI and git tags — a fixes-and-hardening patch on `0.9.0`. `0.9.0` was the first release since **`0.7.0`**; the `0.8.x` milestones below were never published separately and ship inside it. Those dated `0.8.x` headers mark when each milestone was cut on `main`, not a PyPI release.
+> **Release status:** `0.9.4` is the current release on PyPI, git tags and Homebrew (published 2026-08-29). It carries the leaderboard disclosure the site's pseudonymous-listing gate keys on — that listing is now **live** (`docs/plans/pseudonymous-leaderboard.md`) — a fixes-and-hardening patch on `0.9.0`. `0.9.0` was the first release since **`0.7.0`**; the `0.8.x` milestones below were never published separately and ship inside it. Those dated `0.8.x` headers mark when each milestone was cut on `main`, not a PyPI release.
 
 ## [Unreleased]
 

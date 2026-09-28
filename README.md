@@ -53,6 +53,11 @@ That's it. The node discovers the router via mDNS and starts sending heartbeats.
 
 > To skip mDNS and connect directly: `herd-node --router-url http://router-ip:11435`
 
+**Keeping it running (macOS):** nothing restarts `herd` after a reboot, and a
+missing router is the one failure the health checks cannot report — there is no
+router to report it. Ready-made launchd agents are in
+[`docs/examples/launchd/`](docs/examples/launchd/README.md).
+
 ## Features
 
 | Feature | Description |
@@ -246,6 +251,7 @@ Two CLI entry points, one Python package:
 | [Thinking Models](docs/guides/thinking-models.md) | Chain-of-thought models, budget inflation, diagnostic headers |
 | [Image Generation](docs/guides/image-generation.md) | mflux, DiffusionKit, Ollama native setup |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues, LAN debugging, operational gotchas |
+| [Autostart (launchd)](docs/examples/launchd/README.md) | Keep `herd` running across reboots and crashes on macOS |
 | [Changelog](CHANGELOG.md) | What's new in each release |
 
 ## Optimize Ollama for Your Hardware
@@ -254,11 +260,14 @@ Ollama's defaults are conservative. On machines with lots of memory, set these t
 
 | Setting | Default | Recommended | Why |
 |---------|---------|-------------|-----|
-| `OLLAMA_KEEP_ALIVE` | `5m` | `-1` (forever) | Don't unload models from memory when you have RAM to spare |
-| `OLLAMA_MAX_LOADED_MODELS` | auto | `-1` (unlimited) | Let multiple models stay hot simultaneously |
-| `OLLAMA_NUM_PARALLEL` | auto | `2`-`4` | Prevents KV cache bloat on high-memory machines |
+| `OLLAMA_KEEP_ALIVE` | `5m` | `-1` (forever) | Don't unload models when you have RAM to spare. `-1` **is** valid here. |
+| `OLLAMA_MAX_LOADED_MODELS` | auto | a positive integer, e.g. `10` | Let several models stay hot. **Do not use `-1`** — it is parsed as unsigned, fails, and silently falls back to a 3-model cap. Ollama's `-1` semantics differ per variable. |
+| `OLLAMA_NUM_PARALLEL` | auto | `2`–`4` | Becomes llama-server's `-np`. Also **multiplies** the context — see the next row. |
+| `OLLAMA_CONTEXT_LENGTH` | auto (by VRAM) | the largest per-slot context you need | Ollama launches llama-server with `-c NumCtx × OLLAMA_NUM_PARALLEL`. Setting this *below* what a model needs silently shrinks its context even when a client asks for more — which collapses prefix caching. Measured cost: TTFT 1.0s → 6.3s with decode throughput unchanged, so every throughput metric stays green while latency doubles. |
 
-Set via `launchctl setenv` (macOS), `systemctl edit ollama` (Linux), or system environment variables (Windows). See [Configuration Reference](docs/configuration-reference.md) for details.
+Set via `launchctl setenv` (macOS), `systemctl edit ollama` (Linux), or system environment variables (Windows). On macOS, applying a change means quitting the Ollama **app**, not just `ollama serve` — the app inherited the old values and re-passes them to every child it respawns. Always re-check `curl -s localhost:11434/api/version` afterwards: a reboot self-updates the app, and anything that binds `:11434` first is served transparently.
+
+See [Configuration Reference](docs/configuration-reference.md#ollama-environment-not-fleet-prefixed--but-herds-behaviour-depends-on-it) for the full detail.
 
 ## Development
 

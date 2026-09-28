@@ -64,7 +64,7 @@ uv run herd-node --router-url http://localhost:11435  # explicit URL
 
 ```bash
 uv sync --extra dev
-uv run pytest                          # 1006 tests, ~40s
+uv run pytest                          # 1349 tests, ~15s
 uv run pytest tests/test_server/       # server tests only
 uv run pytest tests/test_node/         # node agent tests only
 uv run pytest -k "test_scorer"         # single test module
@@ -108,7 +108,7 @@ src/fleet_manager/
     scorer.py              7-signal routing scorer (thermal, memory, queue, wait, affinity, availability, context fit)
     queue_manager.py       per-node:model queues, dynamic concurrency, zombie reaper
     streaming.py           httpx proxy → Ollama, NDJSON↔SSE, auto-retry, context protection
-    health_engine.py       36 automated health checks — all wired to /dashboard/api/health
+    health_engine.py       40 automated health checks — all wired to /dashboard/api/health
     registry.py            in-memory node registry, heartbeat ingestion, node state
     context_optimizer.py   dynamic num_ctx: analyzes token usage, queues Ollama restarts
     trace_store.py         SQLite WAL trace storage, dual-connection (read/write separation)

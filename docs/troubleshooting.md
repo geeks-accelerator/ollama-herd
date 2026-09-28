@@ -214,6 +214,76 @@ Meeting detection is disabled by default — it only activates when `FLEET_NODE_
 
 ---
 
+## herd isn't running at all (and nothing told you)
+
+Health checks cover a *degraded* fleet well and an *absent* one not at all — if the
+router is not running, there is nothing to report it. On the reference fleet this
+caused three unattended outages in a month, one of them **21 hours**, each time a
+reboot with no manual restart.
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' localhost:11435/fleet/status   # 000 = down
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT datetime(MAX(timestamp),'unixepoch','localtime') FROM request_traces"  # last traffic
+uptime                                                                   # compare to the above
+```
+
+Last-traffic matching machine uptime means herd never came back after a reboot.
+**Install the launchd agents** (`docs/examples/launchd/`) so this cannot recur, then
+use `launchctl`, not `pkill`, to manage them — `KeepAlive` respawns within 30s, so a
+pkill-then-start sequence races itself:
+
+```bash
+launchctl list | grep ollama-herd                                          # 3rd col = last exit code
+launchctl kickstart -k gui/$UID/com.geeksaccelerator.ollama-herd.router    # restart
+launchctl bootout   gui/$UID/com.geeksaccelerator.ollama-herd.node         # really stop
+pkill -9 -f mlx_lm.server   # MLX children use start_new_session; reap separately
+```
+
+## A model is resident at the wrong context (KV memory 4x what you configured)
+
+Symptom: `FLEET_NUM_CTX_OVERRIDES` says 32768, but the model is running at 131072 —
+and the router *refuses to correct it*, logging:
+
+```
+Dynamic num_ctx: override num_ctx=32768 for gemma3:27b cannot apply
+  -- already resident at 32768. Shrinking would force an unload/reload...
+```
+
+while the backend says otherwise. The router is trusting a cached value the backend
+has since contradicted, so it never self-heals. Confirm from the launch args, which
+are authoritative (**not** `ollama ps` — it reported `CONTEXT 131072` for models at
+both 131,072/slot and 32,768/slot):
+
+```bash
+ps -Ao args | grep llama-server | grep -oE '\-c [0-9]+ \-np [0-9]+'
+# per-slot = -c / -np
+```
+
+**Workaround:** `ollama stop <model>`, then send one request through the router
+(`:11435`), which reloads it with the override applied. Verify with the args again.
+
+This is worth fixing rather than living with: an oversized resident model is exactly
+what made Ollama predict 341.7 GiB for a 16 GB model, try to evict an unevictable
+`KEEP_ALIVE=-1` model, and then **hang forever instead of erroring** — every
+subsequent model load timed out. Tracked in `docs/issues.md`.
+
+## A model load hangs forever instead of failing
+
+If `/api/generate` for a not-yet-loaded model never returns and the request never
+even appears in Ollama's GIN log, the scheduler is stuck. Look for:
+
+```bash
+grep -a "predicted\|evicting" ~/.ollama/logs/server.log | tail -3
+```
+
+`predicted to exceed available memory, evicting` with an absurd `predicted=` for a
+small model means the context math went wrong (`predicted_num_ctx` = context ×
+`OLLAMA_NUM_PARALLEL`). It then tries to evict, cannot if the resident model is
+`KEEP_ALIVE=-1` (`expires_at` far in the future via `/api/ps`), and hangs. Restart
+Ollama to clear it, and fix the context so the prediction is sane — see
+`docs/configuration-reference.md` § Ollama environment.
+
 ## Fleet-wide throughput dropped and nothing in the dashboard explains it
 
 **Check this first — before tuning anything, and before suspecting an Ollama or

@@ -1,6 +1,6 @@
 # Pseudonymous leaderboard listing
 
-**Status:** client half shipped (0.9.4). Server + site half is the platform repo's work.
+**Status: COMPLETE (2026-08-29).** Client shipped in 0.9.4, `ollamaherd.com/telemetry` updated, and listing is live — the leaderboard now shows named herds plus `"6 not listed (running a version older than v0.9.4, which was never told listing was possible)"`. Kept for the reasoning, the handle derivation, and the one deliberate gap at the end.
 **Audience:** whoever maintains `ollamaherd.com` and the telemetry API.
 
 ## Why
@@ -18,8 +18,8 @@ they were never told. Two of the three changes below are just fixing that.
 | # | Change | Repo | Status |
 |---|--------|------|--------|
 | 1 | First-run notice + dashboard disclose the leaderboard | this repo | **done, 0.9.4** |
-| 2 | Leaderboard shows the count of unnamed herds | site | todo |
-| 3 | Unnamed herds listed under a handle derived from `install_id` | server + site | todo |
+| 2 | Leaderboard shows the count of unnamed herds | site | **done** |
+| 3 | Unnamed herds listed under a handle derived from `install_id` | server + site | **done** |
 
 ## The consent problem, and how `agent_version` solves it
 

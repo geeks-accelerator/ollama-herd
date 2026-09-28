@@ -4,6 +4,81 @@ All settings are configured via environment variables. No config files needed.
 
 ---
 
+## Ollama environment (NOT `FLEET_`-prefixed — but herd's behaviour depends on it)
+
+These belong to Ollama, not herd. They are documented here because getting them
+wrong degrades the fleet in ways that look like herd bugs, and because two of them
+interact multiplicatively.
+
+| Variable | Recommended | Why |
+|----------|-------------|-----|
+| `OLLAMA_CONTEXT_LENGTH` | **the largest per-slot context the fleet needs** (e.g. `131072`) | See the warning below. Setting it *low* is the trap. |
+| `OLLAMA_NUM_PARALLEL` | `4` | Becomes llama-server's `-np`. Also multiplies the context (below). |
+| `OLLAMA_KEEP_ALIVE` | `-1` | Never unload. Note `-1` IS valid here, unlike `OLLAMA_MAX_LOADED_MODELS`. |
+| `OLLAMA_MAX_LOADED_MODELS` | a positive integer (e.g. `10`) | `-1` is parsed as unsigned, fails, and silently falls back to a 3-model cap. |
+| `OLLAMA_FLASH_ATTENTION` | `1` | |
+
+### ⚠️ `OLLAMA_CONTEXT_LENGTH` overrides herd's per-request `num_ctx`
+
+Ollama launches llama-server with **`-c NumCtx × OLLAMA_NUM_PARALLEL`**, and
+`OLLAMA_CONTEXT_LENGTH` sets `NumCtx`. Despite being documented as the value used
+"unless otherwise specified", in practice it wins over the `num_ctx` herd injects
+per request.
+
+Setting it *below* what a model needs is a silent, expensive mistake. Measured on
+the reference fleet (2026-09-22 → 09-28), setting `32768` while `gpt-oss:120b`
+needed `131072`:
+
+| | before | after |
+|---|---|---|
+| per-slot context | 131,072 | 32,768 |
+| llama.cpp prefix-cache hits | 5,772 | **770** |
+| TTFT | ~1,010 ms | **~6,300 ms** |
+| total latency | ~5,300 ms | ~10,500 ms |
+| decode throughput | 76.2 tok/s | 76.1 tok/s — **unchanged** |
+
+Decode was untouched, so every throughput metric stayed green while mean latency
+doubled. It went unnoticed for six days. **Pin this to the largest context the
+fleet needs and express per-model sizes via `FLEET_NUM_CTX_OVERRIDES`**, which herd
+injects per request and which works correctly — a 131072-default box happily runs
+`gpt-oss` at 131,072/slot and `gemma3:27b` at 32,768/slot simultaneously.
+
+### Verifying the context a model actually got
+
+`ollama ps` is **not** authoritative — it reported `CONTEXT 131072` for a model
+whose launch args were `-c 524288 -np 4` (i.e. 131,072 per slot) *and* for one at
+`-c 131072 -np 4` (32,768 per slot). Read the launch args:
+
+```bash
+ps -Ao args | grep llama-server | grep -oE '\-c [0-9]+ \-np [0-9]+'
+# per-slot context = -c divided by -np
+```
+
+### Applying a change
+
+`launchctl setenv` only affects **newly launched** processes, and on macOS the Mac
+app is the parent. Killing `ollama serve` is not enough — the Electron parent
+(`Ollama.app/Contents/MacOS/Ollama`) inherited the old value at *its* launch and
+re-passes it to every child it respawns. Quit the app itself, and reap orphaned
+`llama-server` processes (they reparent to launchd, `ppid=1`, and keep serving at
+the old context):
+
+```bash
+osascript -e 'quit app "Ollama"'
+pkill -9 -f "Ollama.app/Contents/MacOS/Ollama"
+pkill -9 -f "Ollama.app/Contents/Resources/llama-server"
+open -a Ollama
+curl -s localhost:11434/api/version     # ALWAYS re-verify; see below
+```
+
+Re-verify the version because anything that can bind `:11434` first will be served
+transparently — a stray `homebrew.mxcl.ollama` agent once won that race and served
+a six-month-old `0.16.3`. Also note a reboot silently self-updates the Mac app
+(observed `0.32.9 → 0.32.13 → 0.32.15 → 0.33.0 → 0.34.2 → 0.34.4`), so check the
+version after any restart, not just after a deliberate upgrade.
+
+---
+
 ## Server Settings (`FLEET_` prefix)
 
 ### Network
