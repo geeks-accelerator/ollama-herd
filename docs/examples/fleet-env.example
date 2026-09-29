@@ -58,3 +58,8 @@
 # ---- Debug request capture (optional, internal fleets only) ----------
 # FLEET_DEBUG_REQUEST_BODIES=true
 # FLEET_DEBUG_REQUEST_RETENTION_DAYS=7
+
+# ---- Browser clients (CORS, off by default) ----------------------------
+# Only needed for clients that run in a browser page (Hollama, TypingMind,
+# Chatbox web, Page Assist). Same syntax as OLLAMA_ORIGINS; "*" = any origin.
+# FLEET_CORS_ORIGINS=https://hollama.fernando.is,http://localhost:*

@@ -187,6 +187,47 @@ List all models across the fleet — LLM, image, and embedding models (loaded + 
 
 ---
 
+### `POST /v1/embeddings`
+
+OpenAI-compatible embeddings, for clients that only speak OpenAI (Chatbox Knowledge Base, LangChain/LlamaIndex OpenAI embedders, generic "OpenAI-compatible" settings). It is a translation layer over the **same path as `POST /api/embed`**: `nomic-embed-text` still goes to the native fastembed server, vision embedding models to the vision server, and everything else is scored, retried and traced exactly as on `/api/embed`.
+
+**Request:**
+
+```json
+{
+  "model": "nomic-embed-text",
+  "input": ["first document", "second document"],
+  "encoding_format": "float"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model` | string | *required* | Embedding model name (any name `/api/embed` accepts) |
+| `input` | string or array of strings | *required* | Text(s) to embed. Empty strings and token-id arrays are rejected with `400`. |
+| `encoding_format` | `"float"` / `"base64"` | `"float"` | `base64` is little-endian float32, as OpenAI encodes it. Anything else is `400`. |
+| `dimensions` | integer | — | Forwarded to the backend. If the backend returns a different width (it ignored the parameter), the request fails with `400` rather than returning vectors of the wrong size. |
+
+**Response:**
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"object": "embedding", "index": 0, "embedding": [0.0101, -0.0018, ...]},
+    {"object": "embedding", "index": 1, "embedding": [0.0207, 0.0114, ...]}
+  ],
+  "model": "nomic-embed-text",
+  "usage": {"prompt_tokens": 6, "total_tokens": 6}
+}
+```
+
+`usage` is the backend's `prompt_eval_count` (the fastembed server reports a word-count approximation; `0` if the backend reports nothing). The `X-Fleet-*` headers from the embed path are preserved.
+
+**Errors** use OpenAI's shape, `{"error": {"message", "type", "param", "code"}}`: `400` `invalid_request_error`, `404` with `code: "model_not_found"`, `503`/`504` `model_overloaded`, `502` `api_error` (including a backend that returned a different number of vectors than inputs).
+
+---
+
 ### `POST /v1/responses`
 
 The **OpenAI Responses API** — what OpenAI Codex speaks. Codex removed
@@ -243,6 +284,10 @@ endpoint.
 ---
 
 ## Ollama-Compatible Endpoints
+
+### `HEAD /`
+
+Liveness probe, returns `200` with an empty body, like Ollama. OllamaKit (Ollamac, Enchanted) checks reachability with exactly this request and requires a 2xx. `GET /` is unchanged: it redirects browsers to `/dashboard`.
 
 ### `POST /api/chat`
 
@@ -326,7 +371,9 @@ Response format is the same as `/api/chat`.
 
 ### `GET /api/tags`
 
-List all models across the fleet with node information. Includes LLM models and image models (mflux + DiffusionKit).
+List all models across the fleet with node information. Includes LLM models, `mlx:` models, image models (mflux + DiffusionKit) and vision embedding models.
+
+Each entry has Ollama's full field set, plus Herd's `details.fleet_nodes`. Strict clients depend on this: OllamaKit (the library behind Enchanted and Ollamac) and Reins decode `modified_at`, `digest` and every `details` string as **required and non-null**, so one missing key fails the whole listing and the model picker comes up empty.
 
 **Response:**
 
@@ -334,18 +381,46 @@ List all models across the fleet with node information. Includes LLM models and 
 {
   "models": [
     {
-      "name": "llama3.3:70b",
-      "model": "llama3.3:70b",
-      "size": 42949672960,
+      "name": "gpt-oss:120b",
+      "model": "gpt-oss:120b",
+      "modified_at": "2026-04-24T05:29:24.844674018-03:00",
+      "size": 65369818941,
+      "digest": "a951a23b46a1f6093dafee2ea481d634b4e31ac720a8a16f3f91e04f5a40ecd9",
       "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "gptoss",
+        "families": ["gptoss"],
+        "parameter_size": "116.8B",
+        "quantization_level": "MXFP4",
         "fleet_nodes": ["mac-studio-ultra", "macbook-pro-m4"]
+      }
+    },
+    {
+      "name": "mlx:Qwen3-Coder-Next-4bit",
+      "model": "mlx:Qwen3-Coder-Next-4bit",
+      "modified_at": "2026-09-29T17:04:11.482113Z",
+      "size": 44800000000,
+      "digest": "3f0c…(sha256 of the name, see below)",
+      "details": {
+        "parent_model": "",
+        "format": "mlx",
+        "family": "",
+        "families": [],
+        "parameter_size": "",
+        "quantization_level": "",
+        "fleet_nodes": ["mac-studio-ultra"]
       }
     },
     {
       "name": "z-image-turbo",
       "model": "z-image-turbo",
+      "modified_at": "2026-09-29T17:04:11.482200Z",
       "size": 0,
+      "digest": "…",
       "details": {
+        "parent_model": "", "format": "mflux", "family": "", "families": [],
+        "parameter_size": "", "quantization_level": "",
         "fleet_nodes": ["mac-studio-ultra"],
         "type": "image"
       }
@@ -354,7 +429,16 @@ List all models across the fleet with node information. Includes LLM models and 
 }
 ```
 
-The `fleet_nodes` array shows which nodes have each model (loaded or available on disk). The `size` field is in bytes. Image models include a `"type": "image"` field in details.
+**Where the values come from:**
+
+- **Ollama models:** passed through unchanged from the node's own Ollama `/api/tags`. The node agent carries them in its heartbeat (`ollama.models_available_meta`), but only when they change plus once a minute as a refresh, since for a 50-model node they are about 13.6 KB, 15x the rest of the Ollama section. Ollama's own `null`s (it sends `"families": null` for some models) are normalized to `[]` / `""`.
+- **Models with no Ollama metadata** (`mlx:` models, image and vision-embedding models, or any model on a node running an agent older than this field) get non-null defaults instead of `null`:
+  - `details.format`: `"mlx"` for `mlx:` models, the runtime (`"onnx"`) for vision embedding models, the generator (`"mflux"`, `"diffusionkit"`) for image models, and `""` when unknown. Herd does not guess `"gguf"`.
+  - `family`, `parameter_size`, `quantization_level`, `parent_model`: `""`. `families`: `[]`.
+  - `modified_at`: the time this router process first listed the model (RFC3339 with fractional seconds, UTC). Stable across calls, so a list sorted by date does not reshuffle on every poll; it resets when the router restarts.
+  - `digest`: `sha256("ollama-herd:<name>")`. It is **not** a content digest. It is unique and stable so clients that key their lists on `digest` don't collapse every such model into one row.
+- `size` is the **on-disk** size in bytes, as in Ollama, when any node reports it; it falls back to the resident size for a loaded model with no disk size, and `0` otherwise.
+- `fleet_nodes` lists every node that has the model (loaded or on disk). Image models add `"type": "image"`; vision embedding models add `"type": "vision-embedding"`, `runtime` and `dimensions`.
 
 ---
 
@@ -382,6 +466,26 @@ List all currently loaded (hot) models across the fleet.
   ]
 }
 ```
+
+---
+
+### `POST /api/show`
+
+Ollama-compatible model details. Ollama's desktop app calls it before every chat, AnythingLLM reads the context window (`model_info["<arch>.context_length"]`) and tool support (`capabilities`) from it, and Cherry Studio's "Check" button probes it.
+
+**Request body:** `{"model": "gpt-oss:120b"}`. The legacy `{"name": ...}` field is also accepted, and a bare name resolves to `:latest` as in Ollama. Other fields (e.g. `verbose`) are forwarded.
+
+**Behavior:**
+
+| Model | Response |
+|---|---|
+| Ollama model | Proxied to a node that has it (nodes with it loaded first, then on disk). That node's Ollama response is returned unchanged, with `X-Fleet-Node`. If a node is unreachable or errors, the next one is tried. |
+| `mlx:` model | Synthesized: `details.format: "mlx"`, `capabilities: ["completion"]`, empty `modelfile` / `parameters` / `template`, and an empty `model_info` (Herd doesn't know the context length, so it doesn't invent one). |
+| Vision embedding model | Synthesized, `capabilities: ["embedding"]`. |
+| Image model | Synthesized, `capabilities: ["image"]`. |
+| Unknown | `404 {"error": "model '<name>' not found"}`, matching Ollama. |
+
+**Error responses:** `400` (missing `model` / invalid JSON), `404` (unknown model, or every node that should have it answered 404), `502` (no node holding the model was reachable).
 
 ---
 
@@ -841,6 +945,8 @@ Receives heartbeats from node agents. Internal endpoint — not intended for ext
   }
 }
 ```
+
+`ollama.models_available_meta` (optional) maps each model to its Ollama `/api/tags` metadata (`modified_at`, `digest`, `format`, `family`, `families`, `parameter_size`, `quantization_level`, `parent_model`), which the router's `GET /api/tags` returns. The agent sends it only when it changes, plus once every 60 s; `null` means "unchanged", and the router keeps its previous copy.
 
 **Drain signal:**
 

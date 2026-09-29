@@ -87,6 +87,22 @@ version after any restart, not just after a deliberate upgrade.
 |----------|---------|-------------|
 | `FLEET_HOST` | `0.0.0.0` | Bind address for the router |
 | `FLEET_PORT` | `11435` | Listen port (Ollama default + 1) |
+| `FLEET_CORS_ORIGINS` | `""` (off) | Browser CORS allow-list, Herd's equivalent of `OLLAMA_ORIGINS`. Comma-separated origins; `*` inside an origin is a wildcard (`http://localhost:*`, `chrome-extension://*`) and a bare `*` allows every origin. **Empty = no CORS handling at all** (no `Access-Control-*` headers, preflight `OPTIONS` returns 405), which is the behavior before this setting existed. See below. |
+
+#### Browser clients and CORS (`FLEET_CORS_ORIGINS`)
+
+Browser-based clients (Hollama, TypingMind, Chatbox web, Page Assist) call the router from a web page, so the browser sends a preflight `OPTIONS` and refuses to hand the page any response that lacks CORS headers. Desktop apps, CLIs and server-side integrations are unaffected by CORS either way.
+
+```bash
+# Allow one hosted client plus anything on localhost:
+FLEET_CORS_ORIGINS=https://hollama.fernando.is,http://localhost:*
+# Allow a browser extension:
+FLEET_CORS_ORIGINS=chrome-extension://*
+```
+
+- **Default is off on purpose.** The router listens on `0.0.0.0` for the whole LAN, and its dashboard APIs can change settings. `*` lets any page you open in a browser on a machine that can reach the router read fleet data and call the API. Prefer naming origins.
+- **One difference from `OLLAMA_ORIGINS`:** Ollama always allows a built-in set of localhost and app origins on top of your list. Herd adds nothing implicitly: only origins you list are allowed.
+- Credentials are not allowed (Ollama doesn't allow them either). All `X-Fleet-*` response headers are exposed to the page.
 
 ### Heartbeat Monitoring
 

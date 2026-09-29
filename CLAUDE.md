@@ -18,7 +18,7 @@ The `--extra embedding` now also installs `fastembed` for the **native text embe
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 1377 tests (~15s)
+uv run pytest                    # run all 1422 tests (~15s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -260,6 +260,7 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `node/device_info.py` | Per-platform hardware probe (macOS/Linux/Windows) for registration |
 | `node/benchmark_estimate.py` | Tokens/sec from trace data or hardware heuristic |
 | `server/model_preloader.py` | Priority model loading after restart — weighted 24h/7d usage scoring |
+| `server/cors.py` | Opt-in CORS for browser clients (`FLEET_CORS_ORIGINS`, `OLLAMA_ORIGINS` syntax). Empty default installs no middleware at all |
 
 Routes: `server/routes/` — `openai_compat.py` (v1/), `ollama_compat.py` (api/), `fleet.py`, `heartbeat.py`, `dashboard.py`, `image_compat.py`, `transcription_compat.py`, `embedding_compat.py`, `text_embedding_compat.py`, `platform.py` (Connect/Disconnect)
 
