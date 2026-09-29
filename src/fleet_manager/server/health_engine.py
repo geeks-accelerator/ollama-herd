@@ -66,6 +66,26 @@ class HealthReport(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_OVERSIZE_HEADROOM_GB = 40.0
+
+
+def _free_memory_gb(nodes) -> float:
+    """Most free memory reported by any node, or inf when unknown.
+
+    Unknown must not manufacture a warning, so it errs toward "plenty".
+    """
+    best = 0.0
+    seen = False
+    for n in nodes:
+        mem = getattr(n, "memory", None) or getattr(n, "system", None)
+        for attr in ("available_gb", "free_gb", "memory_available_gb"):
+            v = getattr(mem, attr, None) if mem is not None else None
+            if isinstance(v, (int, float)) and v > 0:
+                best = max(best, float(v))
+                seen = True
+    return best if seen else float("inf")
+
+
 class HealthEngine:
     """Analyzes fleet state and produces actionable health recommendations."""
 
@@ -623,6 +643,16 @@ class HealthEngine:
             return []
 
         oversized = [m for m in mismatched if m["resident"] > m["configured"]]
+        # Severity follows actual impact, not the ratio.  Serving at a LARGER
+        # context than configured is functionally identical for the request --
+        # a 500-token prompt does not care whether its slot holds 32K or 131K --
+        # and herd deliberately does NOT force a reload to shrink a resident
+        # model, because that reload is the multi-minute hang context protection
+        # exists to prevent.  So this is a memory-efficiency note, not a fault,
+        # and it only earns a WARNING when the waste actually threatens capacity.
+        # Calling it WARNING unconditionally (as this check first did) reported a
+        # deliberate trade as breakage.
+        threatens_capacity = _free_memory_gb(nodes) < _OVERSIZE_HEADROOM_GB
         lines = ", ".join(
             f"{m['model']} on {m['node_id']} resident at {m['resident']} "
             f"(configured {m['configured']}, {m['ratio']}x)"
@@ -635,19 +665,26 @@ class HealthEngine:
         return [
             Recommendation(
                 check_id="num_ctx_override_inert",
-                # Oversized wastes KV and can wedge the Ollama scheduler.  Undersized
-                # is the milder direction: requests get less context than intended.
-                severity=Severity.WARNING if oversized else Severity.INFO,
+                severity=(
+                    Severity.WARNING
+                    if (oversized and threatens_capacity)
+                    else Severity.INFO
+                ),
                 title=f"num_ctx override not applied on {len(mismatched)} model(s)",
                 description=(
                     f"{lines}. FLEET_NUM_CTX_OVERRIDES only applies on a cold load, so "
                     f"these models keep the context they were loaded with"
                     + (
-                        ". An oversized resident model wastes KV cache and inflates "
-                        "Ollama's memory prediction, which can make a later model load "
-                        "hang instead of fail."
+                        ". Requests are served correctly at the resident context — herd "
+                        "will not force a reload to shrink a hot model, since that reload "
+                        "is the multi-minute stall context protection exists to prevent. "
+                        "The cost is KV cache only. Worth knowing: each cold load at the "
+                        "larger context makes Ollama predict context x OLLAMA_NUM_PARALLEL "
+                        "of memory and take its evict-first path — the same path that hung "
+                        "instead of erroring on 2026-09-22 when the peer model was "
+                        "KEEP_ALIVE=-1 and could not be evicted."
                         if oversized
-                        else "."
+                        else ". Requests get less context than intended."
                     )
                 ),
                 fix=(

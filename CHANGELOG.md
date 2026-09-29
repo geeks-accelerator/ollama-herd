@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`num_ctx_override_inert` severity now follows impact instead of ratio.** It warned whenever a model's resident context differed from its configured override, which reported a deliberate engineering trade as breakage. herd intentionally does *not* force a reload to shrink a hot model — that reload is the multi-minute stall context protection exists to prevent — and serving at a *larger* context is functionally identical for the request. So this is a KV-efficiency note: INFO when there is memory headroom, WARNING only when the waste actually threatens capacity.
+
+  Root cause of the recurrence is now understood, from captured request bodies: 199 of 203 gemma3 requests reached Ollama with no `num_ctx` at all. Injection is skipped when the override is `<=` the resident context, and the strip branch removes any `num_ctx <= loaded_ctx` — so the override is deferred to a cold load that, by that same rule, carries no `num_ctx`. Once a model lands at the wrong context it stays there. Entry point is a ~5s heartbeat race. Documented in `docs/issues.md` with the accepted residual risk rather than papered over.
+
 ### Fixed
 
 - **`pre_warm` resolves a model's configured `num_ctx` itself instead of trusting every caller to pass it.** `rebalancer._do_pre_warm` called it with no `num_ctx` for as long as it existed, so a runner-up node would be warmed at Ollama's default context rather than the configured one — and because an override only takes effect on a cold load, and pre-warming *is* the cold load, the model then stayed mis-sized until something unloaded it. On the reference fleet that meant 4× the intended KV cache. The guard needs a runner-up node so it could not fire on a single-node fleet, but it would have silently mis-sized every pre-warmed model on any multi-node one. An explicit argument still wins; unconfigured models still get Ollama's own default rather than a guess.

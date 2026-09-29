@@ -8,7 +8,7 @@ Identified via code review of the full codebase. Organized by priority.
 
 ## Correctness
 
-### A `num_ctx` override that can never apply is now visible instead of silent `FIXED` (2026-09-28)
+### A `num_ctx` override that can never apply is visible, and deliberately not enforced `FIXED` (2026-09-29)
 
 **Severity:** medium — silently wastes KV memory and defeats `FLEET_NUM_CTX_OVERRIDES`.
 
@@ -73,6 +73,40 @@ Two changes:
    The check reads live node state so the card clears once corrected, and rates
    oversized as WARNING (wastes KV, inflates Ollama's memory prediction, can wedge a
    later load) versus undersized as INFO.
+
+**Root cause (2026-09-29), from captured request bodies.** `FLEET_DEBUG_REQUEST_BODIES`
+showed it exactly: of 203 gemma3 requests over four days, **199 reached Ollama with no
+`num_ctx` at all** — only the 4 manual fixes carried 32768. Two individually-correct
+branches of `_apply_context_protection` interlock into a loop:
+
+1. Injection is skipped when `override <= already_loaded_ctx` (avoids emitting a value
+   the strip branch would remove — it once produced 393 injected/393 stripped pairs in
+   9 hours).
+2. The strip branch removes any `num_ctx <= loaded_ctx`, to avoid forcing a reload.
+
+The emergent behaviour: the override is "deferred to the next cold load", but the
+request that *causes* the next cold load carries no `num_ctx` by rule 1 — so it cold-loads
+at Ollama's default again. **Once a model lands at the wrong context it stays there
+permanently.** The entry point is a ~5s race: `models_loaded` refreshes on the heartbeat,
+so if Ollama evicts a model and a request arrives inside that window, herd still believes
+it is resident and skips injection on precisely the request that will reload it.
+
+**Decision: do not enforce it.** Forcing the override on a resident model means an
+unload/reload, which is the multi-minute stall context protection exists to prevent, and
+the trade is not worth it — serving at a *larger* context is functionally identical (gemma3's
+prompts average 495 tokens; 32K vs 131K is indistinguishable), and on this fleet there is
+81 GB free with zero swap. The cost is KV cache only.
+
+**So the fix was to the reporting, not the behaviour.** Severity now follows actual impact:
+INFO when there is memory headroom, WARNING only when the waste threatens capacity
+(`_free_memory_gb(nodes) < _OVERSIZE_HEADROOM_GB`). The first version warned
+unconditionally, which reported a deliberate engineering trade as breakage.
+
+**Residual risk, accepted and recorded:** each cold load at the larger context makes Ollama
+predict `context x OLLAMA_NUM_PARALLEL` of memory and take its evict-first path —
+observed three times on 2026-09-28 as `predicted="341.7 GiB" ... evicting`. That is the same
+path that hung instead of erroring on 2026-09-22, when the peer model was `KEEP_ALIVE=-1`
+and could not be evicted. It succeeds while there is headroom; it is not free.
 
 Covered by `tests/test_server/test_num_ctx_override_inert.py`. Worth noting how the
 first version of those tests failed: they invented `_settings` and `_registry`

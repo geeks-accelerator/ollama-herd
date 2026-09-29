@@ -52,7 +52,11 @@ class TestOverrideInertCheck:
         assert len(recs) == 1
         r = recs[0]
         assert r.check_id == "num_ctx_override_inert"
-        assert r.severity.value.upper() == "WARNING"     # oversized is the costly direction
+        # Severity follows impact, not ratio: with memory headroom this is a
+        # KV-efficiency note, because herd deliberately serves at the resident
+        # context rather than forcing a reload. It only warns when capacity is
+        # actually threatened.
+        assert r.severity.value.upper() == "INFO"
         m = r.data["mismatched_models"][0]
         assert (m["configured"], m["resident"], m["ratio"]) == (32768, 131072, 4.0)
         # the fix must be actionable, not "requires a restart"
@@ -69,6 +73,23 @@ class TestOverrideInertCheck:
         env({"gemma3:27b": 32768})
         nodes = [_node("bb", [("qwen3.8:27b", 147491)])]
         assert HealthEngine()._check_num_ctx_override_inert(nodes) == []
+
+    def test_warns_only_when_capacity_is_threatened(self, env):
+        """Oversized + low free memory is the one case that earns a WARNING."""
+        env({"gemma3:27b": 32768})
+        from types import SimpleNamespace
+        tight = SimpleNamespace(
+            node_id="bb",
+            memory=SimpleNamespace(available_gb=5.0),
+            ollama=SimpleNamespace(
+                models_loaded=[
+                    SimpleNamespace(name="gemma3:27b", context_length=131072, size_gb=1.0)
+                ]
+            ),
+        )
+        recs = HealthEngine()._check_num_ctx_override_inert([tight])
+        assert len(recs) == 1
+        assert recs[0].severity.value.upper() == "WARNING"
 
     def test_undersized_is_info_not_warning(self, env):
         """Less context than intended is a correctness annoyance, not a memory hazard."""
