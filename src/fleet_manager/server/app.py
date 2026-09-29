@@ -331,4 +331,15 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
 
         return RedirectResponse(url="/dashboard")
 
+    @app.head("/")
+    async def root_head():
+        # Liveness probe.  Ollama answers HEAD / with 200, and OllamaKit (the
+        # client library behind Ollamac and Enchanted) checks reachability with
+        # exactly that request, requiring a 2xx.  A GET-only route made FastAPI
+        # answer 405, so those apps declared the router offline.  GET / keeps
+        # redirecting browsers to the dashboard; HEAD has no body to redirect.
+        from fastapi.responses import Response
+
+        return Response(status_code=200, media_type="text/plain; charset=utf-8")
+
     return app

@@ -352,6 +352,145 @@ async def ollama_ps(request: Request):
     return {"models": models}
 
 
+_SHOW_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=10.0)
+
+
+def _name_candidates(model: str) -> list[str]:
+    """Names to look up for ``model`` — Ollama resolves a bare name to ``:latest``."""
+    if ":" in model or model.startswith("mlx:"):
+        return [model]
+    return [model, f"{model}:latest"]
+
+
+def _synth_show(
+    name: str, *, fmt: str, capabilities: list[str], family: str = "",
+) -> dict:
+    """Minimal valid ``/api/show`` body for a model no Ollama instance serves.
+
+    Mirrors Ollama's response shape so clients that parse it (Ollama's desktop
+    app, AnythingLLM, Cherry Studio) get every key they index.  It claims only
+    what Herd actually knows: no template/parameters, and ``model_info`` empty
+    rather than an invented context length.
+    """
+    return {
+        "modelfile": "",
+        "parameters": "",
+        "template": "",
+        "details": {
+            "parent_model": "",
+            "format": fmt,
+            "family": family,
+            "families": [family] if family else [],
+            "parameter_size": "",
+            "quantization_level": "",
+        },
+        "model_info": {},
+        "capabilities": capabilities,
+        "modified_at": _synth_modified_at(name),
+    }
+
+
+@router.post("/api/show")
+async def ollama_show(request: Request):
+    """Ollama-compatible model details.
+
+    Ollama's desktop app calls this before every chat, AnythingLLM reads the
+    context window and tool capability from it, and Cherry Studio's "Check"
+    button probes it.  Ollama-served models are proxied to a node that has the
+    model (loaded nodes first, falling through on error); MLX, image and
+    vision-embedding models get a synthesized minimal response.
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "invalid JSON body"})
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"error": "invalid JSON body"})
+    # "model" is current Ollama; "name" is the legacy field older clients send.
+    model = str(body.get("model") or body.get("name") or "").strip()
+    if not model:
+        return JSONResponse(status_code=400, content={"error": "model is required"})
+
+    registry = request.app.state.registry
+    nodes = registry.get_online_nodes()
+    names = _name_candidates(model)
+
+    # MLX models live behind mlx_lm.server, which has no /api/show.
+    if model.startswith("mlx:"):
+        if any(
+            n.ollama and model in n.ollama.models_available for n in nodes
+        ):
+            return _synth_show(model, fmt="mlx", capabilities=["completion"])
+        return JSONResponse(status_code=404, content={"error": f"model '{model}' not found"})
+
+    # Ollama-served: loaded nodes first (the model's metadata is warm there),
+    # then any node that has it on disk.
+    loaded, on_disk = [], []
+    for n in nodes:
+        if not n.ollama:
+            continue
+        loaded_names = {m.name for m in n.ollama.models_loaded}
+        match = next((c for c in names if c in loaded_names), None)
+        if match:
+            loaded.append((n, match))
+            continue
+        match = next((c for c in names if c in n.ollama.models_available), None)
+        if match:
+            on_disk.append((n, match))
+
+    candidates = loaded + on_disk
+    if candidates:
+        proxy = request.app.state.streaming_proxy
+        last_error: tuple[int, dict] | None = None
+        for node, resolved in candidates:
+            fwd = {k: v for k, v in body.items() if k != "name"}
+            fwd["model"] = resolved
+            try:
+                client = proxy._get_client(node.node_id)
+                resp = await client.post("/api/show", json=fwd, timeout=_SHOW_TIMEOUT)
+            except Exception as e:  # noqa: BLE001 — try the next node
+                logger.warning(
+                    f"/api/show for {resolved} failed on {node.node_id}: "
+                    f"{type(e).__name__}: {e}"
+                )
+                last_error = (502, {"error": f"failed to reach Ollama on {node.node_id}: "
+                                             f"{type(e).__name__}: {e}"})
+                continue
+            if resp.status_code == 200:
+                return JSONResponse(
+                    content=resp.json(),
+                    headers={"X-Fleet-Node": node.node_id},
+                )
+            try:
+                err_body = resp.json()
+            except ValueError:
+                err_body = {"error": resp.text[:500]}
+            logger.warning(
+                f"/api/show for {resolved} returned HTTP {resp.status_code} "
+                f"on {node.node_id}"
+            )
+            last_error = (resp.status_code, err_body)
+        # Every node refused.  A 404 from all of them means the registry is
+        # stale (model deleted since the last heartbeat) — surface it as-is.
+        status, content = last_error or (502, {"error": "no node answered /api/show"})
+        return JSONResponse(status_code=status, content=content)
+
+    # Non-Ollama backends that /api/tags also lists.
+    for n in nodes:
+        if n.vision_embedding and any(
+            m.name == model for m in n.vision_embedding.models_available
+        ):
+            vm = next(m for m in n.vision_embedding.models_available if m.name == model)
+            return _synth_show(model, fmt=vm.runtime, capabilities=["embedding"])
+        if n.image and any(m.name == model for m in n.image.models_available):
+            im = next(m for m in n.image.models_available if m.name == model)
+            return _synth_show(
+                model, fmt=(im.binary or "").split("-")[0], capabilities=["image"],
+            )
+
+    return JSONResponse(status_code=404, content={"error": f"model '{model}' not found"})
+
+
 # Non-Ollama models that require separate installation
 _NON_OLLAMA_MODELS: dict[str, str] = {
     "z-image-turbo": "uv tool install mflux (macOS Apple Silicon only)",

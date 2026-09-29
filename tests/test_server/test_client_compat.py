@@ -298,3 +298,129 @@ class TestOllamaClientTagMeta:
         assert payload.ollama.models_available == ["gpt-oss:120b"]
         # None = "unchanged": a failed probe must not wipe the router's copy.
         assert payload.ollama.models_available_meta is None
+
+
+# ---------------------------------------------------------------------------
+# 2. /api/show
+# ---------------------------------------------------------------------------
+
+SHOW_RESPONSE = {
+    "modelfile": "FROM ...",
+    "parameters": "stop <|end|>",
+    "template": "{{ .Prompt }}",
+    "details": {"format": "gguf", "family": "gptoss"},
+    "model_info": {"general.architecture": "gptoss", "gptoss.context_length": 131072},
+    "capabilities": ["completion", "tools", "thinking"],
+}
+
+
+class TestApiShow:
+    def test_proxies_to_node_with_model_accepting_legacy_name(self, app_client):
+        hb = make_heartbeat(node_id="studio", available_models=["llama3:latest"])
+        app_client.post("/heartbeat", json=hb.model_dump())
+
+        seen = {}
+
+        def handler(request: httpx.Request):
+            seen["path"] = request.url.path
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json=SHOW_RESPONSE)
+
+        _install_mock_ollama(app_client, "studio", handler)
+        # Legacy "name" field + bare name (Ollama resolves to :latest).
+        resp = app_client.post("/api/show", json={"name": "llama3", "verbose": True})
+        assert resp.status_code == 200
+        assert resp.json() == SHOW_RESPONSE
+        assert resp.headers["X-Fleet-Node"] == "studio"
+        assert seen["path"] == "/api/show"
+        assert seen["body"] == {"model": "llama3:latest", "verbose": True}
+
+    def test_unknown_model_is_ollama_style_404(self, app_client):
+        resp = app_client.post("/api/show", json={"model": "nope:1b"})
+        assert resp.status_code == 404
+        assert resp.json() == {"error": "model 'nope:1b' not found"}
+
+    def test_missing_model_is_400(self, app_client):
+        resp = app_client.post("/api/show", json={})
+        assert resp.status_code == 400
+        assert "error" in resp.json()
+
+    def test_mlx_model_is_synthesized(self, app_client):
+        hb = make_heartbeat(node_id="studio", available_models=["mlx:Qwen3-Coder-Next-4bit"])
+        app_client.post("/heartbeat", json=hb.model_dump())
+        resp = app_client.post("/api/show", json={"model": "mlx:Qwen3-Coder-Next-4bit"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["capabilities"] == ["completion"]
+        assert body["details"]["format"] == "mlx"
+        for key in REQUIRED_DETAIL_STRINGS:
+            assert isinstance(body["details"][key], str)
+        assert body["model_info"] == {}
+        for key in ("modelfile", "parameters", "template"):
+            assert body[key] == ""
+
+    def test_unknown_mlx_model_is_404(self, app_client):
+        resp = app_client.post("/api/show", json={"model": "mlx:missing"})
+        assert resp.status_code == 404
+
+    def test_fails_over_to_next_node(self, app_client):
+        # studio has it loaded (tried first) but is unreachable.
+        app_client.post("/heartbeat", json=make_heartbeat(
+            node_id="studio", lan_ip="10.0.0.1",
+            loaded_models=[("phi4:14b", 9.0)], available_models=["phi4:14b"],
+        ).model_dump())
+        app_client.post("/heartbeat", json=make_heartbeat(
+            node_id="mbp", lan_ip="10.0.0.2", available_models=["phi4:14b"],
+        ).model_dump())
+
+        def down(request):
+            raise httpx.ConnectError("refused", request=request)
+
+        _install_mock_ollama(app_client, "studio", down)
+        _install_mock_ollama(app_client, "mbp", lambda r: httpx.Response(200, json=SHOW_RESPONSE))
+
+        resp = app_client.post("/api/show", json={"model": "phi4:14b"})
+        assert resp.status_code == 200
+        assert resp.headers["X-Fleet-Node"] == "mbp"
+
+    def test_all_nodes_404_passes_through(self, app_client):
+        app_client.post("/heartbeat", json=make_heartbeat(
+            node_id="studio", available_models=["gone:1b"],
+        ).model_dump())
+        _install_mock_ollama(
+            app_client, "studio",
+            lambda r: httpx.Response(404, json={"error": "model 'gone:1b' not found"}),
+        )
+        resp = app_client.post("/api/show", json={"model": "gone:1b"})
+        assert resp.status_code == 404
+        assert resp.json() == {"error": "model 'gone:1b' not found"}
+
+    def test_vision_embedding_model_is_synthesized(self, app_client):
+        hb = make_heartbeat(node_id="studio")
+        hb.vision_embedding = VisionEmbeddingMetrics(models_available=[
+            VisionEmbeddingModel(name="dinov2-vit-s14", runtime="onnx", dimensions=384),
+        ])
+        app_client.post("/heartbeat", json=hb.model_dump())
+        body = app_client.post("/api/show", json={"model": "dinov2-vit-s14"}).json()
+        assert body["capabilities"] == ["embedding"]
+        assert body["details"]["format"] == "onnx"
+
+
+# ---------------------------------------------------------------------------
+# 3. HEAD /
+# ---------------------------------------------------------------------------
+
+
+class TestRootHead:
+    def test_head_root_is_200_and_get_still_redirects(self):
+        from fleet_manager.server.app import create_app
+
+        # No `with`: lifespan (mDNS, stores) is not needed for these routes.
+        client = TestClient(create_app(ServerSettings()))
+        head = client.head("/")
+        assert head.status_code == 200
+        assert head.content == b""
+
+        get = client.get("/", follow_redirects=False)
+        assert get.status_code in (302, 307)
+        assert get.headers["location"] == "/dashboard"
