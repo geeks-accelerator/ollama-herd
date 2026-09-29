@@ -184,6 +184,25 @@ Ollama Herd is a drop-in replacement — just change the base URL:
 | **OpenClaw** | See [OpenClaw Integration Guide](docs/openclaw-integration.md) |
 | **Any OpenAI client** | Change `base_url` to `http://router-ip:11435/v1` |
 
+### Desktop and web chat clients
+
+Point any Ollama-compatible chat client at `http://router-ip:11435` and it sees the
+whole fleet as one Ollama. Verified against a source read of 16 clients — Enchanted,
+Ollamac, Reins, Ollama's own desktop app, AnythingLLM, Cherry Studio, Chatbox,
+Hollama, Page Assist and others — which drove `POST /api/show`, `HEAD /`, full
+`/api/tags` field parity and an OpenAI-compatible `POST /v1/embeddings`.
+
+**Browser-based clients** (Hollama, TypingMind, Chatbox web, Page Assist) additionally
+need CORS enabled, since a web page cannot read a response without it:
+
+```bash
+FLEET_CORS_ORIGINS=https://hollama.fernando.is,http://localhost:*
+```
+
+Off by default, and nothing is allowed implicitly — the router listens on the whole
+LAN, so you name the origins you trust. See
+[Configuration Reference](docs/configuration-reference.md#browser-clients-and-cors-fleet_cors_origins).
+
 ## Platform Support
 
 Ollama Herd runs on **macOS, Linux, and Windows** — anywhere Ollama runs.

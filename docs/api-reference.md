@@ -283,6 +283,22 @@ endpoint.
 
 ---
 
+## Calling the router from a browser
+
+Every endpoint below works unchanged from desktop apps, CLIs and server-side code.
+**Browser-based clients are the exception**: the browser sends a preflight `OPTIONS`
+and refuses to hand the page any response without `Access-Control-*` headers. The
+router emits none by default, so a page-based client gets a CORS error even though
+the request itself would have succeeded.
+
+Set `FLEET_CORS_ORIGINS` to an allow-list to enable it — same syntax as
+`OLLAMA_ORIGINS`. All `X-Fleet-*` response headers are exposed to the page, since
+CORS otherwise hides them from exactly the clients this is for. Full detail,
+including why nothing is allowed implicitly, is in
+[Configuration Reference § Browser clients and CORS](configuration-reference.md#browser-clients-and-cors-fleet_cors_origins).
+
+---
+
 ## Ollama-Compatible Endpoints
 
 ### `HEAD /`
