@@ -110,7 +110,6 @@ class HealthEngine:
         recommendations.extend(self._check_vram_fallbacks())
         recommendations.extend(self._check_version_mismatch(nodes))
         recommendations.extend(self._check_context_protection())
-        recommendations.extend(self._check_num_ctx_override_inert(nodes))
         recommendations.extend(self._check_zombie_reaper())
         recommendations.extend(self._check_kv_cache_bloat(nodes))
         recommendations.extend(self._check_image_generation(nodes))
@@ -188,6 +187,9 @@ class HealthEngine:
             prompt_stats = await trace_store.get_prompt_token_stats(days=7)
             recommendations.extend(
                 self._check_context_waste(prompt_stats, nodes)
+            )
+            recommendations.extend(
+                self._check_num_ctx_override_inert(nodes, prompt_stats)
             )
 
             # Priority model check
@@ -581,7 +583,9 @@ class HealthEngine:
             )
         return recs
 
-    def _check_num_ctx_override_inert(self, nodes) -> list[Recommendation]:
+    def _check_num_ctx_override_inert(
+        self, nodes, prompt_stats: list[dict] | None = None
+    ) -> list[Recommendation]:
         """A model resident at a context that differs from its configured override.
 
         ``FLEET_NUM_CTX_OVERRIDES`` only takes effect on a *cold* load — shrinking a
@@ -658,6 +662,29 @@ class HealthEngine:
             f"(configured {m['configured']}, {m['ratio']}x)"
             for m in mismatched
         )
+        # Is the CONFIGURED value itself too small for observed usage?  That is the
+        # only case where "increase the context" is the right advice; a resident
+        # context larger than the config is not evidence for it.
+        usage = {
+            st["model"]: max(
+                st.get("total_p99", st.get("p99", 0)) or 0,
+                st.get("max_total_24h", 0) or 0,
+            )
+            for st in (prompt_stats or [])
+            if st.get("model")
+        }
+        under_configured = [
+            f"{m['model']} (usage ~{usage[m['model']]:,} > configured {m['configured']:,})"
+            for m in mismatched
+            if usage.get(m["model"], 0) > m["configured"]
+        ]
+        lower_recs = []
+        for m in mismatched:
+            u = usage.get(m["model"], 0)
+            if u > 0 and u * 4 < m["configured"]:
+                lower_recs.append(f"{m['model']} usage ~{u:,}")
+        waste_hint = ", ".join(lower_recs)
+
         unload_cmds = "; ".join(
             f"ollama stop {name}"
             for name in dict.fromkeys(entry["model"] for entry in mismatched)
@@ -688,11 +715,34 @@ class HealthEngine:
                     )
                 ),
                 fix=(
-                    f"Unload so the override applies on the next load: {unload_cmds} — "
-                    f"then send one request through the router (:11435), which injects "
-                    f"the configured num_ctx. Verify with the launch args, not `ollama "
-                    f"ps`: ps -Ao args | grep llama-server | grep -oE '-c [0-9]+ -np "
-                    f"[0-9]+' (per-slot context = -c / -np)."
+                    # Which direction to fix depends on whether the CONFIGURED value
+                    # is right, and that is a usage question, not a residency one.
+                    # Answering it here stops this check from contradicting
+                    # context_waste, which computes a recommendation from the same
+                    # trace data and would otherwise name a different target.
+                    (
+                        f"Observed usage exceeds the configured value for "
+                        f"{', '.join(under_configured)} — raise the override in "
+                        f"FLEET_NUM_CTX_OVERRIDES rather than shrinking to it, or "
+                        f"requests will hit context protection. "
+                        if under_configured
+                        else ""
+                    )
+                    + ("Otherwise u" if under_configured else "U")
+                    + f"nload so the override applies on the next load: "
+                    f"{unload_cmds} — then send one request through the router "
+                    f"(:11435), which injects the configured num_ctx. "
+                    + (
+                        f"Note `context_waste` recommends even lower values from "
+                        f"observed usage ({waste_hint}); the two are consistent — this "
+                        f"check is about the override not being applied, that one about "
+                        f"whether the override is the right number. "
+                        if waste_hint
+                        else ""
+                    )
+                    + "Verify with the launch args, not `ollama ps`: ps -Ao args | "
+                    "grep llama-server | grep -oE '-c [0-9]+ -np [0-9]+' "
+                    "(per-slot context = -c / -np)."
                 ),
                 data={"mismatched_models": mismatched},
             )

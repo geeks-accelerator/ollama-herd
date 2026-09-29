@@ -148,3 +148,58 @@ class TestInertLogDedupe:
         assert evs, "inert override must be recorded, not only logged"
         assert evs[-1]["model"] == "gemma3:27b"
         assert evs[-1]["loaded_ctx"] == 131072
+
+
+class TestRemediationDirection:
+    """The remedy depends on whether the CONFIGURED number is right.
+
+    A resident context larger than the config is not evidence that the config is too
+    small — on the reference fleet gemma3 was resident at 131072, configured 32768,
+    and had never used more than 896 tokens. Raising the override to match residency
+    would have silenced the check while preserving the only real cost: 131072 x
+    OLLAMA_NUM_PARALLEL is exactly what makes Ollama predict 341.7 GiB and take its
+    evict-first path.
+    """
+
+    def _nodes(self, resident):
+        from types import SimpleNamespace
+
+        return [
+            SimpleNamespace(
+                node_id="bb",
+                memory=SimpleNamespace(available_gb=200.0),
+                ollama=SimpleNamespace(
+                    models_loaded=[
+                        SimpleNamespace(name="m:1", context_length=resident, size_gb=1.0)
+                    ]
+                ),
+            )
+        ]
+
+    def test_recommends_unloading_when_usage_is_below_the_config(self, env):
+        env({"m:1": 32768})
+        stats = [{"model": "m:1", "total_p99": 800, "max_total_24h": 896,
+                  "request_count": 500}]
+        fix = HealthEngine()._check_num_ctx_override_inert(self._nodes(131072), stats)[0].fix
+        assert "ollama stop m:1" in fix
+        assert "raise the override" not in fix, (
+            "must not suggest increasing when observed usage is far below the config"
+        )
+        assert fix.startswith("Unload"), f"awkward lead-in: {fix[:40]!r}"
+
+    def test_recommends_raising_when_usage_exceeds_the_config(self, env):
+        """The one legitimate 'increase the context' case."""
+        env({"m:1": 8192})
+        stats = [{"model": "m:1", "total_p99": 20000, "max_total_24h": 24000,
+                  "request_count": 500}]
+        fix = HealthEngine()._check_num_ctx_override_inert(self._nodes(131072), stats)[0].fix
+        assert "raise the override" in fix
+        assert "context protection" in fix, "should say what breaks if left too small"
+
+    def test_cross_references_context_waste_when_config_is_generous(self, env):
+        """Two checks must not name different targets for the same model."""
+        env({"m:1": 32768})
+        stats = [{"model": "m:1", "total_p99": 800, "max_total_24h": 896,
+                  "request_count": 500}]
+        fix = HealthEngine()._check_num_ctx_override_inert(self._nodes(131072), stats)[0].fix
+        assert "context_waste" in fix
