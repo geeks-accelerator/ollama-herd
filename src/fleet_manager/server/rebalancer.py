@@ -73,7 +73,14 @@ class Rebalancer:
             )
 
     async def _do_pre_warm(self, lock_key: str, node_id: str, model: str):
-        """Execute pre-warm and release lock when done."""
+        """Execute pre-warm and release lock when done.
+
+        num_ctx is deliberately left to ``pre_warm`` to resolve: this call site
+        omitted it for as long as it existed, warming the runner-up at Ollama's
+        default context instead of the configured one.  That is worse than it
+        sounds — the override only applies on a cold load, and pre-warming IS the
+        cold load, so the model then stays mis-sized until something unloads it.
+        """
         try:
             await self._proxy.pre_warm(node_id, model)
         finally:

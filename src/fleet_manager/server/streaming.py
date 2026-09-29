@@ -707,6 +707,18 @@ class StreamingProxy:
         if request.original_format == RequestFormat.OPENAI:
             yield "data: [DONE]\n\n"
 
+    def _resolved_num_ctx(self, model: str) -> int | None:
+        """The num_ctx this model should load with, or None if unconfigured.
+
+        Single source of truth for pre-warm and the streaming injection path, so
+        a warmed model comes up at the same context a real request would ask for.
+        """
+        if not self._settings or not getattr(self._settings, "dynamic_num_ctx", False):
+            return None
+        overrides = getattr(self._settings, "num_ctx_overrides", None) or {}
+        value = overrides.get(model, 0)
+        return value if value > 0 else None
+
     async def pre_warm(self, node_id: str, model: str, num_ctx: int | None = None):
         """Send a load-only request to pre-warm a model on a node.
 
@@ -720,6 +732,16 @@ class StreamingProxy:
         """
         try:
             client = self._get_client(node_id)
+            # Resolve the override ourselves when the caller did not pass one.
+            # "Callers must remember to pass num_ctx" is a contract that gets
+            # broken silently: `rebalancer._do_pre_warm` called this with no
+            # num_ctx for as long as it existed, which would warm a model at
+            # Ollama's default instead of its configured context — and the
+            # override then "cannot apply" forever, because it only takes effect
+            # on a cold load and this WAS the cold load.  The proxy has the
+            # settings, so it should not depend on every call site being careful.
+            if num_ctx is None:
+                num_ctx = self._resolved_num_ctx(model)
             body: dict = {"model": model, "prompt": "", "keep_alive": -1}
             if num_ctx and num_ctx > 0:
                 body["options"] = {"num_ctx": num_ctx}

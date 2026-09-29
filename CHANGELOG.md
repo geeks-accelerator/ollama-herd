@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`pre_warm` resolves a model's configured `num_ctx` itself instead of trusting every caller to pass it.** `rebalancer._do_pre_warm` called it with no `num_ctx` for as long as it existed, so a runner-up node would be warmed at Ollama's default context rather than the configured one — and because an override only takes effect on a cold load, and pre-warming *is* the cold load, the model then stayed mis-sized until something unloaded it. On the reference fleet that meant 4× the intended KV cache. The guard needs a runner-up node so it could not fire on a single-node fleet, but it would have silently mis-sized every pre-warmed model on any multi-node one. An explicit argument still wins; unconfigured models still get Ollama's own default rather than a guess.
+
+### Changed
+
+- **Corrected the recovery claims for the 2026-08-23 co-tenancy incident.** `CLAUDE.md` and `docs/observations.md` stated that removing the bypassing client returned p25 to 74.2 and conc=3 to 74.6. That came from a 25-minute window (n=114 overall, n=12 at conc=3) and whole-day data contradicts it: p25 went 43.0 → 44–49 and conc=3 stayed flat at ~52 against 68.0 before the step. The **Aug 22 step change is still unexplained** and is now an OPEN issue. Also records that conc=3 has oscillated between ~46 and ~75 since March while conc=1 held at 70–76, so anchoring on Aug 15–21 made a month of stable ~52 look like ongoing decay.
+
+
 ## [0.9.5] - 2026-09-29
 
 ### Added

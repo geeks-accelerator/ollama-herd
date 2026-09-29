@@ -335,3 +335,80 @@ class TestPreWarmDiagnostics:
         await proxy.pre_warm("bb", "gpt-oss:120b", num_ctx=131072)
 
         assert captured["json"]["options"]["num_ctx"] == 131072
+
+
+class TestPreWarmResolvesNumCtx:
+    """Pre-warm must load a model at its configured context without being told.
+
+    "Callers pass num_ctx" is a contract that breaks silently.
+    `rebalancer._do_pre_warm` omitted it for as long as it existed, which warms the
+    runner-up at Ollama's default — and because an override only applies on a cold
+    load, and pre-warming IS the cold load, the model then stays mis-sized until
+    something unloads it.  On the reference fleet that meant 4x the intended KV.
+    """
+
+    def _proxy(self, overrides, dynamic=True):
+        from types import SimpleNamespace
+
+        from fleet_manager.server.streaming import StreamingProxy
+
+        p = StreamingProxy.__new__(StreamingProxy)
+        p._settings = SimpleNamespace(
+            dynamic_num_ctx=dynamic, num_ctx_overrides=overrides
+        )
+        return p
+
+    async def _capture(self, proxy, **kw):
+        captured: dict = {}
+
+        class _Resp:
+            status_code = 200
+
+        class _Client:
+            async def post(self, path, json=None, timeout=None):
+                captured["json"] = json
+                return _Resp()
+
+        proxy._get_client = lambda node_id: _Client()
+        await proxy.pre_warm("bb", "gemma3:27b", **kw)
+        return captured["json"]
+
+    async def test_resolves_the_override_when_caller_omits_it(self):
+        body = await self._capture(self._proxy({"gemma3:27b": 32768}))
+        assert body["options"]["num_ctx"] == 32768, (
+            "pre-warm must not fall back to Ollama's default when an override exists"
+        )
+
+    async def test_explicit_argument_still_wins(self):
+        body = await self._capture(self._proxy({"gemma3:27b": 32768}), num_ctx=8192)
+        assert body["options"]["num_ctx"] == 8192
+
+    async def test_no_override_configured_sends_none(self):
+        """Unconfigured models must keep Ollama's own default, not get a guess."""
+        body = await self._capture(self._proxy({"other:7b": 4096}))
+        assert "options" not in body
+
+    async def test_respects_dynamic_num_ctx_disabled(self):
+        body = await self._capture(self._proxy({"gemma3:27b": 32768}, dynamic=False))
+        assert "options" not in body
+
+    async def test_rebalancer_pre_warm_gets_the_override(self):
+        """End-to-end for the call site that was actually wrong."""
+        from types import SimpleNamespace
+
+        from fleet_manager.server.rebalancer import Rebalancer
+
+        captured: dict = {}
+
+        class _Proxy:
+            async def pre_warm(self, node_id, model, num_ctx=None):
+                captured["num_ctx"] = num_ctx
+
+        rb = Rebalancer.__new__(Rebalancer)
+        rb._proxy = _Proxy()
+        rb._pre_warm_locks = set()
+        await rb._do_pre_warm("bb:gemma3:27b", "bb", "gemma3:27b")
+        # It passes None on purpose — pre_warm resolves it. What must NOT happen is
+        # a hardcoded value here that drifts from FLEET_NUM_CTX_OVERRIDES.
+        assert captured["num_ctx"] is None
+        assert rb._pre_warm_locks == set(), "lock must be released"

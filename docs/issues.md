@@ -85,6 +85,53 @@ matching `_check_anthropic_map_targets`.
 
 ## Performance
 
+### Unexplained 2026-08-22 step change: p25 73.4 → 43.1, conc=3 68.0 → 50.6 `OPEN`
+
+**Severity:** high (throughput). Present continuously since 2026-08-22.
+
+On 2026-08-22 batched-decode throughput stepped down in a single day and has not
+recovered in the five weeks since:
+
+| | p25 | conc=3 | conc=1 |
+|---|-----|--------|--------|
+| Aug 21 | **73.4** | **68.0** | 76.5 |
+| Aug 22 | 43.1 | 50.6 | 74.0 |
+| Aug 23 – Sep 29 | 43–49 | **~52, flat** | 74–77 |
+
+`conc=1` and `conc=2` are unaffected — they are at their seven-month best (76.8).
+Only multi-stream batching lost ground.
+
+**This was previously believed fixed, and that belief was an artifact of a bad
+measurement.** A co-located client (`openclaw`) bypassing the router was found and
+removed on Aug 23, and a 25-minute window (n=114 overall, **n=12** at conc=3)
+showed p25 at 74.2 and conc=3 at 74.6 — reported as a full recovery. Whole-day
+data contradicts it: removal moved p25 from 43.0 to 44–49 and left conc=3 flat.
+**openclaw was worth roughly 5 points of p25, not 30.**
+
+**Eliminated so far** (each by direct measurement, see `docs/observations.md`
+2026-08-23 and 2026-09-28): the Ollama/llama.cpp version (0.32.13 vs 0.32.15
+benchmarked identically on the real model), herd itself (direct-vs-routed A/B),
+workload volume and token mix, routing, memory and swap, power/thermal, env drift,
+client parallelism, co-tenancy (the tripwire now reads exactly clean daily), and
+`OLLAMA_CONTEXT_LENGTH` (that was a separate, self-inflicted TTFT regression).
+
+**Worth knowing before investigating:** `conc=3` oscillates between ~46 and ~75
+across the whole seven-month record while `conc=1` stays at 70–76. Several earlier
+reports called stable ~52 an ongoing decline because they anchored on Aug 15–21,
+one of the high phases. **Plot the full history first.** The question to answer is
+specifically "what happened on Aug 22", not "why is it drifting" — it is not
+drifting.
+
+One untested lead: during Sep 22–27, when `OLLAMA_CONTEXT_LENGTH=32768` had
+accidentally quartered gpt-oss's per-slot context, conc=3 rose to 58–60 and conc=4
+to 54 — better than the ~52/~42 on either side. That suggests per-slot KV size
+trades against batching efficiency, and is measurable without breaking prefill by
+testing intermediate values. Note it is confounded: that period also had 6× worse
+TTFT, which changes the concurrency mix.
+
+---
+
+
 ### No health check detects a second client bypassing the router `OPEN`
 
 **Severity:** high — this class of problem is invisible to every existing check.

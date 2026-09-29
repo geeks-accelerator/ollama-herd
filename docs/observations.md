@@ -357,6 +357,10 @@ Handy fingerprint on this box: **herd connects over IPv6 (`::1`), the stray clie
 
 p25 returned exactly to the healthy baseline and the concurrency cliff disappeared — conc=3 and conc=4 now match conc=1, which they never did even during the "healthy" period. That residual pre-existing tail (p10 ≈ 43 back then) is worth noting: some co-tenancy cost was present all along and simply below the threshold of notice. Caveat on this measurement: 25 minutes at a quieter concurrency mix than a full day, so treat a 24-hour comparison as the real confirmation.
 
+**CORRECTION (2026-09-29).** The recovery table above is wrong, and the error is instructive: it was measured over 25 minutes (n=114 overall, n=12 at conc=3) during a quiet period, then reported as a restored baseline. Seven months of daily data say otherwise. p25 went 43.0 on the day of removal to 44–49 over the following week — never back to Aug 21's 73.4 — and conc=3 stayed flat at ~52 against 68.0 before the step. **openclaw was worth roughly 5 points of p25, not 30.** The Aug 22 step change is still unexplained and is now tracked as an OPEN issue.
+
+The wider lesson is about baselines, not about openclaw: conc=3 has oscillated between ~46 and ~75 continuously since March while conc=1 held steady at 70–76. Anchoring on Aug 15–21 — one of the high phases — made a month of stable ~52 look like ongoing decay, and that false trend was repeated in several reports. **Plot the whole history before calling anything a regression.**
+
 **Why it hurts so much more than 27% of extra requests should.** Two compounding effects:
 
 1. **herd's concurrency cap is computed against a slot count it does not exclusively own.** `QueueManager` caps `bb:gpt-oss:120b` at 4 to match llama-server's `-np 4`. With a second client also filling those same 4 slots, herd's "conc=2" is really occupancy 3–4 at the backend. Every scoring and queueing decision is made against a number that is now wrong. Measured effect: the share of traffic herd *observes* at conc≥3 went 23% → 44%, and per-request rate at conc=3 fell from ~68 to ~50 tok/s.
