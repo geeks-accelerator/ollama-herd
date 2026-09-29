@@ -47,6 +47,10 @@ def _clear_collector_ttl_caches():
         collector._detect_transcription_models.cache_clear()
     dashboard._HEALTH_CACHE["payload"] = None
     dashboard._HEALTH_CACHE["ts"] = 0.0
+    # Tag-metadata send-on-change state: a test that "already sent" meta would
+    # otherwise make the next test's first heartbeat omit it.
+    collector._meta_sent["fingerprint"] = None
+    collector._meta_sent["at"] = 0.0
     yield
 
 

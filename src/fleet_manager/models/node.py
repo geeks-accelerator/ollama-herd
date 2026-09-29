@@ -83,9 +83,40 @@ class LoadedModel(BaseModel):
     context_length: int = 0  # allocated context window
 
 
+class ModelTagMeta(BaseModel):
+    """Per-model metadata from a node's own Ollama ``/api/tags``.
+
+    Carried so the router's ``/api/tags`` can return the same fields Ollama
+    does.  Several clients (OllamaKit, which Enchanted and Ollamac use, and
+    Reins) decode ``modified_at``, ``digest`` and every ``details`` string as
+    *required non-null* — a listing without them fails to decode entirely, so
+    the whole model picker comes up empty.
+
+    Every field is a non-null string (``families`` a list) because that is
+    the contract those clients enforce; the Ollama client coerces Ollama's own
+    occasional ``null`` (e.g. ``families`` on some models) to the empty value.
+    """
+
+    modified_at: str = ""
+    digest: str = ""
+    format: str = ""
+    family: str = ""
+    families: list[str] = Field(default_factory=list)
+    parameter_size: str = ""
+    quantization_level: str = ""
+    parent_model: str = ""
+
+
 class OllamaMetrics(BaseModel):
     models_loaded: list[LoadedModel] = Field(default_factory=list)
     models_available: list[str] = Field(default_factory=list)
+    # ``/api/tags`` metadata per available model (digest, modified_at, details).
+    # ~270 bytes per model — 13.6 KB for a 50-model node, 15x the rest of this
+    # object — so it is sent only when it changes (or once a minute as a
+    # refresh), not every 5 s heartbeat.  ``None`` means "not sent this time,
+    # keep what you have"; the registry carries the previous value forward.
+    # Older agents never send it and the router synthesizes non-null defaults.
+    models_available_meta: dict[str, ModelTagMeta] | None = None
     # True on-disk size in GB per available model, straight from /api/tags.
     # Optional by design: older node agents don't send it and the server falls
     # back to name-heuristic guessing, so a mixed-version fleet still works.

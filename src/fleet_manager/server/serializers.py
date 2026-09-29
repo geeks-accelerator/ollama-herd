@@ -85,7 +85,10 @@ def serialize_node(node) -> dict:
     cap = hot_model_cap_for(node)
     data["hot_model_cap"] = cap
     if node.ollama:
-        data["ollama"] = node.ollama.model_dump()
+        # models_available_meta exists only to answer /api/tags; leaving it out
+        # keeps /fleet/status (polled by the dashboard) from growing ~250 bytes
+        # per model per node for data nothing here reads.
+        data["ollama"] = node.ollama.model_dump(exclude={"models_available_meta"})
         loaded = len(node.ollama.models_loaded)
         data["models_loaded_count"] = loaded
         data["free_slots"] = max(0, cap - loaded)

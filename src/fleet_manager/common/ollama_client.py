@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from fleet_manager.models.node import LoadedModel
+from fleet_manager.models.node import LoadedModel, ModelTagMeta
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,41 @@ class OllamaClient:
             return sizes
         except Exception as e:  # noqa: BLE001 — sizes are best-effort; caller falls back
             logger.debug(f"Failed to get model sizes: {type(e).__name__}: {e}")
+            return {}
+
+    async def get_available_model_meta(self) -> dict[str, ModelTagMeta]:
+        """GET /api/tags — ``{model_name: ModelTagMeta}`` for the router's /api/tags.
+
+        Passes Ollama's own ``modified_at``, ``digest`` and ``details`` through
+        so the router can answer ``/api/tags`` with the fields strict clients
+        require (see ``ModelTagMeta``).  Any ``null`` Ollama sends is coerced
+        to ``""`` / ``[]`` here, so the router never has to re-check.
+        Best-effort like the sizes probe: returns ``{}`` on any failure.
+        """
+        try:
+            resp = await self._client.get("/api/tags")
+            resp.raise_for_status()
+            data = resp.json()
+            meta: dict[str, ModelTagMeta] = {}
+            for m in data.get("models", []):
+                name = m.get("model", m.get("name", ""))
+                if not name:
+                    continue
+                details = m.get("details") or {}
+                families = details.get("families") or []
+                meta[name] = ModelTagMeta(
+                    modified_at=str(m.get("modified_at") or ""),
+                    digest=str(m.get("digest") or ""),
+                    format=str(details.get("format") or ""),
+                    family=str(details.get("family") or ""),
+                    families=[str(f) for f in families if f is not None],
+                    parameter_size=str(details.get("parameter_size") or ""),
+                    quantization_level=str(details.get("quantization_level") or ""),
+                    parent_model=str(details.get("parent_model") or ""),
+                )
+            return meta
+        except Exception as e:  # noqa: BLE001 — metadata is best-effort; router synthesizes
+            logger.debug(f"Failed to get model metadata: {type(e).__name__}: {e}")
             return {}
 
     async def chat_stream(self, body: dict) -> AsyncIterator[bytes]:

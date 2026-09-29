@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import functools
+import hashlib
+import json
 import logging
 import os
 import platform
@@ -497,6 +499,36 @@ def _text_embedding_backend_status() -> dict:
     }
 
 
+# Tag metadata is ~15x the size of the rest of the Ollama section (13.6 KB for
+# a 50-model node, measured 2026-09-29), and it changes only on pull/delete.
+# So send it when it changes, plus a periodic refresh that re-seeds a router
+# that restarted (or missed the heartbeat that carried the change).
+META_REFRESH_S = 60.0
+_meta_sent: dict = {"fingerprint": None, "at": 0.0}
+
+
+def _meta_to_send(meta: dict | None) -> dict | None:
+    """Return ``meta`` if the router needs it this heartbeat, else ``None``.
+
+    ``None`` on the wire means "unchanged — keep what you have".  An empty or
+    failed fetch also returns ``None``: a transient Ollama hiccup must not wipe
+    the router's copy.
+    """
+    if not meta:
+        return None
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {k: v.model_dump() for k, v in meta.items()}, sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    now = time.time()
+    if fingerprint == _meta_sent["fingerprint"] and now - _meta_sent["at"] < META_REFRESH_S:
+        return None
+    _meta_sent["fingerprint"] = fingerprint
+    _meta_sent["at"] = now
+    return meta
+
+
 async def collect_heartbeat(
     node_id: str,
     ollama: OllamaClient,
@@ -554,6 +586,17 @@ async def collect_heartbeat(
         models_available_sizes = await ollama.get_available_model_sizes()
     except Exception as e:  # noqa: BLE001
         logger.debug(f"Model sizes unavailable: {type(e).__name__}: {e}")
+
+    # Ollama's own /api/tags metadata (digest, modified_at, details) so the
+    # router's /api/tags can match Ollama field-for-field — strict clients
+    # (OllamaKit, Reins) refuse a listing without them.  Its own try block for
+    # the same reason as sizes: enrichment must never cost us the model list.
+    # Sent only on change / periodic refresh — see _meta_to_send().
+    models_available_meta = None
+    try:
+        models_available_meta = _meta_to_send(await ollama.get_available_model_meta())
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"Model metadata unavailable: {type(e).__name__}: {e}")
 
     # Report the local Ollama's configured hot-model cap so the router doesn't
     # have to hardcode one.  We read it from our own environment: the node agent
@@ -662,6 +705,7 @@ async def collect_heartbeat(
             models_loaded=models_loaded,
             models_available=models_available,
             models_available_sizes=models_available_sizes,
+            models_available_meta=models_available_meta,
             max_loaded_models=max_loaded_models,
             num_parallel=num_parallel,
             requests_active=requests_active,

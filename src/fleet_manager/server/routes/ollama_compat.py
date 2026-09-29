@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
+from datetime import UTC, datetime
 
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from fleet_manager.models.node import NodeStatus
+from fleet_manager.models.node import ModelTagMeta, NodeStatus
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
 from fleet_manager.server.model_knowledge import is_image_model
@@ -183,69 +185,149 @@ async def ollama_version(request: Request):
     return result
 
 
+# Synthesized ``modified_at`` for models Ollama didn't describe (mlx:, image,
+# vision-embedding, or an older node agent that doesn't send metadata).  Pinned
+# to the first time this router listed the model, so the value is stable across
+# calls — a client sorting by date doesn't see the list reshuffle every poll.
+_SYNTH_MODIFIED_AT: dict[str, str] = {}
+
+
+def _synth_modified_at(name: str) -> str:
+    """RFC3339 timestamp, fractional seconds + ``Z``, like Go's RFC3339Nano."""
+    if name not in _SYNTH_MODIFIED_AT:
+        now = datetime.now(UTC)
+        _SYNTH_MODIFIED_AT[name] = now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return _SYNTH_MODIFIED_AT[name]
+
+
+def _synth_digest(name: str) -> str:
+    """A stable, unique stand-in digest for models with no Ollama manifest.
+
+    Not an empty string: some clients key their model lists on ``digest``,
+    so N models sharing ``""`` would collapse into one row.  Hashing the name
+    keeps it unique and constant.  It is NOT a content digest — the name
+    prefix makes that unmistakable to anyone who checks.
+    """
+    return hashlib.sha256(f"ollama-herd:{name}".encode()).hexdigest()
+
+
+def _tag_entry(
+    name: str,
+    *,
+    size: int,
+    meta: ModelTagMeta | None,
+    default_format: str = "",
+) -> dict:
+    """One Ollama-shaped ``/api/tags`` entry, never ``null`` in a required key.
+
+    Real metadata from the node's Ollama is passed through untouched; anything
+    missing gets a non-null default (``""`` / ``[]`` / synthesized date and
+    digest).  See docs/api-reference.md § GET /api/tags.
+    """
+    m = meta or ModelTagMeta(format=default_format)
+    return {
+        "name": name,
+        "model": name,
+        "modified_at": m.modified_at or _synth_modified_at(name),
+        "size": size,
+        "digest": m.digest or _synth_digest(name),
+        "details": {
+            "parent_model": m.parent_model,
+            "format": m.format or default_format,
+            "family": m.family,
+            "families": list(m.families),
+            "parameter_size": m.parameter_size,
+            "quantization_level": m.quantization_level,
+        },
+    }
+
+
 @router.get("/api/tags")
 async def ollama_tags(request: Request):
-    """Ollama-compatible: list all models across the fleet."""
+    """Ollama-compatible: list all models across the fleet.
+
+    Each entry carries Ollama's full field set (``modified_at``, ``digest``,
+    ``details.format/family/families/parameter_size/quantization_level/
+    parent_model``) plus Herd's ``details.fleet_nodes``.  Strict clients
+    (OllamaKit → Enchanted/Ollamac, Reins) decode those as required
+    non-null strings and fail the whole listing without them.
+    """
     registry = request.app.state.registry
-    seen = {}
-    for node in registry.get_online_nodes():
+    nodes = registry.get_online_nodes()
+
+    # Fleet-wide lookups: the first node that reports a model's metadata or
+    # on-disk size wins.  Same model name = same Ollama manifest in practice.
+    fleet_meta: dict[str, ModelTagMeta] = {}
+    fleet_sizes: dict[str, float] = {}
+    for node in nodes:
+        if not node.ollama:
+            continue
+        for name, meta in (node.ollama.models_available_meta or {}).items():
+            fleet_meta.setdefault(name, meta)
+        for name, gb in node.ollama.models_available_sizes.items():
+            fleet_sizes.setdefault(name, gb)
+
+    def _disk_bytes(name: str) -> int:
+        # models_available_sizes is decimal GB (bytes / 1e9) — see ollama_client.
+        gb = fleet_sizes.get(name, 0.0)
+        return int(round(gb * 1e9)) if gb else 0
+
+    seen: dict[str, dict] = {}
+
+    def _add(name: str, node_id: str, entry_factory) -> None:
+        if name not in seen:
+            entry = entry_factory()
+            entry["details"]["fleet_nodes"] = [node_id]
+            seen[name] = entry
+        elif node_id not in seen[name]["details"]["fleet_nodes"]:
+            seen[name]["details"]["fleet_nodes"].append(node_id)
+
+    for node in nodes:
         if not node.ollama:
             continue
         for m in node.ollama.models_loaded:
-            if m.name not in seen:
-                seen[m.name] = {
-                    "name": m.name,
-                    "model": m.name,
-                    "size": int(m.size_gb * (1024**3)),
-                    "details": {"fleet_nodes": [node.node_id]},
-                }
-            else:
-                seen[m.name]["details"]["fleet_nodes"].append(node.node_id)
+            # Ollama's /api/tags reports on-disk size; prefer it, and fall back
+            # to the resident size only when no node reported the disk size.
+            size = _disk_bytes(m.name) or int(m.size_gb * (1024**3))
+            _add(m.name, node.node_id, lambda m=m, size=size: _tag_entry(
+                m.name, size=size, meta=fleet_meta.get(m.name),
+                default_format="mlx" if m.name.startswith("mlx:") else "",
+            ))
         for name in node.ollama.models_available:
-            if name not in seen:
-                seen[name] = {
-                    "name": name,
-                    "model": name,
-                    "size": 0,
-                    "details": {"fleet_nodes": [node.node_id]},
-                }
-            elif node.node_id not in seen[name]["details"]["fleet_nodes"]:
-                seen[name]["details"]["fleet_nodes"].append(node.node_id)
+            _add(name, node.node_id, lambda name=name: _tag_entry(
+                name, size=_disk_bytes(name), meta=fleet_meta.get(name),
+                default_format="mlx" if name.startswith("mlx:") else "",
+            ))
 
     # Include image models (mflux + DiffusionKit) in the unified list
-    for node in registry.get_online_nodes():
+    for node in nodes:
         if not node.image:
             continue
-        for m in node.image.models_available:
-            if m.name not in seen:
-                seen[m.name] = {
-                    "name": m.name,
-                    "model": m.name,
-                    "size": 0,
-                    "details": {"fleet_nodes": [node.node_id], "type": "image"},
-                }
-            elif node.node_id not in seen[m.name]["details"].get("fleet_nodes", []):
-                seen[m.name]["details"]["fleet_nodes"].append(node.node_id)
+        for im in node.image.models_available:
+            def _image_entry(im=im):
+                entry = _tag_entry(
+                    im.name, size=0, meta=None,
+                    # "mflux-generate-…" → "mflux", "diffusionkit-cli" → "diffusionkit"
+                    default_format=(im.binary or "").split("-")[0],
+                )
+                entry["details"]["type"] = "image"
+                return entry
+            _add(im.name, node.node_id, _image_entry)
 
     # Include vision embedding models (DINOv2, SigLIP, CLIP)
-    for node in registry.get_online_nodes():
+    for node in nodes:
         if not node.vision_embedding:
             continue
-        for m in node.vision_embedding.models_available:
-            if m.name not in seen:
-                seen[m.name] = {
-                    "name": m.name,
-                    "model": m.name,
-                    "size": 0,
-                    "details": {
-                        "fleet_nodes": [node.node_id],
-                        "type": "vision-embedding",
-                        "runtime": m.runtime,
-                        "dimensions": m.dimensions,
-                    },
-                }
-            elif node.node_id not in seen[m.name]["details"].get("fleet_nodes", []):
-                seen[m.name]["details"]["fleet_nodes"].append(node.node_id)
+        for vm in node.vision_embedding.models_available:
+            def _vision_entry(vm=vm):
+                entry = _tag_entry(vm.name, size=0, meta=None, default_format=vm.runtime)
+                entry["details"].update({
+                    "type": "vision-embedding",
+                    "runtime": vm.runtime,
+                    "dimensions": vm.dimensions,
+                })
+                return entry
+            _add(vm.name, node.node_id, _vision_entry)
 
     return {"models": list(seen.values())}
 

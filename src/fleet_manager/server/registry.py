@@ -71,6 +71,14 @@ class NodeRegistry:
             node.memory = payload.memory
             node.thermal = payload.thermal
             node.disk = payload.disk
+            # Tag metadata rides only on heartbeats where it changed (see
+            # collector._meta_to_send); None means "unchanged", so keep ours.
+            if (
+                payload.ollama is not None
+                and payload.ollama.models_available_meta is None
+                and node.ollama is not None
+            ):
+                payload.ollama.models_available_meta = node.ollama.models_available_meta
             node.ollama = payload.ollama
             node.capacity = payload.capacity
             node.agent_version = payload.agent_version
