@@ -581,3 +581,82 @@ class TestOpenAIEmbeddings:
         })
         assert resp.status_code == 400
         assert "input too long" in resp.json()["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# 5. Opt-in CORS
+# ---------------------------------------------------------------------------
+
+
+def _preflight(client: TestClient, origin: str, path: str = "/api/tags"):
+    return client.options(path, headers={
+        "Origin": origin,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type,authorization",
+    })
+
+
+class TestCors:
+    def _client(self, origins: str = "") -> TestClient:
+        from fleet_manager.server.app import create_app
+
+        return TestClient(create_app(ServerSettings(cors_origins=origins)))
+
+    def test_default_is_off(self):
+        client = self._client()
+        assert ServerSettings().cors_origins == ""
+        pre = _preflight(client, "http://localhost:3000")
+        assert pre.status_code == 405
+        assert "access-control-allow-origin" not in pre.headers
+        get = client.get("/", headers={"Origin": "http://evil.example"},
+                         follow_redirects=False)
+        assert "access-control-allow-origin" not in get.headers
+
+    def test_wildcard_pattern_allows_matching_origin_only(self):
+        client = self._client("http://localhost:*, https://hollama.fernando.is")
+        ok = _preflight(client, "http://localhost:3000")
+        assert ok.status_code == 200
+        assert ok.headers["access-control-allow-origin"] == "http://localhost:3000"
+        assert "POST" in ok.headers["access-control-allow-methods"]
+
+        exact = _preflight(client, "https://hollama.fernando.is")
+        assert exact.status_code == 200
+
+        bad = _preflight(client, "http://evil.example")
+        assert bad.status_code == 400
+        assert "access-control-allow-origin" not in bad.headers
+
+    def test_star_allows_any_origin_and_exposes_fleet_headers(self):
+        client = self._client("*")
+        pre = _preflight(client, "https://anything.example")
+        assert pre.status_code == 200
+        assert pre.headers["access-control-allow-origin"] == "*"
+        get = client.get("/", headers={"Origin": "https://anything.example"},
+                         follow_redirects=False)
+        assert get.headers["access-control-allow-origin"] == "*"
+        assert "X-Fleet-Node" in get.headers["access-control-expose-headers"]
+
+    def test_env_var_is_read(self, monkeypatch):
+        monkeypatch.setenv("FLEET_CORS_ORIGINS", "chrome-extension://*")
+        assert ServerSettings().cors_origins == "chrome-extension://*"
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("", ([], None)),
+        (" , ", ([], None)),
+        ("*", (["*"], None)),
+        ("http://a.test,*", (["*"], None)),
+        ("http://a.test/, http://b.test", (["http://a.test", "http://b.test"], None)),
+        ("http://localhost:*", ([], r"(?:http://localhost:.*)")),
+    ])
+    def test_parse_cors_origins(self, raw, expected):
+        from fleet_manager.server.cors import parse_cors_origins
+
+        assert parse_cors_origins(raw) == expected
+
+    def test_wildcard_regex_is_anchored(self):
+        from fleet_manager.server.cors import parse_cors_origins
+
+        _, regex = parse_cors_origins("http://localhost:*")
+        assert re.fullmatch(regex, "http://localhost:8080")
+        assert not re.fullmatch(regex, "http://evil.example/?http://localhost:1")
+        assert not re.fullmatch(regex, "https://localhost:8080")

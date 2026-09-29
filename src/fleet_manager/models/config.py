@@ -120,6 +120,18 @@ class ServerSettings(BaseSettings):
     debug_request_bodies: bool = False
     debug_request_retention_days: int = 7
 
+    # Browser CORS allow-list — Herd's equivalent of OLLAMA_ORIGINS, for
+    # browser-based clients (Hollama, TypingMind, Chatbox web, Page Assist)
+    # that call the router straight from a web page.  Comma-separated origins;
+    # ``*`` inside an origin is a wildcard (``http://localhost:*``,
+    # ``chrome-extension://*``) and a bare ``*`` allows every origin.
+    # **Empty (the default) = no CORS headers at all**, exactly the posture
+    # before this setting existed: browsers block cross-origin reads, and
+    # non-browser clients are unaffected either way.  Opt in deliberately —
+    # ``*`` lets any page you visit read fleet data through your browser.
+    # Example: FLEET_CORS_ORIGINS=https://hollama.fernando.is,http://localhost:*
+    cors_origins: str = ""
+
     # Anthropic Messages API compat (for Claude Code etc.)
     # JSON map of claude-* model id → local model name.  OPTIONAL: with
     # anthropic_auto_route on (the default), any claude-* id without an entry

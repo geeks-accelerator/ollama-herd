@@ -342,4 +342,10 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
 
         return Response(status_code=200, media_type="text/plain; charset=utf-8")
 
+    # Opt-in CORS (FLEET_CORS_ORIGINS).  No-op when unset — see server/cors.py.
+    from fleet_manager.server.cors import install_cors
+
+    if install_cors(app, settings.cors_origins):
+        logger.info(f"CORS enabled for origins: {settings.cors_origins}")
+
     return app
