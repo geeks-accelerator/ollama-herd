@@ -424,3 +424,160 @@ class TestRootHead:
         get = client.get("/", follow_redirects=False)
         assert get.status_code in (302, 307)
         assert get.headers["location"] == "/dashboard"
+
+
+# ---------------------------------------------------------------------------
+# 4. /v1/embeddings
+# ---------------------------------------------------------------------------
+
+
+def _register_embed_node(client: TestClient, *, model: str = "mxbai-embed-large:latest"):
+    hb = make_heartbeat(
+        node_id="studio", loaded_models=[(model, 1.0)], available_models=[model],
+    )
+    client.post("/heartbeat", json=hb.model_dump())
+
+
+class TestOpenAIEmbeddings:
+    def test_ollama_path_returns_openai_shape(self, app_client):
+        _register_embed_node(app_client)
+        seen = {}
+
+        def handler(request: httpx.Request):
+            seen["path"] = request.url.path
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={
+                "model": "mxbai-embed-large:latest",
+                "embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+                "prompt_eval_count": 7,
+            })
+
+        _install_mock_ollama(app_client, "studio", handler)
+        resp = app_client.post("/v1/embeddings", json={
+            "model": "mxbai-embed-large:latest", "input": ["hello", "world"],
+        })
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["object"] == "list"
+        assert body["model"] == "mxbai-embed-large:latest"
+        assert [d["index"] for d in body["data"]] == [0, 1]
+        assert all(d["object"] == "embedding" for d in body["data"])
+        assert body["data"][1]["embedding"] == [0.4, 0.5, 0.6]
+        assert body["usage"] == {"prompt_tokens": 7, "total_tokens": 7}
+        # Same path /api/embed uses → same backend endpoint and headers.
+        assert seen["path"] == "/api/embed"
+        assert seen["body"]["input"] == ["hello", "world"]
+        assert resp.headers["X-Fleet-Node"] == "studio"
+        assert resp.headers["X-Fleet-Backend"] == "ollama"
+
+    def test_string_input_and_base64_encoding(self, app_client):
+        _register_embed_node(app_client)
+        vec = [0.25, -1.5, 3.0]
+        _install_mock_ollama(app_client, "studio", lambda r: httpx.Response(
+            200, json={"embeddings": [vec]},
+        ))
+        resp = app_client.post("/v1/embeddings", json={
+            "model": "mxbai-embed-large:latest", "input": "hello",
+            "encoding_format": "base64",
+        })
+        assert resp.status_code == 200, resp.text
+        encoded = resp.json()["data"][0]["embedding"]
+        decoded = list(struct.unpack("<3f", base64.b64decode(encoded)))
+        assert decoded == vec
+        assert resp.json()["usage"] == {"prompt_tokens": 0, "total_tokens": 0}
+
+    def test_nomic_goes_through_fastembed_interception(self, app_client, monkeypatch):
+        """nomic-embed-text must hit the native :11439 server, not Ollama."""
+        from fleet_manager.server.routes import text_embedding_compat
+
+        hb = make_heartbeat(node_id="studio")
+        hb.text_embedding_port = 11439
+        app_client.post("/heartbeat", json=hb.model_dump())
+
+        seen = {}
+
+        def handler(request: httpx.Request):
+            seen["url"] = str(request.url)
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={
+                "model": "nomic-embed-text",
+                "embeddings": [[1.0, 2.0]],
+                "prompt_eval_count": 2,
+            })
+
+        real_client = httpx.AsyncClient
+
+        def patched(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(text_embedding_compat.httpx, "AsyncClient", patched)
+
+        resp = app_client.post("/v1/embeddings", json={
+            "model": "nomic-embed-text", "input": "hello there",
+        })
+        monkeypatch.setattr(text_embedding_compat.httpx, "AsyncClient", real_client)
+        assert resp.status_code == 200, resp.text
+        assert seen["url"].endswith(":11439/embed")
+        assert seen["body"] == {"model": "nomic-embed-text", "input": ["hello there"]}
+        body = resp.json()
+        assert body["data"] == [{"object": "embedding", "index": 0, "embedding": [1.0, 2.0]}]
+        assert body["usage"]["prompt_tokens"] == 2
+        assert resp.headers["X-Fleet-Backend"] == "native"
+        # The node id the fastembed path adds to its Ollama-shaped body must not
+        # leak into the OpenAI response.
+        assert "node" not in body
+
+    @pytest.mark.parametrize("payload,fragment", [
+        ({"input": "x"}, "model is required"),
+        ({"model": "m", "input": [[1, 2, 3]]}, "list of strings"),
+        ({"model": "m"}, "list of strings"),
+        ({"model": "m", "input": ["ok", ""]}, "no empty strings"),
+        ({"model": "m", "input": "x", "encoding_format": "int8"}, "encoding_format"),
+        ({"model": "m", "input": "x", "dimensions": -1}, "dimensions"),
+    ])
+    def test_validation_errors_are_openai_shaped_400s(self, app_client, payload, fragment):
+        resp = app_client.post("/v1/embeddings", json=payload)
+        assert resp.status_code == 400
+        err = resp.json()["error"]
+        assert fragment in err["message"]
+        assert err["type"] == "invalid_request_error"
+
+    def test_unknown_model_is_404_model_not_found(self, app_client):
+        resp = app_client.post("/v1/embeddings", json={"model": "nope:1b", "input": "x"})
+        assert resp.status_code == 404
+        err = resp.json()["error"]
+        assert err["code"] == "model_not_found"
+        assert "nope:1b" in err["message"]
+
+    def test_ignored_dimensions_fails_loud(self, app_client):
+        _register_embed_node(app_client)
+        _install_mock_ollama(app_client, "studio", lambda r: httpx.Response(
+            200, json={"embeddings": [[0.1, 0.2, 0.3]]},
+        ))
+        resp = app_client.post("/v1/embeddings", json={
+            "model": "mxbai-embed-large:latest", "input": "x", "dimensions": 2,
+        })
+        assert resp.status_code == 400
+        assert "dimensions=2" in resp.json()["error"]["message"]
+
+    def test_count_mismatch_is_502(self, app_client):
+        _register_embed_node(app_client)
+        _install_mock_ollama(app_client, "studio", lambda r: httpx.Response(
+            200, json={"embeddings": [[0.1]]},
+        ))
+        resp = app_client.post("/v1/embeddings", json={
+            "model": "mxbai-embed-large:latest", "input": ["a", "b"],
+        })
+        assert resp.status_code == 502
+
+    def test_backend_error_is_translated(self, app_client):
+        _register_embed_node(app_client)
+        _install_mock_ollama(app_client, "studio", lambda r: httpx.Response(
+            400, json={"error": "input too long"},
+        ))
+        resp = app_client.post("/v1/embeddings", json={
+            "model": "mxbai-embed-large:latest", "input": "x",
+        })
+        assert resp.status_code == 400
+        assert "input too long" in resp.json()["error"]["message"]

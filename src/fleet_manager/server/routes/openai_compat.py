@@ -569,3 +569,144 @@ async def openai_images_generations(request: Request):
             media_type="image/png",
             headers={"X-Fleet-Model": model},
         )
+
+
+def _openai_error(status: int, message: str, err_type: str, code: str | None = None):
+    return JSONResponse(
+        status_code=status,
+        content={"error": {"message": message, "type": err_type, "param": None, "code": code}},
+    )
+
+
+@router.post("/v1/embeddings")
+async def openai_embeddings(request: Request):
+    """OpenAI-compatible embeddings (Chatbox Knowledge Base, generic OpenAI embedders).
+
+    A thin translation over the SAME path ``/api/embed`` uses
+    (``ollama_compat.dispatch_embed``), so ``nomic-embed-text`` still goes to
+    the native fastembed server, Ollama models are still scored and retried,
+    and every outcome still lands in the trace store.
+
+    ``input`` is a string or a list of strings (token-id arrays are rejected
+    with 400 — nothing downstream accepts them).  ``encoding_format`` is
+    ``"float"`` (default) or ``"base64"`` (little-endian float32, as OpenAI
+    encodes it).  ``dimensions`` is forwarded to the backend, and a backend
+    that returns a different width is reported as 400 rather than silently
+    handing back vectors of the wrong size.
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return _openai_error(400, "request body must be valid JSON", "invalid_request_error")
+    if not isinstance(body, dict):
+        return _openai_error(400, "request body must be a JSON object", "invalid_request_error")
+
+    model = body.get("model") or ""
+    if not isinstance(model, str) or not model:
+        return _openai_error(400, "model is required", "invalid_request_error")
+
+    raw_input = body.get("input")
+    if isinstance(raw_input, str):
+        texts = [raw_input]
+    elif isinstance(raw_input, list) and all(isinstance(t, str) for t in raw_input):
+        texts = list(raw_input)
+    else:
+        return _openai_error(
+            400,
+            "'input' must be a string or a list of strings "
+            "(token-id arrays are not supported)",
+            "invalid_request_error",
+        )
+    # Empty strings are rejected like OpenAI does — and because the fastembed
+    # backend drops them, which would silently shift every later index.
+    if not texts or any(not t for t in texts):
+        return _openai_error(
+            400, "'input' must be non-empty and contain no empty strings",
+            "invalid_request_error",
+        )
+
+    encoding_format = body.get("encoding_format") or "float"
+    if encoding_format not in ("float", "base64"):
+        return _openai_error(
+            400,
+            f"unsupported encoding_format '{encoding_format}' (use 'float' or 'base64')",
+            "invalid_request_error",
+        )
+
+    dimensions = body.get("dimensions")
+    if dimensions is not None and (not isinstance(dimensions, int) or dimensions <= 0):
+        return _openai_error(
+            400, "'dimensions' must be a positive integer", "invalid_request_error",
+        )
+
+    embed_body: dict = {"model": model, "input": texts}
+    if dimensions is not None:
+        embed_body["dimensions"] = dimensions
+
+    from fleet_manager.server.routes.ollama_compat import dispatch_embed
+
+    resp = await dispatch_embed(request, embed_body, original_format=RequestFormat.OPENAI)
+
+    # Keep the X-Fleet-* headers the embed path set; drop the ones Starlette
+    # recomputes for the new body.
+    passthrough_headers = {
+        k: v for k, v in resp.headers.items()
+        if k.lower() not in ("content-length", "content-type")
+    }
+
+    try:
+        data = json.loads(bytes(resp.body))
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        data = {}
+
+    if resp.status_code >= 400:
+        err = data.get("error") if isinstance(data, dict) else None
+        message = str(err) if err else f"embedding failed with HTTP {resp.status_code}"
+        if resp.status_code == 404:
+            return _openai_error(404, message, "invalid_request_error", "model_not_found")
+        if resp.status_code < 500:
+            return _openai_error(resp.status_code, message, "invalid_request_error")
+        if resp.status_code in (503, 504):
+            return _openai_error(resp.status_code, message, "model_overloaded")
+        return _openai_error(resp.status_code, message, "api_error")
+
+    embeddings = data.get("embeddings") if isinstance(data, dict) else None
+    if not isinstance(embeddings, list) or len(embeddings) != len(texts):
+        got = len(embeddings) if isinstance(embeddings, list) else "no"
+        logger.error(
+            f"/v1/embeddings: backend returned {got} embedding(s) for "
+            f"{len(texts)} input(s) (model={model})"
+        )
+        return _openai_error(
+            502,
+            f"backend returned {got} embedding(s) for {len(texts)} input(s)",
+            "api_error",
+        )
+    if dimensions is not None and any(len(e) != dimensions for e in embeddings):
+        return _openai_error(
+            400,
+            f"model '{model}' does not support dimensions={dimensions} "
+            f"(returned {len(embeddings[0])})",
+            "invalid_request_error",
+        )
+
+    def _encode(vec: list[float]):
+        if encoding_format == "base64":
+            import struct
+
+            return base64.b64encode(struct.pack(f"<{len(vec)}f", *vec)).decode()
+        return vec
+
+    prompt_tokens = int(data.get("prompt_eval_count") or 0)
+    return JSONResponse(
+        content={
+            "object": "list",
+            "data": [
+                {"object": "embedding", "index": i, "embedding": _encode(vec)}
+                for i, vec in enumerate(embeddings)
+            ],
+            "model": model,
+            "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
+        },
+        headers=passthrough_headers,
+    )

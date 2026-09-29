@@ -636,6 +636,22 @@ async def ollama_embed(request: Request):
     embedding service instead of Ollama.
     """
     body = await request.json()
+    return await dispatch_embed(request, body)
+
+
+async def dispatch_embed(
+    request: Request,
+    body: dict,
+    *,
+    original_format: RequestFormat = RequestFormat.OLLAMA,
+):
+    """The one embedding path: vision → text (fastembed) → Ollama ``/api/embed``.
+
+    Shared by ``/api/embed`` and ``/v1/embeddings`` so an OpenAI-format caller
+    gets exactly the same interception (e.g. nomic-embed-text → fastembed),
+    scoring, retries and traces.  Returns an Ollama ``/api/embed``-shaped
+    response; ``original_format`` only labels the trace.
+    """
     model = body.get("model", "")
     if not model:
         return JSONResponse(status_code=400, content={"error": "model is required"})
@@ -668,7 +684,7 @@ async def ollama_embed(request: Request):
         original_model=model,
         messages=[],
         stream=False,
-        original_format=RequestFormat.OLLAMA,
+        original_format=original_format,
         raw_body=body,
         tags=tags,
         request_type="embed",
@@ -765,7 +781,7 @@ async def ollama_embed(request: Request):
                     latency_ms=elapsed_ms,
                     retry_count=retry_count,
                     client_ip=client_ip,
-                    original_format=RequestFormat.OLLAMA.value,
+                    original_format=original_format.value,
                     tags=["embed"] + (tags or []),
                 ))
 
@@ -796,7 +812,7 @@ async def ollama_embed(request: Request):
                     latency_ms=elapsed_ms,
                     retry_count=retry_count,
                     client_ip=client_ip,
-                    original_format=RequestFormat.OLLAMA.value,
+                    original_format=original_format.value,
                     error_message=err_msg,
                     tags=["embed"] + (tags or []),
                 ))
@@ -831,7 +847,7 @@ async def ollama_embed(request: Request):
                     latency_ms=elapsed_ms,
                     retry_count=retry_count,
                     client_ip=client_ip,
-                    original_format=RequestFormat.OLLAMA.value,
+                    original_format=original_format.value,
                     error_message=f"{type(e).__name__}: {error_detail}",
                     tags=["embed"] + (tags or []),
                 ))
@@ -859,7 +875,7 @@ async def ollama_embed(request: Request):
             latency_ms=elapsed_ms,
             retry_count=retry_count,
             client_ip=client_ip,
-            original_format=RequestFormat.OLLAMA.value,
+            original_format=original_format.value,
             error_message=f"ReadTimeout after {retry_count} attempt(s): {error_detail}",
             tags=["embed"] + (tags or []),
         ))
