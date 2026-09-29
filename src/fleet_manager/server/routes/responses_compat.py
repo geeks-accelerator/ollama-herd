@@ -44,6 +44,7 @@ from fleet_manager.server.routes.routing import (
     get_all_fleet_models,
     get_fleet_loaded_and_ondisk,
     parse_allow_fallback,
+    record_routing_rejection,
     score_with_fallbacks,
 )
 
@@ -186,7 +187,19 @@ async def responses(request: Request):
         allow_fallback=allow_fallback,
     )
     if not results:
-        if local_model not in get_all_fleet_models(registry):
+        _missing = local_model not in get_all_fleet_models(registry)
+        await record_routing_rejection(
+            getattr(request.app.state, "trace_store", None),
+            inference_req,
+            reason=(
+                f"model '{local_model}' not found on any node"
+                if _missing
+                else f"no node could serve '{local_model}' within the holding timeout"
+            ),
+            original_format=getattr(inference_req, "original_format", "") or "responses",
+            client_ip=getattr(inference_req, "client_ip", "") or "",
+        )
+        if _missing:
             return _error(
                 404,
                 f"Model '{local_model}' (resolved from '{requested_model}') is not "

@@ -34,6 +34,7 @@ from fleet_manager.server.routes.routing import (
     extract_tags,
     get_all_fleet_models,
     parse_allow_fallback,
+    record_routing_rejection,
     score_with_fallbacks,
 )
 
@@ -321,6 +322,18 @@ async def chat_completions(request: Request):
         models_tried = [model] + inference_req.fallback_models
         all_fleet_models = get_all_fleet_models(registry)
         any_exists = any(m in all_fleet_models for m in models_tried)
+
+        await record_routing_rejection(
+            getattr(request.app.state, "trace_store", None),
+            inference_req,
+            reason=(
+                f"no node could serve '{model}' within the holding timeout"
+                if any_exists
+                else f"none of {models_tried} exist on any node"
+            ),
+            original_format=getattr(inference_req, "original_format", "") or "openai",
+            client_ip=getattr(inference_req, "client_ip", "") or "",
+        )
 
         if not any_exists:
             models_str = "', '".join(models_tried)

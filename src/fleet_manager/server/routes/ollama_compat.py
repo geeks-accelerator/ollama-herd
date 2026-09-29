@@ -24,6 +24,7 @@ from fleet_manager.server.routes.routing import (
     extract_tags,
     get_all_fleet_models,
     parse_allow_fallback,
+    record_routing_rejection,
     score_with_fallbacks,
 )
 
@@ -465,7 +466,19 @@ async def ollama_embed(request: Request):
 
     if not results:
         all_fleet_models = get_all_fleet_models(registry)
-        if model not in all_fleet_models:
+        missing = model not in all_fleet_models
+        await record_routing_rejection(
+            getattr(request.app.state, "trace_store", None),
+            inference_req,
+            reason=(
+                f"model '{model}' not found on any node"
+                if missing
+                else f"no node could serve '{model}' within the holding timeout"
+            ),
+            original_format=getattr(inference_req, "original_format", "") or "ollama",
+            client_ip=(request.client.host if request.client else ""),
+        )
+        if missing:
             return JSONResponse(
                 status_code=404,
                 content={"error": f"model '{model}' not found on any node. "
@@ -660,6 +673,18 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         models_tried = [model] + inference_req.fallback_models
         all_fleet_models = get_all_fleet_models(registry)
         any_exists = any(m in all_fleet_models for m in models_tried)
+
+        await record_routing_rejection(
+            getattr(request.app.state, "trace_store", None),
+            inference_req,
+            reason=(
+                f"no node could serve '{model}' within the holding timeout"
+                if any_exists
+                else f"none of {models_tried} exist on any node"
+            ),
+            original_format=getattr(inference_req, "original_format", "") or "ollama",
+            client_ip=inference_req.client_ip,
+        )
 
         if not any_exists:
             models_str = "', '".join(models_tried)

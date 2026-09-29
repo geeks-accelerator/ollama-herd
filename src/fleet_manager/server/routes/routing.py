@@ -309,6 +309,60 @@ async def score_with_fallbacks(
     return [], ""
 
 
+# Status written when routing rejects a request before any node was chosen.  Kept
+# distinct from "failed" (a node was picked and the backend errored) so the two
+# causes stay separable, and it is deliberately NOT "completed"/"retried", which
+# means it counts toward the error rate in `trace_store` — the client did get an
+# error, so it should.
+REJECTED_STATUS = "rejected"
+
+
+async def record_routing_rejection(
+    trace_store,
+    inference_req,
+    *,
+    reason: str,
+    original_format: str = "",
+    client_ip: str = "",
+    tags: list[str] | None = None,
+) -> None:
+    """Record a trace for a request rejected before a node was selected.
+
+    Without this the rejection is invisible to every consumer of the trace store:
+    the request never reaches `record_trace`, which only runs after a winner is
+    chosen.  On 2026-09-28 four requests hit the 30s holding-queue timeout and
+    returned 503 to their clients while the day's traces showed **zero**
+    non-completed rows — so the dashboard reported 100% success while bots were
+    getting errors, and several status reports repeated that figure.
+
+    Failures here are swallowed: a trace-write problem must never turn a 503 into
+    a 500.  `trace_store` already counts its own write failures for the
+    `trace_store_write_failures` health check.
+    """
+    if trace_store is None:
+        return
+    try:
+        await trace_store.record_trace(
+            request_id=getattr(inference_req, "request_id", "") or "",
+            model=getattr(inference_req, "model", "") or "",
+            original_model=getattr(inference_req, "model", "") or "",
+            # No node was selected — that is the whole point of this record.
+            node_id="",
+            status=REJECTED_STATUS,
+            error_message=reason,
+            original_format=original_format,
+            client_ip=client_ip,
+            tags=tags or getattr(inference_req, "tags", None) or [],
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "Could not record routing rejection for %s: %s: %s",
+            getattr(inference_req, "model", "?"),
+            type(exc).__name__,
+            exc or "(no detail)",
+        )
+
+
 def _try_vram_fallback(
     inference_req: InferenceRequest,
     scorer,

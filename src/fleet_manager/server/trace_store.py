@@ -751,6 +751,13 @@ class TraceStore:
                     THEN 1 ELSE 0 END) AS failed
             FROM request_traces
             WHERE timestamp >= ?
+              -- Exclude routing rejections.  Those carry node_id='' because no
+              -- node was ever chosen, so grouping by node invents a phantom node
+              -- whose every request "failed" -- and the per-node remediation
+              -- ("check Ollama health on <blank>") points at the wrong thing
+              -- entirely.  A request nothing could be routed to is a placement or
+              -- availability problem, not a node fault.
+              AND node_id != ''
             GROUP BY node_id
             """,
             (cutoff,),

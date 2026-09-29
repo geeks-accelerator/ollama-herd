@@ -59,6 +59,7 @@ from fleet_manager.server.routes.routing import (
     get_all_fleet_models,
     get_fleet_loaded_and_ondisk,
     parse_allow_fallback,
+    record_routing_rejection,
     score_with_fallbacks,
 )
 
@@ -977,6 +978,17 @@ async def messages(
     if not results:
         all_fleet_models = get_all_fleet_models(registry)
         any_exists = local_model in all_fleet_models
+        await record_routing_rejection(
+            getattr(request.app.state, "trace_store", None),
+            inference_req,
+            reason=(
+                f"no node could serve '{local_model}' within the holding timeout"
+                if any_exists
+                else f"model '{local_model}' not found on any node"
+            ),
+            original_format=getattr(inference_req, "original_format", "") or "anthropic",
+            client_ip=getattr(inference_req, "client_ip", "") or "",
+        )
         if not any_exists:
             logger.warning(
                 f"Anthropic[{rid}] 404: model '{local_model}' (from '{body.model}') "

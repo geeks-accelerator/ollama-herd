@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Requests rejected before a node is chosen now leave a trace.** `record_trace` only runs after a routing winner is selected, so every rejection path returned an HTTP error and recorded nothing. On 2026-09-28 four requests hit the 30s holding-queue timeout and got 503s while that day's traces held zero non-completed rows out of 8,140 — the dashboard reported 100% success while clients were getting errors. Five sites across four route files now share one `record_routing_rejection()` helper writing `status="rejected"`, kept distinct from `"failed"` so "nothing could serve this" stays separable from "a node errored". A test fails if a route grows a rejection branch without recording it.
+
+  Wiring it in surfaced a second bug: the per-node error-rate check groups by `node_id`, and rejections carry an empty one, so a single rejection invented a phantom node reporting `100.0% error rate (1/1)` and advising "check Ollama health on ␣" — the wrong diagnosis for a request that never reached a node. `get_error_rates_24h` now excludes node-less rows.
+
+  **Success rates will no longer read 100% when rejections occur**, which is the point: the previous figure counted only requests that reached a node.
+
 - **`pre_warm` resolves a model's configured `num_ctx` itself instead of trusting every caller to pass it.** `rebalancer._do_pre_warm` called it with no `num_ctx` for as long as it existed, so a runner-up node would be warmed at Ollama's default context rather than the configured one — and because an override only takes effect on a cold load, and pre-warming *is* the cold load, the model then stayed mis-sized until something unloaded it. On the reference fleet that meant 4× the intended KV cache. The guard needs a runner-up node so it could not fire on a single-node fleet, but it would have silently mis-sized every pre-warmed model on any multi-node one. An explicit argument still wins; unconfigured models still get Ollama's own default rather than a guess.
 
 ### Changed

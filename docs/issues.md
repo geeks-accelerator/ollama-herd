@@ -8,6 +8,45 @@ Identified via code review of the full codebase. Organized by priority.
 
 ## Correctness
 
+### Requests rejected before a node is chosen left no trace `FIXED` (2026-09-29)
+
+**Severity:** was high (observability). Fixed.
+
+`record_trace` only runs after a routing winner is selected, so every rejection path
+returned an HTTP error to the client and recorded **nothing**. On 2026-09-28 four
+requests hit the 30s holding-queue timeout and got 503s, while that day's traces held
+**zero** non-completed rows out of 8,140. The dashboard reported 100% success, and
+several status reports in this repo repeated that figure — they were measuring only
+requests that reached a node.
+
+Five sites across four route files (`ollama_compat` x2, `openai_compat`,
+`anthropic_compat`, `responses_compat`). Fixed with one shared
+`record_routing_rejection()` in `routes/routing.py` rather than five copies, writing
+`status="rejected"` — distinct from `"failed"` (a node *was* chosen and the backend
+errored) so the two causes stay separable, and outside `completed`/`retried` so it
+counts toward the error rate, which is correct: the client did get an error. Trace-write
+failures are swallowed, because a trace problem must never turn a 503 into a 500.
+
+**Wiring it in immediately produced a second, subtler bug — worth recording.** The
+per-node error-rate check groups by `node_id`, and rejections carry `node_id=''`
+because no node was chosen. So a single rejection invented a phantom node:
+`High error rate on ␣ — 100.0% error rate (1/1 requests failed)`, advising *"check
+connectivity and Ollama health on ␣"*. That is precisely the wrong diagnosis — a
+request nothing could be routed to is a placement or availability problem, not a node
+fault. `get_error_rates_24h` now excludes `node_id = ''`.
+
+Covered by `tests/test_server/test_routing_rejection_traces.py`, including a guard that
+fails if a route module grows a `if not results:` block without a matching
+`record_routing_rejection()` call, so a new API surface cannot silently reintroduce the
+blind spot.
+
+**Consequence for reported numbers:** success rates will no longer read 100% when
+rejections occur. That is the point — the previous figure was flattering rather than
+accurate.
+
+---
+
+
 ### A `num_ctx` override that can never apply is visible, and deliberately not enforced `FIXED` (2026-09-29)
 
 **Severity:** medium — silently wastes KV memory and defeats `FLEET_NUM_CTX_OVERRIDES`.
