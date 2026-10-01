@@ -109,6 +109,13 @@ class StreamingProxy:
         self._request_done_reason: dict[str, str] = {}
         # Models we've already warned about an inert num_ctx override for.
         self._inert_override_logged: set[tuple[str, int]] = set()
+        # Models the backend has told us cannot serve /api/generate at all —
+        # embedding models, for instance.  Pre-warming one is a permanent 400,
+        # not a transient failure, so retrying it every preload cycle only
+        # produces log noise: `nomic-embed-text:latest` failed 81 times in 30
+        # hours before this existed.  Learned from the backend rather than from
+        # a name heuristic, so it covers any model type with the same property.
+        self._non_generatable: set[str] = set()
 
     def pop_token_counts(
         self, request_id: str
@@ -719,6 +726,15 @@ class StreamingProxy:
         value = overrides.get(model, 0)
         return value if value > 0 else None
 
+    def is_non_generatable(self, model: str) -> bool:
+        """True when the backend has said this model cannot serve /api/generate.
+
+        Lets the preloader skip a model that will always 400 instead of retrying
+        it on every cycle.  Empty until a real backend response teaches it, so no
+        model is excluded on a guess.
+        """
+        return model in getattr(self, "_non_generatable", set())
+
     async def pre_warm(self, node_id: str, model: str, num_ctx: int | None = None):
         """Send a load-only request to pre-warm a model on a node.
 
@@ -759,6 +775,22 @@ class StreamingProxy:
             )
             if resp.status_code == 200:
                 logger.info(f"Pre-warmed {model} on {node_id}")
+            elif resp.status_code == 400 and "does not support generate" in (
+                resp.text or ""
+            ):
+                # Permanent, not transient: Ollama answers
+                # {"error": "\"<model>\" does not support generate"} for an
+                # embedding model.  Record it so the preloader stops choosing it,
+                # and say so once instead of every cycle.
+                if model not in self._non_generatable:
+                    self._non_generatable.add(model)
+                    logger.info(
+                        "Pre-warm %s on %s: model does not support /api/generate "
+                        "(embedding-only); it will not be pre-warmed again. Such "
+                        "models are served on their own path and need no warming.",
+                        model,
+                        node_id,
+                    )
             else:
                 logger.warning(f"Pre-warm {model} on {node_id} failed: {resp.status_code}")
         except Exception as e:

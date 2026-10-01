@@ -455,6 +455,20 @@ async def _load_model_on_best_node(
     back to the model's observed default context, or — never having seen it —
     to the old weights-only approximation.
     """
+    # Cheapest possible exit, before any node lookup: the backend has already
+    # told us this model cannot serve /api/generate (an embedding model, say).
+    # That is permanent, so retrying it every cycle can only produce noise.
+    # `is True` deliberately, not truthiness: a Mock proxy in a test returns a
+    # Mock from any attribute call, which is truthy, and would silently skip
+    # EVERY model.  Eight existing preloader tests caught exactly that.
+    _skip = getattr(proxy, "is_non_generatable", None)
+    if callable(_skip) and _skip(model) is True:
+        logger.debug(
+            "Preloader: skipping %s — backend does not support /api/generate for it",
+            model,
+        )
+        return False
+
     available_nodes = _nodes_with_model_on_disk(model, nodes)
     if not available_nodes:
         logger.info(f"Preloader: {model} not on disk anywhere — skipping ({why})")

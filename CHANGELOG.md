@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An embedding model in the usage-priority list is no longer pre-warmed forever.** Pre-warming posts to `/api/generate`, which Ollama refuses for an embedding model: `{"error": "\"nomic-embed-text:latest\" does not support generate"}`. That is permanent, not transient, so the preloader retried it every cycle — 81 warnings in 30 hours once new embed traffic made `nomic-embed-text:latest` a top-priority model, and a standing `priority_model_not_loaded` card for something that could never load. The proxy now learns which models the backend refuses to generate for (from the backend's own answer, not a name heuristic, so it covers any model with the same property), reports it once at INFO rather than every cycle at WARNING, and the preloader skips them before it even looks for a node.
+
+
 ## [0.9.6] - 2026-09-29
 
 ### Added

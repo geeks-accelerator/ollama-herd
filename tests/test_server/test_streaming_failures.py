@@ -412,3 +412,87 @@ class TestPreWarmResolvesNumCtx:
         # a hardcoded value here that drifts from FLEET_NUM_CTX_OVERRIDES.
         assert captured["num_ctx"] is None
         assert rb._pre_warm_locks == set(), "lock must be released"
+
+
+class TestNonGeneratableModels:
+    """An embedding model can never be pre-warmed via /api/generate.
+
+    Ollama answers `{"error": "\"<model>\" does not support generate"}` with 400.
+    That is permanent, not transient, so retrying it each preload cycle is pure
+    noise: `nomic-embed-text:latest` failed 81 times in 30 hours once embed traffic
+    made it a usage-priority model. Learned from the backend rather than a name
+    heuristic, so it covers any model with the same property.
+    """
+
+    def _proxy(self):
+        from types import SimpleNamespace
+
+        from fleet_manager.server.streaming import StreamingProxy
+
+        p = StreamingProxy.__new__(StreamingProxy)
+        p._settings = SimpleNamespace(dynamic_num_ctx=False, num_ctx_overrides={})
+        p._non_generatable = set()
+        return p
+
+    def _client(self, status, text):
+        class _Resp:
+            status_code = status
+
+            def __init__(self):
+                self.text = text
+
+        class _Client:
+            async def post(self, *a, **kw):
+                return _Resp()
+
+        return _Client()
+
+    async def test_learns_from_the_backend_and_logs_once(self, caplog):
+        import logging
+
+        p = self._proxy()
+        p._get_client = lambda n: self._client(
+            400, '{"error":"\\"nomic-embed-text:latest\\" does not support generate"}'
+        )
+        assert not p.is_non_generatable("nomic-embed-text:latest")
+        with caplog.at_level(logging.INFO):
+            await p.pre_warm("bb", "nomic-embed-text:latest")
+            await p.pre_warm("bb", "nomic-embed-text:latest")
+            await p.pre_warm("bb", "nomic-embed-text:latest")
+        assert p.is_non_generatable("nomic-embed-text:latest")
+        said = [r for r in caplog.records if "does not support" in r.getMessage()]
+        assert len(said) == 1, f"must report once, not per attempt: {len(said)}"
+        # and never as a WARNING — it is expected, not a fault
+        assert said[0].levelno == logging.INFO
+
+    async def test_a_real_400_still_warns(self):
+        """Only the generate-unsupported 400 is permanent; others stay warnings."""
+        import logging
+
+        p = self._proxy()
+        p._get_client = lambda n: self._client(400, '{"error":"invalid options"}')
+        await p.pre_warm("bb", "gpt-oss:120b")
+        assert not p.is_non_generatable("gpt-oss:120b"), (
+            "an unrelated 400 must not permanently exclude a chat model"
+        )
+
+    async def test_nothing_is_excluded_before_the_backend_says_so(self):
+        """No name heuristic — an unprobed embedding model is still attempted once."""
+        p = self._proxy()
+        assert not p.is_non_generatable("nomic-embed-text")
+        assert not p.is_non_generatable("some-future-embed-model")
+
+    async def test_preloader_skips_a_known_non_generatable_model(self):
+        from fleet_manager.server import model_preloader as mp
+
+        class _Proxy:
+            def is_non_generatable(self, m):
+                return m == "nomic-embed-text:latest"
+
+            async def pre_warm(self, *a, **kw):  # pragma: no cover - must not run
+                raise AssertionError("pre_warm called for a non-generatable model")
+
+        ok = await mp._load_model_on_best_node(
+            "nomic-embed-text:latest", None, proxy=_Proxy(), settings=None,
+        )
+        assert ok is False
