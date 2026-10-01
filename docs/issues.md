@@ -8,6 +8,38 @@ Identified via code review of the full codebase. Organized by priority.
 
 ## Correctness
 
+### Embed traces recorded no request size, making embed latency unexplainable `FIXED` (2026-10-01)
+
+**Severity:** medium (observability). Fixed.
+
+Every embed trace had `prompt_tokens` NULL — 3,770 rows on the reference fleet. The
+backend already computes the value (`node/text_embedding_server.py`:
+`prompt_eval_count = sum(len(t.split()) for t in texts)`), returns it in the response,
+and `/v1/embeddings` reports it as OpenAI `usage`. It simply was never passed to
+`record_trace`, which recorded only status and latency.
+
+**Found by an investigation it blocked.** On 2026-10-01 `nomic-embed-text:latest`
+averaged 324 ms while the bare `nomic-embed-text` averaged 1,624 ms. Everything
+checkable came back identical: both names are in `TEXT_EMBEDDING_MODELS` so both route
+to the native fastembed server on :11439, both on node `bb`, both tagged
+`["embed","text-embed"]` from `127.0.0.1`, and median concurrent LLM load was **0.0 for
+both**, ruling out contention. Direct measurement showed fastembed is fast and barely
+text-length sensitive (19 ms for 200 chars, 22 ms for 8,000; 2.4 ms/text at batch 64),
+so batch size was the only remaining explanation — **and there was no recorded way to
+test it.** The debug-body capture does not cover the embed path either.
+
+Now recorded, verified live: batch 1 → 5 tokens / 42 ms, batch 25 → 125 / 77 ms,
+batch 100 → 500 / 233 ms. The same question will answer itself from traces next time.
+
+**The original latency difference remains unexplained** and is expected to resolve on
+its own once enough post-fix traffic accumulates — group embed latency by
+`prompt_tokens` per model and the answer should be immediate. It is almost certainly
+two callers with different batch sizes (324 ms ≈ batch ~150, 1,624 ms ≈ batch ~600 at
+measured rates), but that is inference, not evidence.
+
+---
+
+
 ### Requests rejected before a node is chosen left no trace `FIXED` (2026-09-29)
 
 **Severity:** was high (observability). Fixed.

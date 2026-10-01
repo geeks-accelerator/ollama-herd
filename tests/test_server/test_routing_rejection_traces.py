@@ -133,3 +133,35 @@ class TestRejectionsDoNotFakeANodeFault:
                     assert r["failed"] == 0, "healthy node must not inherit the rejection"
         finally:
             await store.close()
+
+
+class TestEmbedTracesRecordSize:
+    """Embed traces must carry the request size, or embed latency is unexplainable.
+
+    The backend already computes `prompt_eval_count` and `/v1/embeddings` reports it
+    as OpenAI `usage`, but it was never written to the trace: all 3,770 embed rows on
+    the reference fleet had prompt_tokens NULL. On 2026-10-01 two spellings of the
+    same model averaged 324 ms and 1,624 ms — same node, same backend, no contention
+    — and there was no recorded way to test whether batch size explained it.
+    """
+
+    def test_backend_reports_a_count_we_can_record(self):
+        """Guard the field name the trace now depends on."""
+        import inspect
+
+        from fleet_manager.node import text_embedding_server as tes
+
+        src = inspect.getsource(tes)
+        assert "prompt_eval_count" in src
+
+    def test_embed_success_path_passes_prompt_tokens(self):
+        import inspect
+
+        from fleet_manager.server.routes import text_embedding_compat as tec
+
+        src = inspect.getsource(tec)
+        # the success-path record_trace must forward the size
+        assert "prompt_tokens=prompt_tokens" in src, (
+            "embed traces must record request size, not just latency"
+        )
+        assert 'result.get("prompt_eval_count")' in src

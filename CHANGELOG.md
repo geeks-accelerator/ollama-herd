@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Embed traces now record the request size.** `prompt_tokens` was NULL on every embed row (3,770 of them on the reference fleet), even though the backend computes `prompt_eval_count`, returns it, and `/v1/embeddings` already reports it as OpenAI `usage` — it was simply never passed to `record_trace`. Found by an investigation it blocked: two spellings of the same embedding model averaged 324 ms and 1,624 ms with identical routing, identical node, identical tags and zero concurrent LLM load, and there was no recorded way to test whether batch size explained it. Verified live: batch 1 → 5 tokens, batch 100 → 500.
+
 - **An embedding model in the usage-priority list is no longer pre-warmed forever.** Pre-warming posts to `/api/generate`, which Ollama refuses for an embedding model: `{"error": "\"nomic-embed-text:latest\" does not support generate"}`. That is permanent, not transient, so the preloader retried it every cycle — 81 warnings in 30 hours once new embed traffic made `nomic-embed-text:latest` a top-priority model, and a standing `priority_model_not_loaded` card for something that could never load. The proxy now learns which models the backend refuses to generate for (from the backend's own answer, not a name heuristic, so it covers any model with the same property), reports it once at INFO rather than every cycle at WARNING, and the preloader skips them before it even looks for a node.
 
 

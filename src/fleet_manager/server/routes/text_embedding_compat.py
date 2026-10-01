@@ -196,11 +196,24 @@ async def embed_text(request: Request):
 
     result = resp.json()
     if trace_store:
+        # Record the request size.  The backend already computes and returns
+        # `prompt_eval_count` (a word-count approximation — see
+        # node/text_embedding_server.py) and `/v1/embeddings` reports it as
+        # OpenAI `usage`, but it was never written to the trace: every embed row
+        # had prompt_tokens NULL.  That made embed latency unexplainable from
+        # traces — on 2026-10-01, `nomic-embed-text:latest` averaged 324 ms and
+        # the bare name 1,624 ms, same node, same backend, no contention, and
+        # there was no recorded way to tell whether batch size was the reason.
+        try:
+            prompt_tokens = int(result.get("prompt_eval_count") or 0) or None
+        except (TypeError, ValueError):
+            prompt_tokens = None
         asyncio.ensure_future(trace_store.record_trace(
             request_id=request_id,
             model=model, original_model=model,
             node_id=best.node_id, score=None,
             status="completed", latency_ms=elapsed_ms,
+            prompt_tokens=prompt_tokens,
             client_ip=client_ip, original_format="embed",
             tags=["embed", "text-embed"],
         ))
