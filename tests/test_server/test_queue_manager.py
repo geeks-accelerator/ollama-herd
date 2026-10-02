@@ -310,13 +310,54 @@ def test_mlx_run_model_decodes_one_at_a_time():
     assert decode_parallelism_for(node, "qwen3.8:27b-mlx") == 1
 
 
-@pytest.mark.parametrize("caps", [["embedding"], ["decision"]])
-def test_non_completion_models_decode_one_at_a_time(caps):
+def test_embedding_models_decode_one_at_a_time():
     from fleet_manager.models.node import ModelTagMeta
     from fleet_manager.server.serializers import decode_parallelism_for
 
-    node = _node_with_meta(4, {"m:latest": ModelTagMeta(capabilities=caps)})
+    node = _node_with_meta(4, {"m:latest": ModelTagMeta(capabilities=["embedding"])})
     assert decode_parallelism_for(node, "m") == 1  # bare name → :latest, like Ollama
+
+
+def test_decision_capability_alone_does_not_force_serial():
+    """sched.go forces only !completion models.  Decision models report
+    completion too, so a decision model in a non-serial family keeps the node
+    limit — capping it at 1 would be the under-dispatch failure mode."""
+    from fleet_manager.models.node import ModelTagMeta
+    from fleet_manager.server.serializers import decode_parallelism_for
+
+    node = _node_with_meta(4, {"d:1b": ModelTagMeta(
+        family="llama", format="gguf", capabilities=["decision", "completion"],
+    )})
+    assert decode_parallelism_for(node, "d:1b") == 4
+
+
+def test_real_ollama_metadata_from_the_reference_mac():
+    """Exactly what Ollama 0.35.0 reported on the Mac mini, 2026-10-02."""
+    from fleet_manager.models.node import ModelTagMeta
+    from fleet_manager.server.serializers import decode_parallelism_for
+
+    node = _node_with_meta(4, {
+        # MLX variant: safetensors, EMPTY family — serial via the format rule.
+        "qwen3.8:27b-mlx": ModelTagMeta(
+            format="safetensors", family="",
+            capabilities=["completion", "vision", "tools", "thinking"],
+        ),
+        # Decision model: serial via its qwen35 family, not via "decision".
+        "nimble:latest": ModelTagMeta(
+            format="gguf", family="qwen35",
+            capabilities=["decision", "tools", "thinking", "completion"],
+        ),
+        "gemma3:27b": ModelTagMeta(
+            format="gguf", family="gemma3", capabilities=["completion", "vision"],
+        ),
+        "nomic-embed-text:latest": ModelTagMeta(
+            format="gguf", family="nomic-bert", capabilities=["embedding"],
+        ),
+    })
+    assert decode_parallelism_for(node, "qwen3.8:27b-mlx") == 1
+    assert decode_parallelism_for(node, "nimble") == 1
+    assert decode_parallelism_for(node, "gemma3:27b") == 4
+    assert decode_parallelism_for(node, "nomic-embed-text") == 1
 
 
 @pytest.mark.parametrize("meta", [

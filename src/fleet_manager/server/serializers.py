@@ -75,7 +75,7 @@ def decode_parallelism_for(node, model: str | None = None) -> int:
       loop that runs each request to completion before taking the next.
       Ollama 0.40 makes MLX the default on Apple Silicon.
     * ``OLLAMA_SERIAL_FAMILIES`` — forced to 1 in ``sched.go``.
-    * Non-completion models (embedding, decision) — ``sched.go`` again.
+    * Non-completion models (embedders) — ``sched.go`` again.
 
     Each check uses what the node's Ollama *reports* in ``/api/tags``.  A
     model with no metadata (older agent, ``mlx:`` model) gets the node-level
@@ -92,10 +92,13 @@ def decode_parallelism_for(node, model: str | None = None) -> int:
     if (
         meta.format == "safetensors"
         or meta.family in OLLAMA_SERIAL_FAMILIES
-        # Presence-only form of sched.go's ``!completion`` rule — see
-        # model_has_capability for why a *missing* "completion" proves nothing.
-        or "embedding" in meta.capabilities
-        or "decision" in meta.capabilities
+        # sched.go's ``!completion`` rule, in the only form that is safe to read
+        # from /api/tags: a positively reported embedder that doesn't also
+        # report completion.  NOT "decision" — decision models report
+        # completion too (nimble: decision, tools, thinking, completion), so
+        # sched.go doesn't force them; nimble is serial via its qwen35 family.
+        # And never a bare missing "completion": see model_has_capability.
+        or ("embedding" in meta.capabilities and "completion" not in meta.capabilities)
     ):
         return 1
     return node_limit
