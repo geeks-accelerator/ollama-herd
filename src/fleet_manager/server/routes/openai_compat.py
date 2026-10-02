@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import time
 import uuid
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -26,7 +28,11 @@ from fleet_manager.server.mlx_proxy import (
 )
 from fleet_manager.server.model_knowledge import is_vision_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
-from fleet_manager.server.routes.ollama_compat import _build_thinking_headers
+from fleet_manager.server.routes.ollama_compat import (
+    _build_thinking_headers,
+    _nodes_with_model,
+    _post_with_failover,
+)
 from fleet_manager.server.routes.routing import (
     check_context_overflow,
     client_concurrency_response,
@@ -38,6 +44,7 @@ from fleet_manager.server.routes.routing import (
     record_routing_rejection,
     score_with_fallbacks,
 )
+from fleet_manager.server.serializers import model_has_capability
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["openai"])
@@ -714,3 +721,90 @@ async def openai_embeddings(request: Request):
         },
         headers=passthrough_headers,
     )
+
+
+# Ollama's own limits for /v1/systemone (server/routes.go SystemOneHandler):
+# 32 MiB hard cap, and 64 KiB unless the request carries images.  Enforced here
+# so an oversized request fails fast with Ollama's exact message instead of
+# making a network hop to be told the same thing.
+_SYSTEMONE_MAX_BYTES = 32 << 20
+_SYSTEMONE_MAX_BYTES_WITHOUT_IMAGES = 64 << 10
+# A decision model may cold-load on first use, so allow far longer than
+# /api/show's metadata read.
+_SYSTEMONE_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=30.0, pool=10.0)
+
+
+@router.post("/v1/systemone")
+async def systemone(request: Request):
+    """Ollama "decision models" (``nimble``, ``tev1``) — choices + probabilities.
+
+    Added in Ollama 0.35.  A passthrough: the body is forwarded unchanged to a
+    node whose Ollama *reports* the ``decision`` capability for the model, so
+    nodes older than 0.35 (which can't report it) are excluded without parsing
+    a version.  Node selection and failover are the same as ``/api/show``.
+    Ollama's own 4xx (a cloud or MLX model — it only accepts local GGUF) pass
+    through unchanged.
+    """
+    raw = await request.body()
+    if len(raw) > _SYSTEMONE_MAX_BYTES:
+        return JSONResponse(
+            status_code=413, content={"error": "request body must not exceed 32 MiB"},
+        )
+    try:
+        body = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "invalid JSON body"})
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"error": "invalid JSON body"})
+    if not body.get("images") and len(raw) > _SYSTEMONE_MAX_BYTES_WITHOUT_IMAGES:
+        return JSONResponse(
+            status_code=413,
+            content={"error": "request body must not exceed 64 KiB without images"},
+        )
+    model = str(body.get("model") or "").strip()
+    if not model:
+        return JSONResponse(status_code=400, content={"error": "model is required"})
+
+    registry = request.app.state.registry
+    trace_store = getattr(request.app.state, "trace_store", None)
+    tags = ["decision"] + extract_tags(body, request.headers)
+    client_ip = request.client.host if request.client else ""
+    candidates = [
+        (node, resolved)
+        for node, resolved in _nodes_with_model(registry.get_online_nodes(), model)
+        if model_has_capability(node, resolved, "decision")
+    ]
+    if not candidates:
+        reason = (
+            f"no node serves decision model '{model}' — needs Ollama >= 0.35 "
+            f"and a local GGUF decision model (e.g. `ollama pull nimble`)"
+        )
+        await record_routing_rejection(
+            trace_store, InferenceRequest(model=model, tags=tags), reason=reason,
+            original_format="systemone", client_ip=client_ip,
+        )
+        return JSONResponse(status_code=404, content={"error": reason})
+
+    started = time.time()
+    resp = await _post_with_failover(
+        request.app.state.streaming_proxy, candidates, "/v1/systemone", body,
+        timeout=_SYSTEMONE_TIMEOUT,
+    )
+    if trace_store is not None:
+        ok = resp.status_code == 200
+        usage = json.loads(resp.body).get("usage", {}) if ok else {}
+        asyncio.ensure_future(trace_store.record_trace(
+            request_id=str(uuid.uuid4()),
+            model=model,
+            original_model=model,
+            node_id=resp.headers.get("X-Fleet-Node", ""),
+            status="completed" if ok else "failed",
+            latency_ms=(time.time() - started) * 1000,
+            prompt_tokens=usage.get("input_tokens"),
+            completion_tokens=usage.get("output_tokens"),
+            client_ip=client_ip,
+            original_format="systemone",
+            error_message=None if ok else resp.body.decode(errors="replace")[:500],
+            tags=tags,
+        ))
+    return resp

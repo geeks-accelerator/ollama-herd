@@ -378,6 +378,68 @@ def _name_candidates(model: str) -> list[str]:
     return [model, f"{model}:latest"]
 
 
+def _nodes_with_model(nodes, model: str) -> list[tuple]:
+    """``(node, resolved_name)`` for every Ollama node that has ``model``.
+
+    Loaded nodes come first — the model is warm there, so a request needs no
+    cold load — then nodes that only have it on disk.  ``resolved_name`` is
+    the tag that node's Ollama knows it by (a bare name resolves to
+    ``:latest``).  Shared by ``/api/show`` and ``/v1/systemone``.
+    """
+    names = _name_candidates(model)
+    loaded, on_disk = [], []
+    for n in nodes:
+        if not n.ollama:
+            continue
+        loaded_names = {m.name for m in n.ollama.models_loaded}
+        match = next((c for c in names if c in loaded_names), None)
+        if match:
+            loaded.append((n, match))
+            continue
+        match = next((c for c in names if c in n.ollama.models_available), None)
+        if match:
+            on_disk.append((n, match))
+    return loaded + on_disk
+
+
+async def _post_with_failover(proxy, candidates, path: str, body: dict, *, timeout):
+    """POST ``body`` to ``path`` on each candidate in turn; first 200 wins.
+
+    Each node gets ``body`` with ``model`` set to its own resolved name.  On a
+    transport error or non-200 it moves to the next node; if every node
+    refuses, the last answer is returned as-is — so a 404 from all of them
+    (registry staler than the heartbeat) or a 4xx the backend meant (a model
+    that can't serve this endpoint) reaches the client unchanged.  The winning
+    node is in ``X-Fleet-Node``.
+    """
+    last_error: tuple[int, dict] | None = None
+    for node, resolved in candidates:
+        fwd = {**body, "model": resolved}
+        try:
+            client = proxy._get_client(node.node_id)
+            resp = await client.post(path, json=fwd, timeout=timeout)
+        except Exception as e:  # noqa: BLE001 — try the next node
+            logger.warning(
+                f"{path} for {resolved} failed on {node.node_id}: "
+                f"{type(e).__name__}: {e}"
+            )
+            last_error = (502, {"error": f"failed to reach Ollama on {node.node_id}: "
+                                         f"{type(e).__name__}: {e}"})
+            continue
+        if resp.status_code == 200:
+            return JSONResponse(content=resp.json(), headers={"X-Fleet-Node": node.node_id})
+        try:
+            err_body = resp.json()
+        except ValueError:
+            err_body = {"error": resp.text[:500]}
+        logger.warning(
+            f"{path} for {resolved} returned HTTP {resp.status_code} on {node.node_id}"
+        )
+        last_error = (resp.status_code, err_body)
+    status, content = last_error or (502, {"error": f"no node answered {path}"})
+    return JSONResponse(status_code=status, content=content)
+
+
 def _synth_show(
     name: str, *, fmt: str, capabilities: list[str], family: str = "",
 ) -> dict:
@@ -429,7 +491,6 @@ async def ollama_show(request: Request):
 
     registry = request.app.state.registry
     nodes = registry.get_online_nodes()
-    names = _name_candidates(model)
 
     # MLX models live behind mlx_lm.server, which has no /api/show.
     if model.startswith("mlx:"):
@@ -441,55 +502,14 @@ async def ollama_show(request: Request):
 
     # Ollama-served: loaded nodes first (the model's metadata is warm there),
     # then any node that has it on disk.
-    loaded, on_disk = [], []
-    for n in nodes:
-        if not n.ollama:
-            continue
-        loaded_names = {m.name for m in n.ollama.models_loaded}
-        match = next((c for c in names if c in loaded_names), None)
-        if match:
-            loaded.append((n, match))
-            continue
-        match = next((c for c in names if c in n.ollama.models_available), None)
-        if match:
-            on_disk.append((n, match))
-
-    candidates = loaded + on_disk
+    candidates = _nodes_with_model(nodes, model)
     if candidates:
-        proxy = request.app.state.streaming_proxy
-        last_error: tuple[int, dict] | None = None
-        for node, resolved in candidates:
-            fwd = {k: v for k, v in body.items() if k != "name"}
-            fwd["model"] = resolved
-            try:
-                client = proxy._get_client(node.node_id)
-                resp = await client.post("/api/show", json=fwd, timeout=_SHOW_TIMEOUT)
-            except Exception as e:  # noqa: BLE001 — try the next node
-                logger.warning(
-                    f"/api/show for {resolved} failed on {node.node_id}: "
-                    f"{type(e).__name__}: {e}"
-                )
-                last_error = (502, {"error": f"failed to reach Ollama on {node.node_id}: "
-                                             f"{type(e).__name__}: {e}"})
-                continue
-            if resp.status_code == 200:
-                return JSONResponse(
-                    content=resp.json(),
-                    headers={"X-Fleet-Node": node.node_id},
-                )
-            try:
-                err_body = resp.json()
-            except ValueError:
-                err_body = {"error": resp.text[:500]}
-            logger.warning(
-                f"/api/show for {resolved} returned HTTP {resp.status_code} "
-                f"on {node.node_id}"
-            )
-            last_error = (resp.status_code, err_body)
-        # Every node refused.  A 404 from all of them means the registry is
-        # stale (model deleted since the last heartbeat) — surface it as-is.
-        status, content = last_error or (502, {"error": "no node answered /api/show"})
-        return JSONResponse(status_code=status, content=content)
+        # "name" is the legacy request field; Ollama wants "model".
+        fwd = {k: v for k, v in body.items() if k != "name"}
+        return await _post_with_failover(
+            request.app.state.streaming_proxy, candidates, "/api/show", fwd,
+            timeout=_SHOW_TIMEOUT,
+        )
 
     # Non-Ollama backends that /api/tags also lists.
     for n in nodes:

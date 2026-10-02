@@ -283,6 +283,40 @@ endpoint.
 
 ---
 
+### `POST /v1/systemone`
+
+Ollama's **decision models** (Ollama ≥ 0.35: `nimble`, `tev1`), which return
+choices with probabilities instead of text. Use them for triage,
+classification, and model routing. Herd passes the request through unchanged
+to a node whose Ollama reports the `decision` capability for the model. Nodes on
+older Ollama can't report that capability, so they're skipped.
+
+```bash
+curl http://localhost:11435/v1/systemone -H 'Content-Type: application/json' -d '{
+  "model": "nimble",
+  "state": "Our checkout has returned 500 errors since 9am.",
+  "questions": {"label": {"type": "choice", "instructions": "Which label fits?",
+    "criteria": {"billing": "Payments", "bug": "Software errors", "account": "Login"}}}
+}'
+```
+
+**Response:** Ollama's, unchanged. Example: `answers.label.choice == "bug"`, with
+`probabilities` and `confidence`, plus `usage`.
+
+**Limits:** these are Ollama's, enforced at the router before any network hop:
+the body may not exceed 64 KiB unless `images` is set, and never 32 MiB → `413`.
+
+**Errors:**
+- `404`: no node serves that decision model. Needs Ollama ≥ 0.35 and a local
+  GGUF decision model (`ollama pull nimble`). Recorded as a `rejected` trace.
+- `400`: passed through from Ollama, for example a `:cloud` or MLX model, since
+  System One only accepts local GGUF models.
+
+Traces carry the `decision` tag. Node selection and failover are the same as
+`/api/show`: loaded nodes first, and the winning node is in `X-Fleet-Node`.
+
+---
+
 ## Calling the router from a browser
 
 Every endpoint below works unchanged from desktop apps, CLIs and server-side code.

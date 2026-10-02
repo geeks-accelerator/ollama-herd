@@ -759,3 +759,110 @@ class TestModelsSupportsVision:
         entries = {m["id"]: m for m in app_client.get("/v1/models").json()["models"]}
         assert entries["qwen3.8:27b"]["supports_vision"] is True
         assert entries["phi4:14b"]["supports_vision"] is False
+
+
+# ---------------------------------------------------------------------------
+# /v1/systemone — Ollama 0.35 decision models, passed through
+# ---------------------------------------------------------------------------
+
+SYSTEMONE_REQUEST = {
+    "model": "nimble",
+    "state": "Our checkout has returned 500 errors since 9am.",
+    "questions": {"label": {
+        "type": "choice", "instructions": "Which label fits this ticket?",
+        "criteria": {"billing": "Payments", "bug": "Software errors", "account": "Login"},
+    }},
+}
+SYSTEMONE_RESPONSE = {
+    "model": "nimble",
+    "answers": {"label": {"type": "choice", "choice": "bug",
+                          "probabilities": {"billing": 0.01, "bug": 0.98, "account": 0.01}}},
+    "usage": {"input_tokens": 174, "output_tokens": 1},
+}
+
+
+def _decision_node(app_client, node_id: str, caps=("decision",)):
+    hb = make_heartbeat(node_id=node_id, available_models=["nimble:latest"])
+    hb.ollama.models_available_meta = {
+        "nimble:latest": ModelTagMeta(format="gguf", capabilities=list(caps)),
+    }
+    app_client.post("/heartbeat", json=hb.model_dump())
+
+
+class TestSystemOne:
+    def test_forwards_to_a_node_reporting_decision(self, app_client):
+        _decision_node(app_client, "mini")
+        seen = {}
+
+        def handler(request):
+            seen["path"] = request.url.path
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json=SYSTEMONE_RESPONSE)
+
+        _install_mock_ollama(app_client, "mini", handler)
+        resp = app_client.post("/v1/systemone", json=SYSTEMONE_REQUEST)
+        assert resp.status_code == 200
+        assert resp.json() == SYSTEMONE_RESPONSE
+        assert resp.headers["X-Fleet-Node"] == "mini"
+        assert seen["path"] == "/v1/systemone"
+        # Forwarded unchanged apart from the resolved tag.
+        assert seen["body"] == {**SYSTEMONE_REQUEST, "model": "nimble:latest"}
+
+    def test_node_without_decision_capability_is_skipped(self, app_client):
+        """A node on Ollama < 0.35 can't report "decision" — excluded, no version parse."""
+        _decision_node(app_client, "old", caps=("completion",))
+        resp = app_client.post("/v1/systemone", json=SYSTEMONE_REQUEST)
+        assert resp.status_code == 404
+        assert "Ollama >= 0.35" in resp.json()["error"]
+
+    def test_upstream_400_passes_through(self, app_client):
+        _decision_node(app_client, "mini")
+        msg = {"error": 'model "nimble" is not supported by System One; use a local GGUF model'}
+        _install_mock_ollama(app_client, "mini", lambda r: httpx.Response(400, json=msg))
+        resp = app_client.post("/v1/systemone", json=SYSTEMONE_REQUEST)
+        assert resp.status_code == 400
+        assert resp.json() == msg
+
+    def test_size_caps_match_ollama_and_fail_before_any_network_call(self, app_client):
+        _decision_node(app_client, "mini")
+        _install_mock_ollama(app_client, "mini", lambda r: pytest.fail("must not be called"))
+        big = {**SYSTEMONE_REQUEST, "state": "x" * (65 << 10)}
+        resp = app_client.post("/v1/systemone", json=big)
+        assert resp.status_code == 413
+        assert resp.json() == {"error": "request body must not exceed 64 KiB without images"}
+
+    def test_images_raise_the_cap(self, app_client):
+        _decision_node(app_client, "mini")
+        _install_mock_ollama(
+            app_client, "mini", lambda r: httpx.Response(200, json=SYSTEMONE_RESPONSE),
+        )
+        with_image = {**SYSTEMONE_REQUEST, "images": ["x" * (65 << 10)]}
+        assert app_client.post("/v1/systemone", json=with_image).status_code == 200
+
+    def test_model_required(self, app_client):
+        resp = app_client.post("/v1/systemone", json={"state": "x"})
+        assert resp.status_code == 400
+
+    def test_unservable_request_leaves_a_rejection_trace(self, app_client):
+        """Otherwise the dashboard reports 100% success while clients get 404s."""
+        recorded = AsyncMock()
+        app_client.app.state.trace_store.record_trace = recorded
+        app_client.post("/v1/systemone", json=SYSTEMONE_REQUEST)
+        kwargs = recorded.call_args.kwargs
+        assert kwargs["status"] == "rejected"
+        assert kwargs["node_id"] == ""
+        assert "decision" in kwargs["tags"]
+        assert kwargs["original_format"] == "systemone"
+
+    def test_success_is_traced_with_usage(self, app_client):
+        _decision_node(app_client, "mini")
+        _install_mock_ollama(
+            app_client, "mini", lambda r: httpx.Response(200, json=SYSTEMONE_RESPONSE),
+        )
+        recorded = AsyncMock()
+        app_client.app.state.trace_store.record_trace = recorded
+        app_client.post("/v1/systemone", json=SYSTEMONE_REQUEST)
+        kwargs = recorded.call_args.kwargs
+        assert kwargs["status"] == "completed"
+        assert kwargs["node_id"] == "mini"
+        assert (kwargs["prompt_tokens"], kwargs["completion_tokens"]) == (174, 1)
