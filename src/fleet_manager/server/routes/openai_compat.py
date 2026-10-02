@@ -33,6 +33,7 @@ from fleet_manager.server.routes.routing import (
     client_error_passthrough,
     extract_tags,
     get_all_fleet_models,
+    get_fleet_capabilities,
     parse_allow_fallback,
     record_routing_rejection,
     score_with_fallbacks,
@@ -66,6 +67,9 @@ async def list_models(request: Request):
                 models.add(f"mlx:{s.model}")
 
     now = int(time.time())
+    # What each node's Ollama reports, ORed with the name heuristic below so a
+    # model the heuristic misses (qwen3.8 reports vision) is still advertised.
+    reported = get_fleet_capabilities(registry)
     # `data` — the OpenAI standard shape. Kept pure.
     entries = [
         {"id": m, "object": "model", "created": now, "owned_by": "ollama"}
@@ -114,7 +118,7 @@ async def list_models(request: Request):
             # Codex that gemma3 — a model we deliberately auto-route images to —
             # cannot see, so a client honouring the field would never offer to
             # send one.
-            "supports_vision": is_vision_model(m),
+            "supports_vision": "vision" in reported.get(m, ()) or is_vision_model(m),
             # Another closed enum: `list` | `hide` | `none`. "public" is not a
             # member, and Codex fails the WHOLE decode on it —
             #   failed to decode models response: unknown variant `public`,

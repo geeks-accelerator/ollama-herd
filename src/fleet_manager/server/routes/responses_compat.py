@@ -42,6 +42,7 @@ from fleet_manager.server.routes.routing import (
     client_error_passthrough,
     extract_tags,
     get_all_fleet_models,
+    get_fleet_capabilities,
     get_fleet_loaded_and_ondisk,
     parse_allow_fallback,
     record_routing_rejection,
@@ -109,7 +110,7 @@ async def responses(request: Request):
     has_images = input_has_images(body.get("input"))
     local_model, route_reason = resolve_model(
         requested_model, model_map, loaded_names, ondisk_names, auto_route=auto_route,
-        has_images=has_images,
+        has_images=has_images, capabilities=get_fleet_capabilities(registry),
     )
     if not local_model:
         return _error(

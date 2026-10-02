@@ -1367,7 +1367,7 @@ class StreamingProxy:
             # Protect against num_ctx triggering expensive model reloads
             self._apply_context_protection(body, request.model, node_id)
             # Auto-inflate num_predict for thinking models
-            self._apply_thinking_overhead(body, request.model)
+            self._apply_thinking_overhead(body, request.model, node_id)
             return body
 
         body = {
@@ -1402,7 +1402,7 @@ class StreamingProxy:
             body["options"] = options
 
         # Auto-inflate num_predict for thinking models
-        self._apply_thinking_overhead(body, request.model)
+        self._apply_thinking_overhead(body, request.model, node_id)
 
         return body
 
@@ -1466,7 +1466,9 @@ class StreamingProxy:
             converted.append(new_msg)
         return converted
 
-    def _apply_thinking_overhead(self, body: dict, model: str) -> None:
+    def _apply_thinking_overhead(
+        self, body: dict, model: str, node_id: str | None = None
+    ) -> None:
         """Auto-inflate num_predict for thinking models.
 
         Thinking models (deepseek-r1, gpt-oss, qwq) split their token budget
@@ -1478,10 +1480,22 @@ class StreamingProxy:
         Only applies when num_predict is explicitly set by the client. If the
         client doesn't set num_predict, Ollama uses the model's default (usually
         large enough), so no inflation is needed.
+
+        A model thinks if the target node's Ollama *reports* the ``thinking``
+        capability, or — for ``mlx:`` models and older agents that report
+        nothing — if the name heuristic says so.  Over-detecting is free:
+        ``num_predict`` is a ceiling, so a model that doesn't think still stops
+        at end-of-sequence.  An explicit ``think: false`` turns it off.
         """
         from fleet_manager.server.model_knowledge import is_thinking_model
+        from fleet_manager.server.serializers import model_has_capability
 
-        if not is_thinking_model(model):
+        if body.get("think") is False:
+            return  # client disabled thinking — the whole budget is output
+        node = self._registry.get_node(node_id) if node_id else None
+        if not (
+            model_has_capability(node, model, "thinking") or is_thinking_model(model)
+        ):
             return
 
         options = body.get("options", {})

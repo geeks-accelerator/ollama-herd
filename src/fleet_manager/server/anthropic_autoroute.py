@@ -126,13 +126,23 @@ def _is_on_fleet(model: str, ondisk_names) -> bool:
     return model in names or normalize_model_name(model) in names
 
 
-def _candidate_score(name: str, tier: str, *, want_vision: bool) -> float | None:
+def _candidate_score(
+    name: str, tier: str, *, want_vision: bool, capabilities=None
+) -> float | None:
     """Rank score for loading ``name`` to serve ``tier``; None if unusable.
 
     Higher is better.  Unusable = an embedding/image model, or (for an image
     request) a model that can't see images.
+
+    ``capabilities`` maps model name → what Ollama reports for it (see
+    ``get_fleet_capabilities``).  It is ORed with the name heuristics, so it
+    only ever widens detection: it catches models the heuristics miss (qwen3.8
+    reports vision; no name pattern matches it) without overruling them.
     """
-    if _is_embedding_name(name):
+    reported = (capabilities or {}).get(name) or (capabilities or {}).get(
+        normalize_model_name(name)
+    ) or ()
+    if "embedding" in reported or _is_embedding_name(name):
         return None  # embedding models can't chat, and classify as GENERAL
 
     spec = lookup_model(name)
@@ -142,7 +152,7 @@ def _candidate_score(name: str, tier: str, *, want_vision: bool) -> float | None
         return None
     if category not in _CHAT_CATEGORIES:
         return None
-    if want_vision and not is_vision_model(name):
+    if want_vision and not ("vision" in reported or is_vision_model(name)):
         return None
 
     if spec and spec.benchmarks.quality_score > 0:
@@ -163,7 +173,7 @@ def _candidate_score(name: str, tier: str, *, want_vision: bool) -> float | None
 
 
 def rank_candidates(
-    names, claude_model: str, *, want_vision: bool = False
+    names, claude_model: str, *, want_vision: bool = False, capabilities=None
 ) -> list[str]:
     """Return ``names`` that can serve ``claude_model``, best first.
 
@@ -177,7 +187,9 @@ def rank_candidates(
         if not name or name in seen:
             continue
         seen.add(name)
-        score = _candidate_score(name, tier, want_vision=want_vision)
+        score = _candidate_score(
+            name, tier, want_vision=want_vision, capabilities=capabilities
+        )
         if score is None:
             continue
         scored.append((score, name))
@@ -194,6 +206,7 @@ def resolve_model(
     *,
     auto_route: bool,
     has_images: bool = False,
+    capabilities=None,
 ) -> tuple[str | None, str]:
     """Resolve a Claude model id to a local model name.
 
@@ -224,11 +237,15 @@ def resolve_model(
 
     if auto_route:
         # 3. Best model already resident anywhere on the fleet — no cold load.
-        ranked = rank_candidates(loaded_names, model, want_vision=has_images)
+        ranked = rank_candidates(
+            loaded_names, model, want_vision=has_images, capabilities=capabilities
+        )
         if ranked:
             return ranked[0], "auto-loaded"
         # 4. Nothing suitable loaded — best on-disk, accepting a cold load.
-        ranked = rank_candidates(ondisk_names, model, want_vision=has_images)
+        ranked = rank_candidates(
+            ondisk_names, model, want_vision=has_images, capabilities=capabilities
+        )
         if ranked:
             return ranked[0], "auto-ondisk"
 

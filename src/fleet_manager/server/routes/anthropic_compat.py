@@ -57,6 +57,7 @@ from fleet_manager.server.routes.routing import (
     client_error_passthrough,
     extract_tags,
     get_all_fleet_models,
+    get_fleet_capabilities,
     get_fleet_loaded_and_ondisk,
     parse_allow_fallback,
     record_routing_rejection,
@@ -732,6 +733,7 @@ async def messages(
     local_model, route_reason = resolve_model(
         body.model, model_map, loaded_names, ondisk_names,
         auto_route=auto_route, has_images=has_images,
+        capabilities=get_fleet_capabilities(request.app.state.registry),
     )
     if not local_model:
         return JSONResponse(

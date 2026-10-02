@@ -203,3 +203,63 @@ def test_vision_request_routes_to_loaded_vision_model():
     )
     assert model == "gemma3:27b"
     assert reason == "auto-loaded"
+
+
+# ---------------------------------------------------------------------------
+# Ollama-reported capabilities widen what the name heuristics detect
+# ---------------------------------------------------------------------------
+
+
+class TestReportedCapabilities:
+    def test_reported_vision_model_is_offered_for_images(self):
+        """qwen3.8 reports vision; no name pattern matches it, so without the
+        capability an image request would never be routed to it."""
+        names = ["qwen3.8:27b"]
+        assert rank_candidates(names, "claude-sonnet-4-5", want_vision=True) == []
+        caps = {"qwen3.8:27b": {"completion", "vision", "thinking"}}
+        assert rank_candidates(
+            names, "claude-sonnet-4-5", want_vision=True, capabilities=caps
+        ) == ["qwen3.8:27b"]
+
+    def test_reported_embedder_is_never_a_chat_candidate(self):
+        """An embedding model whose name matches none of the hint substrings."""
+        names = ["gemma3:27b", "granite-retriever:1b"]
+        caps = {"granite-retriever:1b": {"embedding"}}
+        ranked = rank_candidates(names, "claude-sonnet-4-5", capabilities=caps)
+        assert "granite-retriever:1b" not in ranked
+        assert "gemma3:27b" in ranked
+
+    def test_absent_capabilities_change_nothing(self):
+        names = ["gemma3:27b", "qwen3-coder:30b", "nomic-embed-text:latest"]
+        for want_vision in (False, True):
+            assert rank_candidates(
+                names, "claude-opus-4", want_vision=want_vision, capabilities={}
+            ) == rank_candidates(names, "claude-opus-4", want_vision=want_vision)
+
+    def test_resolve_model_threads_capabilities_through(self):
+        model, reason = resolve_model(
+            "claude-sonnet-4-5", {}, {"qwen3.8:27b"}, {"qwen3.8:27b"},
+            auto_route=True, has_images=True,
+            capabilities={"qwen3.8:27b": {"vision"}},
+        )
+        assert model == "qwen3.8:27b" and reason == "auto-loaded"
+
+
+class TestGetFleetCapabilities:
+    def test_unions_across_online_nodes_and_ignores_empty(self):
+        from types import SimpleNamespace
+
+        from fleet_manager.models.node import ModelTagMeta
+        from fleet_manager.server.routes.routing import get_fleet_capabilities
+
+        def node(meta):
+            return SimpleNamespace(ollama=SimpleNamespace(models_available_meta=meta))
+
+        registry = SimpleNamespace(get_online_nodes=lambda: [
+            node({"m:1b": ModelTagMeta(capabilities=["completion"])}),
+            node({"m:1b": ModelTagMeta(capabilities=["vision"]),
+                  "old:1b": ModelTagMeta(), "gone:1b": None}),
+            node(None),
+            SimpleNamespace(ollama=None),
+        ])
+        assert get_fleet_capabilities(registry) == {"m:1b": {"completion", "vision"}}

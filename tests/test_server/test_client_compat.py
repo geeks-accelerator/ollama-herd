@@ -743,3 +743,19 @@ class TestSynthesizedCapabilitiesAgree:
         app_client.get("/api/tags")
         app_client.post("/api/show", json={"model": "dinov2-vit-s14"})
         assert ollama_compat._VISION_EMBEDDING_CAPABILITIES == ["embedding"]
+
+
+class TestModelsSupportsVision:
+    def test_reported_vision_capability_is_advertised(self, app_client):
+        """qwen3.8 matches no vision name pattern; Ollama reports vision for it,
+        so a client honoring supports_vision can offer to send it an image."""
+        hb = make_heartbeat(node_id="mini", available_models=["qwen3.8:27b", "phi4:14b"])
+        hb.ollama.models_available_meta = {
+            "qwen3.8:27b": ModelTagMeta(capabilities=["completion", "vision"]),
+            "phi4:14b": ModelTagMeta(capabilities=["completion"]),
+        }
+        app_client.post("/heartbeat", json=hb.model_dump())
+
+        entries = {m["id"]: m for m in app_client.get("/v1/models").json()["models"]}
+        assert entries["qwen3.8:27b"]["supports_vision"] is True
+        assert entries["phi4:14b"]["supports_vision"] is False

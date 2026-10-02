@@ -682,3 +682,20 @@ def get_fleet_loaded_and_ondisk(registry) -> tuple[set[str], set[str]]:
     # On-disk is a superset of loaded by intent (a loaded model is also present).
     ondisk |= loaded
     return loaded, ondisk
+
+
+def get_fleet_capabilities(registry) -> dict[str, set[str]]:
+    """Ollama-reported capabilities per model, unioned across ONLINE nodes.
+
+    The fleet-level view of ``model_has_capability``, for decisions made across
+    nodes (auto-routing, ``/v1/models``).  Presence-only like that helper: a
+    model missing here, or missing a capability, means "unknown" — callers OR
+    this with their name heuristics, so it can only widen what they detect.
+    """
+    caps: dict[str, set[str]] = {}
+    for n in registry.get_online_nodes():
+        meta = (n.ollama.models_available_meta if n.ollama else None) or {}
+        for name, m in meta.items():
+            if m is not None and m.capabilities:
+                caps.setdefault(name, set()).update(m.capabilities)
+    return caps
