@@ -322,7 +322,7 @@ Shrinks bloated `tool_result` blocks (Read/Bash/WebFetch) before main-model infe
 
 ### MLX Backend (Apple Silicon)
 
-Opt-in backend that runs `mlx_lm.server` as an independent subprocess alongside Ollama, letting a single node serve models too large for Ollama's 3-model hot cap. Requires `./scripts/setup-mlx.sh` (installs pinned `mlx-lm==0.31.3` + applies the `--kv-bits` patch). See [`docs/guides/mlx-setup.md`](guides/mlx-setup.md).
+Opt-in backend that runs `mlx_lm.server` as an independent subprocess alongside Ollama, letting a single node serve models too large for Ollama's 3-model hot cap. Requires `./scripts/setup-mlx.sh` (installs pinned `mlx-lm==0.32.0`, which has `--kv-bits` natively). See [`docs/guides/mlx-setup.md`](guides/mlx-setup.md).
 
 | Variable | Default | Description |
 |----------|---------|-------------|

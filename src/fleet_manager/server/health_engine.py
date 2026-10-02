@@ -1255,8 +1255,9 @@ class HealthEngine:
                             f"Inspect ~/.fleet-manager/logs/mlx-server-"
                             f"{srv.port}.log on {node.node_id} for the "
                             "stack trace.  Common upstream causes: mlx-lm "
-                            "version regression (try `uv tool upgrade "
-                            "mlx-lm` then re-run `./scripts/setup-mlx.sh`), "
+                            "version regression (re-run "
+                            "`./scripts/setup-mlx.sh` to restore the pinned, "
+                            "tested version), "
                             "model weights corrupted (delete + re-download "
                             "the HF cache dir), or a request payload "
                             "tickling an mlx_lm bug.  After fixing, "
@@ -1291,8 +1292,9 @@ class HealthEngine:
                         fix=(
                             f"Check ~/.fleet-manager/logs/mlx-server-{srv.port}.log "
                             f"on {node.node_id}.  Common causes: model weights "
-                            "missing from HF cache, --kv-bits patch wiped "
-                            "(re-run ./scripts/setup-mlx.sh), or port "
+                            "missing from HF cache, mlx-lm older than 0.32.0 "
+                            "so --kv-bits is rejected (run ./scripts/setup-mlx.sh), "
+                            "or port "
                             "collision from a leftover subprocess."
                         ),
                         node_id=node.node_id,

@@ -440,8 +440,8 @@ class MlxSupervisor:
     def _binary_supports_kv_bits(binary: str) -> bool:
         """Probe ``mlx_lm.server --help`` for ``--kv-bits`` support.
 
-        Stock upstream mlx-lm omits this flag; ollama-herd patches it in via
-        ``scripts/setup-mlx.sh``.  Checked once at startup so the supervisor
+        mlx-lm has it natively since 0.32.0 (PR #1832); older versions don't
+        (herd used to patch it in).  Checked once at startup so the supervisor
         can fail fast with a clear remediation hint rather than letting
         Popen + health-check timeout hide the real cause.
         """
@@ -501,9 +501,17 @@ class MlxSupervisor:
             "--log-level", "INFO",
         ]
         if self.kv_bits in (4, 8):
-            # Requires our patched mlx_lm.server (or upstream PR #1073 / #934).
-            # Stock mlx_lm.server will reject this flag.
-            cmd += ["--kv-bits", str(self.kv_bits), "--kv-group-size", "64"]
+            # Native in mlx-lm >= 0.32.0 (PR #1832); older versions reject it.
+            # --quantized-kv-start 0 is explicit on purpose: upstream defaults it
+            # to 5000 (quantize only after 5,000 tokens), while the patch herd
+            # used to carry quantized from the first token, like
+            # OLLAMA_KV_CACHE_TYPE=q8_0.  Omitting it would silently leave every
+            # sequence's first 5K tokens at full precision.
+            cmd += [
+                "--kv-bits", str(self.kv_bits),
+                "--kv-group-size", "64",
+                "--quantized-kv-start", "0",
+            ]
         # Speculative decoding — only add flags when configured.  Main +
         # draft must share the same tokenizer family or acceptance rate
         # collapses.  See docs/plans/claude-code-performance-improvements.md.
@@ -716,24 +724,19 @@ class MlxSupervisor:
             await asyncio.sleep(1.0)
 
         # Preflight: if the user asked for KV quantization but the installed
-        # mlx_lm.server doesn't expose --kv-bits, fail fast with actionable
-        # guidance instead of letting Popen surface as a 120s health-check
-        # timeout.  Upstream mlx-lm drops this flag; we depend on a local
-        # patch (see ``docs/experiments/mlx-lm-server-kv-bits.patch``).  Only
-        # gate when quantization is actually requested (4/8) — stock mlx-lm
-        # without the patch must still serve f16 (kv_bits=0), which matters for
-        # distributed nodes that don't run the patch.
+        # mlx_lm.server doesn't expose --kv-bits (mlx-lm < 0.32.0), fail fast
+        # with actionable guidance instead of letting Popen surface as a 120s
+        # health-check timeout.  Only gate when quantization is actually
+        # requested (4/8) — an older mlx-lm must still serve f16 (kv_bits=0).
         if self.kv_bits in (4, 8) and not self._binary_supports_kv_bits(binary):
             logger.error(
-                "mlx_lm.server at %s does not support --kv-bits — the "
-                "ollama-herd KV-quant patch is missing (likely wiped by a "
-                "fresh `uv tool install mlx-lm`). Re-run "
-                "`./scripts/setup-mlx.sh` from the repo root to reapply. "
-                "Skipping MLX auto-start.",
+                "mlx_lm.server at %s does not support --kv-bits — mlx-lm is "
+                "older than 0.32.0. Run `./scripts/setup-mlx.sh` from the repo "
+                "root to install the pinned version. Skipping MLX auto-start.",
                 binary,
             )
             self._status = "stopped"
-            self._status_reason = "mlx_lm.server missing --kv-bits patch"
+            self._status_reason = "mlx-lm < 0.32.0 (no --kv-bits); run scripts/setup-mlx.sh"
             return False
 
         # Preflight: distributed mode needs the mlx.launch launcher on PATH.

@@ -19,27 +19,20 @@ routing still works against Ollama.
 
 This:
 
-1. Installs `mlx-lm==0.31.3` via `uv tool` (the version the ollama-herd
-   patch is verified against).
-2. Applies the KV-cache-quantization patch documented in
-   `docs/experiments/mlx-lm-server-kv-bits.patch` — exposes
-   `--kv-bits`, `--kv-group-size`, `--quantized-kv-start` which the
-   node's `mlx_supervisor` passes to match Ollama's `OLLAMA_KV_CACHE_TYPE=q8_0`
-   tuning.
-3. Verifies the flags are live on `mlx_lm.server --help`.
+1. Installs `mlx-lm==0.32.0` via `uv tool`. That's the version herd is tested against,
+   and the first with native KV-cache quantization (`--kv-bits`,
+   `--kv-group-size`, `--quantized-kv-start`, mlx-lm PR #1832). The node's
+   `mlx_supervisor` passes those flags to match Ollama's
+   `OLLAMA_KV_CACHE_TYPE=q8_0` tuning.
+2. Verifies all three flags are live on `mlx_lm.server --help`.
 
-**The script is idempotent.** Safe to re-run; a no-op if everything's
-already in place.
+**The script is idempotent.** It's safe to re-run, and does nothing if the
+pinned version is already installed.
 
-### Re-run after any mlx-lm upgrade
-
-`uv tool upgrade mlx-lm` or any fresh `uv tool install mlx-lm` **wipes
-the patch** — `mlx_lm.server` will start failing with
-`unrecognized arguments: --kv-bits 8 --kv-group-size 64` and the node
-agent will log "mlx_lm.server failed to become healthy within 120s".
-
-Remedy: re-run `./scripts/setup-mlx.sh`.  If upstream has moved past
-`0.31.3`, the script will re-pin to that known-good version.
+Before mlx-lm 0.32.0, herd patched these flags in, and every
+`uv tool upgrade mlx-lm` wiped the patch. That is no longer the case. The pin
+is still exact because this subsystem has broken on mlx-lm upgrades before.
+Bump `PINNED_VERSION` in the script only after a soak on the reference fleet.
 
 ## Required environment variables
 
@@ -175,7 +168,8 @@ curl -sS http://localhost:11435/fleet/status | jq '.nodes[0].mlx'
 ## Troubleshooting
 
 - **`mlx_lm.server: error: unrecognized arguments: --kv-bits 8`** →
-  the patch was wiped.  Re-run `./scripts/setup-mlx.sh`.
+  mlx-lm is older than 0.32.0.  Run `./scripts/setup-mlx.sh` to install the
+  pinned version.
 - **`mlx_lm.server failed to become healthy within 120s`** → usually
   a cold-load timeout on huge models.  The 480B takes ≈90–180s to
   load on a fresh start.  Increase the health-check timeout in

@@ -1,3 +1,9 @@
+# SUPERSEDED (2026-10-02): mlx-lm 0.32.0 ships --kv-bits / --kv-group-size /
+# --quantized-kv-start natively (PR #1832), including the batching guard in
+# hunk 1 below.  scripts/setup-mlx.sh no longer applies this; it is kept for
+# history.  Note one difference: upstream defaults --quantized-kv-start to
+# 5000, this patch defaulted it to 0 — mlx_supervisor now passes 0 explicitly.
+
 # mlx-lm server patch: expose --kv-bits / --kv-group-size / --quantized-kv-start
 #
 # Context: mlx_lm.generate (CLI) supports these flags for KV cache quantization,

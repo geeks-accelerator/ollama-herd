@@ -474,3 +474,47 @@ async def test_stop_falls_back_to_sigkill_on_timeout():
     import signal
     assert signal.SIGTERM in signals_sent
     assert signal.SIGKILL in signals_sent
+
+
+# ---------------------------------------------------------------------------
+# --kv-bits support probe (had no tests) — characterized before the patch was
+# retired, so the probe is shown to behave the same against stock mlx-lm 0.32.
+# ---------------------------------------------------------------------------
+
+
+def _help(stdout: str = "", stderr: str = ""):
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr=stderr)
+
+
+def test_probe_true_when_help_lists_kv_bits():
+    with patch("subprocess.run", return_value=_help("  --kv-bits KV_BITS  Number of bits")):
+        assert MlxSupervisor._binary_supports_kv_bits("mlx_lm.server")
+
+
+def test_probe_reads_stderr_too():
+    with patch("subprocess.run", return_value=_help(stderr="--kv-bits KV_BITS")):
+        assert MlxSupervisor._binary_supports_kv_bits("mlx_lm.server")
+
+
+def test_probe_false_when_flag_absent():
+    """mlx-lm < 0.32.0 without the old patch."""
+    with patch("subprocess.run", return_value=_help("  --pipeline  Use pipelining")):
+        assert not MlxSupervisor._binary_supports_kv_bits("mlx_lm.server")
+
+
+@pytest.mark.parametrize("exc", [
+    subprocess.TimeoutExpired(cmd="mlx_lm.server", timeout=10), OSError("no such file"),
+])
+def test_probe_fails_open_when_it_cannot_run(exc):
+    """If the probe can't run, let Popen surface the real error instead."""
+    with patch("subprocess.run", side_effect=exc):
+        assert MlxSupervisor._binary_supports_kv_bits("mlx_lm.server")
+
+
+def test_build_cmd_quantizes_kv_from_the_first_token():
+    """Upstream mlx-lm defaults --quantized-kv-start to 5000; herd's retired patch
+    defaulted it to 0.  Passing 0 explicitly keeps that behavior — otherwise every
+    sequence's first 5K tokens would silently stay at full precision."""
+    cmd = MlxSupervisor(model="m", kv_bits=8)._build_cmd("mlx_lm.server")
+    i = cmd.index("--quantized-kv-start")
+    assert cmd[i + 1] == "0"
