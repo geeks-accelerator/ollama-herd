@@ -10,6 +10,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 
 import httpx
 import psutil
@@ -22,6 +23,15 @@ from fleet_manager.node.collector import collect_heartbeat
 from fleet_manager.node.ollama_proxy import OllamaProxy
 
 logger = logging.getLogger(__name__)
+
+# One summary line per this many SUCCESSFUL heartbeats.  The line is emitted
+# only after a send succeeds, so its *absence* is the outage signal and a
+# counter that goes backwards means the agent restarted.  Both are easy to
+# misread from timestamps alone -- at the default 5s interval the line lands
+# every ~5 min, so a naive "gap > 2 min" scan flags every healthy interval as
+# an outage.  The line therefore states its own sampling rate; see the format
+# in the heartbeat loop below.
+HEARTBEAT_SUMMARY_EVERY = 60
 
 # How long to wait for Ollama to become healthy after starting it.
 _OLLAMA_START_TIMEOUT = 30
@@ -210,6 +220,7 @@ class NodeAgent:
         self._connection_failures = 0  # Since last successful heartbeat
         self._connection_failures_total = 0  # Since agent start
         heartbeat_count = 0
+        last_summary_at = time.monotonic()
 
         while self._running:
             try:
@@ -244,12 +255,16 @@ class NodeAgent:
                 self._ollama_failures = 0
                 heartbeat_count += 1
 
-                # Log summary every 60 heartbeats (~5 min at 5s interval)
-                if heartbeat_count % 60 == 0:
+                if heartbeat_count % HEARTBEAT_SUMMARY_EVERY == 0:
                     models_loaded = len(payload.ollama.models_loaded) if payload.ollama else 0
                     models_available = len(payload.ollama.models_available) if payload.ollama else 0
+                    now_m = time.monotonic()
+                    span_m = (now_m - last_summary_at) / 60.0
+                    last_summary_at = now_m
                     logger.info(
-                        f"Heartbeat #{heartbeat_count}: "
+                        f"Heartbeat #{heartbeat_count} "
+                        f"({HEARTBEAT_SUMMARY_EVERY} ok in {span_m:.1f}m, "
+                        f"1 line per {HEARTBEAT_SUMMARY_EVERY} ok sends): "
                         f"cpu={payload.cpu.utilization_pct:.0f}%, "
                         f"mem={payload.memory.used_gb:.1f}/{payload.memory.total_gb:.0f}GB "
                         f"({payload.memory.pressure.value}), "
