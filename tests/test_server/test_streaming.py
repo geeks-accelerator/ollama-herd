@@ -484,6 +484,99 @@ def test_plain_text_streaming_is_unchanged():
     assert chunk["choices"][0]["finish_reason"] is None
 
 
+# ---------------------------------------------------------------------------
+# Multi-turn tool calling — stringified `arguments` in replayed history
+#
+# Found 2026-09-09: OpenAI's wire format encodes tool_calls[].function.
+# arguments as a JSON *string*. When an OpenAI-format client replays its own
+# history (assistant tool call -> tool result -> next turn), that string went
+# to Ollama's /api/chat unchanged, which expects an *object* there. Ollama
+# rejected the whole request with a 400 ("Value looks like object, but can't
+# find closing '}' symbol") on every multi-turn tool-calling request.
+# ---------------------------------------------------------------------------
+
+
+def test_convert_messages_parses_stringified_tool_call_arguments():
+    proxy = _make_proxy_with_loaded_model()
+    messages = [
+        {"role": "user", "content": "list files in /tmp"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "bash", "arguments": '{"cmd": "ls /tmp"}'},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "file1\nfile2"},
+    ]
+    converted = proxy._convert_messages_for_ollama(messages)
+    tc = converted[1]["tool_calls"][0]
+    assert tc["function"]["arguments"] == {"cmd": "ls /tmp"}, (
+        "Ollama's /api/chat expects arguments as an object, not the "
+        "OpenAI-wire JSON string"
+    )
+    # Untouched messages pass through unchanged
+    assert converted[0] == messages[0]
+    assert converted[2] == messages[2]
+
+
+def test_convert_messages_leaves_object_arguments_alone():
+    """If arguments already arrives as an object, don't touch it."""
+    proxy = _make_proxy_with_loaded_model()
+    messages = [{
+        "role": "assistant",
+        "tool_calls": [{
+            "function": {"name": "bash", "arguments": {"cmd": "ls"}},
+        }],
+    }]
+    converted = proxy._convert_messages_for_ollama(messages)
+    assert converted[0]["tool_calls"][0]["function"]["arguments"] == {"cmd": "ls"}
+
+
+def test_convert_messages_ignores_unparseable_arguments():
+    """Don't crash on a malformed arguments string — pass it through as-is
+    rather than raising, so one bad message doesn't 500 the whole request."""
+    proxy = _make_proxy_with_loaded_model()
+    messages = [{
+        "role": "assistant",
+        "tool_calls": [{
+            "function": {"name": "bash", "arguments": "not json"},
+        }],
+    }]
+    converted = proxy._convert_messages_for_ollama(messages)
+    assert converted[0]["tool_calls"][0]["function"]["arguments"] == "not json"
+
+
+def test_build_ollama_body_normalizes_tool_call_history_for_openai_format():
+    """End-to-end: the OPENAI-format body builder must normalize tool_calls
+    in message history, not just top-level `tools`."""
+    from fleet_manager.models.request import InferenceRequest, RequestFormat
+
+    proxy = _make_proxy_with_loaded_model()
+    messages = [
+        {"role": "user", "content": "list files"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "bash", "arguments": '{"cmd": "ls"}'},
+            }],
+        },
+    ]
+    req = InferenceRequest(
+        model="qwen3-coder:30b",
+        messages=messages,
+        original_format=RequestFormat.OPENAI,
+        raw_body={"model": "qwen3-coder:30b", "messages": messages},
+    )
+    body = proxy._build_ollama_body(req, "some-node")
+    assert body["messages"][1]["tool_calls"][0]["function"]["arguments"] == {"cmd": "ls"}
+
+
 def test_finish_reason_survives_the_route_popping_request_meta():
     """Regression: finish_reason was read out of `_request_meta`, which routes pop
     to build response headers. Trace recording runs in the queue worker while the

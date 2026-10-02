@@ -1407,17 +1407,57 @@ class StreamingProxy:
         return body
 
     @staticmethod
-    def _convert_messages_for_ollama(messages: list[dict]) -> list[dict]:
-        """Convert OpenAI multimodal message format to Ollama format.
+    def _normalize_tool_call_arguments(msg: dict) -> dict:
+        """Parse stringified tool_calls[].function.arguments back into objects.
+
+        OpenAI's wire format always encodes `arguments` as a JSON *string*
+        (e.g. `"{\"path\": \"/tmp\"}"`). Ollama's native /api/chat expects it
+        as a JSON *object*. An OpenAI-format client replaying its own
+        conversation history (assistant tool call -> tool result -> next
+        turn) sends that string back verbatim; forwarded as-is, Ollama
+        rejects the whole request with a 400 ("Value looks like object, but
+        can't find closing '}' symbol") on every multi-turn tool-calling
+        request. Undo the stringification before it reaches Ollama.
+        """
+        tool_calls = msg.get("tool_calls")
+        if not tool_calls:
+            return msg
+
+        new_tool_calls = []
+        changed = False
+        for tc in tool_calls:
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            args = fn.get("arguments") if isinstance(fn, dict) else None
+            if isinstance(args, str):
+                try:
+                    parsed_args = json.loads(args)
+                except json.JSONDecodeError:
+                    new_tool_calls.append(tc)
+                    continue
+                tc = {**tc, "function": {**fn, "arguments": parsed_args}}
+                changed = True
+            new_tool_calls.append(tc)
+
+        if not changed:
+            return msg
+        return {**msg, "tool_calls": new_tool_calls}
+
+    @classmethod
+    def _convert_messages_for_ollama(cls, messages: list[dict]) -> list[dict]:
+        """Convert OpenAI-shaped messages to Ollama's /api/chat format.
 
         OpenAI uses content as a list of typed parts:
             {"type": "text", ...}, {"type": "image_url", ...}
 
         Ollama uses content as a string with a separate images field:
             {"content": "...", "images": ["base64data"]}
+
+        Also normalizes tool_calls[].function.arguments — see
+        _normalize_tool_call_arguments.
         """
         converted = []
         for msg in messages:
+            msg = cls._normalize_tool_call_arguments(msg)
             content = msg.get("content")
             if not isinstance(content, list):
                 converted.append(msg)
