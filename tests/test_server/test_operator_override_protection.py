@@ -69,7 +69,7 @@ def test_the_premise_still_holds(opt):
     """
     rec = compute_recommended_ctx(GPT_OSS["total_p99"], GPT_OSS["max_total_24h"])
     assert rec == 16384
-    assert 131072 > rec * 4
+    assert rec * 4 < 131072
 
 
 @pytest.mark.asyncio

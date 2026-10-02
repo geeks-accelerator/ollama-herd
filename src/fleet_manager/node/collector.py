@@ -107,8 +107,8 @@ _LAUNCHCTL_CACHE: dict[str, str] = {}
 # 60 s, not the 5 s heartbeat interval: this spawns an `lsof` plus one `ps` per
 # unknown peer, and a bypassing client that matters is one that sticks around.
 @_ttl_cache(ttl_seconds=60.0)
-def _collect_backend_clients(ollama_host: str):
-    return probe_backend_clients(ollama_host)
+def _collect_backend_clients(ollama_host: str, router_url: str = ""):
+    return probe_backend_clients(ollama_host, router_url)
 
 
 def _ollama_env(name: str) -> str:
@@ -562,6 +562,7 @@ async def collect_heartbeat(
     capacity_learner=None,
     mlx_supervisor_set=None,  # type: ignore[no-untyped-def]
     mlx_bind_host: str = "127.0.0.1",
+    router_url: str = "",
 ) -> HeartbeatPayload:
     """Assemble a complete heartbeat payload from local system state.
 
@@ -736,7 +737,7 @@ async def collect_heartbeat(
             num_parallel=num_parallel,
             requests_active=requests_active,
             version=ollama_version,
-            backend_clients=_collect_backend_clients(ollama_host),
+            backend_clients=_collect_backend_clients(ollama_host, router_url),
         ),
         ollama_host=_make_lan_reachable_url(ollama_host, lan_ip),
         lan_ip=lan_ip,

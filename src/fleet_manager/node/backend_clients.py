@@ -37,6 +37,22 @@ it constant.  Parsing ``new prompt`` lines out of Ollama's own log works (it is
 the manual tripwire in CLAUDE.md) but the log path is per-platform and the
 counts only reconcile roughly.  Connection ownership is exact, immediate, and
 names the culprit process instead of leaving an operator to go find it.
+
+Local and remote bypassers look different
+-----------------------------------------
+``lsof`` on this host sees both ends of a *loopback* connection, so a local
+co-tenant is identified by pid and argv.  A client on another machine is
+different: its own socket lives on that machine, and all we see here is
+Ollama's server-side socket (``ourip:11434->theirip:52341``).  There is no
+local pid to name, so those are reported by peer address with ``pid=0``.  That
+path is reachable whenever Ollama listens beyond loopback -- it binds
+``*:11434`` on the reference fleet -- and filtering only on the client end
+would have missed it entirely.
+
+The router is the one legitimate remote client (it proxies to each node's
+Ollama over the LAN), so its address is excluded by the caller passing
+``router_host``.  Without that exclusion every node would report the router
+itself as a bypasser, which is the sort of false alarm that gets a check muted.
 """
 
 from __future__ import annotations
@@ -45,6 +61,7 @@ import logging
 import os
 import platform
 import shutil
+import socket
 import subprocess
 from urllib.parse import urlparse
 
@@ -111,14 +128,28 @@ def _is_ours(pid: int, command: str, cmdline: str) -> bool:
     return command.lower() in ("ollama", "ollama.exe", "llama-server")
 
 
-def _parse_lsof(output: str, port: int) -> dict[int, dict]:
-    """Group lsof rows into one entry per *client* pid.
+def _host_of(endpoint: str) -> str:
+    """Strip the port from an lsof endpoint, keeping bracketed IPv6 intact."""
+    if endpoint.startswith("["):
+        return endpoint.partition("]")[0] + "]"
+    return endpoint.rsplit(":", 1)[0]
 
-    lsof prints both ends of a loopback connection: the client's socket
+
+def _parse_lsof(output: str, port: int) -> tuple[dict[int, dict], dict[str, int]]:
+    """Split lsof rows into local client pids and remote peer addresses.
+
+    lsof prints both ends of a *loopback* connection: the client's socket
     (``[::1]:61641->[::1]:11434``) and Ollama's (``[::1]:11434->[::1]:61641``).
-    Only the first is a client, identified by the *remote* side being our port.
+    For a local client the first row is the one that names a process, so it is
+    keyed by pid.
+
+    For a client on another machine only Ollama's row exists here, because the
+    client's own socket is on that machine.  Those are keyed by peer address
+    with no pid -- dropping them, as the first version of this did, misses
+    every remote bypasser, and Ollama binds ``*:11434`` by default.
     """
-    peers: dict[int, dict] = {}
+    local_peers: dict[int, dict] = {}
+    remote_peers: dict[str, int] = {}
     for line in output.splitlines()[1:]:  # skip lsof's header
         parts = line.split()
         if len(parts) < 9:
@@ -127,19 +158,31 @@ def _parse_lsof(output: str, port: int) -> dict[int, dict]:
         if "->" not in name:
             continue
         local, _, remote = name.partition("->")
-        # The client side is the one whose *remote* endpoint is Ollama's port.
-        if not remote.endswith(f":{port}"):
+
+        # Client end: its *remote* endpoint is Ollama's port. Names a process.
+        if remote.endswith(f":{port}"):
+            try:
+                pid = int(raw_pid)
+            except ValueError:
+                continue
+            entry = local_peers.setdefault(
+                pid, {"command": command, "connections": 0, "local": local}
+            )
+            entry["connections"] += 1
             continue
-        try:
-            pid = int(raw_pid)
-        except ValueError:
-            continue
-        entry = peers.setdefault(pid, {"command": command, "connections": 0, "local": local})
-        entry["connections"] += 1
-    return peers
+
+        # Server end: our *local* endpoint is Ollama's port. Only interesting
+        # when the peer is off-box -- a loopback peer already has its own row
+        # above, and counting it here too would double-report it.
+        if local.endswith(f":{port}"):
+            peer = _host_of(remote)
+            if peer in _LOOPBACK:
+                continue
+            remote_peers[peer] = remote_peers.get(peer, 0) + 1
+    return local_peers, remote_peers
 
 
-def _probe_lsof(port: int) -> list[BackendClient]:
+def _probe_lsof(port: int, router_host: str = "") -> list[BackendClient]:
     lsof = shutil.which("lsof")
     if not lsof:
         return []
@@ -155,28 +198,73 @@ def _probe_lsof(port: int) -> list[BackendClient]:
         logger.debug(f"backend client probe failed: {type(exc).__name__}: {exc}")
         return []
     # lsof exits 1 when nothing matches, which is a normal empty result.
-    peers = _parse_lsof(out.stdout or "", port)
+    local_peers, remote_peers = _parse_lsof(out.stdout or "", port)
 
     clients: list[BackendClient] = []
-    for pid, info in peers.items():
+    for pid, info in local_peers.items():
         cmd = _cmdline(pid)
         if _is_ours(pid, info["command"], cmd):
             continue
-        local_host = info["local"].rsplit(":", 1)[0]
         clients.append(
             BackendClient(
                 pid=pid,
                 process=info["command"],
                 cmdline=cmd[:300],
                 connections=info["connections"],
-                loopback=local_host in _LOOPBACK,
+                loopback=_host_of(info["local"]) in _LOOPBACK,
             )
         )
-    clients.sort(key=lambda c: (-c.connections, c.pid))
+
+    # The router legitimately proxies to this node's Ollama over the LAN, so it
+    # is the one remote peer that must never be reported. Excluding it is not
+    # optional: without this every node would flag the router as a bypasser.
+    router_ips = _resolve_host(router_host)
+    for peer, count in remote_peers.items():
+        if peer.strip("[]") in router_ips:
+            continue
+        clients.append(
+            BackendClient(
+                pid=0,  # off-box: there is no local process to name
+                process="",
+                peer=peer,
+                connections=count,
+                loopback=False,
+            )
+        )
+
+    clients.sort(key=lambda c: (-c.connections, c.pid, c.peer))
     return clients
 
 
-def probe_backend_clients(ollama_host: str) -> list[BackendClient]:
+def _resolve_host(url_or_host: str) -> set[str]:
+    """Every IP the given router URL (or bare host) resolves to.
+
+    A set, because the router may be reachable as several addresses and any of
+    them can show up as the peer on an established connection.
+    """
+    if not url_or_host:
+        return set()
+    host = url_or_host
+    if "//" in host:
+        try:
+            host = urlparse(url_or_host).hostname or ""
+        except (ValueError, AttributeError):
+            return set()
+    host = host.strip("[]")
+    if not host:
+        return set()
+    out = {host}
+    try:
+        for info in socket.getaddrinfo(host, None):
+            out.add(info[4][0])
+    except (OSError, UnicodeError):
+        pass
+    return out
+
+
+def probe_backend_clients(
+    ollama_host: str, router_host: str = ""
+) -> list[BackendClient]:
     """Processes other than herd holding open connections to this node's Ollama.
 
     Returns an empty list on any failure -- a probe that cannot run must never
@@ -191,7 +279,7 @@ def probe_backend_clients(ollama_host: str) -> list[BackendClient]:
             # the signal is only as good as the process attribution, and
             # netstat -ano + tasklist needs its own verification pass.
             return []
-        return _probe_lsof(port)
+        return _probe_lsof(port, router_host)
     except Exception as exc:  # noqa: BLE001 -- never break the heartbeat
         logger.debug(f"backend client probe failed: {type(exc).__name__}: {exc}")
         return []

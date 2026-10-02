@@ -13,6 +13,7 @@ CancelledError all stringify to "".
 """
 
 import asyncio
+import pathlib
 
 import httpx
 import pytest
@@ -158,7 +159,7 @@ class TestCallSitesUseTheHelper:
         ],
     )
     def test_no_bare_stringification_remains(self, path):
-        src = open(path).read()
+        src = pathlib.Path(path).read_text()
         assert "error_message=str(exc)" not in src
         assert "error_message=str(e) or repr(e)" not in src
         assert "describe_exception" in src

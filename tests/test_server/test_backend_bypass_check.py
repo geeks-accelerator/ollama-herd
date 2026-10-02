@@ -33,7 +33,15 @@ def _node(node_id="bb", clients=(), loaded=()):
 def _client(pid=26007, process="node", connections=3, cmdline="/usr/bin/node gw.js"):
     return SimpleNamespace(
         pid=pid, process=process, connections=connections,
-        cmdline=cmdline, loopback=True,
+        cmdline=cmdline, peer="", loopback=True,
+    )
+
+
+def _remote(peer="192.168.1.77", connections=2):
+    """An off-box client: no local pid, named by address."""
+    return SimpleNamespace(
+        pid=0, process="", cmdline="", peer=peer,
+        connections=connections, loopback=False,
     )
 
 
@@ -99,6 +107,30 @@ class TestBypassCheck:
         src = inspect.getsource(HealthEngine.analyze)
         head = src.split("if trace_store:")[0]
         assert "_check_backend_bypass_clients" in head
+
+
+class TestRemoteBypassers:
+    def test_an_off_box_client_is_named_by_address_not_pid_zero(self, engine):
+        """"pid 0" in an operator-facing card reads as a bug, not as a fact."""
+        rec = engine._check_backend_bypass_clients([_node(clients=[_remote()])])[0]
+        assert "192.168.1.77" in rec.description
+        assert "pid 0" not in rec.description
+
+    def test_the_remedy_says_where_to_look_instead(self, engine):
+        rec = engine._check_backend_bypass_clients([_node(clients=[_remote()])])[0]
+        assert "another machine" in rec.fix
+        assert "OLLAMA_HOST" in rec.fix
+
+    def test_a_purely_local_offender_gets_no_remote_advice(self, engine):
+        rec = engine._check_backend_bypass_clients([_node(clients=[_client()])])[0]
+        assert "another machine" not in rec.fix
+
+    def test_local_and_remote_offenders_coexist(self, engine):
+        rec = engine._check_backend_bypass_clients(
+            [_node(clients=[_client(), _remote()])]
+        )[0]
+        assert len(rec.data["clients"]) == 2
+        assert "26007" in rec.description and "192.168.1.77" in rec.description
 
 
 class TestContextWasteRespectsOperatorIntent:

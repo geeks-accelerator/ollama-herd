@@ -622,6 +622,7 @@ class HealthEngine:
                     "pid": client.pid,
                     "process": client.process,
                     "cmdline": client.cmdline,
+                    "peer": getattr(client, "peer", ""),
                     "connections": client.connections,
                     "loopback": client.loopback,
                 })
@@ -629,11 +630,23 @@ class HealthEngine:
             return []
 
         by_node = sorted({o["node_id"] for o in offenders})
-        lines = "; ".join(
-            f"{o['process'] or 'pid ' + str(o['pid'])} (pid {o['pid']}, "
-            f"{o['connections']} conn) on {o['node_id']}"
-            for o in offenders[:4]
-        )
+
+        def _describe(o: dict) -> str:
+            # An off-box client has no local pid -- its socket lives on its own
+            # machine and all the node can see is Ollama's server end -- so it
+            # is named by address. Printing "pid 0" would read as a bug.
+            if not o["pid"]:
+                return (
+                    f"remote {o['peer'] or 'unknown'} ({o['connections']} conn) "
+                    f"on {o['node_id']}"
+                )
+            return (
+                f"{o['process'] or 'pid ' + str(o['pid'])} (pid {o['pid']}, "
+                f"{o['connections']} conn) on {o['node_id']}"
+            )
+
+        lines = "; ".join(_describe(o) for o in offenders[:4])
+        has_remote = any(not o["pid"] for o in offenders)
         return [
             Recommendation(
                 check_id="backend_bypass_clients",
@@ -664,6 +677,17 @@ class HealthEngine:
                     "at an unrelated project. Check whether it arrived by *fallback* "
                     "rather than by configuration: a cloud provider losing its API key "
                     "can silently redirect a whole workload onto the local fleet."
+                    + (
+                        " One or more peers are on another machine, so there is no "
+                        "local process to inspect — identify them by address from "
+                        "`data.clients[].peer` and look on that host. The router "
+                        "itself is already excluded, so these are genuinely third "
+                        "parties. If Ollama does not need to be reachable off-box, "
+                        "binding it back to loopback (unset OLLAMA_HOST) removes the "
+                        "whole class of access."
+                        if has_remote
+                        else ""
+                    )
                 ),
                 node_id=by_node[0] if len(by_node) == 1 else None,
                 data={"clients": offenders},

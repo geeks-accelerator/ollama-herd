@@ -233,6 +233,10 @@ class NodeAgent:
                     mlx_bind_host=getattr(
                         self.settings, "mlx_bind_host", "127.0.0.1",
                     ),
+                    # So the backend-client probe can exclude the router: it
+                    # proxies to our Ollama over the LAN and is the one remote
+                    # peer that must never be reported as a bypasser.
+                    router_url=self.router_url or "",
                 )
                 if self._image_port:
                     payload.image_port = self._image_port

@@ -19,12 +19,14 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from fleet_manager.node.backend_clients import (
     _is_ours,
     _parse_lsof,
+    _resolve_host,
     ollama_port,
     probe_backend_clients,
 )
@@ -32,41 +34,45 @@ from fleet_manager.node.backend_clients import (
 # Two lsof rows for ONE loopback connection: the client's socket and the
 # server's. Only the client is a bypasser; counting both double-reports every
 # peer and inventing one for Ollama itself.
-_LSOF_BOTH_ENDS = """\
-COMMAND     PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
-node      26007 neonsoul    9u  IPv4 0x81ec846ef50a9440      0t0  TCP 127.0.0.1:61641->127.0.0.1:11434 (ESTABLISHED)
-ollama    56184 neonsoul    5u  IPv4 0xee0cada05a0c0d1b      0t0  TCP 127.0.0.1:11434->127.0.0.1:61641 (ESTABLISHED)
-"""
+# Verbatim lsof output, so the column layout is the real one and not a guess.
+_LSOF_BOTH_ENDS = (
+    "COMMAND     PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\n"
+    "node      26007 neonsoul    9u  IPv4 0x81ec846ef50a9440      0t0  TCP "
+    "127.0.0.1:61641->127.0.0.1:11434 (ESTABLISHED)\n"
+    "ollama    56184 neonsoul    5u  IPv4 0xee0cada05a0c0d1b      0t0  TCP "
+    "127.0.0.1:11434->127.0.0.1:61641 (ESTABLISHED)\n"
+)
 
 
 class TestParsing:
-    def test_only_the_client_end_is_a_peer(self):
-        peers = _parse_lsof(_LSOF_BOTH_ENDS, 11434)
-        assert list(peers) == [26007], "server-side row must not become a peer"
-        assert peers[26007]["command"] == "node"
+    def test_only_the_client_end_is_a_local_peer(self):
+        local, remote = _parse_lsof(_LSOF_BOTH_ENDS, 11434)
+        assert list(local) == [26007], "server-side row must not become a peer"
+        assert local[26007]["command"] == "node"
+        assert remote == {}, "a loopback peer must not be double-counted as remote"
 
     def test_multiple_connections_from_one_pid_collapse_to_one_peer(self):
         rows = _LSOF_BOTH_ENDS.rstrip("\n") + (
             "\nnode      26007 neonsoul   10u  IPv4 0x1 0t0  TCP "
             "127.0.0.1:61642->127.0.0.1:11434 (ESTABLISHED)"
         )
-        peers = _parse_lsof(rows, 11434)
-        assert peers[26007]["connections"] == 2
+        local, _ = _parse_lsof(rows, 11434)
+        assert local[26007]["connections"] == 2
 
     def test_connections_to_a_different_port_are_ignored(self):
         # A node agent also talks to :11439 (text embeddings) and :11440+ (MLX).
         # Those are ours and on other ports; this probe is scoped to one port.
-        assert _parse_lsof(_LSOF_BOTH_ENDS, 11439) == {}
+        assert _parse_lsof(_LSOF_BOTH_ENDS, 11439) == ({}, {})
 
     def test_listening_rows_without_a_peer_are_ignored(self):
         rows = (
             "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n"
             "ollama 1 u 1u IPv4 0x1 0t0 TCP *:11434 (LISTEN)\n"
         )
-        assert _parse_lsof(rows, 11434) == {}
+        assert _parse_lsof(rows, 11434) == ({}, {})
 
     def test_malformed_rows_do_not_raise(self):
-        assert _parse_lsof("header\ngarbage\n\nx y\n", 11434) == {}
+        assert _parse_lsof("header\ngarbage\n\nx y\n", 11434) == ({}, {})
 
 
 class TestOwnership:
@@ -214,3 +220,83 @@ class TestAgainstARealSocket:
         assert probe_backend_clients(f"http://127.0.0.1:{port}") == [], (
             "the peer must clear once it exits, or this check latches on forever"
         )
+
+
+class TestRemotePeers:
+    """A client on another machine is only visible as Ollama's server-side socket.
+
+    Ollama binds `*:11434` by default, so this path is reachable on any fleet
+    that has not deliberately bound it back to loopback. The first version of
+    this probe filtered on the client end alone and missed it completely --
+    caught by checking the detection against lsof's real output rather than
+    only against the loopback case it was written for.
+    """
+
+    _REMOTE_ONLY = (
+        "COMMAND     PID     USER   FD   TYPE  DEVICE SIZE/OFF NODE NAME\n"
+        "ollama    56184 neonsoul    5u  IPv4  0x1    0t0  TCP "
+        "192.168.1.50:11434->192.168.1.77:52341 (ESTABLISHED)\n"
+    )
+
+    def test_an_off_box_client_is_detected(self):
+        local, remote = _parse_lsof(self._REMOTE_ONLY, 11434)
+        assert local == {}, "there is no local process for an off-box client"
+        assert remote == {"192.168.1.77": 1}
+
+    def test_multiple_connections_from_one_host_are_counted(self):
+        rows = self._REMOTE_ONLY.rstrip("\n") + (
+            "\nollama    56184 neonsoul    6u  IPv4  0x2    0t0  TCP "
+            "192.168.1.50:11434->192.168.1.77:52342 (ESTABLISHED)"
+        )
+        _, remote = _parse_lsof(rows, 11434)
+        assert remote == {"192.168.1.77": 2}
+
+    def test_ipv6_peers_keep_their_brackets(self):
+        rows = (
+            "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n"
+            "ollama 1 u 5u IPv6 0x1 0t0 TCP [fd00::1]:11434->[fd00::2]:5555 "
+            "(ESTABLISHED)\n"
+        )
+        _, remote = _parse_lsof(rows, 11434)
+        assert remote == {"[fd00::2]": 1}
+
+    def test_the_router_is_never_reported(self, monkeypatch):
+        """The router proxies to each node's Ollama, so it is a legitimate peer.
+
+        Without this exclusion every node in a multi-node fleet would flag the
+        router as a bypasser -- the kind of false alarm that gets a check muted.
+        """
+        monkeypatch.setattr(
+            "fleet_manager.node.backend_clients.shutil.which", lambda _: "/usr/bin/lsof"
+        )
+        monkeypatch.setattr(
+            "fleet_manager.node.backend_clients.subprocess.run",
+            lambda *a, **k: SimpleNamespace(stdout=self._REMOTE_ONLY, stderr=""),
+        )
+        assert probe_backend_clients(
+            "http://localhost:11434", "http://192.168.1.77:11435"
+        ) == []
+        # ...but a different remote host still is.
+        found = probe_backend_clients(
+            "http://localhost:11434", "http://192.168.1.99:11435"
+        )
+        assert len(found) == 1
+        assert found[0].peer == "192.168.1.77"
+        assert found[0].pid == 0, "off-box clients carry no local pid"
+        assert found[0].loopback is False
+
+
+class TestRouterResolution:
+    def test_a_url_resolves_to_its_host(self):
+        assert "192.168.1.77" in _resolve_host("http://192.168.1.77:11435")
+
+    def test_a_bare_host_works_too(self):
+        assert "192.168.1.77" in _resolve_host("192.168.1.77")
+
+    def test_localhost_resolves_to_its_loopback_addresses(self):
+        got = _resolve_host("http://localhost:11435")
+        assert "127.0.0.1" in got or "::1" in got
+
+    @pytest.mark.parametrize("bad", ["", "http://", "::::"])
+    def test_unresolvable_input_is_empty_not_an_exception(self, bad):
+        assert isinstance(_resolve_host(bad), set)

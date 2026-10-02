@@ -125,12 +125,18 @@ class BackendClient(BaseModel):
     sighting, so a blind node is a missed detection and never a false alarm.
     """
 
-    pid: int
+    # 0 for an off-box client: its socket lives on its own machine, so all this
+    # node can see is Ollama's server end and there is no local process to name.
+    pid: int = 0
     process: str = ""
     # Full argv, truncated.  Not the process name: a Node daemon's name is just
     # `process.title` and in the 2026-08 incident it matched an unrelated
     # project folder, which is what made the culprit hard to find.
     cmdline: str = ""
+    # Remote address, set only when ``pid`` is 0.  The router is excluded before
+    # this is populated -- it proxies to each node's Ollama over the LAN and is
+    # the one legitimate remote client.
+    peer: str = ""
     connections: int = 1
     loopback: bool = True
 

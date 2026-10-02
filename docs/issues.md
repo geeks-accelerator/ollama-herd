@@ -474,6 +474,20 @@ Design notes worth keeping:
 - Windows is deliberately unimplemented rather than guessed at — the signal is only
   as good as its process attribution, and `netstat -ano` + `tasklist` needs its own
   verification pass. It returns an empty list there.
+- **Local and off-box clients are different shapes and both are handled.** The first
+  version filtered on the client end of the socket only, which is correct for a
+  loopback co-tenant and misses an off-box one entirely: that client's socket lives
+  on its own machine, so all this node sees is Ollama's server end
+  (`ourip:11434->theirip:52341`), whose remote port is not ours and was therefore
+  filtered out. Caught by checking the parser against lsof's real output for the
+  remote case rather than only the loopback case it was written for — and it matters,
+  because Ollama binds `*:11434` by default (confirmed on this fleet). Off-box peers
+  are reported by address with `pid=0`; the card names the address rather than
+  printing "pid 0", which would read as a bug.
+- **The router is excluded by address** (`node/agent.py` passes `router_url` through).
+  It proxies to every node's Ollama over the LAN, so without this exclusion every
+  node in a multi-node fleet would report the router as a bypasser — exactly the
+  false alarm that gets a check muted.
 
 Verified end-to-end on the live fleet, not just in tests: a foreign process holding
 4 connections to :11434 produced the WARNING ~48 s after it appeared and the card
