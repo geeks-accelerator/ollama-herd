@@ -15,6 +15,7 @@ from fleet_manager.common.logging_config import setup_logging
 from fleet_manager.models.config import ServerSettings
 from fleet_manager.server.latency_store import LatencyStore
 from fleet_manager.server.mlx_proxy import MlxProxy
+from fleet_manager.server.offline_alert import OfflineAlerter
 from fleet_manager.server.pinned_models import PinnedModelsStore
 from fleet_manager.server.queue_manager import QueueManager
 from fleet_manager.server.rebalancer import Rebalancer
@@ -37,6 +38,11 @@ async def lifespan(app: FastAPI):
 
     # Initialize components
     registry = NodeRegistry(settings)
+    # node_offline is CRITICAL but pull-only; the alerter is what makes an
+    # absent fleet announce itself.  Off unless FLEET_OFFLINE_ALERT is set,
+    # so default behavior is byte-identical to before.
+    offline_alerter = OfflineAlerter(settings)
+    registry.on_node_offline = offline_alerter.node_went_offline
     latency_store = LatencyStore(settings.data_dir)
     await latency_store.initialize()
     trace_store = TraceStore(settings.data_dir)
@@ -156,6 +162,7 @@ async def lifespan(app: FastAPI):
 
     # Store on app state
     app.state.registry = registry
+    app.state.offline_alerter = offline_alerter
     app.state.scorer = scorer
     app.state.queue_mgr = queue_mgr
     app.state.streaming_proxy = streaming_proxy

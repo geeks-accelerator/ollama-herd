@@ -22,6 +22,10 @@ class NodeRegistry:
         self._settings = settings
         self._nodes: dict[str, NodeState] = {}
         self._lock = asyncio.Lock()
+        # Optional async callback invoked on an online -> offline transition.
+        # A callback rather than a direct import keeps the registry unaware of
+        # browsers and notifications; app.py wires the alerter in.
+        self.on_node_offline = None
 
     async def update_from_heartbeat(
         self, payload: HeartbeatPayload, request_ip: str = ""
@@ -126,7 +130,16 @@ class NodeRegistry:
             return node
 
     def handle_drain(self, node_id: str):
-        """Mark a node as draining (going offline gracefully)."""
+        """Mark a node as draining (going offline gracefully).
+
+        Deliberately does NOT fire ``on_node_offline``.  A drain means the
+        node announced its own shutdown, so somebody already knows -- waking
+        an operator for it is the kind of noise that trains people to ignore
+        the alert that matters.  Same reasoning as the launchd agents'
+        ``KeepAlive{SuccessfulExit:false}``: a clean exit stays stopped.
+        Only the stale-heartbeat path in ``monitor_heartbeats`` alerts,
+        because that is the one nobody asked for.
+        """
         if node_id in self._nodes:
             self._nodes[node_id].status = NodeStatus.OFFLINE
             logger.info(f"Node {node_id} is draining, marked OFFLINE")
@@ -205,6 +218,13 @@ class NodeRegistry:
                 out[f"mlx:{srv.model}"] = f"http://{host}:{srv.port}"
         return out
 
+    async def _fire_offline_callback(self, node_id: str) -> None:
+        """Run ``on_node_offline`` without letting it break the monitor."""
+        try:
+            await self.on_node_offline(node_id)
+        except Exception as e:
+            logger.warning(f"on_node_offline callback failed for {node_id}: {e!r}")
+
     async def monitor_heartbeats(self):
         """Background task: check for stale heartbeats."""
         while True:
@@ -223,6 +243,13 @@ class NodeRegistry:
                                 f"Node {node.node_id} marked OFFLINE "
                                 f"(no heartbeat for {elapsed:.0f}s)"
                             )
+                            # Fire-and-forget: this loop holds ``self._lock``
+                            # and must keep checking every other node, so the
+                            # alert must not block it or propagate failures.
+                            if self.on_node_offline is not None:
+                                asyncio.create_task(
+                                    self._fire_offline_callback(node.node_id)
+                                )
                     elif (
                         elapsed > self._settings.heartbeat_timeout
                         and node.status != NodeStatus.DEGRADED

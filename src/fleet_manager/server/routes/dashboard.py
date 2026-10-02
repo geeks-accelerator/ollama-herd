@@ -126,6 +126,19 @@ async def favicon_ico():
     return Response(content=_FAVICON_SVG, media_type="image/svg+xml")
 
 
+# Same art, alert red.  Swapped into the tab when a node drops, so a
+# backgrounded dashboard shows the fleet is down at a glance -- this is the
+# half of the alert that still works when notification permission was never
+# granted or was denied, which is the common case.
+_FAVICON_SVG_ALERT = _FAVICON_SVG.replace("#6c63ff", "#ef4444")
+
+
+@router.get("/favicon-alert.svg")
+async def favicon_alert_svg():
+    """Serve the alert-state (red) favicon."""
+    return Response(content=_FAVICON_SVG_ALERT, media_type="image/svg+xml")
+
+
 # ---------------------------------------------------------------------------
 # SSE event stream (shared by the fleet overview page)
 # ---------------------------------------------------------------------------
@@ -364,6 +377,14 @@ async def dashboard_events(request: Request):
         # should end this one stream cleanly; the browser's EventSource
         # reconnects on its own.  CancelledError is normal teardown and is
         # re-raised untouched.
+        # This stream IS the "somebody is watching" signal the offline
+        # alerter uses to decide whether to open a browser window.  The
+        # decrement has to run on every exit path -- a leaked increment would
+        # make the fleet look permanently watched and silence the alert
+        # exactly when nobody is there, so it lives in a finally.
+        alerter = getattr(request.app.state, "offline_alerter", None)
+        if alerter is not None:
+            alerter.client_connected()
         try:
             async for chunk in event_stream():
                 yield chunk
@@ -372,6 +393,9 @@ async def dashboard_events(request: Request):
         except Exception:
             logger.exception("dashboard SSE stream ended on an unexpected error")
             return
+        finally:
+            if alerter is not None:
+                alerter.client_disconnected()
 
     return StreamingResponse(
         guarded_stream(),
@@ -2126,6 +2150,7 @@ function initTimeRange(containerId, callback, defaultRange) {{
 <div class="footer">
   <div>Ollama Herd v0.1.0 — Created by Twins at <a href="https://geeksinthewoods.com/" target="_blank" style="color:var(--accent);text-decoration:none">Geeks in the Woods</a></div>
   <div class="connected-indicator">
+    <button id="notify-toggle" onclick="requestNotifyPermission()" style="background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer;margin-right:10px">Enable alerts</button>
     <span class="status-dot online pulse" id="sse-dot"></span>
     <span id="sse-status">Connected</span>
   </div>
@@ -2579,6 +2604,114 @@ function renderQueues(queues) {
   if (sc) sc.textContent = totalCompleted;
 }
 
+// Browser notification on an online -> offline transition.  The SSE payload
+// already carries per-node status, so this needs no polling and no new
+// endpoint.  Only TRANSITIONS notify: re-alerting every 2s for a node that is
+// still down trains people to dismiss the alert.
+// The first payload seeds the baseline without notifying, so loading the page
+// onto an already-offline fleet doesn't fire a stale alert for old news.
+var _nodeStatus = null;
+var _notifyPermission = (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported';
+
+// --- notification icon -----------------------------------------------------
+// Chrome does not reliably render an SVG in a Notification's `icon`; it wants
+// a raster image and silently shows its own generic bell otherwise.  The
+// favicon is only available as SVG, so draw it into a canvas once at load and
+// keep the PNG data URL.  Same-origin, so the canvas is not tainted and
+// toDataURL works.  Null until it resolves (or forever, if it fails) and the
+// notification simply goes out without an icon rather than not going out.
+var _iconDataUrl = null;
+(function rasterizeIcon() {
+  try {
+    var img = new Image();
+    img.onload = function() {
+      try {
+        var c = document.createElement('canvas');
+        c.width = 192; c.height = 192;
+        c.getContext('2d').drawImage(img, 0, 0, 192, 192);
+        _iconDataUrl = c.toDataURL('image/png');
+      } catch (e) { console.warn('favicon rasterize failed:', e); }
+    };
+    img.onerror = function() { console.warn('favicon load failed for notification icon'); };
+    img.src = '/favicon.svg';
+  } catch (e) { console.warn('favicon rasterize setup failed:', e); }
+})();
+
+// --- tab badge -------------------------------------------------------------
+// The half of the alert that works with no permission at all: a backgrounded
+// tab turns its favicon red and prefixes the title, so the fleet being down is
+// visible in the tab strip whether or not notifications were ever allowed.
+var _baseTitle = document.title;
+var _tabAlerted = false;
+function setTabAlert(on) {
+  if (on === _tabAlerted) return;
+  _tabAlerted = on;
+  var link = document.querySelector('link[rel="icon"]');
+  if (link) link.href = on ? '/favicon-alert.svg' : '/favicon.svg';
+  document.title = on ? ('\u26A0 OFFLINE \u2014 ' + _baseTitle) : _baseTitle;
+}
+
+function requestNotifyPermission() {
+  if (typeof Notification === 'undefined') return;
+  // Chrome only reliably shows the prompt from a user gesture, so this is
+  // wired to a button rather than fired on load.
+  Notification.requestPermission().then(function(p) {
+    _notifyPermission = p;
+    renderNotifyButton();
+  });
+}
+
+function renderNotifyButton() {
+  var b = document.getElementById('notify-toggle');
+  if (!b) return;
+  if (_notifyPermission === 'unsupported') { b.style.display = 'none'; return; }
+  if (_notifyPermission === 'granted') { b.textContent = 'Alerts on'; b.disabled = true; }
+  else if (_notifyPermission === 'denied') { b.textContent = 'Alerts blocked'; b.disabled = true; }
+  else { b.textContent = 'Enable alerts'; b.disabled = false; }
+}
+
+function notifyOnOffline(nodes) {
+  if (!nodes) return;
+  var next = {};
+  for (var i = 0; i < nodes.length; i++) next[nodes[i].node_id] = nodes[i].status;
+  if (_nodeStatus === null) {
+    // First payload seeds the baseline without notifying (no transition has
+    // been observed yet) -- but the badge is state, not a transition, so a
+    // page opened onto an already-down fleet still shows red immediately.
+    _nodeStatus = next;
+    var downAtLoad = false;
+    for (var k0 in next) { if (next[k0] === 'offline') downAtLoad = true; }
+    setTabAlert(downAtLoad);
+    renderNotifyButton();
+    return;
+  }
+  for (var id in next) {
+    var was = _nodeStatus[id];
+    if (next[id] === 'offline' && was && was !== 'offline') {
+      if (_notifyPermission === 'granted') {
+        try {
+          var opts = {
+            body: 'herd stopped receiving heartbeats. The fleet may have no capacity.',
+            tag: 'herd-offline-' + id,   // collapses repeats for the same node
+            requireInteraction: true
+          };
+          if (_iconDataUrl) { opts.icon = _iconDataUrl; opts.badge = _iconDataUrl; }
+          var n = new Notification('Node offline: ' + id, opts);
+          n.onclick = function() { window.focus(); n.close(); };
+        } catch (err) { console.warn('Notification failed:', err); }
+      }
+      console.warn('Node went offline:', id);
+    }
+  }
+  // Badge reflects current state, not the transition: it must stay on while a
+  // node is still down and clear by itself when the fleet recovers.
+  var anyOffline = false;
+  for (var k in next) { if (next[k] === 'offline') anyOffline = true; }
+  setTabAlert(anyOffline);
+
+  _nodeStatus = next;
+}
+
 var _sseWatchdog = null;
 function connect() {
   const es = new EventSource('/dashboard/events');
@@ -2598,7 +2731,12 @@ function connect() {
   };
   es.onmessage = (e) => {
     resetWatchdog();
-    try { const data = JSON.parse(e.data); renderNodes(data.nodes); renderQueues(data.queues); }
+    try {
+      const data = JSON.parse(e.data);
+      notifyOnOffline(data.nodes);
+      renderNodes(data.nodes);
+      renderQueues(data.queues);
+    }
     catch (err) { console.error('Parse error:', err); }
   };
   es.onerror = () => {
@@ -2610,6 +2748,7 @@ function connect() {
     es.close(); setTimeout(connect, 3000);
   };
 }
+renderNotifyButton();
 connect();
 
 // Fleet Intelligence Briefing

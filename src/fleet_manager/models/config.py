@@ -132,6 +132,27 @@ class ServerSettings(BaseSettings):
     # Example: FLEET_CORS_ORIGINS=https://hollama.fernando.is,http://localhost:*
     cors_origins: str = ""
 
+    # Offline alerting.  ``node_offline`` is already a CRITICAL health check,
+    # but it is pull-only: a fleet with every node gone looks identical to a
+    # healthy one until somebody opens the dashboard.  That is the same gap
+    # the launchd agents closed for process absence -- a node that is running
+    # but cannot reach the router has the same blast radius and no equivalent
+    # answer.  On 2026-10-01 a DHCP lease change left this fleet with zero
+    # usable nodes for 3.9h while both agents reported healthy.
+    #
+    # When on, a node going online -> offline surfaces two ways:
+    #   1. Every connected dashboard raises a browser notification (the page
+    #      already receives node status over the existing SSE stream).
+    #   2. If NO dashboard is connected, the router opens one, so the alert
+    #      has somewhere to land.  Opening a window is intrusive, which is
+    #      why the whole feature is **off by default** -- same posture as
+    #      ``cors_origins`` above.
+    offline_alert: bool = False
+
+    # URL the router opens when a node goes offline with no dashboard watching.
+    # Empty means "derive http://localhost:<port>/dashboard from this server".
+    offline_alert_url: str = ""
+
     # Anthropic Messages API compat (for Claude Code etc.)
     # JSON map of claude-* model id → local model name.  OPTIONAL: with
     # anthropic_auto_route on (the default), any claude-* id without an entry
