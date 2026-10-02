@@ -1026,7 +1026,12 @@ The Trends page has preset time buttons (24h, 48h, 72h, 7d) but no custom date/t
 
 ---
 
-### Queue concurrency ignores OLLAMA_NUM_PARALLEL — allows 8 in-flight but Ollama only runs 2 `OPEN` (root cause found 2026-10-02)
+### Queue concurrency ignores OLLAMA_NUM_PARALLEL — allows 8 in-flight but Ollama only runs 2 `FIXED` (2026-10-02, enforced)
+
+**Fixed 2026-10-02, verified live.** A worker now holds its slot until the request leaves the queue. Every exit releases it: `mark_completed`, `mark_failed`, the reaper, and `_settle_on_exit`, a wrapper around every dispatched stream that settles the request however the stream ends. Four concurrent requests to `gemma3:27b` went from `in_flight=4, pending=0` to **`in_flight=1, pending=3`**, stepping `(1,3)→(1,2)→(1,1)→(1,0)`, all answered.
+
+Building it found a regression of its own, now fixed. Starlette ends a disconnected streaming response by cancelling the task, and mid-generation that arrives as `CancelledError`. `_stream_with_retry` caught only `GeneratorExit` and `Exception`, so the request never left `in_flight`. With slots now held, a client disconnecting mid-stream froze the model's queue until the reaper: **measured 641.2 s** before the next request ran. After the fix: **3.5 s** on `/api/chat`, and **11.3 s** on `/v1/chat/completions`, where the remaining delay is herd taking ~10 s to *notice* the disconnect (Ollama's own log shows it generating for 10.39 s; pre-existing, separate). Disconnects mid-generation are also now traced as `client_disconnected`; before, most left no trace.
+
 
 **Re-opened 2026-10-02.** This was marked `FIXED` earlier the same day on the assumption that `decode_parallelism_for()` caps each queue. It computes the right number, now per model (post-0.35 Phase 1), but **nothing enforces it**. Measured live on the Mac mini: four concurrent `/api/chat` requests to `qwen3.8:27b-mlx` showed herd's queue at `concurrency=1` with **`in_flight=4`, `pending=0`**. Completion times stepped 3.6 → 6.8 → 9.5 → 12.8 s, so the backend ran them one at a time while herd reported all four as in flight.
 

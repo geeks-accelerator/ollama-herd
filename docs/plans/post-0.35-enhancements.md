@@ -1,6 +1,6 @@
 # Post-0.35 Enhancements — MLX-default readiness, mlx-lm 0.32, and three router capabilities
 
-**Status**: **IMPLEMENTED and verified live 2026-10-02.** All 8 phases are done (code, plus the Ollama 0.35.0 upgrade). **Open:** the 24-hour soak (Phase 2); the Mac Studio soak (Phase 3); a two-machine cache measurement (Phase 7). **Phase 1's limit is computed but not enforced.** Herd's queue workers never held a slot for a request's duration, a pre-existing bug since the initial commit, now re-opened in `docs/issues.md`. See [Implementation notes](#implementation-notes-2026-10-02).
+**Status**: **IMPLEMENTED and verified live 2026-10-02.** All 8 phases are done (code, plus the Ollama 0.35.0 upgrade). **Open:** the 24-hour soak (Phase 2); the Mac Studio soak (Phase 3); a two-machine cache measurement (Phase 7). **Phase 1's limits are now enforced** (fixed 2026-10-02). Queue workers never held a slot for a request's duration, a pre-existing bug since the initial commit; see `docs/issues.md`. See [Implementation notes](#implementation-notes-2026-10-02).
 **Date**: 2026-10-02
 **Prereq context**: [`post-0.32-enhancements.md`](post-0.32-enhancements.md) (the last Ollama audit) and [`../issues/ollama-native-mlx-runner.md`](../issues/ollama-native-mlx-runner.md) (the MLX-subsystem question this plan partly answers).
 
@@ -387,7 +387,7 @@ Each phase was built against the code rather than this document, and four places
 | 6 | `nimble` through herd matches direct Ollama exactly: `bug` 0.9781, confidence 0.8906, the same as Ollama's release-notes example |
 | 7 | Two logical nodes, three sessions with a shared 1.9K-token head. The second and third followed the first with `X-Fleet-Affinity: prefix` (102 vs 92). One shared Ollama, so this proves the decision, not the cache causality |
 
-**Phase 1 finding (pre-existing, not fixed here):** queue workers call `process_fn()`, receive an unconsumed generator, and immediately take the next request. So `concurrency` has never limited backend in-flight requests. The per-model values from this plan become effective once workers hold their slot. That's a hot-path change needing its own design. See the re-opened issue in `docs/issues.md`.
+**Phase 1 finding (pre-existing, since FIXED 2026-10-02: in_flight 4→1, pending 0→3 live):** queue workers call `process_fn()`, receive an unconsumed generator, and immediately take the next request. So `concurrency` has never limited backend in-flight requests. The per-model values from this plan become effective once workers hold their slot. That's a hot-path change needing its own design. See the re-opened issue in `docs/issues.md`.
 
 **Live testing also corrected Phase 1's rule:** `nimble` reports `completion` alongside `decision`, so `sched.go` doesn't force decision models serial. Only embedders (`embedding` without `completion`) are forced, plus the families list.
 

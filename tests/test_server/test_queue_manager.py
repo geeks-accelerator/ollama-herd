@@ -422,3 +422,265 @@ async def test_queue_concurrency_uses_the_per_model_limit():
     qm = QueueManager(registry=registry)
     assert qm._compute_queue_concurrency("mini", "qwen3-vl:32b") == 1
     assert qm._compute_queue_concurrency("mini", "gemma3:27b") == 4
+
+
+# ---------------------------------------------------------------------------
+# Enforcement: a worker holds its slot until the request leaves the queue.
+#
+# Measured 2026-10-02: four concurrent requests to a concurrency-1 queue showed
+# in_flight=4, pending=0 — the worker handed off an unconsumed stream and took
+# the next request immediately, so `concurrency` never bounded the backend.
+# ---------------------------------------------------------------------------
+
+
+def _fixed_concurrency(qm, n):
+    """Pin every queue's computed concurrency (no registry needed)."""
+    qm._compute_queue_concurrency = lambda node_id, model: n
+
+
+async def _slow_process(entry):
+    """Like the real process_fns: returns an unconsumed async generator."""
+    async def gen():
+        yield "chunk"
+    return gen()
+
+
+def _sync_process(entry):
+    async def gen():
+        yield "chunk"
+    return gen()
+
+
+async def _settle():
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+async def test_concurrency_bounds_requests_in_flight():
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+    entries = [_make_entry() for _ in range(3)]
+    for e in entries:
+        await qm.enqueue(e, _sync_process)
+    await _settle()
+    q = qm._queues["studio:phi4:14b"]
+    assert len(q.in_flight) == 1, "concurrency=1 must allow exactly one request at the backend"
+    assert q.pending.qsize() == 2, "the rest must wait in herd's queue, where they are visible"
+    await qm.shutdown()
+
+
+async def test_completing_a_request_dispatches_the_next():
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+    a, b = _make_entry(), _make_entry()
+    await qm.enqueue(a, _sync_process)
+    await qm.enqueue(b, _sync_process)
+    await _settle()
+    q = qm._queues["studio:phi4:14b"]
+    assert list(q.in_flight) == [a.request.request_id]
+    qm.mark_completed("studio:phi4:14b", a)
+    await _settle()
+    assert list(q.in_flight) == [b.request.request_id]
+    assert q.pending.qsize() == 0
+    await qm.shutdown()
+
+
+async def test_concurrency_two_runs_two():
+    qm = QueueManager()
+    _fixed_concurrency(qm, 2)
+    for _ in range(3):
+        await qm.enqueue(_make_entry(), _sync_process)
+    await _settle()
+    q = qm._queues["studio:phi4:14b"]
+    assert (len(q.in_flight), q.pending.qsize()) == (2, 1)
+    await qm.shutdown()
+
+
+async def test_failure_frees_the_slot():
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+    a, b = _make_entry(), _make_entry()
+    await qm.enqueue(a, _sync_process)
+    await qm.enqueue(b, _sync_process)
+    await _settle()
+    qm.mark_failed("studio:phi4:14b", a)
+    await _settle()
+    assert list(qm._queues["studio:phi4:14b"].in_flight) == [b.request.request_id]
+    await qm.shutdown()
+
+
+async def test_reaper_frees_a_slot_whose_stream_was_never_consumed(monkeypatch):
+    """A stream nobody reads never runs its finally, so no mark_* fires.  The
+    reaper is the safety net — it must free the worker, not just the entry."""
+    from fleet_manager.server import queue_manager as qm_mod
+
+    monkeypatch.setattr(qm_mod, "_REAPER_INTERVAL_SECONDS", 0.01)
+    qm = QueueManager()
+    qm._stale_timeout = 0.05
+    _fixed_concurrency(qm, 1)
+    dispatched = []
+
+    def tracking_process(entry):
+        dispatched.append(entry.request.request_id)
+        return _sync_process(entry)
+
+    a, b = _make_entry(), _make_entry()
+    await qm.enqueue(a, tracking_process)
+    await qm.enqueue(b, tracking_process)
+    await _settle()
+    assert dispatched == [a.request.request_id]  # b waits behind a's held slot
+    qm.start_reaper()
+    await asyncio.sleep(0.3)
+    # Only the reaper could have freed a's slot (nothing marked it), and b ran.
+    assert dispatched == [a.request.request_id, b.request.request_id]
+    assert a.request.request_id not in qm._queues["studio:phi4:14b"].in_flight
+    await qm.shutdown()
+
+
+async def test_request_abandoned_while_queued_is_skipped():
+    """A client that disconnects while waiting cancels the route's await; the
+    worker must not start a stream nobody will read."""
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+    calls = []
+
+    def tracking_process(entry):
+        calls.append(entry.request.request_id)
+        return _sync_process(entry)
+
+    a, gone, c = _make_entry(), _make_entry(), _make_entry()
+    await qm.enqueue(a, tracking_process)
+    gone_future = await qm.enqueue(gone, tracking_process)
+    await qm.enqueue(c, tracking_process)
+    await _settle()
+    gone_future.cancel()
+    qm.mark_completed("studio:phi4:14b", a)
+    await _settle()
+    assert gone.request.request_id not in calls
+    assert list(qm._queues["studio:phi4:14b"].in_flight) == [c.request.request_id]
+    await qm.shutdown()
+
+
+async def test_process_fn_raising_does_not_hold_the_slot():
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+
+    def boom(entry):
+        raise RuntimeError("node unreachable")
+
+    bad_future = await qm.enqueue(_make_entry(), boom)
+    good = _make_entry()
+    await qm.enqueue(good, _sync_process)
+    await _settle()
+    assert isinstance(bad_future.exception(), RuntimeError)
+    assert good.request.request_id in qm._queues["studio:phi4:14b"].in_flight
+    await qm.shutdown()
+
+
+async def test_a_lowered_limit_retires_the_excess_workers():
+    """E.g. a queue created before node metadata arrived, which then says the
+    model is serial: the limit must drop to 1 for real, not stay at 2."""
+    qm = QueueManager()
+    _fixed_concurrency(qm, 2)
+    first = [_make_entry(), _make_entry()]
+    for e in first:
+        await qm.enqueue(e, _sync_process)
+    await _settle()
+    _fixed_concurrency(qm, 1)
+    later = [_make_entry(), _make_entry()]
+    for e in later:
+        await qm.enqueue(e, _sync_process)  # recomputes the limit to 1
+    for e in first:
+        qm.mark_completed("studio:phi4:14b", e)
+    await _settle()
+    q = qm._queues["studio:phi4:14b"]
+    assert len(q.in_flight) == 1
+    assert q.pending.qsize() == 1
+    await qm.shutdown()
+
+
+async def test_client_abandoning_a_stream_mid_way_frees_the_slot_promptly():
+    """A streaming client that disconnects mid-response leaves its stream
+    suspended at a yield; the stream's GeneratorExit handler (mark_failed in
+    _stream_with_tracking) only runs once nothing references it.  Found live
+    2026-10-02: the worker kept the future -- whose result IS the stream -- in
+    scope while waiting, so the stream could never be finalized, so the slot it
+    would release was held until the reaper (~11 min), freezing the model."""
+    import gc
+
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+    key = "studio:phi4:14b"
+
+    def realistic_process(entry):
+        async def gen():
+            try:
+                yield "chunk-1"
+                yield "chunk-2"
+            except GeneratorExit:
+                qm.mark_failed(key, entry)  # what _stream_with_tracking does
+                raise
+            qm.mark_completed(key, entry)
+        return gen()
+
+    a, b = _make_entry(), _make_entry()
+    fut_a = await qm.enqueue(a, realistic_process)
+    await qm.enqueue(b, realistic_process)
+    stream = await fut_a
+    assert await stream.__anext__() == "chunk-1"
+    # The client goes away: the route stops iterating and drops the stream.
+    del stream, fut_a
+    for _ in range(3):
+        gc.collect()
+        await _settle()
+    q = qm._queues[key]
+    assert b.request.request_id in q.in_flight, "the abandoned stream must not hold the slot"
+    await qm.shutdown()
+
+
+async def test_stream_cancelled_mid_await_still_leaves_the_queue():
+    """Starlette doesn't close a streaming body on client disconnect -- it
+    cancels the task.  Mid-generation that lands as CancelledError while the
+    stream awaits the backend, which `except Exception` / `except GeneratorExit`
+    don't catch.  Found live 2026-10-02: the slot stayed held until the reaper.
+    Whatever the process_fn does, the queue must settle the request."""
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+    key = "studio:phi4:14b"
+    backend_waiting = asyncio.Event()
+
+    def process_without_cancel_handling(entry):
+        async def gen():
+            try:
+                yield "chunk-1"
+                backend_waiting.set()
+                await asyncio.Event().wait()  # waiting on the backend
+                yield "never"
+            except GeneratorExit:
+                qm.mark_failed(key, entry)
+                raise
+            except Exception:
+                qm.mark_failed(key, entry)
+                raise
+        return gen()
+
+    a, b = _make_entry(), _make_entry()
+    fut_a = await qm.enqueue(a, process_without_cancel_handling)
+    await qm.enqueue(b, process_without_cancel_handling)
+    stream = await fut_a
+
+    async def consume():  # the route's streaming task
+        async for _ in stream:
+            pass
+
+    task = asyncio.create_task(consume())
+    await backend_waiting.wait()
+    task.cancel()  # client disconnect
+    with __import__("contextlib").suppress(asyncio.CancelledError):
+        await task
+    await _settle()
+    q = qm._queues[key]
+    assert a.request.request_id not in q.in_flight, "a cancelled stream must leave the queue"
+    assert b.request.request_id in q.in_flight, "and free its slot for the next request"
+    assert q.failed_count == 1
+    await qm.shutdown()

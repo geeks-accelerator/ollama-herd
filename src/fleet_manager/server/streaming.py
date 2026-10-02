@@ -477,8 +477,13 @@ class StreamingProxy:
                         capture_chunks.append(chunk)
                         capture_bytes += len(chunk)
                     yield chunk
-            except GeneratorExit:
-                # Client disconnected — not a successful completion
+            except (GeneratorExit, asyncio.CancelledError) as gone:
+                # Client disconnected — not a successful completion.  It arrives
+                # as GeneratorExit if the stream was paused at a yield, but as
+                # CancelledError if it was awaiting the backend: Starlette ends a
+                # disconnected streaming response by cancelling the task, which
+                # mid-generation is the common case.  Catching only GeneratorExit
+                # meant most disconnects left no trace and never left the queue.
                 queue_manager.mark_failed(current_queue_key, entry)
                 logger.warning(
                     f"Client disconnected for {entry.request.request_id[:8]} "
@@ -492,6 +497,8 @@ class StreamingProxy:
                 )
                 self._request_tokens.pop(entry.request.request_id, None)
                 self._request_done_reason.pop(entry.request.request_id, None)
+                if isinstance(gone, asyncio.CancelledError):
+                    raise  # never swallow a cancellation
                 return
             except Exception as e:
                 # Invalidate stale client on connection errors

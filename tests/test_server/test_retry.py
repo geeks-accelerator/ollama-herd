@@ -387,3 +387,43 @@ class TestTraceReliability:
         ]
         assert "failed" in statuses  # terminal outcome recorded
         assert "retried" in statuses  # earlier attempt still recorded
+
+
+class TestClientDisconnectMidGeneration:
+    """Starlette ends a disconnected streaming response by cancelling the task.
+    Mid-generation that arrives as CancelledError while awaiting the backend,
+    not GeneratorExit at a yield -- and was neither settled nor traced."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_while_awaiting_backend_is_a_traced_disconnect(self):
+        registry = MagicMock()
+        proxy = StreamingProxy(registry)
+        proxy._record_trace = MagicMock()
+        queue_mgr = _mock_queue_mgr()
+        entry = _make_entry()
+        waiting = asyncio.Event()
+
+        async def slow_backend(node_id, request):
+            yield "data: {}\n\n"
+            waiting.set()
+            await asyncio.Event().wait()  # generation still running
+            yield "never"
+
+        proxy.stream_from_node = slow_backend
+
+        async def route_task():
+            async for _ in proxy._stream_with_retry(
+                entry, "node-a:phi4:14b", queue_mgr, _mock_scorer(),
+                ServerSettings(max_retries=2),
+            ):
+                pass
+
+        task = asyncio.create_task(route_task())
+        await waiting.wait()
+        task.cancel()  # client disconnected
+        with pytest.raises(asyncio.CancelledError):
+            await task  # cancellation is re-raised, never swallowed
+
+        queue_mgr.mark_failed.assert_called_once_with("node-a:phi4:14b", entry)
+        assert proxy._record_trace.call_args.args[4] == "client_disconnected"
+        assert entry.retry_count == 0  # a disconnect is not retried on another node

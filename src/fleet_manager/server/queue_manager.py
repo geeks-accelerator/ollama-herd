@@ -72,6 +72,10 @@ class DeviceModelQueue:
     model: str
     pending: asyncio.Queue = field(default_factory=asyncio.Queue)
     in_flight: dict[str, QueueEntry] = field(default_factory=dict)  # keyed by request_id
+    # Set when the request leaves this queue (completed, failed, reaped).  The
+    # worker that dispatched it waits on this, so it holds its slot for the
+    # request's whole duration — that is what makes `concurrency` a real limit.
+    slots: dict[str, asyncio.Event] = field(default_factory=dict)  # keyed by request_id
     worker_tasks: list[asyncio.Task] = field(default_factory=list)
     concurrency: int = _MIN_CONCURRENCY
     completed_count: int = 0
@@ -156,6 +160,10 @@ class QueueManager:
                     ]
                     for rid, entry in stale:
                         del q.in_flight[rid]
+                        # The safety net for a request whose stream was never
+                        # consumed (so no mark_* ever runs): without this the
+                        # worker holding its slot would wait forever.
+                        self._release_slot(q, rid)
                         self._release_client(entry)
                         entry.status = RequestStatus.FAILED
                         entry.completed_at = now
@@ -320,27 +328,83 @@ class QueueManager:
         return response_future
 
     async def _worker(self, q: DeviceModelQueue, worker_id: int = 0):
-        """Worker loop for a single queue."""
+        """Worker loop for a single queue: one request at a time, start to finish.
+
+        ``process_fn`` returns an *unconsumed* stream; the request only reaches
+        the backend as the route reads it.  So the worker can't treat handing
+        the stream off as "done" — it holds its slot until the request leaves
+        this queue (``mark_completed`` / ``mark_failed`` / the reaper).  Before
+        this, a worker handed off and immediately took the next request, so one
+        worker dispatched the whole queue and ``concurrency`` bounded nothing.
+        """
+        me = asyncio.current_task()
         while True:
+            # Retire if the limit dropped below the live worker count (e.g. node
+            # metadata arrived after this queue was created and says the model
+            # is serial).  Rank among live workers is unique and stable, so
+            # exactly the excess retire — never all of them at once.
+            live = [t for t in q.worker_tasks if not t.done()]
+            if me in live and live.index(me) >= q.concurrency:
+                logger.debug(f"Queue {q.node_id}:{q.model} worker {worker_id} retiring")
+                break
+
             try:
                 entry, future, process_fn = await asyncio.wait_for(q.pending.get(), timeout=300.0)
             except TimeoutError:
                 logger.debug(f"Queue {q.node_id}:{q.model} worker {worker_id} idle, stopping")
                 break
 
+            if future.cancelled():
+                # The caller went away while queued (a client disconnect cancels
+                # the route awaiting this future).  Don't start work nobody will
+                # read — its stream would never be consumed, so no mark_* would
+                # ever free the slot.
+                self._release_client(entry)
+                continue
+
+            rid = entry.request.request_id
             entry.status = RequestStatus.IN_FLIGHT
             entry.started_at = time.time()
-            q.in_flight[entry.request.request_id] = entry
+            q.in_flight[rid] = entry
+            released = asyncio.Event()
+            q.slots[rid] = released
 
             try:
                 stream = process_fn(entry)
+                if hasattr(stream, "__aiter__"):
+                    stream = self._settle_on_exit(q, entry, stream)
                 if not future.done():
                     future.set_result(stream)
             except Exception as e:
                 entry.status = RequestStatus.FAILED
                 if not future.done():
                     future.set_exception(e)
-                logger.error(f"Queue worker error for {entry.request.request_id}: {e}")
+                logger.error(f"Queue worker error for {rid}: {e}")
+                q.slots.pop(rid, None)
+                continue  # nothing was dispatched, so nothing will release it
+
+            # Drop our references to the stream before waiting.  The future's
+            # result IS the stream, and a stream is only finalized -- its
+            # GeneratorExit handler calls mark_failed, which releases this very
+            # slot -- once nothing references it.  A streaming client that
+            # disconnects mid-response leaves its stream suspended at a yield;
+            # if this frame still held it, the slot would wait for the reaper
+            # (~11 min) and the model's queue would freeze.  Found live.
+            stream = future = None
+
+            try:
+                # Belt and braces: the reaper releases stale entries after
+                # stale_timeout, so this only fires if the reaper isn't running.
+                await asyncio.wait_for(
+                    released.wait(), timeout=self._stale_timeout + _REAPER_INTERVAL_SECONDS
+                )
+            except TimeoutError:
+                logger.warning(
+                    f"Queue {q.node_id}:{q.model} worker {worker_id}: {rid[:8]} never "
+                    f"left the queue — releasing the slot"
+                )
+            finally:
+                q.slots.pop(rid, None)
 
     def mark_completed(
         self,
@@ -365,6 +429,7 @@ class QueueManager:
             entry.status = RequestStatus.COMPLETED
             entry.completed_at = time.time()
             q.in_flight.pop(entry.request.request_id, None)
+            self._release_slot(q, entry.request.request_id)
             q.completed_count += 1
             # Accumulate stats only when at least one value is provided,
             # otherwise the averages would drift to zero for completions
@@ -380,6 +445,35 @@ class QueueManager:
                 q.stats_samples += 1
             logger.debug(f"Completed {entry.request.request_id[:8]} on {queue_key}")
 
+    async def _settle_on_exit(self, q: DeviceModelQueue, entry: QueueEntry, stream):
+        """Pass ``stream`` through, guaranteeing the request leaves this queue.
+
+        The process_fns settle requests themselves (mark_completed/mark_failed)
+        on completion, errors and GeneratorExit -- but not on CancelledError,
+        which is how Starlette ends a streaming response when the client
+        disconnects: it cancels the task, and mid-generation that lands while
+        the stream awaits the backend.  Neither ``except Exception`` nor
+        ``except GeneratorExit`` catches it, so the request never left
+        ``in_flight``, and with workers holding their slot the model's queue
+        froze until the reaper (measured: 641 s).  One guarantee here covers
+        every process_fn, present and future, instead of each re-learning it.
+        """
+        rid = entry.request.request_id
+        try:
+            async for chunk in stream:
+                yield chunk
+        finally:
+            if rid in q.in_flight:  # nothing settled it
+                self.mark_failed(f"{q.node_id}:{q.model}", entry)
+            self._release_slot(q, rid)
+
+    @staticmethod
+    def _release_slot(q: DeviceModelQueue, request_id: str) -> None:
+        """Free the worker holding ``request_id`` — every exit path calls this."""
+        event = q.slots.pop(request_id, None)
+        if event is not None:
+            event.set()
+
     def mark_failed(self, queue_key: str, entry: QueueEntry):
         """Remove an entry from in-flight and mark failed."""
         self._release_client(entry)
@@ -388,6 +482,7 @@ class QueueManager:
             entry.status = RequestStatus.FAILED
             entry.completed_at = time.time()
             q.in_flight.pop(entry.request.request_id, None)
+            self._release_slot(q, entry.request.request_id)
             q.failed_count += 1
             logger.warning(f"Failed {entry.request.request_id[:8]} on {queue_key}")
 
