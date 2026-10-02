@@ -684,3 +684,68 @@ async def test_stream_cancelled_mid_await_still_leaves_the_queue():
     assert b.request.request_id in q.in_flight, "and free its slot for the next request"
     assert q.failed_count == 1
     await qm.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# A client that leaves while its request is still queued
+# ---------------------------------------------------------------------------
+
+
+class _FakeRequest:
+    """The bit of a Starlette Request the dispatch helper uses."""
+
+    def __init__(self):
+        self.gone = False
+
+    async def is_disconnected(self):
+        return self.gone
+
+
+async def test_dispatched_stream_returns_the_stream_when_dispatched():
+    from fleet_manager.server.routes.routing import dispatched_stream
+
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+    fut = await qm.enqueue(_make_entry(), _sync_process)
+    stream = await dispatched_stream(_FakeRequest(), fut, _make_entry(), None)
+    assert stream is not None
+    await qm.shutdown()
+
+
+async def test_client_leaving_while_queued_is_never_dispatched():
+    """Otherwise a timed-out client's request still runs later, for nobody,
+    holding a slot real requests need.  Found live: 15 abandoned requests from
+    timed-out test clients sat in one queue, each due to run in full."""
+    from unittest.mock import AsyncMock
+
+    from fleet_manager.server.routes.routing import dispatched_stream
+
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+    calls = []
+
+    def tracking(entry):
+        calls.append(entry.request.request_id)
+        return _sync_process(entry)
+
+    running, queued = _make_entry(), _make_entry()
+    await qm.enqueue(running, tracking)
+    fut = await qm.enqueue(queued, tracking)
+    req, traces = _FakeRequest(), AsyncMock()
+    trace_store = type("T", (), {"record_trace": traces})()
+
+    async def leave_soon():
+        await asyncio.sleep(0.05)
+        req.gone = True
+
+    asyncio.create_task(leave_soon())
+    assert await dispatched_stream(req, fut, queued, trace_store, poll_s=0.01) is None
+    assert fut.cancelled()
+
+    qm.mark_completed("studio:phi4:14b", running)
+    await _settle()
+    assert queued.request.request_id not in calls, "abandoned request must not run"
+    kwargs = traces.call_args.kwargs
+    assert kwargs["status"] == "client_disconnected"
+    assert "queued" in kwargs["error_message"]
+    await qm.shutdown()

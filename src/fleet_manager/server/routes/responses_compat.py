@@ -21,7 +21,7 @@ import logging
 import time
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.anthropic_autoroute import resolve_model
@@ -37,9 +37,11 @@ from fleet_manager.server.responses_translator import (
     responses_to_openai_body,
 )
 from fleet_manager.server.routes.routing import (
+    CLIENT_GONE_STATUS,
     check_context_overflow,
     client_concurrency_response,
     client_error_passthrough,
+    dispatched_stream,
     extract_tags,
     get_all_fleet_models,
     get_fleet_capabilities,
@@ -238,7 +240,11 @@ async def responses(request: Request):
         response_future = await queue_mgr.enqueue(entry, process_fn)
     except ClientConcurrencyExceeded as e:
         return client_concurrency_response(e)
-    ollama_stream = await response_future
+    ollama_stream = await dispatched_stream(
+        request, response_future, entry, request.app.state.trace_store
+    )
+    if ollama_stream is None:
+        return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
 
     _extra = check_context_overflow(winner, inference_req, registry)
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}

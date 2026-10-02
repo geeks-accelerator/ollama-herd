@@ -323,6 +323,51 @@ async def score_with_fallbacks(
 REJECTED_STATUS = "rejected"
 
 
+# Returned to a client that disconnected while its request was still queued.
+# Nobody reads it; nginx's "client closed request" code says what happened.
+CLIENT_GONE_STATUS = 499
+
+
+async def dispatched_stream(request, future, entry, trace_store, *, poll_s: float = 0.5):
+    """Await a queued request's stream -- or cancel it if the client leaves first.
+
+    With the queue enforcing concurrency, a request can wait in herd's queue.
+    Starlette doesn't cancel a route on client disconnect while it awaits, so a
+    client that times out mid-wait still had its request dispatched later, run
+    in full for nobody, holding a slot real requests need (found live: 15 such
+    requests in one queue).  Polling ``is_disconnected`` while waiting and
+    cancelling the future lets the worker skip it instead.
+
+    Returns the stream, or ``None`` when the client is gone -- the caller
+    returns ``Response(status_code=CLIENT_GONE_STATUS)``.  Recorded as a
+    ``client_disconnected`` trace so it counts like any other disconnect.
+    """
+    while True:
+        done, _ = await asyncio.wait({future}, timeout=poll_s)
+        if done:
+            return future.result()
+        if await request.is_disconnected():
+            future.cancel()
+            req = entry.request
+            logger.info(f"Client left while {req.request_id[:8]} was queued — not dispatching")
+            if trace_store is not None:
+                try:
+                    await trace_store.record_trace(
+                        request_id=req.request_id,
+                        model=req.model,
+                        original_model=req.original_model or req.model,
+                        node_id=entry.assigned_node or "",
+                        status="client_disconnected",
+                        error_message="Client disconnected while queued, before dispatch",
+                        client_ip=req.client_ip,
+                        original_format=str(getattr(req, "original_format", "") or ""),
+                        tags=list(req.tags or []),
+                    )
+                except Exception as exc:  # pragma: no cover - a trace must never fail the request
+                    logger.warning(f"Could not trace queued disconnect: {exc!r}")
+            return None
+
+
 async def record_routing_rejection(
     trace_store,
     inference_req,

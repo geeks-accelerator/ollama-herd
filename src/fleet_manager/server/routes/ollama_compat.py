@@ -19,10 +19,12 @@ from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_he
 from fleet_manager.server.model_knowledge import is_image_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.routing import (
+    CLIENT_GONE_STATUS,
     _pick_pull_node,
     _pulls_in_flight,
     check_context_overflow,
     client_concurrency_response,
+    dispatched_stream,
     extract_tags,
     get_all_fleet_models,
     parse_allow_fallback,
@@ -1000,7 +1002,11 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         response_future = await queue_mgr.enqueue(entry, process_fn)
     except ClientConcurrencyExceeded as e:
         return client_concurrency_response(e)
-    stream = await response_future
+    stream = await dispatched_stream(
+        request, response_future, entry, request.app.state.trace_store
+    )
+    if stream is None:
+        return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
 
     # Build response headers — canonical X-Fleet-* set via the shared builder.
     headers = fleet_headers(

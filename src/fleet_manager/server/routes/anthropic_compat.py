@@ -21,7 +21,7 @@ import logging
 import time
 
 from fastapi import APIRouter, Header, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
@@ -52,9 +52,11 @@ from fleet_manager.server.mlx_proxy import (
 )
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.routing import (
+    CLIENT_GONE_STATUS,
     check_context_overflow,
     client_concurrency_response,
     client_error_passthrough,
+    dispatched_stream,
     extract_tags,
     get_all_fleet_models,
     get_fleet_capabilities,
@@ -1053,7 +1055,11 @@ async def messages(
         response_future = await queue_mgr.enqueue(entry, process_fn)
     except ClientConcurrencyExceeded as e:
         return client_concurrency_response(e)
-    stream = await response_future
+    stream = await dispatched_stream(
+        request, response_future, entry, request.app.state.trace_store
+    )
+    if stream is None:
+        return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
 
     _extra = check_context_overflow(winner, inference_req, registry)
     if anthropic_version:

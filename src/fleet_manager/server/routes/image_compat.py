@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, Response
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.fleet_headers import fleet_headers
 from fleet_manager.server.model_knowledge import is_image_model
-from fleet_manager.server.routes.routing import extract_tags
+from fleet_manager.server.routes.routing import CLIENT_GONE_STATUS, dispatched_stream, extract_tags
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,11 @@ async def generate_image(request: Request):
 
     start = time.monotonic()
     try:
-        stream = await response_future
+        stream = await dispatched_stream(
+            request, response_future, entry, request.app.state.trace_store
+        )
+        if stream is None:
+            return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
         png_bytes = b""
         async for chunk in stream:
             png_bytes = chunk  # Single chunk — the full PNG

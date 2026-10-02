@@ -7,11 +7,11 @@ import logging
 import time
 
 from fastapi import APIRouter, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.fleet_headers import fleet_headers
-from fleet_manager.server.routes.routing import extract_tags
+from fleet_manager.server.routes.routing import CLIENT_GONE_STATUS, dispatched_stream, extract_tags
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,11 @@ async def transcribe_audio(request: Request, audio: UploadFile):
 
     start = time.monotonic()
     try:
-        stream = await response_future
+        stream = await dispatched_stream(
+            request, response_future, entry, request.app.state.trace_store
+        )
+        if stream is None:
+            return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
         result_json = ""
         async for chunk in stream:
             result_json = chunk

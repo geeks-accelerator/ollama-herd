@@ -35,9 +35,11 @@ from fleet_manager.server.routes.ollama_compat import (
     _post_with_failover,
 )
 from fleet_manager.server.routes.routing import (
+    CLIENT_GONE_STATUS,
     check_context_overflow,
     client_concurrency_response,
     client_error_passthrough,
+    dispatched_stream,
     extract_tags,
     get_all_fleet_models,
     get_fleet_capabilities,
@@ -396,7 +398,11 @@ async def chat_completions(request: Request):
         response_future = await queue_mgr.enqueue(entry, process_fn)
     except ClientConcurrencyExceeded as e:
         return client_concurrency_response(e)
-    stream = await response_future
+    stream = await dispatched_stream(
+        request, response_future, entry, request.app.state.trace_store
+    )
+    if stream is None:
+        return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
 
     # Build response headers — canonical X-Fleet-* set via the shared builder.
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
