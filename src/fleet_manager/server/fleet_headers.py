@@ -90,7 +90,10 @@ def affinity_from_breakdown(breakdown: dict | None) -> str | None:
     """
     if not breakdown:
         return None
-    return "matched" if breakdown.get("session_affinity", 0) else "new"
+    if breakdown.get("session_affinity", 0):
+        return "matched"
+    # A new conversation sent where its shared system prompt + tools were warm.
+    return "prefix" if breakdown.get("prefix_affinity", 0) else "new"
 
 
 def usage_with_cached_tokens(usage: dict, cached_tokens: int | None) -> dict:

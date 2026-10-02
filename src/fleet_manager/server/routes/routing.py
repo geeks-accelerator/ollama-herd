@@ -14,7 +14,7 @@ from fleet_manager.models.request import InferenceRequest, RoutingResult
 from fleet_manager.server.model_knowledge import classify_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.scorer import ScoringEngine
-from fleet_manager.server.session_affinity import session_key_for
+from fleet_manager.server.session_affinity import prefix_key_for, session_key_for
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +154,7 @@ def parse_allow_fallback(body: dict, headers=None) -> bool | None:
     return None
 
 
-def _remember_session_node(scorer, session_key: str, results) -> None:
+def _remember_session_node(scorer, session_key: str, results, prefix_key: str = "") -> None:
     """Pin this conversation to whichever node actually won.
 
     Recorded here rather than in each route so every surface — OpenAI, Ollama,
@@ -163,9 +163,12 @@ def _remember_session_node(scorer, session_key: str, results) -> None:
     pulls and upgrades), not the one first considered.
     """
     tracker = getattr(scorer, "_sessions", None)
-    if tracker is None or not session_key or not results:
+    if tracker is None or not results:
         return
-    tracker.remember(session_key, results[0].node_id)
+    # The same TTL'd map holds both: a conversation pin and a prompt-head pin.
+    for key in (session_key, prefix_key):
+        if key:
+            tracker.remember(key, results[0].node_id)
 
 
 async def score_with_fallbacks(
@@ -212,10 +215,13 @@ async def score_with_fallbacks(
     # holds its prefix. Empty for stateless callers — signal 8 then scores 0 and
     # routing is unchanged.
     session_key = session_key_for(inference_req)
+    # And the shared prompt head (system + tools), for a new conversation's
+    # first turn — see prefix_key_for.  Empty for short heads.
+    prefix_key = prefix_key_for(inference_req)
 
     for model in models_to_try:
         results = scorer.score_request(
-            model, queue_depths, estimated_tokens, session_key=session_key
+            model, queue_depths, estimated_tokens, session_key=session_key, prefix_key=prefix_key
         )
         if results:
             winner = results[0]
@@ -227,7 +233,7 @@ async def score_with_fallbacks(
                         f"Fallback: '{inference_req.model}' unavailable, "
                         f"using '{model}' instead"
                     )
-                _remember_session_node(scorer, session_key, results)
+                _remember_session_node(scorer, session_key, results, prefix_key)
                 return results, model
             # Model scored but only COLD/WARM — save as fallback
             if cold_results is None:
@@ -239,12 +245,12 @@ async def score_with_fallbacks(
             inference_req, scorer, queue_depths, estimated_tokens, models_to_try,
         )
         if fallback_result:
-            _remember_session_node(scorer, session_key, fallback_result[0])
+            _remember_session_node(scorer, session_key, fallback_result[0], prefix_key)
             return fallback_result
 
     # --- Return cold results if available (will trigger cold load) ---
     if cold_results is not None:
-        _remember_session_node(scorer, session_key, cold_results[0])
+        _remember_session_node(scorer, session_key, cold_results[0], prefix_key)
         return cold_results
 
     # --- Holding queue: model exists but no node available ---
@@ -254,7 +260,7 @@ async def score_with_fallbacks(
         for model in models_to_try:
             queue_depths = queue_mgr.get_queue_depths()
             results = scorer.score_request(
-            model, queue_depths, estimated_tokens, session_key=session_key
+            model, queue_depths, estimated_tokens, session_key=session_key, prefix_key=prefix_key
         )
             if results:
                 if model != inference_req.model:
@@ -262,7 +268,7 @@ async def score_with_fallbacks(
                         f"Fallback: '{inference_req.model}' unavailable, "
                         f"using '{model}' instead"
                     )
-                _remember_session_node(scorer, session_key, results)
+                _remember_session_node(scorer, session_key, results, prefix_key)
                 return results, model
 
         # Check if ANY of the models exist on any node

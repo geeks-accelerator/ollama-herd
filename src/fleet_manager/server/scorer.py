@@ -31,7 +31,7 @@ class ScoringEngine:
 
     def score_request(
         self, model: str, queue_depths: dict[str, int], estimated_tokens: int = 0,
-        session_key: str = "",
+        session_key: str = "", prefix_key: str = "",
     ) -> list[RoutingResult]:
         """
         Score all candidate nodes for a model request.
@@ -70,8 +70,12 @@ class ScoringEngine:
 
             s8 = self._score_session_affinity(node, session_key, depth)
             breakdown["session_affinity"] = s8
+            # Second tier of signal 8, only when this conversation has no pin
+            # here: a node already holding the same system prompt + tools.
+            s8p = 0.0 if s8 else self._score_prefix_affinity(node, prefix_key, depth)
+            breakdown["prefix_affinity"] = s8p
 
-            total = s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8
+            total = s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s8p
             breakdown["total"] = total
 
             results.append(
@@ -390,6 +394,12 @@ class ScoringEngine:
     # is genuinely saturated the bonus is small enough that an idle peer wins.
     SESSION_AFFINITY_DECAY_SCALE = 2.0
 
+    # A shared system prompt + tools warm on a node is worth less than *this
+    # conversation's* full history warm there, so it scores below the session
+    # bonus — and through the same decay, which is what stops every client
+    # sharing one popular system prompt from piling onto one node.
+    PREFIX_AFFINITY_BONUS = 10.0
+
     def _score_session_affinity(
         self, node: NodeState, session_key: str, depth: int = 0
     ) -> float:
@@ -405,9 +415,26 @@ class ScoringEngine:
         first turn, a stateless call, and a stale conversation all score exactly
         as they did before this signal existed.
         """
-        if not session_key or self._sessions is None:
+        return self._pin_bonus(node, session_key, self.SESSION_AFFINITY_BONUS, depth)
+
+    def _score_prefix_affinity(
+        self, node: NodeState, prefix_key: str, depth: int = 0
+    ) -> float:
+        """Signal 8, second tier: a new conversation whose leading system prompt
+        and tools another conversation already warmed on this node.
+
+        Five agents on five machines sending the same ~20K-token system prompt
+        each start cold wherever they land; this sends them where that prefix
+        already is.  Zero without a prefix key (short prompts don't get one —
+        see ``prefix_key_for``), so routing is unchanged for everything else.
+        """
+        return self._pin_bonus(node, prefix_key, self.PREFIX_AFFINITY_BONUS, depth)
+
+    def _pin_bonus(self, node: NodeState, key: str, bonus: float, depth: int) -> float:
+        """``bonus`` if ``key`` is pinned to ``node``, decayed by its queue depth."""
+        if not key or self._sessions is None:
             return 0.0
-        preferred = self._sessions.preferred_node(session_key)
+        preferred = self._sessions.preferred_node(key)
         if not preferred or preferred != node.node_id:
             return 0.0
 
@@ -422,7 +449,7 @@ class ScoringEngine:
         # Decay can only shrink, never grow, so the deliberate ceiling below
         # thermal's 50 holds by construction.
         factor = 1.0 / (1.0 + max(0, depth) / self.SESSION_AFFINITY_DECAY_SCALE)
-        return self.SESSION_AFFINITY_BONUS * factor
+        return bonus * factor
 
     def _score_role_affinity(self, node: NodeState, model: str) -> float:
         """Signal 5: Match model size to node capability.

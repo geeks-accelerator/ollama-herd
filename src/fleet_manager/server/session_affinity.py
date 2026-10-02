@@ -40,6 +40,8 @@ Deliberately *approximate*, and the limits are worth stating plainly:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 
 # How long a pin stays credible.  Chosen to comfortably span the gap between
@@ -110,3 +112,56 @@ def session_key_for(request) -> str:
     ip = getattr(request, "client_ip", "") or ""
     model = getattr(request, "original_model", "") or getattr(request, "model", "")
     return f"{ip}|{model}" if ip else ""
+
+
+# A shared prompt head is only worth routing for when re-prefilling it costs
+# real time.  Below this, a cold prefill is cheaper than pulling otherwise
+# unrelated requests onto one node.
+PREFIX_AFFINITY_MIN_TOKENS = 2000
+
+
+def prefix_key_for(request) -> str:
+    """Identity of a request's shared prompt head — model, system prompt, tools.
+
+    ``session_key_for`` follows one *conversation*; this follows a *prompt
+    head* many conversations share.  Five Claude Code sessions on five machines
+    send the same ~20K-token system prompt and tool list, so the node one of
+    them warmed is the right place for the others' first turns too.
+
+    Read from what the backend will actually see, because its prefix cache is
+    exact-match: the leading ``role: system`` messages of the already-translated
+    ``messages`` (every route puts the system prompt there, and the Anthropic
+    route has already replaced Claude Code's per-request ``cch=`` fingerprint —
+    ``anthropic_translator._normalize_cache_busting_tokens``), plus ``tools``.
+    Deliberately NOT normalized beyond that: whitespace or tool order that
+    differs reaches the backend as different tokens and shares no cache, so
+    grouping such requests would be routing for nothing.  Dict keys are sorted
+    only because backends parse tool JSON, so key order never reaches the prompt.
+
+    Empty when the head is under ``PREFIX_AFFINITY_MIN_TOKENS``.  Only a hash is
+    kept — prompt text is never stored.
+    """
+    system = []
+    for m in getattr(request, "messages", None) or []:
+        if not isinstance(m, dict) or m.get("role") != "system":
+            break
+        system.append(m.get("content"))
+    tools = (getattr(request, "raw_body", None) or {}).get("tools") or None
+    if not system and not tools:
+        return ""
+
+    from fleet_manager.server.scorer import ScoringEngine  # token estimate, reused
+
+    head = [{"role": "system", "content": c} for c in system]
+    if tools:
+        head.append({"role": "system", "content": json.dumps(tools)})
+    if ScoringEngine.estimate_tokens(head) < PREFIX_AFFINITY_MIN_TOKENS:
+        return ""
+
+    blob = json.dumps(
+        {"model": getattr(request, "model", "") or "", "system": system, "tools": tools},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return "prefix:" + hashlib.sha256(blob.encode()).hexdigest()[:32]
