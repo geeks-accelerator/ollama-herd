@@ -1,6 +1,6 @@
 # Post-0.35 Enhancements — MLX-default readiness, mlx-lm 0.32, and three router capabilities
 
-**Status**: **Code IMPLEMENTED 2026-10-02** — Phases 0, 1, 3, 4, 5, 6, 7 (one commit each, 1444 → 1541 tests). **Pending:** Phase 2 (the Ollama upgrade) and the live checks that need downloads; Phase 3's Mac Studio soak and Phase 7's two-machine cache measurement can't run on the reference Mac mini. See [Implementation notes](#implementation-notes-2026-10-02) for where the build departed from this plan.
+**Status**: **IMPLEMENTED and verified live 2026-10-02.** All 8 phases are done (code, plus the Ollama 0.35.0 upgrade). **Open:** the 24-hour soak (Phase 2); the Mac Studio soak (Phase 3); a two-machine cache measurement (Phase 7). **Phase 1's limit is computed but not enforced.** Herd's queue workers never held a slot for a request's duration, a pre-existing bug since the initial commit, now re-opened in `docs/issues.md`. See [Implementation notes](#implementation-notes-2026-10-02).
 **Date**: 2026-10-02
 **Prereq context**: [`post-0.32-enhancements.md`](post-0.32-enhancements.md) (the last Ollama audit) and [`../issues/ollama-native-mlx-runner.md`](../issues/ollama-native-mlx-runner.md) (the MLX-subsystem question this plan partly answers).
 
@@ -374,12 +374,25 @@ Each phase was built against the code rather than this document, and four places
 - `X-Fleet-Affinity` gains a `prefix` value.
 - `/v1/systemone` traces with the `decision` tag, the way embeds tag themselves.
 
-**Verified live on the Mac mini:**
-- Phase 0: herd's `/api/tags` matches Ollama's; dinov2 agrees across both endpoints.
-- Phase 4: `/v1/models` `supports_vision`.
-- Phase 5: the node advertises a reranker; 400/404 pass through; `nomic` now `cached=True`.
-- Phase 6: an actionable 404 replaces the bare one; `/api/show` serves through the extracted path.
-- Phase 7: two logical nodes, three sessions with a shared 1.9K-token head. The second and third followed the first with `X-Fleet-Affinity: prefix`, scoring 102 vs 92. Both logical nodes share one Ollama, so this proves the decision, not the 27.3s → 0.7s cache hit.
+**Verified live on the Mac mini (after the upgrade to Ollama 0.35.0):**
+
+| Phase | Result |
+|---|---|
+| 0 | herd's `/api/tags` matches Ollama's. dinov2 agrees across `/api/tags` and `/api/show`. On 0.35.0, gemma3 reports `vision` in both Ollama endpoints (on 0.33.3, `/api/tags` left it out) |
+| 1 | Real metadata gives the right per-model limits. With a hypothetical `NUM_PARALLEL=4`: `qwen3.8:27b-mlx`=1 (safetensors), `nimble`=1 (qwen35), `gemma3:27b`=4, `nomic`=1. **But it isn't enforced:** four concurrent requests ran with `concurrency=1, in_flight=4, pending=0` (see Phase 1 finding below) |
+| 2 | 0.35.0 installed with a matching SHA-256 and notarized signature. Decode 13.6 vs 13.7 tok/s baseline. `/v1/systemone` exists. Details in `docs/observations.md` (2026-10-02) |
+| 3 | The rewritten `setup-mlx.sh` installs and verifies 0.32.0. Stock `mlx_lm.server` serves a chat with herd's exact flags (`--kv-bits 8 --kv-group-size 64 --quantized-kv-start 0`). The probe returns True against the real binary |
+| 4 | `qwen3.8:27b-mlx` with `num_predict: 50`. **Direct to Ollama, the budget is exhausted (50 tokens) and content is `''`.** Through herd it's inflated to 1024, takes 153 tokens, and answers `6:44pm` (correct). `think:false` is not inflated |
+| 5 | The right document ranks first (0.99). Cold 4.8 s (includes the 80 MB download), warm 17–31 ms. nomic and the reranker now read `cached=True` |
+| 6 | `nimble` through herd matches direct Ollama exactly: `bug` 0.9781, confidence 0.8906, the same as Ollama's release-notes example |
+| 7 | Two logical nodes, three sessions with a shared 1.9K-token head. The second and third followed the first with `X-Fleet-Affinity: prefix` (102 vs 92). One shared Ollama, so this proves the decision, not the cache causality |
+
+**Phase 1 finding (pre-existing, not fixed here):** queue workers call `process_fn()`, receive an unconsumed generator, and immediately take the next request. So `concurrency` has never limited backend in-flight requests. The per-model values from this plan become effective once workers hold their slot. That's a hot-path change needing its own design. See the re-opened issue in `docs/issues.md`.
+
+**Live testing also corrected Phase 1's rule:** `nimble` reports `completion` alongside `decision`, so `sched.go` doesn't force decision models serial. Only embedders (`embedding` without `completion`) are forced, plus the families list.
+
+**Also found, out of scope:** non-streaming `/api/chat` through herd drops `message.thinking`, because `ollama_compat.py`'s aggregation keeps only `content`. Streaming passes it through.
+
 
 ## Sequencing & effort
 

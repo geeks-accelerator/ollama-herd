@@ -77,6 +77,28 @@ When you see a pattern, add it below with the date and evidence.
 
 ## Observations
 
+### 2026-10-02 — Ollama 0.33.3 → 0.35.0 on the Mac mini: capabilities fixed, throughput unchanged, and quitting the app doesn't quit it
+
+**Evidence:**
+- **Install.** The `Ollama-darwin.zip` SHA-256 matched GitHub's published asset digest. Code signature valid, Gatekeeper reported *"accepted · Notarized Developer ID"*, Team ID `3MU9H2V9Y9` (same as 0.33.3).
+- **Quit.** `osascript -e 'tell application "Ollama" to quit'` returned **`-128` ("User canceled")**, and the process list showed `Ollama hidden`. The app cancels an AppleScript quit and hides to the menu bar, so `ollama serve` and `llama-server` keep running. `SIGTERM` to the Electron parent (`Contents/MacOS/Ollama`) stopped everything cleanly, with no orphans.
+- **Capabilities.** On 0.33.3, `/api/tags` reported `gemma3:27b` as `["completion"]` while `/api/show` said `["completion", "vision"]`. On 0.35.0 both say `["completion", "vision"]`, matching the 0.34.1 note "capabilities are now reported consistently".
+- **Throughput.** `gemma3:27b` decode was **13.6 tok/s median after vs 13.7 before** (p25 13.5 both; n=8 post-upgrade vs n=520 over the prior 7 days).
+- **New endpoint.** `/v1/systemone` returns a 400 validation error (it exists).
+- **Auto-update.** The app's `settings` table in `~/Library/Application Support/Ollama/db.sqlite` has **`auto_update_enabled = 1`** and no release-channel column.
+
+**Insight:**
+1. The "quit" step in CLAUDE.md's Ollama-restart recipe must be a signal to the Electron parent. A graceful AppleScript quit silently does nothing, and anything that then assumes `:11434` is free races a server that's still running.
+2. The 0.33.x `/api/tags` under-reporting is real, which is exactly why herd reads capabilities presence-only (`model_has_capability`): a missing entry proves nothing on older nodes.
+3. With auto-update on and no channel control, the 0.40 change that makes MLX the default can arrive on a relaunch without anyone choosing it. Ollama's MLX runner decodes one request at a time, so herd must not assume `OLLAMA_NUM_PARALLEL` for those models.
+
+**Action taken:**
+- Herd now computes decode concurrency per model (`decode_parallelism_for(node, model)`, Phase 1 of `docs/plans/post-0.35-enhancements.md`) and reads capabilities from each node's Ollama (Phase 0).
+- The 0.33.3 bundle was kept as a rollback (0.33.3 also stays downloadable from GitHub releases).
+- The 24-hour soak per the release checklist is still to be run.
+
+---
+
 ### 2026-07-17 — Ollama 0.30.2 changed `prompt_eval_count` to include cached prefix tokens
 
 **Evidence:** Ollama 0.30.2 release note: *"The llama.cpp backend now includes cached prompt tokens in token accounting, improving usage reporting for requests with prompt cache hits."* We read `prompt_eval_count` directly at `streaming.py` (the `done:true` branch) and feed it to traces → `context_optimizer`'s `total_p99` → dynamic num_ctx sizing. Before 0.30.2, on a prefix-cache hit Ollama reported only the *newly-evaluated* tokens, so a cache hit made a large prompt look small — **undercounting** true prompt size. After 0.30.2 it reports the full logical prompt.

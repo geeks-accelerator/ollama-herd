@@ -1026,9 +1026,17 @@ The Trends page has preset time buttons (24h, 48h, 72h, 7d) but no custom date/t
 
 ---
 
-### Queue concurrency ignores OLLAMA_NUM_PARALLEL — allows 8 in-flight but Ollama only runs 2 `FIXED`
+### Queue concurrency ignores OLLAMA_NUM_PARALLEL — allows 8 in-flight but Ollama only runs 2 `OPEN` (root cause found 2026-10-02)
 
-**Fixed:** the node reports `num_parallel` in the heartbeat and `decode_parallelism_for()` (`server/serializers.py`) caps each queue at it — the proposed fix below, as shipped. **Follow-up (2026-10-02):** Ollama decides admission per *model*, not per node — MLX-run models decode serially and `sched.go` forces `numParallel=1` for several architectures — so the limit is now per model. See `docs/plans/post-0.35-enhancements.md` Phase 1.
+**Re-opened 2026-10-02.** This was marked `FIXED` earlier the same day on the assumption that `decode_parallelism_for()` caps each queue. It computes the right number, now per model (post-0.35 Phase 1), but **nothing enforces it**. Measured live on the Mac mini: four concurrent `/api/chat` requests to `qwen3.8:27b-mlx` showed herd's queue at `concurrency=1` with **`in_flight=4`, `pending=0`**. Completion times stepped 3.6 → 6.8 → 9.5 → 12.8 s, so the backend ran them one at a time while herd reported all four as in flight.
+
+**Root cause** (`server/queue_manager.py` `_worker`, unchanged since the 2026-03-07 initial commit): the worker pulls an entry, calls `process_fn(entry)`, and gets back an **unconsumed async generator**, since every `process()` in `streaming.py` returns `AsyncIterator[str]`. It hands that to the route via the future and immediately loops for the next entry. The request to Ollama runs later, while the route consumes the generator, so a worker never holds its slot for a request's duration. One worker dispatches the whole pending queue at once. `concurrency` bounds how fast generators are handed out, not how many requests are at the backend.
+
+**Impact:** the original symptom (surplus requests queue *inside Ollama*, invisible to herd's depth and wait estimates) has been present since day one, for every model. The per-model limits from Phase 1 (MLX serial, the `sched.go` families) are correct values with no effect until this is fixed. `_score_wait_time` uses `depth × p75`, so wait estimates are still roughly right in aggregate, but herd can't reorder or reject work that has already left its queue.
+
+**Proposed fix (needs its own design and soak, since it's the hot path for every request):** a worker holds its slot until the entry completes. For example, it awaits an event that `mark_completed` / `mark_failed` set, with the zombie reaper (`_reap_stale_in_flight`) also releasing it, so a route that never reports completion can't wedge a worker forever. Expect visible behavior changes: requests over the limit wait in herd's queue (where `client_max_in_flight`, holding-queue timeouts and the dashboard now see them) instead of inside Ollama.
+
+**Original report (2026-04-16):**
 
 **Severity:** Medium
 **Discovered:** 2026-04-16 — dashboard always shows "1/8 in-flight" regardless of model or node. On a 512GB machine the concurrency formula always hits the `_MAX_CONCURRENCY=8` cap because headroom is massive (436GB / 2GB per slot = 218, clamped to 8).
