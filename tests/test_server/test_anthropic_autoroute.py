@@ -263,3 +263,31 @@ class TestGetFleetCapabilities:
             SimpleNamespace(ollama=None),
         ])
         assert get_fleet_capabilities(registry) == {"m:1b": {"completion", "vision"}}
+
+
+class TestDecisionModelsAreNotChatCandidates:
+    """Ollama 0.35 decision models (nimble, tev1) report "completion" too, so
+    nothing excluded them -- and the resolver prefers a LOADED model, so right
+    after a /v1/systemone call loaded nimble, claude-sonnet resolved to it
+    (found live 2026-10-02).  A Claude Code session answered by a ticket
+    classifier.  They're reported as "decision", and that is what excludes them."""
+
+    CAPS = {
+        "nimble:latest": {"decision", "tools", "thinking", "completion"},
+        "gemma3:27b": {"completion", "vision"},
+        "qwen3.8:27b-mlx": {"completion", "vision", "tools", "thinking"},
+    }
+
+    def test_decision_model_is_never_ranked(self):
+        for tier in ("claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4"):
+            assert "nimble:latest" not in rank_candidates(
+                set(self.CAPS), tier, capabilities=self.CAPS,
+            )
+
+    def test_a_loaded_decision_model_does_not_win_a_claude_request(self):
+        model, reason = resolve_model(
+            "claude-sonnet-4-5", {}, {"nimble:latest"}, set(self.CAPS),
+            auto_route=True, capabilities=self.CAPS,
+        )
+        assert model != "nimble:latest"
+        assert reason == "auto-ondisk"

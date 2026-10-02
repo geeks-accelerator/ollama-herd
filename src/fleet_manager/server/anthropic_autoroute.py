@@ -144,6 +144,12 @@ def _candidate_score(
     ) or ()
     if "embedding" in reported or _is_embedding_name(name):
         return None  # embedding models can't chat, and classify as GENERAL
+    if "decision" in reported:
+        # Decision models (Ollama 0.35 /v1/systemone: nimble, tev1) report
+        # "completion" too, but they're task-tuned classifiers.  Because the
+        # resolver prefers a loaded model, one loaded by a /v1/systemone call
+        # would otherwise win the next Claude request.
+        return None
 
     spec = lookup_model(name)
     category = spec.category if spec else classify_model(name)
