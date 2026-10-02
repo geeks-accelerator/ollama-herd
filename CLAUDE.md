@@ -328,6 +328,7 @@ Silent failures are dishonest. Fail fast, fail loud.
 - **Inference request is primary** — every component serves one goal: best response, fastest, on best machine
 - **AI as resident** — CLAUDE.md, traces, observations compound across sessions. AI accumulates understanding, not just executes tasks
 - **Knowledge in committed files** — never `.claude/` memory. Use `CLAUDE.md`, `docs/issues.md`, `docs/observations.md`, `CHANGELOG.md`
+- **Greenfield: no feature gating, minimal debt** — correct behavior *is* the behavior: no `FLEET_*` on/off flags and no second code path for improvements. Reuse before build — find the existing helper or pattern first, and extract a shared helper rather than copy an inline block. Tuning follows existing patterns (scorer weights are class constants, not settings). The only opt-ins are behaviors with side effects outside herd that need operator consent (`FLEET_CORS_ORIGINS` exposes fleet data cross-origin; `FLEET_OFFLINE_ALERT` opens browser windows). Worked example: the audit in `docs/plans/post-0.35-enhancements.md`
 
 ## Issues & Observations
 
