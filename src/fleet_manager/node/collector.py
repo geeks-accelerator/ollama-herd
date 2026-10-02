@@ -37,6 +37,7 @@ from fleet_manager.models.node import (
     VisionEmbeddingMetrics,
     VisionEmbeddingModel,
 )
+from fleet_manager.node.backend_clients import probe_backend_clients
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,13 @@ def _make_lan_reachable_url(ollama_host: str, lan_ip: str) -> str:
 # Cache for launchctl lookups — the values can't change without restarting
 # Ollama, and shelling out on every heartbeat would be wasteful.
 _LAUNCHCTL_CACHE: dict[str, str] = {}
+
+
+# 60 s, not the 5 s heartbeat interval: this spawns an `lsof` plus one `ps` per
+# unknown peer, and a bypassing client that matters is one that sticks around.
+@_ttl_cache(ttl_seconds=60.0)
+def _collect_backend_clients(ollama_host: str):
+    return probe_backend_clients(ollama_host)
 
 
 def _ollama_env(name: str) -> str:
@@ -728,6 +736,7 @@ async def collect_heartbeat(
             num_parallel=num_parallel,
             requests_active=requests_active,
             version=ollama_version,
+            backend_clients=_collect_backend_clients(ollama_host),
         ),
         ollama_host=_make_lan_reachable_url(ollama_host, lan_ip),
         lan_ip=lan_ip,

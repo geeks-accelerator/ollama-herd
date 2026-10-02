@@ -268,6 +268,71 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+## 2026-10-02: A documented gotcha was wrong, and I nearly "fixed" a working check to match it
+
+**Evidence.** Auditing why `context_waste` had been a standing WARNING, I started
+from CLAUDE.md's claim that `prompt_tokens` records `prompt_eval_count`, "i.e.
+cache misses, NOT full context". If that held, every context-sizing number herd
+computes is deflated by however well prefix caching is working, and the better the
+cache performs the more "waste" the check invents. I was two edits from rewriting
+the check on that basis. The test that stopped me was four lines — send an
+identical prompt twice to Ollama 0.34.4:
+
+```
+run 1 (cold): prompt_eval_count=4074  prompt_eval_duration=2.235s
+run 2 (warm): prompt_eval_count=4074  prompt_eval_duration=0.021s
+```
+
+Prefill duration fell 106x, so the cache was unambiguously hit, and the count did
+not move. `prompt_eval_count` is the **full prompt length**. The original note had
+conflated "absent from traces" (a bypassing client's request never reaches
+`request_traces` at all — which was the actual 2026-08 finding) with "deflated in
+traces" (herd's own requests). Same gotcha, second wrong claim: it said
+fully-cached prompts may emit no `new prompt` line in Ollama's log. Both runs
+emitted one. That is why 674 traces reconciled against 679 backend lines over the
+same 2.4 h window — 0.7% apart, not the loose agreement the note led me to expect.
+
+**Insight 1 — a wrong fact in CLAUDE.md is more expensive than a missing one.**
+Every agent on this repo reads that file and treats it as settled. A missing fact
+gets measured; a wrong one gets *built on*. This one would have produced a
+"fix" that broke a correct check, with a confident commit message citing the
+documented rationale. Three things made it survivable: the claim was specific
+enough to test, the test was cheap, and the instinct to run it before editing.
+**When a CLAUDE.md gotcha is load-bearing for the change you are about to make,
+re-derive it first.** Both corrections now carry their reproduction inline, so the
+next agent can re-check in thirty seconds rather than trusting me.
+
+**Insight 2 — the measurement being right does not make the recommendation
+right.** With `prompt_tokens` vindicated, gpt-oss:120b really does see p99 ~5.3K
+prompts against 131,072 allocated, and `context_waste` really does compute 16,384.
+But that reduction had already been tried: on 2026-09-22 the per-slot context went
+131072 -> 32768, still 23x the p99 prompt and comfortably fitting by the check's
+own arithmetic, and TTFT went 1.0s -> 6.3s for six days. So the check's arithmetic
+was sound and its advice was still the thing that caused the incident. A metric can
+be measured correctly, be the right metric, and still not support the decision
+being made from it.
+
+**Insight 3 — and the automation would have reverted the fix for that incident.**
+`context_optimizer._check_and_optimize` overwrote *any* override every 5 minutes
+when `num_ctx_auto_calculate` was on, including the hand-set
+`gpt-oss:120b=131072` that ended the regression. Simulated against live trace
+data, it would have reset it to 16384 and queued an Ollama restart to apply it.
+The tell that this was a bug and not a decision: `_auto_initialize_overrides` had
+always skipped a model with an existing override, and only the periodic path did
+not. **Two code paths that read the same config and disagree about whose data it
+is are a bug even before you find the scenario** — the asymmetry is the evidence.
+herd now tracks what it set itself (`_auto_set`) and manages only that.
+
+**Insight 4 — a WARNING nobody can act on is how a board stops being read.**
+`context_waste` had been WARNING for as long as anyone looked, on two models both
+pinned on purpose. That is indistinguishable from noise, and this fleet has now
+lost six days (the 32768 regression) and four days (the trace-write failures) to
+things hiding behind exactly that. Severity now follows what is *actionable*, not
+what is true: INFO when every oversized model is deliberately pinned. The card
+still reports the memory cost — it just stops demanding a change it cannot justify.
+
+---
+
 ## 2026-09-28: `OLLAMA_CONTEXT_LENGTH` is not a fallback — it silently overrode a per-request `num_ctx` and cost 6x prefill
 
 **I caused this one.** On 2026-09-22 I set `OLLAMA_CONTEXT_LENGTH=32768` to stop a model-load deadlock. It worked, and it also quadrupled prefill latency on the model serving 99% of traffic. I verified the thing I fixed and did not measure the thing I might have broken.

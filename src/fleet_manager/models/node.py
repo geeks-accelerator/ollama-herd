@@ -113,6 +113,28 @@ class ModelTagMeta(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
 
 
+class BackendClient(BaseModel):
+    """A process other than herd holding an open connection to a node's Ollama.
+
+    Populated by ``node/backend_clients.py``.  Its reason for existing is that
+    a co-tenant on ``:11434`` silently invalidates every scheduling signal herd
+    has while leaving every herd-side metric looking healthy -- see the
+    2026-08-23 entry in ``docs/observations.md``.  Older node agents never send
+    this, and an empty list means "nothing seen", which is also what a probe
+    that could not run reports; the router only ever alerts on a positive
+    sighting, so a blind node is a missed detection and never a false alarm.
+    """
+
+    pid: int
+    process: str = ""
+    # Full argv, truncated.  Not the process name: a Node daemon's name is just
+    # `process.title` and in the 2026-08 incident it matched an unrelated
+    # project folder, which is what made the culprit hard to find.
+    cmdline: str = ""
+    connections: int = 1
+    loopback: bool = True
+
+
 class OllamaMetrics(BaseModel):
     models_loaded: list[LoadedModel] = Field(default_factory=list)
     models_available: list[str] = Field(default_factory=list)
@@ -150,6 +172,11 @@ class OllamaMetrics(BaseModel):
     # 0.32.10 changed the default repeat_penalty.  Empty = not reported (older
     # agent, or Ollama unreachable at collection time).
     version: str = ""
+    # Processes other than herd with open connections to this node's Ollama.
+    # Empty = none seen (or the probe could not run -- the two are deliberately
+    # indistinguishable, because the router only alerts on a positive sighting).
+    # Probed at most once a minute; an lsof per 5 s heartbeat is not worth it.
+    backend_clients: list[BackendClient] = Field(default_factory=list)
 
 
 class CapacityMetrics(BaseModel):

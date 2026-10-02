@@ -298,6 +298,27 @@ slots means herd's "concurrency 2" is really occupancy 3–4 at the backend.
 The symptom is distinctive: **herd's own numbers all look healthy** — no errors,
 no retries, no fallbacks, memory fine — while throughput is plainly down.
 
+**Check the dashboard first — this is now automated.** Since 0.9.7 the
+`backend_bypass_clients` health check names the culprit directly:
+
+```bash
+curl -s localhost:11435/dashboard/api/health | python3 -c "
+import json,sys
+for r in json.load(sys.stdin)['recommendations']:
+    if r['check_id'] == 'backend_bypass_clients':
+        for c in r['data']['clients']:
+            print(c['node_id'], c['pid'], c['process'], c['connections'], c['cmdline'])"
+```
+
+Each node probes who holds established connections to its Ollama and reports any
+process that is not herd, a child herd spawned, or Ollama itself. It fires within
+about a minute of a foreign client appearing and clears about a minute after it
+leaves. **A silent check is not proof of absence:** an empty list also means "the
+probe could not run" (no `lsof`, or Windows, where it is unimplemented), because
+the check only ever fires on a positive sighting — a blind node is a missed
+detection, never a false alarm. So if throughput is down and this card is absent,
+still run the manual reconciliation below.
+
 **Reconcile backend-side work against router-side dispatch:**
 
 ```bash
@@ -312,7 +333,8 @@ sqlite3 ~/.fleet-manager/latency.db \
 **Only a gap in one direction matters.** `backend > router` means work herd never
 dispatched — that is the co-tenant signal. `router > backend` is benign and common:
 the backend line is attributed by the nearest preceding `[GIN]` timestamp (approximate),
-the log rotates, and a fully-cached prompt may not emit a `new prompt` line at all.
+and the log rotates. (This section used to add that a fully-cached prompt may not
+emit a `new prompt` line; on 0.34.4 it does — see the correction further down.)
 Treat this as a **rough tripwire, not an audit** — a sustained `backend > router`
 excess of tens of percent is the alarm; small gaps either way are noise. When it
 does trip, confirm with `lsof` below before concluding anything.
@@ -341,13 +363,21 @@ the binary path, not the name.
 - `ollama ps` shows a model at a larger `CONTEXT` than `FLEET_NUM_CTX_OVERRIDES`
   specifies. A request that skips the router also skips `num_ctx` resolution, so
   Ollama applies its own default.
-- Oversized prompts appear in the backend log that never appear in herd's traces:
+- Oversized prompts appear in the backend log that never appear in herd's traces
+  **at all**:
   ```bash
   grep -oE "task\.n_tokens = [0-9]+" ~/.ollama/logs/server.log | sort -t= -k2 -n | tail
   ```
-  herd's `prompt_tokens` records `prompt_eval_count`, which counts **cache misses,
-  not full context** — so a long-context request can look small in traces while
-  occupying a slot with a huge KV cache and starving co-resident decode.
+  A bypassing client's request is absent from `request_traces` entirely — that
+  absence is the tell. **Correction (2026-10-02):** this section previously said
+  `prompt_tokens` counts cache misses rather than full context, so a long-context
+  request "looks small in traces". That is wrong. `prompt_eval_count` is the full
+  prompt length — verified on Ollama 0.34.4 by resending an identical prompt:
+  `prompt_eval_count=4074` both times while `prompt_eval_duration` fell
+  2.235 s → 0.021 s, so the prefix cache was hit and the count did not move.
+  Likewise, a fully-cached prompt **does** emit a `new prompt` line on 0.34.4,
+  which makes the reconciliation above tighter than described (674 traces against
+  679 backend lines over the same 2.4 h window).
 
 **Fix:** point the other client at the router (`:11435`) instead of the backend
 (`:11434`). herd is Ollama-API compatible, so this is usually a one-line change to

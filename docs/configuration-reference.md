@@ -225,6 +225,10 @@ Replay captured requests with `scripts/replay-debug-requests.py` — e.g. `--lis
 
 Per-model overrides are set at runtime via `POST /dashboard/api/settings` with `{"num_ctx_overrides": {"model-name": 16384}}`. When `dynamic_num_ctx` is enabled and `num_ctx_auto_calculate` is true, the optimizer auto-initializes overrides from 7-day trace history on startup.
 
+**The optimizer only manages overrides it set itself.** An entry you put in `FLEET_NUM_CTX_OVERRIDES` (or set by hand through the API) is treated as a decision and left alone — `num_ctx_auto_calculate` will never reduce it. Before 0.9.7 it would: the periodic pass overwrote any override every 5 minutes, which meant enabling the toggle could silently reset a deliberate value and queue an Ollama restart to apply the reset. On this reference fleet that would have reverted `gpt-oss:120b=131072`, the value set specifically to end a six-day TTFT regression, to 16384.
+
+**Treat a trace-derived context recommendation as a hypothesis, not an answer.** The arithmetic is sound — `prompt_tokens` is the full prompt length, not just the cache-missed part — but prompt size is not the only thing allocated context buys. Cutting gpt-oss:120b's per-slot context to 32768 left its p99 prompt fitting 23x over and *still* collapsed prefix-cache reuse (5,772 → 770 hits), taking TTFT from 1.0s to 6.3s for six days while decode throughput never moved. **After any context change, verify prefix-cache hits and TTFT — not decode throughput**, which is the one metric a bad context change leaves untouched. See the `OLLAMA_CONTEXT_LENGTH` section below and `docs/observations.md` (2026-09-28, 2026-10-02).
+
 **Tuning guidance:**
 - Enable `FLEET_DYNAMIC_NUM_CTX` when a model's allocated context far exceeds actual usage (check `/dashboard/api/context-usage`)
 - The recommended context is p99 of total tokens (prompt + completion) with 50% headroom, rounded to next power of 2

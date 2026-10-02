@@ -1548,6 +1548,14 @@ def record_trace_mlx(
     """Record a trace for an MLX-served request, matching StreamingProxy format."""
     if not trace_store:
         return
+    # Last line of defence for the one thing this function must never persist:
+    # status='failed' with no reason.  Callers pass describe_exception(), which
+    # is already non-empty, but a trace that records a failure and not its cause
+    # is worse than useless -- it shows up on the dashboard as an unexplained
+    # failure and lands in the published telemetry histogram as "unknown",
+    # which reads as a categorisation gap rather than a missing message.
+    if status == "failed" and not (error_message or "").strip():
+        error_message = "unspecified MLX backend failure"
     import asyncio
 
     elapsed_ms = (time.time() - start_time) * 1000

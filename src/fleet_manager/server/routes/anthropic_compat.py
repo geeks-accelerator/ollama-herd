@@ -24,6 +24,7 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
+from fleet_manager.common.errors import describe_exception
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server import debug_log
 from fleet_manager.server.anthropic_autoroute import resolve_model
@@ -337,7 +338,7 @@ async def _serve_via_mlx(
                 )
                 record_trace_mlx(
                     trace_store, inference_req, t_start, None, "failed",
-                    error_message=str(exc),
+                    error_message=describe_exception(exc),
                 )
                 return JSONResponse(
                     status_code=503,
@@ -362,7 +363,7 @@ async def _serve_via_mlx(
                 )
                 record_trace_mlx(
                     trace_store, inference_req, t_start, None, "failed",
-                    error_message=str(exc),
+                    error_message=describe_exception(exc),
                 )
                 return JSONResponse(
                     status_code=413,
@@ -387,7 +388,7 @@ async def _serve_via_mlx(
                 logger.error(f"Anthropic[{rid}] MLX model-missing guard fired: {exc}")
                 record_trace_mlx(
                     trace_store, inference_req, t_start, None, "failed",
-                    error_message=str(exc),
+                    error_message=describe_exception(exc),
                 )
                 return JSONResponse(
                     status_code=500,
@@ -404,7 +405,7 @@ async def _serve_via_mlx(
                 logger.exception(f"Anthropic[{rid}] MLX non-streaming failed: {exc}")
                 record_trace_mlx(
                     trace_store, inference_req, t_start, None, "failed",
-                    error_message=str(exc),
+                    error_message=describe_exception(exc),
                 )
                 return JSONResponse(
                     status_code=502,
@@ -494,7 +495,7 @@ async def _serve_via_mlx(
         logger.error(f"Anthropic[{rid}] MLX model-missing (stream): {exc}")
         record_trace_mlx(
             trace_store, inference_req, t_start, None, "failed",
-            error_message=str(exc),
+            error_message=describe_exception(exc),
         )
         return JSONResponse(
             status_code=500,
@@ -508,7 +509,7 @@ async def _serve_via_mlx(
         )
         record_trace_mlx(
             trace_store, inference_req, t_start, None, "failed",
-            error_message=str(exc),
+            error_message=describe_exception(exc),
         )
         if debug_enabled and debug_data_dir:
             debug_log.append_request(
@@ -611,7 +612,7 @@ async def _serve_via_mlx(
                 inference_req.request_id
             )
             status = "failed" if error else "completed"
-            err_msg = str(error) if error else None
+            err_msg = describe_exception(error)
             record_trace_mlx(
                 trace_store, inference_req, t_start, first_token_time,
                 status, error_message=err_msg,

@@ -107,14 +107,14 @@ Every routing decision is recorded in SQLite (`~/.fleet-manager/latency.db`) wit
 | `status` | `completed`, `failed`, or `retried` |
 | `latency_ms` | Total time from request to response complete |
 | `time_to_first_token_ms` | Time until first response chunk |
-| `prompt_tokens` | Tokens in the prompt (from Ollama) |
+| `prompt_tokens` | Tokens in the prompt, from Ollama's `prompt_eval_count`. This is the **full prompt length**, not just the part that missed the prefix cache — verified on 0.34.4 by resending an identical prompt (count unchanged at 4074 while `prompt_eval_duration` fell 2.235 s → 0.021 s). So it is a valid basis for context sizing, which is what `context_waste` and `context_optimizer` compute from |
 | `completion_tokens` | Tokens generated (from Ollama) |
 | `retry_count` | Number of retries before success |
 | `fallback_used` | `1` if a fallback model was used, `0` otherwise |
 | `excluded_nodes` | JSON list of nodes excluded from scoring (failed retries) |
 | `client_ip` | Client's IP address |
 | `original_format` | `openai` or `ollama` |
-| `error_message` | Error details if status is `failed` |
+| `error_message` | Error details if status is `failed`. **Never empty for a failure**, and never `NULL` — `common/errors.py::describe_exception` substitutes the exception class name for the classes that stringify to `""` (every httpx timeout, `RemoteProtocolError`, `asyncio.CancelledError`), and the MLX trace writer refuses a blank one outright. A failure with no cause is unactionable on the dashboard and lands in the published telemetry histogram as `unknown`, which reads as a categorisation gap rather than a missing message |
 
 ### Accessing traces
 

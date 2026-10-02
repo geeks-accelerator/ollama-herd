@@ -99,14 +99,35 @@ def _categorize_error(error_message: str | None) -> str:
     if "permission" in msg:
         return "permission_error"
 
-    # Network / timeout
+    # Network / timeout.  The bare-class-name forms matter: several httpx and
+    # asyncio exceptions stringify to "", so describe_exception() records the
+    # class name instead and these rules are what keep it out of "unknown"
+    # (see fleet_manager.common.errors).  "ReadTimeout"/"ConnectTimeout" are
+    # already caught by the "timeout" substring above.
     if "timeout" in msg or "timed out" in msg:
         return "timeout"
-    if "connection" in msg and ("refused" in msg or "reset" in msg):
+    if (
+        "connecterror" in msg
+        or "connectionerror" in msg
+        or "remoteprotocolerror" in msg
+        or "readerror" in msg
+        or "writeerror" in msg
+        or (
+            "connection" in msg
+            and (
+                "refused" in msg
+                or "reset" in msg
+                or "closed" in msg
+                or "aborted" in msg
+            )
+        )
+    ):
         return "connection_error"
 
-    # Client disconnects (streaming)
-    if "disconnect" in msg or "generatorexit" in msg:
+    # Client disconnects (streaming).  Starlette ends a disconnected streaming
+    # response by cancelling the task, so CancelledError is the common shape --
+    # and it is one of the exceptions whose str() is empty.
+    if "disconnect" in msg or "generatorexit" in msg or "cancellederror" in msg:
         return "client_disconnected"
 
     return "other"

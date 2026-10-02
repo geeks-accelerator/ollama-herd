@@ -230,6 +230,96 @@ matching `_check_anthropic_map_targets`.
 
 ## Performance
 
+### `context_waste` recommended the change that caused a six-day regression, and the optimizer could apply it `FIXED` (2026-10-02)
+
+**Severity:** high — the automation half was one dashboard toggle from
+re-running a known incident, with no operator action beyond flipping it.
+
+Found while auditing why `context_waste` had been a standing WARNING on this
+fleet. Three separate findings, in the order they came out:
+
+**1. The premise I started from was wrong.** CLAUDE.md's co-tenancy gotcha said
+`prompt_tokens` records `prompt_eval_count`, "i.e. cache misses, NOT full
+context", so a 77K request "can look like 2K in traces". If true, every
+context-sizing number herd computes is deflated by however well prefix caching
+is working, and `context_waste` would be systematically inventing waste. It is
+**not** true. Sending an identical prompt twice to Ollama 0.34.4:
+
+```
+run 1 (cold): prompt_eval_count=4074  prompt_eval_duration=2.235s
+run 2 (warm): prompt_eval_count=4074  prompt_eval_duration=0.021s
+```
+
+A 106x drop in prefill duration — the cache was definitively hit — and the count
+did not move. `prompt_eval_count` is the full prompt length. The original note
+appears to have conflated "absent from traces" (a bypassing client's request,
+which never reaches `request_traces` at all) with "deflated in traces" (herd's
+own). Corrected in CLAUDE.md with the reproduction, because believing it makes
+trace data look useless for the thing it is actually good for.
+
+A second claim in the same gotcha — that fully-cached prompts may emit no `new
+prompt` line — is also wrong on 0.34.4: both runs logged one. That makes the
+backend/router reconciliation tripwire *tighter* than documented, and explains
+why 674 traces reconciled against 679 backend lines over the same 2.4 h window.
+
+**2. So the measurement is sound, and the recommendation is still wrong.** With
+`prompt_tokens` correct, gpt-oss:120b genuinely does see p99 ~5.3K prompts
+against 131,072 allocated, and the check genuinely does compute 16,384. But that
+reduction was *already tried* on this fleet. On 2026-09-22 the per-slot context
+went 131072 -> 32768 — still 23x the p99 prompt, comfortably fitting by this
+check's own arithmetic — and prefix-cache reuse collapsed (5,772 -> 770 hits),
+TTFT went 1.0s -> 6.3s and total latency 5.3s -> 10.5s for six days, on the
+model serving 99% of traffic, with **decode throughput completely unchanged**,
+which is why nobody noticed. The router spent those six days requesting 131072
+against a 32768-resident model and losing, so the operative hazard looks like
+the requested/resident *mismatch* rather than the absolute size — but that
+mechanism is inferred from logs, not proven, and that uncertainty is itself the
+argument for not acting on prompt-size arithmetic alone.
+
+**3. The automation would have reverted the fix for that incident.**
+`context_optimizer._check_and_optimize` runs every 5 minutes when
+`num_ctx_auto_calculate` is on (the "Auto-Calculate Context" dashboard toggle)
+and overwrote **any** override, including one the operator set by hand. Simulated
+against live trace data:
+
+```
+recommended      = 16384
+alloc > rec*4    = 131072 > 65536  -> True
+override > rec*2 = 131072 > 32768  -> True
+=> would overwrite the explicit 131072 with 16384 and queue an Ollama restart
+```
+
+That override is the *fix* for the regression above, set on 2026-09-28. The
+asymmetry is what makes this a bug and not a design decision:
+`_auto_initialize_overrides` has always skipped a model that already has an
+override ("keeping existing override"); only the periodic path did not.
+
+**Fixes:**
+
+- `ContextOptimizer` tracks `_auto_set` — the models whose override herd itself
+  computed — and `_check_and_optimize` leaves everything else alone. herd manages
+  what it created; it does not manage what it was told. An override herd set may
+  still be revised, so the feature keeps working.
+- `context_waste` reads `FLEET_NUM_CTX_OVERRIDES` (via a shared
+  `_operator_num_ctx_overrides` helper, so it and `num_ctx_override_inert` cannot
+  name different targets from the same data), marks pinned models
+  `operator_pinned`, and recommends no change for them — stating the memory cost
+  and the prefix-cache caveat instead.
+- Severity now follows what is *actionable*: INFO when every oversized model is
+  pinned. A standing WARNING with no available action is how a board stops being
+  read, which is how both the 32768 regression and the trace-write failures hid.
+- The fix text says to verify prefix-cache hits and TTFT after a context change,
+  **not** decode throughput — decode is the one metric a bad context change
+  leaves untouched.
+
+On this fleet `context_waste` went WARNING -> INFO on restart, with both models
+correctly identified as deliberately pinned.
+
+**Not changed:** the 4x/8x thresholds, and gemma3:27b's 178x ratio. Those
+numbers are real; the problem was never the measurement.
+
+---
+
 ### Unexplained 2026-08-22 step change: p25 73.4 → 43.1, conc=3 68.0 → 50.6 `OPEN`
 
 **Severity:** high (throughput). Present continuously since 2026-08-22.
@@ -306,7 +396,7 @@ TTFT, which changes the concurrency mix.
 ---
 
 
-### No health check detects a second client bypassing the router `OPEN`
+### No health check detects a second client bypassing the router `FIXED` (2026-10-02)
 
 **Severity:** high — this class of problem is invisible to every existing check.
 
@@ -344,6 +434,52 @@ sqlite3 ~/.fleet-manager/latency.db \
 ```
 
 Full evidence and the six wrong turns are in `docs/observations.md` (2026-08-23).
+
+**Fixed 2026-10-02** as `backend_bypass_clients`, but *not* the way proposed above.
+The `/slots` occupancy comparison was dropped: llama-server binds a random
+localhost port that has to be discovered from Ollama's log or `lsof` anyway, and a
+15%-over-10-minutes threshold is a derived symptom that still leaves the operator
+to go find the culprit. Two other signals were tried and rejected on evidence:
+
+- **`/api/ps` `expires_at` drift** — would imply use herd did not dispatch, except
+  the canonical fleet config sets `OLLAMA_KEEP_ALIVE=-1`, which pins `expires_at`
+  to the year 2319. Measured on this box; constant, therefore useless.
+- **`psutil.net_connections()`** — the portable answer, and it raises `AccessDenied`
+  on macOS for any process but our own unless the agent runs as root. Verified on
+  macOS 26 / psutil 7.2.2.
+
+So the node shells out to `lsof -nP -iTCP:<port> -sTCP:ESTABLISHED`, which works as
+the ordinary user, and reports any process that is not herd, a child herd spawned,
+or Ollama itself (`node/backend_clients.py` → `OllamaMetrics.backend_clients`). The
+router fires WARNING naming the pid, process and **full argv** — argv, not the
+process name, because a Node daemon's name is only `process.title` and in the
+2026-08 incident it matched an unrelated project folder and sent the investigation
+the wrong way.
+
+Design notes worth keeping:
+
+- Probed at most once per 60 s, not per 5 s heartbeat: this spawns an `lsof` plus a
+  `ps` per unknown peer, and a co-tenant that matters is one that sticks around.
+- An empty list means "none seen" *or* "the probe could not run" —
+  indistinguishable on purpose. The check only fires on a positive sighting, so a
+  blind node is a missed detection and never a false alarm.
+- Registered with the **registry-based** checks, not the trace-based ones. A fleet
+  with no trace data is exactly when an unaccounted co-tenant is least explainable
+  by any other means; gating it on `trace_store` would have disabled it when it
+  matters most. (It was written into the trace block first and moved.)
+- WARNING, not CRITICAL, and the remedy is *repoint, not kill*: the co-tenant may
+  be deliberate, and herd is Ollama-API compatible so changing a base URL from
+  :11434 to :11435 restores the accounting at no cost. The fix text also says to
+  check whether the client arrived by **fallback** rather than configuration.
+- Windows is deliberately unimplemented rather than guessed at — the signal is only
+  as good as its process attribution, and `netstat -ano` + `tasklist` needs its own
+  verification pass. It returns an empty list there.
+
+Verified end-to-end on the live fleet, not just in tests: a foreign process holding
+4 connections to :11434 produced the WARNING ~48 s after it appeared and the card
+cleared ~48 s after it exited. `tests/test_node/test_backend_clients.py` drives the
+probe against a real socket from a separate process for the same reason — a probe
+that reports nothing is indistinguishable from one that is broken.
 
 ---
 
@@ -413,7 +549,7 @@ last exit status 1) alongside the Mac app. It races the app for port 11434 at bo
 
 ## Routing Safety
 
-### MLX proxy records failed requests with an empty `error_message` `OPEN`
+### MLX proxy records failed requests with an empty `error_message` `FIXED` (2026-10-02)
 
 **Severity:** low (observability), but it degrades two things at once.
 
@@ -433,6 +569,38 @@ categorisation gap when it is really a missing message at the source.
 `"process exited"` or `"connection closed"` beats an empty string. Then confirm
 `_categorize_error()` has a bucket for it rather than falling through to
 `unknown`.
+
+**Fixed 2026-10-02.** The root cause was not a missing call site — all 15 already
+passed `error_message=str(exc)`. It is that `str(exc)` is **empty** for whole
+classes of exception this path hits constantly: `httpx.ReadTimeout`,
+`ConnectTimeout`, `WriteTimeout`, `PoolTimeout`, `RemoteProtocolError` and
+`asyncio.CancelledError` all stringify to `""`. So the obvious-looking code was
+the bug.
+
+Three layers, outermost first:
+
+1. `common/errors.py::describe_exception` — one definition of how an exception
+   becomes a trace message. Deliberately a **no-op when the message is non-empty**
+   (returns `str(exc)` byte for byte), so dropping it into the Ollama path cannot
+   shift any category that already worked in the published telemetry histogram.
+   Only the empty case changes, to the class name. The Ollama path's existing
+   `str(e) or repr(e)` is replaced by it too — same behaviour for real messages,
+   without `repr`'s `ReadTimeout('')` noise.
+2. `_categorize_error` gained rules for the bare class names, so `ReadTimeout` →
+   `timeout`, `ConnectError`/`RemoteProtocolError`/`ReadError` →
+   `connection_error`, `CancelledError` → `client_disconnected`. Previously only
+   the `timeout` substring happened to match; the rest fell to `other`.
+   `CancelledError` matters most: Starlette ends a disconnected streaming response
+   by cancelling the task, so it is the *common* disconnect shape and it is one of
+   the empty-`str` classes.
+3. `record_trace_mlx` refuses to persist `status='failed'` with a blank message at
+   all, substituting `"unspecified MLX backend failure"`. A future call site cannot
+   reintroduce the bug. `"other"` is a truthful bucket; `"unknown"` is a lie that
+   reads as a categorisation gap in public stats.
+
+`unknown` is now reserved for a genuinely absent message, which is what it should
+have meant. Pinned by `tests/test_server/test_error_descriptions.py`, including a
+guard that no call site has drifted back to bare `str(exc)`.
 
 ### Docker nodes unreachable + every node reported `apple_silicon` `FIXED` (0.9.3)
 

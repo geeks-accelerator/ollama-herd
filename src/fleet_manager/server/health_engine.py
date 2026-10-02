@@ -125,6 +125,10 @@ class HealthEngine:
         recommendations.extend(self._check_text_embedding_backend_missing(nodes))
         recommendations.extend(self._check_text_embedding_ollama_bypass(nodes))
         recommendations.extend(self._check_nomic_loaded_in_ollama(nodes))
+        # Node state only: a co-tenant on the backend must be detectable even
+        # with no trace data, which is precisely when herd is least able to
+        # explain a throughput drop any other way.
+        recommendations.extend(self._check_backend_bypass_clients(nodes))
 
         # Trace-based checks (async, queries SQLite)
         if trace_store:
@@ -583,6 +587,122 @@ class HealthEngine:
             )
         return recs
 
+    def _check_backend_bypass_clients(self, nodes) -> list[Recommendation]:
+        """A process other than herd is talking straight to a node's Ollama.
+
+        This is the one failure class that no other check can see, because it is
+        invisible *by construction*: every signal herd scores on — queue depth,
+        free slots, session affinity, context fit — is derived from what herd
+        itself dispatched, so a second client does not merely go unmeasured, it
+        silently invalidates the arithmetic.  ``QueueManager`` caps concurrency
+        to match what the backend admits, so a co-tenant filling the same
+        llama-server slots turns herd's cap from a protection into an
+        oversubscription.
+
+        On 2026-08-21 a co-located CLI daemon contributed ~27% of Ollama's load
+        this way, after its cloud provider lost its credentials and its model
+        fallback chain silently redirected onto the local fleet.  Fleet decode
+        fell 15%; the dashboard, the health engine and the traces all stayed
+        clean, because herd's own requests genuinely were.  It took hours and
+        six wrong turns to find.  See ``docs/observations.md`` (2026-08-23).
+
+        Reported as WARNING, not CRITICAL: the fleet still serves correctly, and
+        the co-tenant may well be deliberate (another team's tool, a benchmark).
+        What the operator needs is to *know*, and to be told the fix is to point
+        that client at the router rather than to kill it — herd is Ollama-API
+        compatible, so repointing costs nothing and restores the accounting.
+        """
+        offenders: list[dict] = []
+        for node in nodes:
+            if not node.ollama:
+                continue
+            for client in node.ollama.backend_clients or []:
+                offenders.append({
+                    "node_id": node.node_id,
+                    "pid": client.pid,
+                    "process": client.process,
+                    "cmdline": client.cmdline,
+                    "connections": client.connections,
+                    "loopback": client.loopback,
+                })
+        if not offenders:
+            return []
+
+        by_node = sorted({o["node_id"] for o in offenders})
+        lines = "; ".join(
+            f"{o['process'] or 'pid ' + str(o['pid'])} (pid {o['pid']}, "
+            f"{o['connections']} conn) on {o['node_id']}"
+            for o in offenders[:4]
+        )
+        return [
+            Recommendation(
+                check_id="backend_bypass_clients",
+                severity=Severity.WARNING,
+                title=(
+                    f"{len(offenders)} process(es) bypassing the router on "
+                    f"{len(by_node)} node(s)"
+                ),
+                description=(
+                    f"{lines}. These hold open connections straight to Ollama, so "
+                    f"their work occupies the same decode slots herd is scheduling "
+                    f"into but appears in none of its metrics. Queue concurrency, "
+                    f"free-slot counts and session affinity are all computed from "
+                    f"herd's own dispatches, so they are now understating real "
+                    f"occupancy — herd's cap oversubscribes the backend rather than "
+                    f"protecting it. Expect decode throughput below baseline with a "
+                    f"clean dashboard and no errors; the tail degrades first, so "
+                    f"compare p25 rather than the mean."
+                ),
+                fix=(
+                    "Point that client at the router instead — herd is Ollama-API "
+                    "compatible, so changing its base URL from :11434 to :11435 is "
+                    "usually the whole fix, and the work then shows up in traces and "
+                    "gets scheduled with everything else. Confirm who it is with "
+                    "`lsof -nP -iTCP:11434 -sTCP:ESTABLISHED` and resolve the real "
+                    "binary with `lsof -p <pid> | awk '$4==\"txt\"{print $NF}'` — a "
+                    "Node daemon's process name is only `process.title` and can point "
+                    "at an unrelated project. Check whether it arrived by *fallback* "
+                    "rather than by configuration: a cloud provider losing its API key "
+                    "can silently redirect a whole workload onto the local fleet."
+                ),
+                node_id=by_node[0] if len(by_node) == 1 else None,
+                data={"clients": offenders},
+            )
+        ]
+
+    @staticmethod
+    def _operator_num_ctx_overrides() -> dict[str, int]:
+        """Per-model contexts the operator declared in ``FLEET_NUM_CTX_OVERRIDES``.
+
+        One definition, shared by the two checks that must not contradict each
+        other: ``num_ctx_override_inert`` (is the resident context what was
+        asked for?) and ``context_waste`` (should we ask for less?).  A model
+        named here has a deliberate value and must not be told to shrink.
+
+        Env rather than a settings reference, matching
+        ``_check_anthropic_map_targets``: the engine is stateless by design and
+        ``analyze`` takes only registry + trace_store.
+        """
+        import json as _json
+        import os
+
+        raw = os.environ.get("FLEET_NUM_CTX_OVERRIDES", "")
+        if not raw:
+            return {}
+        try:
+            parsed = _json.loads(raw)
+        except (_json.JSONDecodeError, ValueError, TypeError):
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        out: dict[str, int] = {}
+        for name, value in parsed.items():
+            try:
+                out[str(name)] = int(value)
+            except (TypeError, ValueError):
+                continue
+        return out
+
     def _check_num_ctx_override_inert(
         self, nodes, prompt_stats: list[dict] | None = None
     ) -> list[Recommendation]:
@@ -873,14 +993,46 @@ class HealthEngine:
             for w in wasteful[:3]
         )
 
+        # A model named in FLEET_NUM_CTX_OVERRIDES has a context the operator
+        # chose, and prompt size is not sufficient evidence to overrule that.
+        #
+        # The measurement here is sound -- prompt_tokens records Ollama's
+        # prompt_eval_count, which is the FULL prompt length and not just the
+        # cache-missed part (verified on Ollama 0.34.4: an identical prompt
+        # resent reported the same 4074 while prompt_eval_duration fell 2.235s
+        # -> 0.021s, so the cache was hit and the count did not move).  What is
+        # not sound is the inference that a smaller context is therefore safe.
+        # On 2026-09-22 gpt-oss:120b's per-slot context was cut 131072 -> 32768
+        # while its p99 prompt was ~1.4K tokens -- comfortably fitting, 23x over
+        # by this check's own arithmetic.  Prefix-cache reuse collapsed anyway
+        # (5,772 -> 770 hits) and TTFT went 1.0s -> 6.3s for six days, on the
+        # model serving 99% of traffic, while decode throughput never moved --
+        # which is why nobody caught it.  The router kept requesting 131072
+        # against a 32768-resident model and losing, so the operative hazard
+        # looks like the requested/resident *mismatch* rather than the absolute
+        # size; that mechanism is inferred from the logs, not proven, which is
+        # itself the reason not to act on this check's arithmetic alone.
+        # So for pinned models: report the memory cost, recommend nothing.
+        pinned = self._operator_num_ctx_overrides()
+        for w in wasteful:
+            w["operator_pinned"] = w["model"] in pinned
+        actionable = [w for w in wasteful if not w["operator_pinned"]]
+        held = [w for w in wasteful if w["operator_pinned"]]
+
+        # Severity follows what the operator can actually act on.  A fleet whose
+        # every oversized model was pinned on purpose has nothing to fix, and a
+        # standing WARNING with no available action is how a board stops being
+        # read -- the same way the 32768 regression and the trace-write failures
+        # both sat unnoticed behind noise.
         severity = Severity.INFO
-        if any(w["ratio"] > 8 for w in wasteful):
+        if any(w["ratio"] > 8 for w in actionable):
             severity = Severity.WARNING
 
-        # Build specific per-model recommendations
         rec_lines = ", ".join(
-            f"{w['model']}: {w['recommended']:,}"
-            for w in wasteful
+            f"{w['model']}: {w['recommended']:,}" for w in actionable
+        )
+        held_lines = ", ".join(
+            f"{w['model']} (pinned at {pinned[w['model']]:,})" for w in held
         )
 
         recs.append(
@@ -889,15 +1041,41 @@ class HealthEngine:
                 severity=severity,
                 title=f"Context oversized on {len(wasteful)} model(s)",
                 description=(
-                    f"Allocated context far exceeds actual usage: {model_lines}. "
-                    f"Reducing context frees KV cache memory for additional models."
+                    f"Allocated context far exceeds measured prompt usage: "
+                    f"{model_lines}. Reducing context frees KV cache memory for "
+                    f"additional models."
+                    + (
+                        f" {held_lines} — pinned in FLEET_NUM_CTX_OVERRIDES, so "
+                        f"the value is deliberate and no change is advised here. "
+                        f"Context also buys prefix-cache residency, which this "
+                        f"check cannot measure: cutting gpt-oss:120b's per-slot "
+                        f"context on 2026-09-22 left prompts fitting 23x over and "
+                        f"still 6x'd TTFT."
+                        if held
+                        else ""
+                    )
                 ),
                 fix=(
-                    f"Recommended num_ctx per model: {rec_lines}. "
-                    f"Enable in Settings > Context Management (FLEET_DYNAMIC_NUM_CTX=true) "
-                    f"to auto-apply these values, or set per-model overrides via the API: "
-                    f"POST /dashboard/api/settings with num_ctx_overrides. "
-                    f"Requires Ollama restart to take effect on loaded models."
+                    (
+                        f"Recommended num_ctx per model: {rec_lines}. "
+                        f"Enable in Settings > Context Management "
+                        f"(FLEET_DYNAMIC_NUM_CTX=true) to auto-apply these values, "
+                        f"or set per-model overrides via the API: POST "
+                        f"/dashboard/api/settings with num_ctx_overrides. "
+                        f"Requires Ollama restart to take effect on loaded models. "
+                        f"Verify prefix-cache hits and TTFT after the restart, not "
+                        f"just decode throughput — decode is the one metric a bad "
+                        f"context change leaves untouched."
+                        if actionable
+                        else ""
+                    )
+                    + (
+                        f"No action recommended for {held_lines}: remove the entry "
+                        f"from FLEET_NUM_CTX_OVERRIDES first if the pin is no longer "
+                        f"wanted, then re-check."
+                        if held and not actionable
+                        else ""
+                    )
                 ),
                 data={"wasteful_models": wasteful},
             )

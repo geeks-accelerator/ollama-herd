@@ -59,6 +59,17 @@ class ContextOptimizer:
         self._trace_store = trace_store
         self._last_restart: dict[str, float] = {}  # node_id → timestamp
         self._pending_commands: dict[str, list[dict]] = {}  # node_id → commands
+        # Models whose override *herd itself* computed.  Everything else in
+        # settings.num_ctx_overrides came from FLEET_NUM_CTX_OVERRIDES, i.e. an
+        # operator decision, and this optimizer must not silently reverse it.
+        # Without this set the two halves of this class disagreed:
+        # _auto_initialize_overrides skips a model that already has an override,
+        # while _check_and_optimize overwrote one. That asymmetry made the
+        # "Auto-Calculate Context" toggle capable of reverting the deliberate
+        # gpt-oss:120b=131072 override to 16384 within 5 minutes and queueing an
+        # Ollama restart to apply it -- re-running, automatically, the six-day
+        # TTFT regression of 2026-09-22 (docs/observations.md 2026-09-28).
+        self._auto_set: set[str] = set()
 
     def get_pending_commands(self, node_id: str) -> list[dict]:
         """Pop pending commands for a node (called from heartbeat response)."""
@@ -123,6 +134,7 @@ class ContextOptimizer:
 
             recommended = compute_recommended_ctx(total_p99, max_24h)
             overrides[model] = recommended
+            self._auto_set.add(model)
             added += 1
             logger.info(
                 f"Context optimizer: auto-init {model} → {recommended} "
@@ -177,14 +189,25 @@ class ContextOptimizer:
 
             recommended = compute_recommended_ctx(total_p99, max_total_24h)
 
+            # An override herd did not set is an operator decision. Leave it
+            # alone: the trace-derived recommendation is computed from prompt
+            # size alone and is blind to the fact that allocated context also
+            # buys prefix-cache residency, which is why shrinking gpt-oss:120b
+            # from 131072 cost 6x TTFT while its measured p99 prompt was ~1.4K.
+            # Reducing a *deliberate* value on that evidence is not optimization.
+            current_override = overrides.get(model, 0)
+            if current_override and model not in self._auto_set:
+                continue
+
             # Only recommend reduction if allocated is >4x what's needed
-            if alloc > recommended * 4:
-                current_override = overrides.get(model, 0)
-                if current_override == 0 or current_override > recommended * 2:
-                    changes[model] = recommended
-                    # Nodes running this model need restart for new ctx to take effect
-                    for nid in model_nodes.get(model, []):
-                        needs_restart.add(nid)
+            if alloc > recommended * 4 and (
+                current_override == 0 or current_override > recommended * 2
+            ):
+                changes[model] = recommended
+                self._auto_set.add(model)
+                # Nodes running this model need restart for new ctx to take effect
+                for nid in model_nodes.get(model, []):
+                    needs_restart.add(nid)
 
         if changes:
             overrides.update(changes)

@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Callable
 
 import httpx
 
+from fleet_manager.common.errors import describe_exception
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server import debug_log
 from fleet_manager.server.registry import NodeRegistry
@@ -258,7 +259,7 @@ class StreamingProxy:
                 start_time,
                 first_token_time,
                 "failed",
-                error_message=str(e) or repr(e),
+                error_message=describe_exception(e),
                 response_chunks=capture_chunks,
             )
             raise
@@ -532,7 +533,7 @@ class StreamingProxy:
                         start_time,
                         first_token_time,
                         "failed",
-                        error_message=str(e) or repr(e),
+                        error_message=describe_exception(e),
                         response_chunks=capture_chunks,
                     )
                     if first_chunk_sent:
@@ -571,7 +572,7 @@ class StreamingProxy:
                         start_time,
                         None,
                         "failed",
-                        error_message=str(e) or repr(e),
+                        error_message=describe_exception(e),
                         response_chunks=capture_chunks,
                     )
                     raise
@@ -583,7 +584,7 @@ class StreamingProxy:
                     start_time,
                     None,
                     "retried",
-                    error_message=str(e) or repr(e),
+                    error_message=describe_exception(e),
                     response_chunks=capture_chunks,
                 )
 

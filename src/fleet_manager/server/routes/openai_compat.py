@@ -13,6 +13,7 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from fleet_manager.common.errors import describe_exception
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.node.text_embedding_models import DEFAULT_RERANK_MODEL
 from fleet_manager.server.fleet_headers import (
@@ -184,7 +185,7 @@ async def _serve_openai_via_mlx(
             logger.warning(f"OpenAI MLX queue full: {exc} — returning 503")
             record_trace_mlx(
                 trace_store, inference_req, t_start, None, "failed",
-                error_message=str(exc),
+                error_message=describe_exception(exc),
             )
             return JSONResponse(
                 status_code=503,
@@ -196,7 +197,7 @@ async def _serve_openai_via_mlx(
             logger.error(f"OpenAI MLX error ({status}): {type(exc).__name__}: {exc}")
             record_trace_mlx(
                 trace_store, inference_req, t_start, None, "failed",
-                error_message=str(exc),
+                error_message=describe_exception(exc),
             )
             return JSONResponse(
                 status_code=status,
@@ -214,7 +215,8 @@ async def _serve_openai_via_mlx(
         await mlx_proxy._acquire_slot(model_key)
     except MlxModelMissingError as exc:
         record_trace_mlx(
-            trace_store, inference_req, t_start, None, "failed", error_message=str(exc),
+            trace_store, inference_req, t_start, None, "failed",
+            error_message=describe_exception(exc),
         )
         return JSONResponse(
             status_code=500,
@@ -223,7 +225,8 @@ async def _serve_openai_via_mlx(
     except MlxQueueFullError as exc:
         logger.warning(f"OpenAI MLX queue full (stream): {exc} — returning 503")
         record_trace_mlx(
-            trace_store, inference_req, t_start, None, "failed", error_message=str(exc),
+            trace_store, inference_req, t_start, None, "failed",
+            error_message=describe_exception(exc),
         )
         return JSONResponse(
             status_code=503,
@@ -253,7 +256,7 @@ async def _serve_openai_via_mlx(
             record_trace_mlx(
                 trace_store, inference_req, t_start, first_token_time,
                 "failed" if error else "completed",
-                error_message=str(error) if error else None,
+                error_message=describe_exception(error),
             )
 
     return StreamingResponse(
