@@ -1,6 +1,6 @@
 # Post-0.35 Enhancements — MLX-default readiness, mlx-lm 0.32, and three router capabilities
 
-**Status**: PROPOSED — **audited against the codebase 2026-10-02** (see [Codebase audit](#codebase-audit-2026-10-02)). Nothing implemented yet.
+**Status**: **Code IMPLEMENTED 2026-10-02** — Phases 0, 1, 3, 4, 5, 6, 7 (one commit each, 1444 → 1541 tests). **Pending:** Phase 2 (the Ollama upgrade) and the live checks that need downloads; Phase 3's Mac Studio soak and Phase 7's two-machine cache measurement can't run on the reference Mac mini. See [Implementation notes](#implementation-notes-2026-10-02) for where the build departed from this plan.
 **Date**: 2026-10-02
 **Prereq context**: [`post-0.32-enhancements.md`](post-0.32-enhancements.md) (the last Ollama audit) and [`../issues/ollama-native-mlx-runner.md`](../issues/ollama-native-mlx-runner.md) (the MLX-subsystem question this plan partly answers).
 
@@ -354,6 +354,32 @@ That makes this a capability Ollama lacks, with **zero new dependencies**.
 **Risk.** Medium, since it changes routing decisions fleet-wide. Mitigated by the existing decay, a bonus below the session bonus, and the 2K threshold. That's why it's last.
 
 ---
+
+## Implementation notes (2026-10-02)
+
+Each phase was built against the code rather than this document, and four places changed when the code disagreed with the plan.
+
+| Phase | Plan said | Built | Why |
+|---|---|---|---|
+| 3 | The flags passed at `mlx_supervisor.py:506` "stay as they are" | The supervisor now passes `--quantized-kv-start 0` | Upstream defaults it to **5000**, while the retired patch defaulted to 0. Without the explicit 0, every sequence's first 5K tokens would silently stay unquantized. A test pins it |
+| 5 | `test_text_embedding.py` proves the `embed_text` extraction | Five new behavioral tests, written and passed against the unchanged code first | That file never exercised the proxy path. The only coverage was one success case and a test that grepped the source for two strings, which is now behavioral too |
+| 5 | Put the route beside the embed routes in `text_embedding_compat.py` | `/v1/rerank` lives in `openai_compat.py` beside `/v1/embeddings` | `text_embedding_compat`'s router is never mounted, so mounting it would have made `/api/embed-text` public as a side effect |
+| 5 | (not in plan) | Fixed `is_model_cached`, which was always False for nomic | fastembed's cache is keyed by HF *source repo*, and nomic's `-Q` file lives in `nomic-embed-text-v1.5`. Heartbeats said `cached=False`, `cached_model_count` was 0, and `text_embedding_backend_missing` could never fire. Rerank's cached-model advertising depended on it |
+| 7 | Normalize whitespace and tool order in the prefix key | Only dict key order is normalized | The backend's prefix cache is exact-match. Prompts differing in whitespace or tool order share no cache, so grouping them would route for nothing |
+
+**Smaller decisions:**
+- `/v1/rerank` scores pass through a sigmoid (0–1, like Cohere and Jina), so Open WebUI's relevance threshold works.
+- Rerank validation lives once, on the node.
+- `/api/tags` now passes `capabilities` through, and the herd-synthesized models (`mlx:`, vision-embedding, image) read one set of constants, so `/api/tags` and `/api/show` can't disagree.
+- `X-Fleet-Affinity` gains a `prefix` value.
+- `/v1/systemone` traces with the `decision` tag, the way embeds tag themselves.
+
+**Verified live on the Mac mini:**
+- Phase 0: herd's `/api/tags` matches Ollama's; dinov2 agrees across both endpoints.
+- Phase 4: `/v1/models` `supports_vision`.
+- Phase 5: the node advertises a reranker; 400/404 pass through; `nomic` now `cached=True`.
+- Phase 6: an actionable 404 replaces the bare one; `/api/show` serves through the extracted path.
+- Phase 7: two logical nodes, three sessions with a shared 1.9K-token head. The second and third followed the first with `X-Fleet-Affinity: prefix`, scoring 102 vs 92. Both logical nodes share one Ollama, so this proves the decision, not the 27.3s → 0.7s cache hit.
 
 ## Sequencing & effort
 
