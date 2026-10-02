@@ -220,6 +220,35 @@ workload volume and token mix, routing, memory and swap, power/thermal, env drif
 client parallelism, co-tenancy (the tripwire now reads exactly clean daily), and
 `OLLAMA_CONTEXT_LENGTH` (that was a separate, self-inflicted TTFT regression).
 
+**NEW, 2026-10-02 — the strongest candidate yet, and it invalidates part of this
+issue's framing.** Queue concurrency never limited backend in-flight requests, from the
+initial commit until `24802b0`: `QueueManager._worker` called `process_fn(entry)`, which
+returns an *unconsumed* async generator, handed it to the future and immediately took the
+next request — the backend call happened later, when the route consumed the stream. So a
+single worker dispatched the whole queue and `concurrency` bounded nothing. Verified
+independently by reading the pre-fix `_worker`.
+
+Two consequences for everything above:
+
+1. **The `conc=N` buckets in this issue measured *unbounded* backend concurrency.** They
+   are still valid as a measure of what actually reached Ollama — they come from
+   overlapping trace intervals, not from herd's cap — but the implied story that herd was
+   managing concurrency was never true. `conc=5`/`conc=6` rows existed precisely because
+   nothing stopped them.
+2. **"Co-tenancy broke the scheduling math" was partly wrong**, including in the CLAUDE.md
+   gotcha (since corrected). A co-tenant could not have defeated a cap that was never
+   enforced. The co-tenancy harm was real — invisible load plus 77K-token re-prefills —
+   but not via the mechanism described.
+
+**Testable prediction, now measurable.** With enforcement live (verified on this fleet:
+8 concurrent requests → `in_flight` capped at exactly 4, excess visible as `pending`),
+`conc` should no longer exceed `decode_parallelism_for(node, model)` = 4 for
+`gpt-oss:120b`. If the Aug-22 step was caused or worsened by unbounded dispatch into a
+backend that admits only 4, p25 should improve now. If p25 stays at ~43–53 with
+concurrency capped, unbounded dispatch was *not* the cause and this issue needs a
+different hypothesis. **Either outcome is informative — measure p25 and the `conc`
+distribution over the next 24h before investigating further.**
+
 **Worth knowing before investigating:** `conc=3` oscillates between ~46 and ~75
 across the whole seven-month record while `conc=1` stays at 70–76. Several earlier
 reports called stable ~52 an ongoing decline because they anchored on Aug 15–21,
