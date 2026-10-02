@@ -256,7 +256,7 @@ class QueueManager:
         # is Ollama's own admission cap.  Workers beyond it don't decode; they
         # block inside Ollama, invisible to the queue that is supposed to be
         # managing them.
-        backend_limit = decode_parallelism_for(node)
+        backend_limit = decode_parallelism_for(node, model)
         if backend_limit > 0:
             concurrency = min(concurrency, backend_limit)
         return max(_MIN_CONCURRENCY, concurrency)

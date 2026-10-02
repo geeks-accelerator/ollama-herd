@@ -272,3 +272,112 @@ def test_capacity_math_still_applies_when_it_is_the_tighter_bound():
     assert compute_concurrency(available_memory_gb=500.0, model_size_gb=20.0) == 8
     # ...but no headroom still clamps to the floor regardless of the backend.
     assert compute_concurrency(available_memory_gb=20.0, model_size_gb=20.0) == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-model decode parallelism — Ollama decides admission per model, not node
+# ---------------------------------------------------------------------------
+
+
+def _node_with_meta(num_parallel: int, meta: dict | None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        ollama=SimpleNamespace(num_parallel=num_parallel, models_available_meta=meta),
+    )
+
+
+@pytest.mark.parametrize("family", sorted(
+    __import__("fleet_manager.server.serializers", fromlist=["x"]).OLLAMA_SERIAL_FAMILIES
+))
+def test_serial_families_decode_one_at_a_time(family):
+    """sched.go forces numParallel=1 for these architectures. On a NUM_PARALLEL=4
+    node herd must not run 4 workers that would silently queue inside Ollama."""
+    from fleet_manager.models.node import ModelTagMeta
+    from fleet_manager.server.serializers import decode_parallelism_for
+
+    node = _node_with_meta(4, {"m:1b": ModelTagMeta(family=family, format="gguf")})
+    assert decode_parallelism_for(node, "m:1b") == 1
+
+
+def test_mlx_run_model_decodes_one_at_a_time():
+    """Ollama's IsMLX() is format == "safetensors", and its MLX runner is a single
+    serial request loop. Ollama 0.40 makes MLX the default on Apple Silicon."""
+    from fleet_manager.models.node import ModelTagMeta
+    from fleet_manager.server.serializers import decode_parallelism_for
+
+    node = _node_with_meta(4, {"qwen3.8:27b-mlx": ModelTagMeta(format="safetensors")})
+    assert decode_parallelism_for(node, "qwen3.8:27b-mlx") == 1
+
+
+@pytest.mark.parametrize("caps", [["embedding"], ["decision"]])
+def test_non_completion_models_decode_one_at_a_time(caps):
+    from fleet_manager.models.node import ModelTagMeta
+    from fleet_manager.server.serializers import decode_parallelism_for
+
+    node = _node_with_meta(4, {"m:latest": ModelTagMeta(capabilities=caps)})
+    assert decode_parallelism_for(node, "m") == 1  # bare name → :latest, like Ollama
+
+
+@pytest.mark.parametrize("meta", [
+    None,                                     # older agent: no meta at all
+    {},                                       # meta present, model not in it
+    {"m:1b": None},                           # defensive: null entry
+])
+def test_missing_metadata_keeps_the_node_limit(meta):
+    """Missing data must reproduce today's behavior exactly, never throttle."""
+    from fleet_manager.server.serializers import decode_parallelism_for
+
+    assert decode_parallelism_for(_node_with_meta(4, meta), "m:1b") == 4
+
+
+def test_empty_capabilities_do_not_throttle():
+    """An old Ollama reports nothing; absence of "completion" must not read as
+    "not a completion model" — that would throttle every model to 1."""
+    from fleet_manager.models.node import ModelTagMeta
+    from fleet_manager.server.serializers import decode_parallelism_for
+
+    node = _node_with_meta(4, {"m:1b": ModelTagMeta(family="llama", format="gguf")})
+    assert decode_parallelism_for(node, "m:1b") == 4
+
+
+def test_two_models_on_one_node_get_their_own_limits():
+    from fleet_manager.models.node import ModelTagMeta
+    from fleet_manager.server.serializers import decode_parallelism_for
+
+    node = _node_with_meta(4, {
+        "gemma3:27b": ModelTagMeta(
+            family="gemma3", format="gguf", capabilities=["completion", "vision"],
+        ),
+        "qwen3-vl:32b": ModelTagMeta(
+            family="qwen3vl", format="gguf", capabilities=["completion", "vision"],
+        ),
+    })
+    assert decode_parallelism_for(node, "gemma3:27b") == 4
+    assert decode_parallelism_for(node, "qwen3-vl:32b") == 1
+    assert decode_parallelism_for(node) == 4  # no model → node-level, unchanged
+
+
+async def test_queue_concurrency_uses_the_per_model_limit():
+    """The single call site passes the model through, so a serial model's queue
+    runs one worker while the node's other models keep their full limit."""
+    from types import SimpleNamespace
+
+    from fleet_manager.models.node import ModelTagMeta
+
+    node = SimpleNamespace(
+        memory=SimpleNamespace(available_gb=400.0),
+        capacity=None,
+        ollama=SimpleNamespace(
+            num_parallel=4,
+            models_loaded=[],
+            models_available_meta={
+                "qwen3-vl:32b": ModelTagMeta(family="qwen3vl", format="gguf"),
+                "gemma3:27b": ModelTagMeta(family="gemma3", format="gguf"),
+            },
+        ),
+    )
+    registry = SimpleNamespace(get_node=lambda node_id: node)
+    qm = QueueManager(registry=registry)
+    assert qm._compute_queue_concurrency("mini", "qwen3-vl:32b") == 1
+    assert qm._compute_queue_concurrency("mini", "gemma3:27b") == 4

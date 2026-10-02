@@ -1026,7 +1026,9 @@ The Trends page has preset time buttons (24h, 48h, 72h, 7d) but no custom date/t
 
 ---
 
-### Queue concurrency ignores OLLAMA_NUM_PARALLEL — allows 8 in-flight but Ollama only runs 2 `OPEN`
+### Queue concurrency ignores OLLAMA_NUM_PARALLEL — allows 8 in-flight but Ollama only runs 2 `FIXED`
+
+**Fixed:** the node reports `num_parallel` in the heartbeat and `decode_parallelism_for()` (`server/serializers.py`) caps each queue at it — the proposed fix below, as shipped. **Follow-up (2026-10-02):** Ollama decides admission per *model*, not per node — MLX-run models decode serially and `sched.go` forces `numParallel=1` for several architectures — so the limit is now per model. See `docs/plans/post-0.35-enhancements.md` Phase 1.
 
 **Severity:** Medium
 **Discovered:** 2026-04-16 — dashboard always shows "1/8 in-flight" regardless of model or node. On a 512GB machine the concurrency formula always hits the `_MAX_CONCURRENCY=8` cap because headroom is massive (436GB / 2GB per slot = 218, clamped to 8).

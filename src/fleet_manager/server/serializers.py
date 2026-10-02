@@ -32,7 +32,29 @@ OLLAMA_HOT_MODEL_CAP = 3
 OLLAMA_DEFAULT_NUM_PARALLEL = 1
 
 
-def decode_parallelism_for(node) -> int:
+# Architectures Ollama refuses to run with num_parallel > 1, whatever
+# OLLAMA_NUM_PARALLEL says — ollama server/sched.go load(): "Some architectures
+# are not safe with num_parallel > 1" (it logs a warning herd never sees).
+# Read from ollama main 2026-10-02.  Re-check on every Ollama upgrade, like the
+# two constants above: a family missing here means herd over-dispatches to it.
+OLLAMA_SERIAL_FAMILIES = frozenset(
+    {
+        "mllama",
+        "qwen3vl",
+        "qwen3vlmoe",
+        "qwen35",
+        "qwen35moe",
+        "qwen3next",
+        "lfm2",
+        "lfm2moe",
+        "nemotron_h",
+        "nemotron_h_moe",
+        "nemotron_h_omni",
+    }
+)
+
+
+def decode_parallelism_for(node, model: str | None = None) -> int:
     """How many requests this node's Ollama will actually decode at once.
 
     Ollama admits ``OLLAMA_NUM_PARALLEL`` requests per model and queues the rest
@@ -44,10 +66,39 @@ def decode_parallelism_for(node) -> int:
     aggregate throughput saturates at N=4 and is flat to N=8, and N=4 is exactly
     the configured ``OLLAMA_NUM_PARALLEL`` — the plateau was the admission limit,
     not the hardware.
+
+    Ollama decides this per *model*, so pass ``model`` when there is one.  It
+    serves one request at a time — regardless of ``OLLAMA_NUM_PARALLEL`` — for:
+
+    * MLX-run models.  Ollama's ``IsMLX()`` is exactly ``format ==
+      "safetensors"``, and its MLX runner (``mlxrunner/runner.go``) is a single
+      loop that runs each request to completion before taking the next.
+      Ollama 0.40 makes MLX the default on Apple Silicon.
+    * ``OLLAMA_SERIAL_FAMILIES`` — forced to 1 in ``sched.go``.
+    * Non-completion models (embedding, decision) — ``sched.go`` again.
+
+    Each check uses what the node's Ollama *reports* in ``/api/tags``.  A
+    model with no metadata (older agent, ``mlx:`` model) gets the node-level
+    value exactly as before, so missing data can't throttle anything.
     """
     ollama = getattr(node, "ollama", None) if node is not None else None
     reported = getattr(ollama, "num_parallel", 0) or 0
-    return reported if reported > 0 else OLLAMA_DEFAULT_NUM_PARALLEL
+    node_limit = reported if reported > 0 else OLLAMA_DEFAULT_NUM_PARALLEL
+    if model is None:
+        return node_limit
+    meta = _model_meta(node, model)
+    if meta is None:
+        return node_limit
+    if (
+        meta.format == "safetensors"
+        or meta.family in OLLAMA_SERIAL_FAMILIES
+        # Presence-only form of sched.go's ``!completion`` rule — see
+        # model_has_capability for why a *missing* "completion" proves nothing.
+        or "embedding" in meta.capabilities
+        or "decision" in meta.capabilities
+    ):
+        return 1
+    return node_limit
 
 
 def _model_meta(node, model: str):
