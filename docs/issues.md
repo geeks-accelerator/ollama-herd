@@ -8,6 +8,46 @@ Identified via code review of the full codebase. Organized by priority.
 
 ## Correctness
 
+### `priority_model_not_loaded` reported embedding models that can never be preloaded `FIXED` (2026-10-02)
+
+**Severity:** low (misleading dashboard), but it was a standing WARNING.
+
+Preloading warms a model by posting to `/api/generate`, which Ollama refuses outright
+for an embedding model (`"does not support generate"`). So the check was reporting
+something that was never going to happen: high embed volume made `nomic-embed-text` a
+priority model, the preloader correctly declined to warm it (see the non-generatable
+fix of 2026-10-01), and the dashboard then carried a permanent WARNING *about the
+decline*. Fixing the log spam had moved the wrong signal rather than removing it.
+
+**Two signals, because neither alone is sufficient:**
+
+1. **What Ollama reports.** `model_has_capability(node, model, "embedding")` —
+   authoritative and immediate, no failed attempt needed. Verified on this fleet:
+   Ollama 0.34.4 answers `nomic-embed-text:latest → capabilities=['embedding']`, and
+   `gpt-oss:120b → ['completion','tools','thinking']`.
+2. **What a backend actually refused**, learned at runtime from a 400. Covers nodes
+   whose Ollama reports no capabilities at all. Moved from a `StreamingProxy`
+   instance attribute to module level with `get_non_generatable_models()`, matching
+   the `get_context_protection_events` pattern the stateless health engine already
+   uses for cross-module state.
+
+**Why both:** `model_has_capability` is presence-only *by contract* — "False means
+unknown", because Ollama 0.33.x under-reported capabilities. Treating absence as
+"embedding" would have silenced every genuine miss on an older node. A test pins
+that an unknown model is still reported.
+
+**Normalization matters here and nearly slipped through.** Ollama keys its metadata
+`name:tag`; a priority list carries whatever name the client used. `_model_meta`
+normalizes, so a bare `nomic-embed-text` resolves against `nomic-embed-text:latest`
+metadata — the first version of the test keyed the fixture bare, so the capability
+signal silently never matched and the test failed for the right reason.
+
+Verified live: the nomic card is gone, the other five checks are unchanged, and an
+unloaded chat model is still flagged.
+
+---
+
+
 ### Embed traces recorded no request size, making embed latency unexplainable `FIXED` (2026-10-01)
 
 **Severity:** medium (observability). Fixed.

@@ -20,6 +20,22 @@ logger = logging.getLogger(__name__)
 # Context protection event tracking (same pattern as VRAM fallbacks in routing.py)
 _context_protection_events: list[dict] = []
 
+# Models the backend has told us cannot serve /api/generate — embedding models,
+# for instance.  Module-level and exposed via a getter, matching
+# ``_context_protection_events``, because the health engine is stateless and
+# consumes cross-module state through exactly this pattern.
+_non_generatable_models: set[str] = set()
+
+
+def get_non_generatable_models() -> frozenset[str]:
+    """Models a backend has refused ``/api/generate`` for, learned at runtime.
+
+    Empty until a real backend response teaches it, so nothing is excluded on a
+    guess.  Complements ``model_has_capability(node, model, "embedding")``, which
+    is authoritative but only when the node's Ollama reports capabilities at all.
+    """
+    return frozenset(_non_generatable_models)
+
 
 def _record_context_protection(
     action: str,
@@ -115,7 +131,9 @@ class StreamingProxy:
         # produces log noise: `nomic-embed-text:latest` failed 81 times in 30
         # hours before this existed.  Learned from the backend rather than from
         # a name heuristic, so it covers any model type with the same property.
-        self._non_generatable: set[str] = set()
+        # Kept as a property-like alias onto the module-level set; see
+        # get_non_generatable_models().
+        self._non_generatable = _non_generatable_models
 
     def pop_token_counts(
         self, request_id: str

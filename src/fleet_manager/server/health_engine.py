@@ -2448,6 +2448,32 @@ class HealthEngine:
                 for m in node.ollama.models_available:
                     available.add(m)
 
+        # Models that cannot be preloaded at all.  Preloading warms a model by
+        # posting to /api/generate, which Ollama refuses outright for an
+        # embedding model ("does not support generate"), so reporting one as a
+        # priority model that failed to load describes a thing that was never
+        # going to happen.  Before this, `nomic-embed-text` sat on the dashboard
+        # as a WARNING indefinitely: high request volume made it a priority
+        # model, and the preloader correctly declined to warm it.
+        #
+        # Two signals, because neither alone is sufficient:
+        #  * what Ollama reports.  Authoritative and immediate, but
+        #    `model_has_capability` is presence-only by contract — it only
+        #    answers in the positive, and older Ollama under-reports.
+        #  * what a backend actually refused, learned at runtime.  Covers nodes
+        #    that report no capabilities, but only after one failed attempt.
+        from fleet_manager.server.serializers import model_has_capability
+        from fleet_manager.server.streaming import get_non_generatable_models
+
+        refused = get_non_generatable_models()
+
+        def _cannot_be_preloaded(model: str) -> bool:
+            if model in refused:
+                return True
+            return any(
+                model_has_capability(node, model, "embedding") for node in nodes
+            )
+
         # Check top priority models
         missing = []
         for entry in priorities:
@@ -2456,6 +2482,8 @@ class HealthEngine:
             if score < 10:
                 break  # Only warn for meaningfully used models
             if model not in loaded and model in available:
+                if _cannot_be_preloaded(model):
+                    continue
                 missing.append((model, score))
 
         if missing:
