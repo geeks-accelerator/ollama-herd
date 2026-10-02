@@ -327,7 +327,7 @@ async def dashboard_events(request: Request):
                                     "node_id":        node.node_id,
                                     "model":          m.name,
                                     "backend":        "native",
-                                    "request_type":   "embed",
+                                    "request_type":   m.kind,  # "embed" | "rerank"
                                     "instant":        True,
                                     "pending":        0,
                                     "in_flight":      0,

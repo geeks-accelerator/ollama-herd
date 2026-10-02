@@ -211,8 +211,11 @@ class TextEmbeddingModel(BaseModel):
     """A text embedding model available on a node via the native fastembed backend."""
 
     name: str        # e.g. "nomic-embed-text"
-    dimensions: int  # e.g. 768
+    dimensions: int  # e.g. 768 (0 for a reranker, which emits scores, not vectors)
     cached: bool     # model weights present on disk
+    # "embed" or "rerank".  Defaulted so heartbeats from older agents, which
+    # only ever reported embedders, still validate unchanged.
+    kind: str = "embed"
 
 
 class TextEmbeddingMetrics(BaseModel):

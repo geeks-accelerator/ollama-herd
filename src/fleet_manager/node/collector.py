@@ -447,7 +447,9 @@ def _detect_text_embedding_models():
 
     from fleet_manager.models.node import TextEmbeddingMetrics, TextEmbeddingModel
     from fleet_manager.node.text_embedding_models import (
+        DEFAULT_RERANK_MODEL,
         canonical_model_names,
+        canonical_rerank_names,
         get_model_spec,
         is_model_cached,
     )
@@ -462,6 +464,15 @@ def _detect_text_embedding_models():
                 cached=is_model_cached(name),
             )
         )
+    # Rerankers share the server.  Advertise the default (so routing knows this
+    # node can rerank before anything is downloaded) plus any already cached —
+    # not all six, which would put six never-used cards on the dashboard.
+    for name in canonical_rerank_names():
+        cached = is_model_cached(name)
+        if cached or name == DEFAULT_RERANK_MODEL:
+            models.append(
+                TextEmbeddingModel(name=name, dimensions=0, cached=cached, kind="rerank")
+            )
 
     # Return metrics even if no models are cached yet — server starts eagerly
     # when fastembed is installed so the first request triggers a lazy download.
@@ -483,6 +494,7 @@ def _text_embedding_backend_status() -> dict:
     """
     from fleet_manager.node.text_embedding_models import (
         canonical_model_names,
+        canonical_rerank_names,
         is_model_cached,
     )
 
@@ -492,7 +504,13 @@ def _text_embedding_backend_status() -> dict:
     except ImportError:
         backend_available = False
 
-    cached = sum(1 for name in canonical_model_names() if is_model_cached(name))
+    # Rerank weights count too: cached weights with fastembed missing is the same
+    # silently-broken state, so text_embedding_backend_missing covers both.
+    cached = sum(
+        1
+        for name in canonical_model_names() + canonical_rerank_names()
+        if is_model_cached(name)
+    )
     return {
         "backend_available": backend_available,
         "cached_model_count": cached,

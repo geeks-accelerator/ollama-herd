@@ -283,6 +283,56 @@ endpoint.
 
 ---
 
+### `POST /v1/rerank`
+
+Reranks documents against a query, for the rerank step of RAG pipelines (Open
+WebUI, Dify, LangChain, LlamaIndex). **Ollama has no rerank endpoint**. Herd
+serves this from the native fastembed server that nodes with the `embedding`
+extra already run, so there's no new dependency. Uses the Jina/Cohere request
+and response shape.
+
+```bash
+curl http://localhost:11435/v1/rerank -H 'Content-Type: application/json' -d '{
+  "query": "how do I stop herd now that launchd is installed?",
+  "documents": ["launchctl bootout gui/$UID/...", "pkill is no longer a stop", "MLX setup"],
+  "top_n": 2,
+  "return_documents": true
+}'
+```
+
+**Request:** `query` (required) and `documents` (strings, or `{"text": ...}` objects).
+Optional: `model`, `top_n`, and `return_documents` (default `false`).
+
+**Response:** `{model, results: [{index, relevance_score, document?}], usage: {total_tokens}}`.
+Results are sorted best first, and `index` points into the original `documents`.
+`relevance_score` is the cross-encoder logit passed through a sigmoid. It's in
+0–1 like Cohere's and Jina's, so clients that apply a relevance threshold
+behave the same way. The serving node is in `X-Fleet-Node`, not the body.
+
+**Models.** Weights download on first use, then stay cached.
+
+| `model` | Size | Notes |
+|---|---|---|
+| `ms-marco-minilm-l-6-v2` *(default)* | 80 MB | Fastest; English |
+| `ms-marco-minilm-l-12-v2` | 120 MB | English |
+| `jina-reranker-v1-tiny-en` | 130 MB | English, long inputs |
+| `jina-reranker-v1-turbo-en` | 150 MB | English, long inputs |
+| `bge-reranker-base` | 1.04 GB | Quality pick; English/Chinese |
+| `jina-reranker-v2-base-multilingual` | 1.11 GB | Quality pick; multilingual |
+
+**Limits:** at most 1,000 documents of 32,000 characters each → `400`. A
+cross-encoder runs one forward pass per document.
+
+**Errors:**
+- `400`: invalid request, from the node.
+- `404`: unknown `model`; the error lists the available ones.
+- `503`: no node runs a rerank-capable text server (`uv sync --extra embedding`).
+- `504`: timed out, usually because a first request is still downloading weights.
+
+Traces carry the `rerank` tag.
+
+---
+
 ### `POST /v1/systemone`
 
 Ollama's **decision models** (Ollama ≥ 0.35: `nimble`, `tev1`), which return

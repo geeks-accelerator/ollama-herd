@@ -155,13 +155,16 @@ class TestEmbedTracesRecordSize:
         assert "prompt_eval_count" in src
 
     def test_embed_success_path_passes_prompt_tokens(self):
-        import inspect
+        """The embed path turns the backend's count into the traced size.
 
-        from fleet_manager.server.routes import text_embedding_compat as tec
+        Was a source grep for two strings; now behavioral, so moving the code
+        (it moved into the shared native-proxy core) can't silently break it.
+        End-to-end coverage: test_native_text_proxy.py, success case.
+        """
+        from fleet_manager.server.routes.text_embedding_compat import EMBED
 
-        src = inspect.getsource(tec)
-        # the success-path record_trace must forward the size
-        assert "prompt_tokens=prompt_tokens" in src, (
+        assert EMBED.count_tokens({"prompt_eval_count": 7}) == 7, (
             "embed traces must record request size, not just latency"
         )
-        assert 'result.get("prompt_eval_count")' in src
+        assert EMBED.count_tokens({}) is None
+        assert EMBED.count_tokens({"prompt_eval_count": "junk"}) is None

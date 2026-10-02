@@ -14,6 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
+from fleet_manager.node.text_embedding_models import DEFAULT_RERANK_MODEL
 from fleet_manager.server.fleet_headers import (
     affinity_from_breakdown,
     fleet_headers,
@@ -43,6 +44,10 @@ from fleet_manager.server.routes.routing import (
     parse_allow_fallback,
     record_routing_rejection,
     score_with_fallbacks,
+)
+from fleet_manager.server.routes.text_embedding_compat import (
+    RERANK,
+    proxy_to_native_text_server,
 )
 from fleet_manager.server.serializers import model_has_capability
 
@@ -586,6 +591,29 @@ def _openai_error(status: int, message: str, err_type: str, code: str | None = N
     return JSONResponse(
         status_code=status,
         content={"error": {"message": message, "type": err_type, "param": None, "code": code}},
+    )
+
+
+@router.post("/v1/rerank")
+async def rerank(request: Request):
+    """Rerank documents against a query (Jina/Cohere format) — Ollama has none.
+
+    Served by the native fastembed server every node with the embedding
+    extra already runs, so it adds no dependency.  Request:
+    {model?, query, documents: [str | {text}], top_n?, return_documents?};
+    response: {model, results: [{index, relevance_score, document?}], usage}.
+    relevance_score is 0..1.  Validation, limits and the default model
+    (ms-marco-minilm-l-6-v2) live on the node; its 4xx pass through.
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "invalid JSON body"})
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"error": "invalid JSON body"})
+    model = str(body.get("model") or DEFAULT_RERANK_MODEL).lower().strip()
+    return await proxy_to_native_text_server(
+        request, model=model, body={**body, "model": model}, kind=RERANK,
     )
 
 

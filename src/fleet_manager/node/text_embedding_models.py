@@ -30,6 +30,9 @@ TEXT_EMBEDDING_CACHE_DIR = Path.home() / ".fleet-manager" / "models" / "text-emb
 TEXT_EMBEDDING_MODELS: dict[str, dict] = {
     "nomic-embed-text": {
         "fastembed_name": "nomic-ai/nomic-embed-text-v1.5-Q",
+        # fastembed serves the -Q file from the base repo, and the HF cache is
+        # keyed by repo — so the cache check must look here, not at the name.
+        "hf_repo": "nomic-ai/nomic-embed-text-v1.5",
         "dimensions": 768,
         "max_tokens": 8192,
         "size_mb": 130,
@@ -43,6 +46,9 @@ TEXT_EMBEDDING_MODELS: dict[str, dict] = {
     "nomic-embed-text:latest": {
         # Ollama tag alias — same model, same cache entry
         "fastembed_name": "nomic-ai/nomic-embed-text-v1.5-Q",
+        # fastembed serves the -Q file from the base repo, and the HF cache is
+        # keyed by repo — so the cache check must look here, not at the name.
+        "hf_repo": "nomic-ai/nomic-embed-text-v1.5",
         "dimensions": 768,
         "max_tokens": 8192,
         "size_mb": 130,
@@ -58,10 +64,65 @@ _CANONICAL_NAMES: set[str] = {
     name for name in TEXT_EMBEDDING_MODELS if not name.endswith(":latest")
 }
 
+# Cross-encoder rerankers, served by the same fastembed server (``/rerank``).
+# Same spec shape as TEXT_EMBEDDING_MODELS, so the lookups below resolve both.
+# Deliberately a SIBLING dict: ``is_text_embedding_model`` and
+# ``TEXT_EMBEDDING_MODEL_NAMES`` stay embed-only, so the /api/embed dispatcher
+# can never send an embed request to a reranker.  Keys are lowercase because
+# every lookup lowercases; ``fastembed_name`` keeps fastembed's own casing.
+# These are the rerankers fastembed 0.8 supports (TextCrossEncoder).
+RERANK_MODELS: dict[str, dict] = {
+    "ms-marco-minilm-l-6-v2": {
+        "fastembed_name": "Xenova/ms-marco-MiniLM-L-6-v2",
+        "size_mb": 80,
+        "description": "Smallest and fastest; English. The default.",
+    },
+    "ms-marco-minilm-l-12-v2": {
+        "fastembed_name": "Xenova/ms-marco-MiniLM-L-12-v2",
+        "size_mb": 120,
+        "description": "Deeper MiniLM; English.",
+    },
+    "jina-reranker-v1-tiny-en": {
+        "fastembed_name": "jinaai/jina-reranker-v1-tiny-en",
+        "size_mb": 130,
+        "description": "Jina tiny; English, long inputs.",
+    },
+    "jina-reranker-v1-turbo-en": {
+        "fastembed_name": "jinaai/jina-reranker-v1-turbo-en",
+        "size_mb": 150,
+        "description": "Jina turbo; English, long inputs.",
+    },
+    "bge-reranker-base": {
+        "fastembed_name": "BAAI/bge-reranker-base",
+        "size_mb": 1040,
+        "description": "BAAI BGE; strong English/Chinese quality.",
+    },
+    "jina-reranker-v2-base-multilingual": {
+        "fastembed_name": "jinaai/jina-reranker-v2-base-multilingual",
+        "size_mb": 1110,
+        "description": "Jina v2; multilingual quality pick.",
+    },
+}
+DEFAULT_RERANK_MODEL = "ms-marco-minilm-l-6-v2"
+RERANK_MODEL_NAMES: set[str] = set(RERANK_MODELS)
+
+
+def _spec(model: str) -> dict:
+    """The registry spec for an embedding *or* rerank model; KeyError if neither."""
+    key = model.lower().strip()
+    if key in TEXT_EMBEDDING_MODELS:
+        return TEXT_EMBEDDING_MODELS[key]
+    return RERANK_MODELS[key]
+
 
 def is_text_embedding_model(model: str) -> bool:
     """Return True if ``model`` should be routed to the native text embedding backend."""
     return model.lower().strip() in TEXT_EMBEDDING_MODEL_NAMES
+
+
+def is_rerank_model(model: str) -> bool:
+    """Return True if ``model`` is a reranker the native server can load."""
+    return model.lower().strip() in RERANK_MODEL_NAMES
 
 
 def get_fastembed_name(model: str) -> str:
@@ -69,8 +130,7 @@ def get_fastembed_name(model: str) -> str:
 
     Raises ``KeyError`` if the model is not in the registry.
     """
-    spec = TEXT_EMBEDDING_MODELS[model.lower().strip()]
-    return spec["fastembed_name"]
+    return _spec(model)["fastembed_name"]
 
 
 def get_model_spec(model: str) -> dict:
@@ -78,7 +138,7 @@ def get_model_spec(model: str) -> dict:
 
     Raises ``KeyError`` if the model is not in the registry.
     """
-    return TEXT_EMBEDDING_MODELS[model.lower().strip()]
+    return _spec(model)
 
 
 def is_model_cached(model: str) -> bool:
@@ -89,13 +149,18 @@ def is_model_cached(model: str) -> bool:
     fastembed on every heartbeat tick (which would slow startup and penalise nodes
     that haven't installed the extra).
     """
-    spec = TEXT_EMBEDDING_MODELS.get(model.lower().strip())
-    if not spec:
+    try:
+        spec = _spec(model)
+    except KeyError:
         return False
-    fastembed_name = spec["fastembed_name"]
-    # fastembed stores models as <cache_dir>/models--<org>--<name>/
-    # e.g. models--nomic-ai--nomic-embed-text-v1.5-Q
-    sanitised = fastembed_name.replace("/", "--")
+    # fastembed stores models in the HF cache layout, keyed by the *source repo*:
+    # <cache_dir>/models--<org>--<repo>/.  That is usually the fastembed name,
+    # but not always — nomic-embed-text-v1.5-Q lives in models--nomic-ai--
+    # nomic-embed-text-v1.5.  Keying on the name made this always False for
+    # nomic, so the heartbeat said cached=False and the backend-missing health
+    # check could never fire.  ``hf_repo`` records the exceptions.
+    repo = spec.get("hf_repo") or spec["fastembed_name"]
+    sanitised = repo.replace("/", "--")
     model_dir = TEXT_EMBEDDING_CACHE_DIR / f"models--{sanitised}"
     if not model_dir.exists():
         return False
@@ -106,3 +171,8 @@ def is_model_cached(model: str) -> bool:
 def canonical_model_names() -> list[str]:
     """Return canonical model names (no :latest aliases) for collector reporting."""
     return sorted(_CANONICAL_NAMES)
+
+
+def canonical_rerank_names() -> list[str]:
+    """Return all registered reranker names."""
+    return sorted(RERANK_MODEL_NAMES)
