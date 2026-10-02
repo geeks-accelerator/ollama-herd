@@ -211,12 +211,21 @@ def _synth_digest(name: str) -> str:
     return hashlib.sha256(f"ollama-herd:{name}".encode()).hexdigest()
 
 
+# Capabilities for models no Ollama instance serves, so herd synthesizes them.
+# One source for both /api/tags and /api/show: Ollama 0.34.1 fixed exactly this
+# kind of disagreement between its two endpoints, so ours must not reintroduce it.
+_MLX_CAPABILITIES = ["completion"]
+_VISION_EMBEDDING_CAPABILITIES = ["embedding"]
+_IMAGE_CAPABILITIES = ["image"]
+
+
 def _tag_entry(
     name: str,
     *,
     size: int,
     meta: ModelTagMeta | None,
     default_format: str = "",
+    default_capabilities: list[str] | None = None,
 ) -> dict:
     """One Ollama-shaped ``/api/tags`` entry, never ``null`` in a required key.
 
@@ -239,6 +248,7 @@ def _tag_entry(
             "parameter_size": m.parameter_size,
             "quantization_level": m.quantization_level,
         },
+        "capabilities": list(m.capabilities or default_capabilities or []),
     }
 
 
@@ -292,11 +302,13 @@ async def ollama_tags(request: Request):
             _add(m.name, node.node_id, lambda m=m, size=size: _tag_entry(
                 m.name, size=size, meta=fleet_meta.get(m.name),
                 default_format="mlx" if m.name.startswith("mlx:") else "",
+                default_capabilities=_MLX_CAPABILITIES if m.name.startswith("mlx:") else None,
             ))
         for name in node.ollama.models_available:
             _add(name, node.node_id, lambda name=name: _tag_entry(
                 name, size=_disk_bytes(name), meta=fleet_meta.get(name),
                 default_format="mlx" if name.startswith("mlx:") else "",
+                default_capabilities=_MLX_CAPABILITIES if name.startswith("mlx:") else None,
             ))
 
     # Include image models (mflux + DiffusionKit) in the unified list
@@ -309,6 +321,7 @@ async def ollama_tags(request: Request):
                     im.name, size=0, meta=None,
                     # "mflux-generate-…" → "mflux", "diffusionkit-cli" → "diffusionkit"
                     default_format=(im.binary or "").split("-")[0],
+                    default_capabilities=_IMAGE_CAPABILITIES,
                 )
                 entry["details"]["type"] = "image"
                 return entry
@@ -320,7 +333,10 @@ async def ollama_tags(request: Request):
             continue
         for vm in node.vision_embedding.models_available:
             def _vision_entry(vm=vm):
-                entry = _tag_entry(vm.name, size=0, meta=None, default_format=vm.runtime)
+                entry = _tag_entry(
+                    vm.name, size=0, meta=None, default_format=vm.runtime,
+                    default_capabilities=_VISION_EMBEDDING_CAPABILITIES,
+                )
                 entry["details"].update({
                     "type": "vision-embedding",
                     "runtime": vm.runtime,
@@ -385,7 +401,7 @@ def _synth_show(
             "quantization_level": "",
         },
         "model_info": {},
-        "capabilities": capabilities,
+        "capabilities": list(capabilities),  # callers pass shared constants
         "modified_at": _synth_modified_at(name),
     }
 
@@ -420,7 +436,7 @@ async def ollama_show(request: Request):
         if any(
             n.ollama and model in n.ollama.models_available for n in nodes
         ):
-            return _synth_show(model, fmt="mlx", capabilities=["completion"])
+            return _synth_show(model, fmt="mlx", capabilities=_MLX_CAPABILITIES)
         return JSONResponse(status_code=404, content={"error": f"model '{model}' not found"})
 
     # Ollama-served: loaded nodes first (the model's metadata is warm there),
@@ -481,11 +497,13 @@ async def ollama_show(request: Request):
             m.name == model for m in n.vision_embedding.models_available
         ):
             vm = next(m for m in n.vision_embedding.models_available if m.name == model)
-            return _synth_show(model, fmt=vm.runtime, capabilities=["embedding"])
+            return _synth_show(
+                model, fmt=vm.runtime, capabilities=_VISION_EMBEDDING_CAPABILITIES,
+            )
         if n.image and any(m.name == model for m in n.image.models_available):
             im = next(m for m in n.image.models_available if m.name == model)
             return _synth_show(
-                model, fmt=(im.binary or "").split("-")[0], capabilities=["image"],
+                model, fmt=(im.binary or "").split("-")[0], capabilities=_IMAGE_CAPABILITIES,
             )
 
     return JSONResponse(status_code=404, content={"error": f"model '{model}' not found"})

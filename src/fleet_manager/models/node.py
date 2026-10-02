@@ -105,6 +105,12 @@ class ModelTagMeta(BaseModel):
     parameter_size: str = ""
     quantization_level: str = ""
     parent_model: str = ""
+    # Ollama's own per-model capabilities ("completion", "embedding",
+    # "thinking", "vision", "decision", ...).  Ollama 0.33.x under-reports
+    # these in /api/tags (gemma3:27b listed ["completion"] while /api/show
+    # said ["completion", "vision"]; fixed in 0.34.1), so treat an *absent*
+    # entry as unknown, never as "no" — see ``model_has_capability``.
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class OllamaMetrics(BaseModel):

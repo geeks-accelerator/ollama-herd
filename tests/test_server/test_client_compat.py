@@ -48,6 +48,7 @@ GPT_OSS_META = ModelTagMeta(
     parameter_size="116.8B",
     quantization_level="MXFP4",
     parent_model="",
+    capabilities=["completion", "tools", "thinking"],
 )
 
 
@@ -61,6 +62,7 @@ def _assert_ollama_shape(entry: dict) -> None:
         assert isinstance(details[key], str), key
     assert isinstance(details["families"], list)
     assert isinstance(details["fleet_nodes"], list) and details["fleet_nodes"]
+    assert isinstance(entry["capabilities"], list)
     # RFC3339 — must parse
     datetime.fromisoformat(entry["modified_at"].replace("Z", "+00:00"))
 
@@ -110,6 +112,8 @@ class TestTagsFieldParity:
         assert entry["details"]["parameter_size"] == "116.8B"
         assert entry["details"]["quantization_level"] == "MXFP4"
         assert entry["details"]["fleet_nodes"] == ["studio"]
+        # Top-level, as Ollama returns it — not under ``details``.
+        assert entry["capabilities"] == ["completion", "tools", "thinking"]
         # Ollama's /api/tags reports ON-DISK bytes, not resident size.
         assert entry["size"] == 65_290_069_606
 
@@ -201,7 +205,11 @@ class TestOllamaClientTagMeta:
                 "families": None, "parameter_size": "14.7B",
                 "quantization_level": "Q4_K_M",
             },
-        }, {"name": "no-details:1b", "model": "no-details:1b"}]}
+            "capabilities": None,
+        }, {"name": "no-details:1b", "model": "no-details:1b"}, {
+            "name": "qwen3.8:27b", "model": "qwen3.8:27b",
+            "capabilities": ["completion", None, "vision", "thinking"],
+        }]}
 
         client = OllamaClient()
         client._client = httpx.AsyncClient(
@@ -214,7 +222,9 @@ class TestOllamaClientTagMeta:
         assert meta["phi4:14b"].parent_model == ""
         assert meta["phi4:14b"].families == []
         assert meta["phi4:14b"].quantization_level == "Q4_K_M"
+        assert meta["phi4:14b"].capabilities == []
         assert meta["no-details:1b"] == ModelTagMeta()
+        assert meta["qwen3.8:27b"].capabilities == ["completion", "vision", "thinking"]
 
     @pytest.mark.asyncio
     async def test_failure_returns_empty(self):
@@ -660,3 +670,76 @@ class TestCors:
         assert re.fullmatch(regex, "http://localhost:8080")
         assert not re.fullmatch(regex, "http://evil.example/?http://localhost:1")
         assert not re.fullmatch(regex, "https://localhost:8080")
+
+
+# ---------------------------------------------------------------------------
+# model_has_capability — presence-only reading of Ollama's capabilities
+# ---------------------------------------------------------------------------
+
+
+class TestModelHasCapability:
+    """Ollama 0.33.x under-reports capabilities in /api/tags (gemma3:27b listed
+    ["completion"] while /api/show said ["completion", "vision"]; fixed in
+    0.34.1).  So the helper believes what is reported and treats a missing
+    entry as unknown — never as a "no" that callers would act on."""
+
+    def _node(self, meta):
+        node = MagicMock()
+        node.ollama.models_available_meta = meta
+        return node
+
+    def test_reported_capability_is_true(self):
+        from fleet_manager.server.serializers import model_has_capability
+
+        node = self._node({"qwen3.8:27b": ModelTagMeta(capabilities=["thinking"])})
+        assert model_has_capability(node, "qwen3.8:27b", "thinking")
+
+    def test_absent_capability_is_false_not_an_error(self):
+        from fleet_manager.server.serializers import model_has_capability
+
+        node = self._node({"gemma3:27b": ModelTagMeta(capabilities=["completion"])})
+        assert not model_has_capability(node, "gemma3:27b", "vision")
+
+    def test_bare_name_resolves_to_latest_like_ollama(self):
+        from fleet_manager.server.serializers import model_has_capability
+
+        node = self._node({"nomic-embed-text:latest": ModelTagMeta(capabilities=["embedding"])})
+        assert model_has_capability(node, "nomic-embed-text", "embedding")
+
+    def test_no_meta_or_no_node_is_false(self):
+        from fleet_manager.server.serializers import model_has_capability
+
+        assert not model_has_capability(self._node(None), "x:1b", "thinking")
+        assert not model_has_capability(self._node({}), "x:1b", "thinking")
+        assert not model_has_capability(None, "x:1b", "thinking")
+        assert not model_has_capability(self._node({}), "", "thinking")
+
+
+class TestSynthesizedCapabilitiesAgree:
+    """/api/tags and /api/show must report the same capabilities for models
+    herd synthesizes (no Ollama serves them).  Ollama 0.34.1 fixed exactly this
+    disagreement between its own two endpoints."""
+
+    def test_vision_embedding_model_agrees_across_endpoints(self, app_client):
+        hb = make_heartbeat(node_id="mini", available_models=["gemma3:27b"])
+        hb.vision_embedding = VisionEmbeddingMetrics(models_available=[
+            VisionEmbeddingModel(name="dinov2-vit-s14", runtime="onnx", dimensions=384),
+        ])
+        app_client.post("/heartbeat", json=hb.model_dump())
+
+        tags = {m["name"]: m for m in app_client.get("/api/tags").json()["models"]}
+        show = app_client.post("/api/show", json={"model": "dinov2-vit-s14"}).json()
+        assert tags["dinov2-vit-s14"]["capabilities"] == ["embedding"]
+        assert show["capabilities"] == tags["dinov2-vit-s14"]["capabilities"]
+
+    def test_synthesized_constants_are_not_shared_by_reference(self, app_client):
+        from fleet_manager.server.routes import ollama_compat
+
+        hb = make_heartbeat(node_id="mini", available_models=["gemma3:27b"])
+        hb.vision_embedding = VisionEmbeddingMetrics(models_available=[
+            VisionEmbeddingModel(name="dinov2-vit-s14", runtime="onnx", dimensions=384),
+        ])
+        app_client.post("/heartbeat", json=hb.model_dump())
+        app_client.get("/api/tags")
+        app_client.post("/api/show", json={"model": "dinov2-vit-s14"})
+        assert ollama_compat._VISION_EMBEDDING_CAPABILITIES == ["embedding"]

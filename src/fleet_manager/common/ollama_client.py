@@ -148,6 +148,7 @@ class OllamaClient:
                     parameter_size=str(details.get("parameter_size") or ""),
                     quantization_level=str(details.get("quantization_level") or ""),
                     parent_model=str(details.get("parent_model") or ""),
+                    capabilities=[str(c) for c in (m.get("capabilities") or []) if c is not None],
                 )
             return meta
         except Exception as e:  # noqa: BLE001 — metadata is best-effort; router synthesizes

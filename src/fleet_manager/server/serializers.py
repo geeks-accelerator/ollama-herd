@@ -8,6 +8,8 @@ this is the single serializer so new fields (``models_loaded_count``,
 
 from __future__ import annotations
 
+from fleet_manager.models.request import normalize_model_name
+
 # Fallback hot-model cap, used only when a node doesn't report its own.
 #
 # This is Ollama's *documented default* ("3 per GPU" when
@@ -46,6 +48,30 @@ def decode_parallelism_for(node) -> int:
     ollama = getattr(node, "ollama", None) if node is not None else None
     reported = getattr(ollama, "num_parallel", 0) or 0
     return reported if reported > 0 else OLLAMA_DEFAULT_NUM_PARALLEL
+
+
+def _model_meta(node, model: str):
+    """The node's Ollama ``/api/tags`` metadata for ``model``, or None.
+
+    Keyed the way Ollama keys it (``name:tag``), so the bare names clients send
+    are normalized with the same helper ``InferenceRequest`` uses.
+    """
+    ollama = getattr(node, "ollama", None) if node is not None else None
+    meta = getattr(ollama, "models_available_meta", None) or {}
+    return meta.get(normalize_model_name(model)) if model else None
+
+
+def model_has_capability(node, model: str, capability: str) -> bool:
+    """True only when the node's Ollama *reports* ``capability`` for ``model``.
+
+    Presence-only, deliberately.  Ollama 0.33.x under-reports capabilities in
+    ``/api/tags`` (fixed in 0.34.1), so a missing entry proves nothing — False
+    here means "unknown", and every caller falls back to what it did before
+    this existed.  That makes the helper safe on any Ollama version without
+    parsing one.
+    """
+    meta = _model_meta(node, model)
+    return meta is not None and capability in meta.capabilities
 
 
 def hot_model_cap_for(node) -> int:
