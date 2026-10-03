@@ -18,6 +18,7 @@ import asyncio
 import logging
 import math
 import time
+from typing import NamedTuple
 
 from fastapi import APIRouter
 from fastapi.requests import Request
@@ -56,9 +57,29 @@ _load_lock = asyncio.Lock()
 # leaves headroom for the two concurrent LLM inference processes.
 _DEFAULT_THREADS = 8
 
+# Activation memory for one ONNX run grows with batch x seq_len^2 (the attention
+# scores), and ONNX Runtime never hands its high-water mark back to the OS: the
+# largest run a process ever does is what it holds from then on, plus a second
+# copy for each input shape it sees twice (memory patterns).  Unbounded, that
+# pinned 28 GB in one node agent on 2026-10-02 (docs/observations.md).  The
+# budget is one full-context nomic sequence (~1 GB measured), so long inputs
+# run one at a time and short ones still batch _MAX_BATCH wide.
+_ATTENTION_BUDGET = 2048 * 2048
+_MAX_BATCH = 32
 
-async def _load(cls, fastembed_name: str):
-    """Return a loaded ``cls(fastembed_name)``, loading or swapping as needed."""
+# The budget only holds one run at a time: concurrent runs on one session each
+# take a full peak from the same arena, so four at once hold four peaks.  Keyed
+# like _slots, so the embedder and the reranker still run in parallel.
+_run_locks: dict[type, asyncio.Lock] = {}
+
+
+async def _load(cls, fastembed_name: str, max_tokens: int | None = None):
+    """Return a loaded ``cls(fastembed_name)``, loading or swapping as needed.
+
+    ``max_tokens`` replaces the tokenizer's truncation limit, which fastembed
+    takes from the model card — 8192 for nomic, four times the context Ollama
+    serves it at, and sixteen times the attention memory.
+    """
     slot = _slots.get(cls)
     if slot is not None and slot[0] == fastembed_name:
         return slot[1]  # fast path — already loaded
@@ -74,16 +95,19 @@ async def _load(cls, fastembed_name: str):
 
         # Run blocking model load in a thread pool so we don't block the event loop.
         # lazy_load=False so the model is fully loaded before the first request.
-        loop = asyncio.get_running_loop()
-        loaded = await loop.run_in_executor(
-            None,
-            lambda: cls(
+        def build():
+            model = cls(
                 model_name=fastembed_name,
                 cache_dir=str(TEXT_EMBEDDING_CACHE_DIR),
                 threads=_DEFAULT_THREADS,
                 lazy_load=False,
-            ),
-        )
+            )
+            if max_tokens:
+                model.model.tokenizer.enable_truncation(max_length=max_tokens)
+            return model
+
+        loop = asyncio.get_running_loop()
+        loaded = await loop.run_in_executor(None, build)
         _slots[cls] = (fastembed_name, loaded)
         logger.info(f"{cls.__name__} model loaded: {fastembed_name}")
         return loaded
@@ -93,7 +117,11 @@ async def _get_model(ollama_model_name: str):
     """Return the loaded fastembed TextEmbedding for an embedding model."""
     from fastembed import TextEmbedding
 
-    return await _load(TextEmbedding, get_fastembed_name(ollama_model_name))
+    return await _load(
+        TextEmbedding,
+        get_fastembed_name(ollama_model_name),
+        max_tokens=TEXT_EMBEDDING_MODELS[ollama_model_name]["max_tokens"],
+    )
 
 
 async def _get_reranker(model: str):
@@ -101,6 +129,35 @@ async def _get_reranker(model: str):
     from fastembed.rerank.cross_encoder import TextCrossEncoder
 
     return await _load(TextCrossEncoder, get_fastembed_name(model))
+
+
+async def _run_onnx(backend, fn):
+    """Run blocking ONNX work for ``backend`` in a thread, one call per model."""
+    async with _run_locks.setdefault(type(backend), asyncio.Lock()):
+        return await asyncio.get_running_loop().run_in_executor(None, fn)
+
+
+class _Batching(NamedTuple):
+    batch_size: int
+    tokens: int
+    truncated: bool
+
+
+def _plan_batches(backend, inputs: list) -> _Batching:
+    """Size ONNX batches to ``_ATTENTION_BUDGET`` with the model's own tokenizer.
+
+    fastembed pads each batch to its longest member, so the request's longest
+    input sets the cost of every batch.  Tokenizing up front costs little next
+    to inference, and gives real token counts for the response.  ``inputs`` are
+    strings, or ``(query, document)`` pairs for a cross-encoder.
+    """
+    encodings = backend.model.tokenizer.encode_batch(inputs)
+    longest = max(len(e.ids) for e in encodings)
+    return _Batching(
+        batch_size=max(1, min(_MAX_BATCH, _ATTENTION_BUDGET // longest**2)),
+        tokens=sum(len(e.ids) for e in encodings),
+        truncated=any(e.overflowing for e in encodings),
+    )
 
 
 @router.post("/embed")
@@ -111,7 +168,8 @@ async def embed_text(request: Request):
         {
             "model": "nomic-embed-text",     // required
             "input": "text here",            // string or list[str]
-            "prompt": "legacy field"         // also accepted
+            "prompt": "legacy field",        // also accepted
+            "truncate": true                 // false: 400 instead of truncating
         }
 
     Response (Ollama /api/embed compatible):
@@ -122,6 +180,9 @@ async def embed_text(request: Request):
             "load_duration": 0,
             "prompt_eval_count": 5
         }
+
+    Inputs are truncated to the registry's ``max_tokens``, as Ollama truncates
+    to the model's context, and ``prompt_eval_count`` is the tokens embedded.
 
     Task prefixes (search_query:, search_document:, etc.) are the caller's
     responsibility — this server passes input through unchanged, identical to
@@ -163,13 +224,21 @@ async def embed_text(request: Request):
             content={"error": f"Failed to load model '{model}': {exc}"},
         )
 
+    loop = asyncio.get_running_loop()
+    plan = await loop.run_in_executor(None, _plan_batches, backend, texts)
+    # Ollama truncates to the context by default and errors only on request.
+    if plan.truncated and body.get("truncate") is False:
+        limit = TEXT_EMBEDDING_MODELS[model]["max_tokens"]
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"input exceeds the context length ({limit} tokens)"},
+        )
+
     # Run inference in thread pool — ONNX Runtime is blocking.
     start_ns = time.perf_counter_ns()
     try:
-        loop = asyncio.get_running_loop()
-        embeddings_raw = await loop.run_in_executor(
-            None,
-            lambda: list(backend.embed(texts, batch_size=32)),
+        embeddings_raw = await _run_onnx(
+            backend, lambda: list(backend.embed(texts, batch_size=plan.batch_size)),
         )
     except Exception as exc:
         logger.error(f"Text embedding inference failed for model '{model}': {exc}")
@@ -180,7 +249,6 @@ async def embed_text(request: Request):
     elapsed_ns = time.perf_counter_ns() - start_ns
 
     embeddings = [v.tolist() for v in embeddings_raw]
-    prompt_eval_count = sum(len(t.split()) for t in texts)  # word-count approximation
 
     logger.info(
         f"Text embed: {len(texts)} string(s) → {len(embeddings[0])}d "
@@ -192,7 +260,7 @@ async def embed_text(request: Request):
         "embeddings": embeddings,
         "total_duration": elapsed_ns,
         "load_duration": 0,
-        "prompt_eval_count": prompt_eval_count,
+        "prompt_eval_count": plan.tokens,
     })
 
 
@@ -286,11 +354,14 @@ async def rerank(request: Request):
             status_code=500, content={"error": f"Failed to load model '{model}': {exc}"},
         )
 
+    loop = asyncio.get_running_loop()
+    plan = await loop.run_in_executor(
+        None, _plan_batches, backend, [(query, d) for d in documents],
+    )
     start_ns = time.perf_counter_ns()
     try:
-        loop = asyncio.get_running_loop()
-        logits = await loop.run_in_executor(
-            None, lambda: list(backend.rerank(query, documents, batch_size=32)),
+        logits = await _run_onnx(
+            backend, lambda: list(backend.rerank(query, documents, batch_size=plan.batch_size)),
         )
     except Exception as exc:
         logger.error(f"Rerank inference failed for model '{model}': {exc}")
@@ -310,9 +381,6 @@ async def rerank(request: Request):
         | ({"document": {"text": documents[i]}} if with_docs else {})
         for i, score in ranked
     ]
-    # Word-count approximation, as /embed reports: each pair is query + document.
-    q_words = len(query.split())
-    total_tokens = sum(q_words + len(t.split()) for t in documents)
 
     logger.info(
         f"Rerank: {len(documents)} doc(s) via {model} in {elapsed_ns // 1_000_000}ms"
@@ -320,7 +388,7 @@ async def rerank(request: Request):
     return JSONResponse({
         "model": model,
         "results": results,
-        "usage": {"total_tokens": total_tokens},
+        "usage": {"total_tokens": plan.tokens},
     })
 
 

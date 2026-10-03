@@ -11,6 +11,7 @@ anything moving.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -199,6 +200,29 @@ class TestRerankRoute:
 # ---------------------------------------------------------------------------
 
 
+class _CharTokenizer:
+    """One token per character: the slice of the ``tokenizers`` API the server uses.
+
+    Characters make a token count easy to construct — ``"x" * 2048`` is
+    exactly 2048 tokens — and distinct from a word count.
+    """
+
+    def __init__(self, max_length: int):
+        self.max_length = max_length
+
+    def encode_batch(self, inputs):
+        out = []
+        for item in inputs:
+            chars = "".join(item) if isinstance(item, tuple) else item
+            over = chars[self.max_length :]
+            out.append(
+                SimpleNamespace(
+                    ids=list(chars[: self.max_length]), overflowing=[over] if over else []
+                )
+            )
+        return out
+
+
 @pytest.fixture
 def node_rerank(monkeypatch):
     """The node's text server with a fake cross-encoder returning set logits."""
@@ -206,10 +230,13 @@ def node_rerank(monkeypatch):
 
     from fleet_manager.node import text_embedding_server as tes
 
-    state = {"logits": [], "loaded": []}
+    state = {"logits": [], "loaded": [], "batch_sizes": []}
 
     class FakeCrossEncoder:
+        model = SimpleNamespace(tokenizer=_CharTokenizer(512))
+
         def rerank(self, query, documents, batch_size=64):
+            state["batch_sizes"].append(batch_size)
             return list(state["logits"])[: len(documents)]
 
     async def fake_get_reranker(model):
@@ -217,6 +244,7 @@ def node_rerank(monkeypatch):
         return FakeCrossEncoder()
 
     monkeypatch.setattr(tes, "_get_reranker", fake_get_reranker)
+    monkeypatch.setattr(tes, "_run_locks", {})
     app = FastAPI()
     app.include_router(tes.router)
     with TestClient(app) as c:
@@ -233,7 +261,7 @@ class TestNodeRerank:
         assert all(0.0 < s < 1.0 for s in scores)  # 0..1 like Cohere/Jina
         assert scores[1] == pytest.approx(0.5)  # sigmoid(0)
         assert "document" not in body["results"][0]
-        assert body["usage"]["total_tokens"] == 6  # (1 + 1) words x 3 pairs
+        assert body["usage"]["total_tokens"] == 6  # (1 + 1) tokens x 3 pairs
 
     def test_top_n_and_return_documents(self, node_rerank):
         client, state = node_rerank
@@ -273,6 +301,186 @@ class TestNodeRerank:
         client, state = node_rerank
         assert client.post("/rerank", json=payload).status_code == status
         assert state["loaded"] == []
+
+
+# ---------------------------------------------------------------------------
+# Node memory bound — batch sizing and truncation
+#
+# ONNX Runtime keeps the high-water mark of the largest run it ever does, and
+# a run costs batch x seq_len^2.  Unbounded, one node agent held 28 GB.
+# ---------------------------------------------------------------------------
+
+
+class _Vec(list):
+    def tolist(self):
+        return list(self)
+
+
+@pytest.fixture
+def node_embed(monkeypatch):
+    """The node's text server with a fake nomic that records its batch sizes."""
+    from fastapi import FastAPI
+
+    from fleet_manager.node import text_embedding_server as tes
+
+    state = {"batch_sizes": []}
+
+    class FakeEmbedder:
+        model = SimpleNamespace(tokenizer=_CharTokenizer(2048))
+
+        def embed(self, texts, batch_size=256):
+            state["batch_sizes"].append(batch_size)
+            return [_Vec([0.0, 1.0]) for _ in texts]
+
+    async def fake_get_model(name):
+        return FakeEmbedder()
+
+    monkeypatch.setattr(tes, "_get_model", fake_get_model)
+    monkeypatch.setattr(tes, "_run_locks", {})
+    app = FastAPI()
+    app.include_router(tes.router)
+    with TestClient(app) as c:
+        yield c, state
+
+
+class TestNodeMemoryBound:
+    def _embed(self, client, inputs, **extra):
+        return client.post("/embed", json={"model": "nomic-embed-text", "input": inputs, **extra})
+
+    @pytest.mark.parametrize(
+        "inputs,batch",
+        [
+            (["hi"] * 40, 32),  # short inputs still batch wide
+            (["x" * 1024] * 3, 4),  # 4 x 1024^2 == one 2048-token sequence
+            (["x" * 2048], 1),  # a full-context input runs alone
+            (["hi"] * 31 + ["x" * 2048], 1),  # the longest input sets every batch
+        ],
+    )
+    def test_batch_size_keeps_each_run_within_the_attention_budget(self, node_embed, inputs, batch):
+        client, state = node_embed
+        assert self._embed(client, inputs).status_code == 200
+        assert state["batch_sizes"] == [batch]
+
+    def test_prompt_eval_count_is_the_tokenizers_count_not_words(self, node_embed):
+        client, _ = node_embed
+        assert self._embed(client, "abc def").json()["prompt_eval_count"] == 7
+
+    def test_over_context_input_is_truncated_by_default(self, node_embed):
+        client, state = node_embed
+        body = self._embed(client, "x" * 3000).json()
+        assert body["prompt_eval_count"] == 2048
+        assert state["batch_sizes"] == [1]
+
+    def test_truncate_false_rejects_instead_of_truncating(self, node_embed):
+        """Ollama's contract: truncation is the default, an error on request."""
+        client, state = node_embed
+        r = self._embed(client, "x" * 2049, truncate=False)
+        assert r.status_code == 400
+        assert "2048" in r.json()["error"]
+        assert state["batch_sizes"] == []  # never reached the model
+        assert self._embed(client, "x" * 2048, truncate=False).status_code == 200
+
+    def test_rerank_is_sized_by_its_longest_pair(self, node_rerank):
+        client, state = node_rerank
+        state["logits"] = [0.0] * 3
+        docs = ["a", "b" * 511, "c"]  # query "q" + 511 chars = a 512-token pair
+        body = client.post("/rerank", json={"query": "q", "documents": docs}).json()
+        assert state["batch_sizes"] == [16]  # 2048^2 // 512^2
+        assert body["usage"]["total_tokens"] == 2 + 512 + 2
+
+    @pytest.mark.asyncio
+    async def test_one_onnx_run_at_a_time_per_model_but_models_overlap(self, monkeypatch):
+        """Four concurrent embeds on one session would hold four peaks; embeds
+        must still not queue behind a slow rerank, so models run in parallel."""
+        import asyncio
+        import threading
+        import time
+
+        from fastapi import FastAPI
+
+        from fleet_manager.node import text_embedding_server as tes
+
+        live: list[str] = []
+        seen = {"max_embed": 0, "overlapped": False}
+        lock = threading.Lock()
+
+        def work(kind, result):
+            with lock:
+                live.append(kind)
+                seen["max_embed"] = max(seen["max_embed"], live.count("embed"))
+                seen["overlapped"] |= {"embed", "rerank"} <= set(live)
+            time.sleep(0.1)
+            with lock:
+                live.remove(kind)
+            return result
+
+        class Embedder:
+            model = SimpleNamespace(tokenizer=_CharTokenizer(2048))
+
+            def embed(self, texts, batch_size=256):
+                return work("embed", [_Vec([0.0]) for _ in texts])
+
+        class CrossEncoder:
+            model = SimpleNamespace(tokenizer=_CharTokenizer(512))
+
+            def rerank(self, query, documents, batch_size=64):
+                return work("rerank", [0.0] * len(documents))
+
+        embedder, cross_encoder = Embedder(), CrossEncoder()
+
+        async def get_model(name):
+            return embedder
+
+        async def get_reranker(name):
+            return cross_encoder
+
+        monkeypatch.setattr(tes, "_get_model", get_model)
+        monkeypatch.setattr(tes, "_get_reranker", get_reranker)
+        monkeypatch.setattr(tes, "_run_locks", {})
+        app = FastAPI()
+        app.include_router(tes.router)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://node") as c:
+            responses = await asyncio.gather(
+                *(
+                    c.post("/embed", json={"model": "nomic-embed-text", "input": "hi"})
+                    for _ in range(4)
+                ),
+                *(c.post("/rerank", json={"query": "q", "documents": ["a"]}) for _ in range(2)),
+            )
+        assert all(r.status_code == 200 for r in responses)
+        assert seen["max_embed"] == 1
+        assert seen["overlapped"]
+
+    @pytest.mark.asyncio
+    async def test_load_truncates_to_the_registry_not_the_model_card(self, monkeypatch):
+        import sys
+        from unittest.mock import MagicMock
+
+        from fleet_manager.node import text_embedding_server as tes
+
+        limits = []
+
+        class FakeTextEmbedding:
+            def __init__(self, **kwargs):
+                self.model = SimpleNamespace(
+                    tokenizer=SimpleNamespace(
+                        enable_truncation=lambda max_length: limits.append(max_length)
+                    )
+                )
+
+        monkeypatch.setitem(sys.modules, "fastembed", MagicMock(TextEmbedding=FakeTextEmbedding))
+        monkeypatch.setattr(tes, "_slots", {})
+        await tes._get_model("nomic-embed-text:latest")
+        assert limits == [2048]
+
+    def test_one_full_context_sequence_fits_the_budget(self):
+        """A model whose context exceeds the budget would blow it even at batch 1."""
+        from fleet_manager.node import text_embedding_server as tes
+        from fleet_manager.node.text_embedding_models import TEXT_EMBEDDING_MODELS
+
+        for name, spec in TEXT_EMBEDDING_MODELS.items():
+            assert spec["max_tokens"] ** 2 <= tes._ATTENTION_BUDGET, name
 
 
 # ---------------------------------------------------------------------------

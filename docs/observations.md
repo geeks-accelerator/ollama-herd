@@ -77,6 +77,61 @@ When you see a pattern, add it below with the date and evidence.
 
 ## Observations
 
+### 2026-10-02 — The node agent held 28 GB because ONNX Runtime keeps the largest run it ever did
+
+**Evidence:** The Mac mini (48 GB) ran out of memory: swap 50.9 of 51.2 GB, load average
+340, the operator had to quit Ollama. `footprint` on `herd-node` showed **28 GB, all in
+`MALLOC_LARGE` across 392 regions**, with 75 MB resident: allocated once, never touched
+again, pushed into the compressor. Co-tenants that night: `llama-server` (gemma3:27b)
+29 GB, a Next.js dev server 11 GB, a VM 13 GB. Only ~200 embeds had reached the node in
+11 hours, so this was not per-request leakage; it was the high-water mark of a few
+large runs.
+
+Reproduced in an isolated process with a 6 GB kill switch, through the node's own loader:
+
+| nomic input | peak / retained |
+|---|---|
+| 1 x 1,332 tokens | 0.85 GB |
+| 1 x 2,660 tokens | 2.36 GB, retained |
+| 4 x ~1,000 tokens in one batch | 1.67 GB |
+| a few ~8K-token inputs | **> 8 GB, killed** |
+| rerank, 64 long docs | 3.52 GB, retained |
+
+**Insight:** Activation memory per ONNX run is batch x seq_len^2 (attention), and ONNX
+Runtime returns none of it, so a process keeps the largest run it ever did. A second
+copy is held per input shape seen twice, from memory patterns, which roughly doubles it.
+Turning off the CPU memory arena did not help: 2.99 GB vs 2.36 retained, because
+macOS's allocator fragments instead. Herd made it unbounded in three ways:
+
+- **nomic accepted 8,192 tokens.** fastembed takes that from the model card. Ollama's
+  own nomic GGUF declares `context_length = 2048`.
+- **Batches were a flat 32 wide.** fastembed pads to the longest member.
+- **Concurrent requests on one session ran at once.** Each took a full peak from the
+  same arena.
+
+**Fix:**
+
+- Truncate to the registry's `max_tokens`, which is now 2048 (Ollama parity, and
+  `"truncate": false` returns a 400).
+- Size each batch from the request's longest input against a budget of one
+  full-context sequence.
+- Run one ONNX job at a time per model; the embedder and the reranker still run in
+  parallel.
+
+The same workload afterwards: 40 long embeds flat at 1.95 GB, one 32-input request
+2.68 GB, rerank of 200 long docs 3 s, whole-process peak **3.71 GB** with both models
+loaded. Memory levels off at about 1.66 GB over 120 distinct input lengths. Speed held
+at about 455 ms per long embed.
+
+**Pattern:** for any in-process ONNX model, the thing to bound is the largest single run,
+not the request rate. Measure memory as a footprint (`footprint <pid>`,
+`proc_pid_rusage`), never as RSS. This process had 75 MB resident while holding 28 GB.
+
+**And herd did not notice.** The node reported `pressure=normal` throughout. On macOS
+`_get_memory_pressure_darwin` looks for "warn"/"critical" in `memory_pressure -Q`, which
+prints only a free percentage, so it can never return anything but NORMAL. See
+`docs/issues.md`.
+
 ### 2026-10-02 — Ollama 0.33.3 → 0.35.0 on the Mac mini: capabilities fixed, throughput unchanged, and quitting the app doesn't quit it
 
 **Evidence:**

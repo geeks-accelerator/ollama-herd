@@ -254,7 +254,7 @@ Serves text embeddings via a FastAPI server on `:11439` using [fastembed](https:
 
 **Setup:** `uv sync --extra embedding` (fastembed is included in the `embedding` extra alongside onnxruntime). Restart `herd-node` — the server starts automatically. The 130 MB model weights (`nomic-ai/nomic-embed-text-v1.5-Q`, int8 ONNX) download on the first request and cache to `~/.fleet-manager/models/text-embedding/`.
 
-No environment variables needed — the server starts whenever fastembed is importable. Performance: ~4ms inference (model hot), 768-dimensional embeddings, 8192-token context.
+No environment variables needed — the server starts whenever fastembed is importable. Performance: ~4ms inference (model hot), 768-dimensional embeddings, 2048-token context — inputs are truncated there, as Ollama truncates to the model's context (`"truncate": false` returns a 400 instead).
 
 **Port:** `ollama_port + 5` (default **11439**). Confirmed unused by any other herd service.
 

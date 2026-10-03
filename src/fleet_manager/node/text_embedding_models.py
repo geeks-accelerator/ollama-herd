@@ -34,11 +34,15 @@ TEXT_EMBEDDING_MODELS: dict[str, dict] = {
         # keyed by repo — so the cache check must look here, not at the name.
         "hf_repo": "nomic-ai/nomic-embed-text-v1.5",
         "dimensions": 768,
-        "max_tokens": 8192,
+        # What Ollama's own nomic-embed-text declares (GGUF
+        # nomic-bert.context_length), and what the server truncates to.  NOT
+        # the model card's 8192: attention memory is quadratic in it, and ONNX
+        # Runtime keeps its peak — see _ATTENTION_BUDGET in the server.
+        "max_tokens": 2048,
         "size_mb": 130,
         "description": (
             "nomic-embed-text-v1.5 int8-quantized (130 MB) — "
-            "high-quality 768-dim embeddings, 8K token context. "
+            "high-quality 768-dim embeddings, 2K token context. "
             "Replaces Ollama nomic-embed-text with a native ONNX backend "
             "that runs independently of LLM inference slots."
         ),
@@ -50,7 +54,7 @@ TEXT_EMBEDDING_MODELS: dict[str, dict] = {
         # keyed by repo — so the cache check must look here, not at the name.
         "hf_repo": "nomic-ai/nomic-embed-text-v1.5",
         "dimensions": 768,
-        "max_tokens": 8192,
+        "max_tokens": 2048,
         "size_mb": 130,
         "description": "Alias for nomic-embed-text (Ollama :latest tag).",
     },

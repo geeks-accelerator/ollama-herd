@@ -47,6 +47,52 @@ unloaded chat model is still flagged.
 
 ---
 
+### macOS memory pressure is always reported `normal` `OPEN`
+
+**Severity:** high. The safety logic built on it has never run on macOS, herd's
+primary platform.
+
+`common/system_metrics.py::_get_memory_pressure_darwin` runs `memory_pressure -Q` and
+looks for "critical" or "warn" in the output. `-Q` prints only `System-wide memory free
+percentage: N%`, so the function returns NORMAL unconditionally. On 2026-10-02 the Mac
+mini reported `normal` with swap at 50.9/51.2 GB and load 340. The scorer's CRITICAL
+elimination (`scorer.py`, `routes/routing.py`) and the health engine's pressure check
+(`health_engine.py`) have therefore never fired on a Mac.
+
+**Proposed fix:** read the kernel's level, `sysctl -n kern.memorystatus_vm_pressure_level`:
+1 = normal, 2 = warn, 4 = critical. This is the signal behind Activity Monitor's pressure
+graph. Map it directly and add a test that pins the mapping.
+
+**Decide before enabling:** on a one-node fleet, CRITICAL elimination means herd refuses
+every request while memory is critical. That is the designed protection, but it is
+behavior no Mac has ever exhibited.
+
+---
+
+### Native embedding server kept its peak activation memory forever: 28 GB in one node agent `FIXED` (2026-10-02)
+
+**Severity:** high. It took a 48 GB Mac out of memory together with its co-tenants.
+
+ONNX Runtime keeps the high-water mark of the largest run a process does, and that
+mark is batch x seq_len^2. The fastembed server allowed 8,192-token nomic inputs (4x
+Ollama's 2048 context), flat batches of 32, and concurrent runs on one session, so the
+mark was effectively unbounded.
+
+**Fixed in `node/text_embedding_server.py`:**
+
+- truncation to the registry's `max_tokens` (2048), with `"truncate": false` returning
+  a 400 as in Ollama
+- `_plan_batches` sizes batches from the longest input against `_ATTENTION_BUDGET`
+- `_run_onnx` runs one job at a time per model
+
+Measured peak with both models under the reproducing workload: 3.71 GB, previously more
+than 8 GB within minutes. `prompt_eval_count` and rerank `usage.total_tokens` are now
+real token counts from the model's tokenizer rather than word counts. Under word
+counting, an unspaced 8K-char input recorded as 1, which bears directly on the
+embed-latency gap in the entry below.
+Evidence: `docs/observations.md` (2026-10-02).
+
+---
 
 ### Embed traces recorded no request size, making embed latency unexplainable `FIXED` (2026-10-01)
 
@@ -105,6 +151,24 @@ caller also self-overlaps more (mean 1.73 concurrent vs 1.11), so the leading
 hypothesis is now that specific caller's burst pattern (threes, ~15 s apart) rather
 than anything about the model name. **Do not close this as "batch size" or as "LLM
 contention" — both have now been measured and neither holds alone.**
+
+**2026-10-02, later: `prompt_tokens = 1` was a *word* count.** Until the memory fix of
+the same day, `prompt_eval_count` was `len(t.split())`. A single long string with no
+whitespace (base64, minified JSON, a joined list) therefore recorded **1**, however
+many thousand real tokens it held. That fits this table better than arrival timing
+does:
+
+- **Every** plain-name request is exactly 1.
+- Its *idle* requests still took 738 ms, against 33–42 ms for a true 1-token embed.
+  That is the cost of a long sequence.
+- The Mac mini shows the same signature on a different fleet: 147 embeds recorded as
+  `prompt_tokens = 1` averaged 1,466 ms.
+- On that machine, before truncation, one 8K-char unspaced input measured 2.8 s.
+
+Such input used to run at up to 8,192 tokens, with quadratic attention cost; it now
+truncates at 2,048 (see the 28 GB entry above). `prompt_tokens` is now the tokenizer's
+real count, so post-fix traces settle this. If the plain-name caller shows hundreds to
+thousands of tokens, the gap is input size. **Leading hypothesis, not yet confirmed.**
 
 ---
 
@@ -346,6 +410,67 @@ correctly identified as deliberately pinned.
 
 **Not changed:** the 4x/8x thresholds, and gemma3:27b's 178x ratio. Those
 numbers are real; the problem was never the measurement.
+### Native embedding models never unload, so herd-node keeps ~3.7 GB after first use `OPEN`
+
+**Severity:** medium on small nodes (48 GB and under), negligible on the Mac Studio.
+
+After the 2026-10-02 fix, the native text server's memory is *bounded* but not
+*released*. Once nomic and the default reranker have each served one long input,
+`herd-node` holds about 3.7 GB until it restarts: about 1.9 GB for nomic, 1 GB for the
+reranker, plus memory-pattern copies. Measured live through the router: 0.09 GB → 3.71
+GB, flat thereafter. That is the designed ceiling, set by `_ATTENTION_BUDGET` and
+ONNX Runtime keeping its high-water mark. On a node that also runs a 27B model plus
+ordinary apps, it is a meaningful share of RAM, spent on a model that may serve a
+handful of requests a day (about 200 in 11 hours on the Mac mini).
+
+**Proposed fix:** evict an idle model from `_slots` after a few minutes without
+requests, and let the next request lazy-load it again. It is about 130 MB from the
+local cache, and the load cost is already paid today on the first request after a
+start. **Verify before relying on it** that dropping the fastembed object actually
+returns the arena to the OS on macOS. Measure with `footprint`, not RSS: that is the
+mistake that hid the original 28 GB. The vision embedding server (`embedding_server.py`)
+has the same lifetime and would take the same treatment.
+
+---
+
+### Node memory oversubscription is invisible: no swap signal, and co-tenants are unaccounted `OPEN`
+
+**Severity:** high on nodes shared with other workloads.
+
+On 2026-10-02 the Mac mini (48 GB) was committed to about 81 GB and swap reached 50.9
+of 51.2 GB:
+
+| Process | Memory |
+|---|---|
+| gemma3:27b `llama-server` | 29 GB |
+| `herd-node`, the leak fixed above | 28 GB |
+| VM | 13 GB |
+| Next.js dev server | 11 GB |
+
+Herd's picture of that node was `used 13.22 / 48 GB, available 8.82 GB,
+pressure=normal`. Three gaps let that happen:
+
+- **Pressure never leaves NORMAL on macOS.** See "macOS memory pressure is always
+  reported `normal`" under Correctness.
+- **The heartbeat has no swap or compressor figures.** `MemoryMetrics.compressed_gb` is
+  hard-coded `0.0` in `common/system_metrics.py`, and there is no swap field at all.
+  "99% of swap used" is therefore unreportable, and no health check can fire on it.
+- **Ollama's reported model size understated the real footprint.** `/api/ps` reported
+  gemma3:27b at **17.7 GB** while its `llama-server` showed a **29 GB** footprint, mostly
+  compressed. The preloader's memory gate trusts reported sizes. This is a single sample
+  taken under extreme pressure, so treat it as a lead: re-measure with
+  `footprint <llama-server pid>` on an idle node with gemma3 loaded before building on it.
+
+**Proposed fix:**
+
+- Add `swap_used_gb` / `swap_total_gb` (`psutil.swap_memory()`) to the heartbeat.
+- Populate `compressed_gb`.
+- Add a health check that fires WARNING when swap is over ~80% of its total and names
+  the node's largest non-herd processes, so the operator sees the co-tenant without
+  having to reach for `top`.
+
+Fix the pressure classifier first: it is the cheaper signal and already wired into
+scoring.
 
 ---
 
