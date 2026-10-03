@@ -284,6 +284,73 @@ small model means the context math went wrong (`predicted_num_ctx` = context ×
 Ollama to clear it, and fix the context so the prediction is sane — see
 `docs/configuration-reference.md` § Ollama environment.
 
+## Is herd itself leaking memory?
+
+**Do not start from system memory — it cannot answer this.** On a large box that
+number is dominated by Ollama's resident weights (~91 GB here) plus any
+`mlx_lm.server` children (17 GB each), so a 20 GB leak inside `herd-node` does not
+move it enough to notice. In the 2026-10-02 incident the system series read 205–246
+GB over seven days with no climb, and the hours before the incident were among the
+lowest in the window. Two devices hit the same bug and neither produced a usable
+history from it.
+
+**Read herd's own numbers instead** (since 0.9.7):
+
+```bash
+# current, per node, with children broken out
+curl -s localhost:11435/fleet/status | python3 -c "
+import json,sys
+for n in json.load(sys.stdin)['nodes']:
+    pm = n.get('process_memory') or {}
+    print(n['node_id'], 'agent', pm.get('footprint_gb'), 'peak', pm.get('peak_gb'))
+    for c in pm.get('children', []):
+        print('   ', c['role'], c['footprint_gb'], 'peak', c['peak_gb'])"
+
+# the trend — the heartbeat summary line is the only durable history, and it
+# rotates daily, so scan the rotations too
+grep -ho 'self=[0-9.]*GB (peak [0-9.]*GB)' ~/.fleet-manager/logs/herd-node.jsonl*
+```
+
+**Three things to get right, each of which has already cost real time:**
+
+1. **Read `peak`, not current.** ONNX Runtime keeps the high-water mark of the
+   largest run a process ever does, so one oversized request raises the floor
+   permanently and current usage afterwards reads innocent. A healthy result is a
+   *flat peak*, not a low current. A flat current proves nothing.
+2. **Use footprint, not RSS.** `phys_footprint` is what the kernel charges the
+   process; RSS is the metric that hid the original 28 GB. Confirm by hand with
+   `footprint -p <pid>`, not `ps -o rss`. Note `psutil.memory_full_info()` raises
+   `AccessDenied` on macOS without root, which is why herd shells out.
+3. **Compare the agent against itself, never the total.** The total on this fleet
+   is ~37 GB and almost all of it is legitimate MLX model weights — it hides the
+   agent's own 3.7 GB as thoroughly as system memory hid the 28 GB. The embedding
+   servers are asyncio tasks *inside* the agent, not subprocesses, so their ONNX
+   arenas are charged to the agent's own figure; `mlx` and `transcription` children
+   are separate processes holding weights and are excluded from the health check
+   for that reason.
+
+**What normal looks like here:** agent at ~0.1 GB cold, settling near **3.7 GB**
+once nomic and the reranker have each served a long input, then flat. Measured over
+9 h: peak rose once to 3.80 GB and held exactly flat for 10 h while current drifted
+down 3.53 → 3.47 GB. That is the designed ceiling (bounded, not released — see the
+open `_slots` eviction issue), not a leak.
+
+**When it is a leak:** the `herd_process_memory` check fires WARNING above 8 GB and
+CRITICAL above 16 GB for the agent's own process. 8 GB is roughly double the
+designed ceiling and is also the figure from the incident, which passed "more than 8
+GB within minutes" on its way to 28 GB. Restart to reclaim the high-water mark
+(`launchctl kickstart -k gui/$UID/com.geeksaccelerator.ollama-herd.node`), then find
+what raised it — oversized embedding inputs are the known cause, and `prompt_tokens`
+in `request_traces` now records real tokenizer counts rather than word counts, so a
+long unspaced input no longer records as `1`.
+
+**Known gap:** the router probes itself for the health check but that figure is not
+persisted, so it has no history; and nothing writes any of these numbers to
+`request_traces` or a time series. The heartbeat log line is the only durable record
+and it rotates daily — good for a day's curve, not a week's.
+
+---
+
 ## Fleet-wide throughput dropped and nothing in the dashboard explains it
 
 **Check this first — before tuning anything, and before suspecting an Ollama or

@@ -641,6 +641,38 @@ concurrency capped, unbounded dispatch was *not* the cause and this issue needs 
 different hypothesis. **Either outcome is informative — measure p25 and the `conc`
 distribution over the next 24h before investigating further.**
 
+**RESOLVED 2026-10-03 — the prediction failed. Unbounded dispatch was NOT the cause,
+and it is now eliminated.** Daily p25 across the nine days spanning the change:
+
+| day | n | median | p25 | p10 |
+|---|---|---|---|---|
+| 09-24 | 5,487 | 68.4 | 53.1 | 51.3 |
+| 09-25 | 2,774 | 69.5 | 53.2 | 52.0 |
+| 09-26 | 5,411 | 74.7 | 54.2 | 52.4 |
+| 09-27 | 7,714 | 70.6 | 54.4 | 52.6 |
+| 09-28 | 7,991 | 75.2 | 51.3 | 37.4 |
+| 09-29 | 7,752 | 76.1 | 49.4 | 36.9 |
+| 09-30 | 7,974 | 76.4 | 52.2 | 37.5 |
+| 10-01 | 7,722 | 77.0 | 54.6 | 37.8 |
+| **10-02** | 5,735 | 76.2 | **52.5** | 37.2 | ← enforcement live |
+| **10-03** | 2,247 | 77.7 | **56.6** | 38.3 | ← enforcement live |
+
+p25 sat in a 49–55 band for nine days and read 52.5 and 56.6 on the two enforced days —
+inside the existing noise. 10-03 is the high end of the band, not a recovery, and it is
+a partial day. Pre-Aug-22 p25 was **73.4** and has never returned.
+
+So the mechanism that looked like the strongest candidate yet is not it. That still
+leaves this issue's framing corrected in the two ways above — the `conc=N` buckets did
+measure unbounded concurrency, and co-tenancy could not have defeated a cap that was
+never enforced — but the step change itself remains **unexplained**.
+
+**Do not re-propose** unbounded dispatch, the Ollama/llama.cpp version, co-tenancy,
+`OLLAMA_CONTEXT_LENGTH`, workload mix, routing, memory/swap, thermals, or client
+parallelism: every one has been measured and eliminated. A useful next hypothesis has
+to explain a *step* on one specific day that persists across Ollama upgrades, reboots,
+a co-tenant's removal, and now a concurrency-semantics change — while leaving `conc=1`
+(70–76) and the median (76–78) untouched and only depressing the lower quartile.
+
 **Worth knowing before investigating:** `conc=3` oscillates between ~46 and ~75
 across the whole seven-month record while `conc=1` stays at 70–76. Several earlier
 reports called stable ~52 an ongoing decline because they anchored on Aug 15–21,

@@ -323,6 +323,85 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+## 2026-10-03: Measuring yourself, and the value of a prediction that fails
+
+Two results from the same 24 hours, both only possible because something was
+written down in advance.
+
+**1. The self-memory telemetry worked on its first soak, and the shape is the
+answer.** herd had never measured its own processes. When the native embedding
+server held 28 GB in one node agent and took a 48 GB Mac down with its
+co-tenants, there was no recorded number anywhere to show the growth — and by
+the time anyone looked, the processes had been restarted and the evidence was
+gone. Worse, the signal we *did* have actively misled: system memory on this box
+oscillated 205–246 GB over seven days with no climb, and the two hours before a
+suspected incident were among the lowest in the window. On a 512 GB machine
+holding ~91 GB of Ollama weights plus two `mlx_lm.server` children at 17 GB
+each, a 20 GB process leak does not move that number enough to notice.
+
+With `HeartbeatPayload.process_memory` shipped, nine hours of heartbeat lines:
+
+```
+10-02 22   self 3.53GB   peak 3.80GB
+10-02 23   self 3.51GB   peak 3.80GB
+10-03 00   self 3.50GB   peak 3.80GB
+   …                         …
+10-03 07   self 3.47GB   peak 3.80GB
+```
+
+Peak rose once and then held **exactly flat for ten hours** while current drifted
+monotonically down. That is bounded-not-released, as designed, and it took one
+grep instead of an unrecoverable post-mortem.
+
+**Insight — an aggregate would have been blind in the same way the old metric
+was.** I nearly reported one total. The total here is ~37 GB and almost all of it
+is legitimate MLX model weights; it would have hidden the agent's own 3.7 GB as
+thoroughly as system memory hid the 28 GB. The fix was not "measure memory", it
+was **measure the right boundary**: the agent's own process separately from the
+children it spawns, because only one of those can leak in a way herd causes.
+Generalises past memory — any metric that sums a leaky thing with a large
+legitimate thing cannot see the leak.
+
+**Insight — peak is the field, not current.** ONNX Runtime keeps the high-water
+mark of the largest run a process ever does, so one oversized request raises the
+floor permanently and *current* then reads innocent. Current-only monitoring
+reports "fine now" about a process still holding its worst moment. The 10-hour
+flat line above is only meaningful because it is a flat **peak**; a flat current
+would have proved nothing.
+
+**2. A prediction failed, and that was worth more than if it had passed.**
+Queue concurrency had never bounded anything — `QueueManager._worker` handed off
+an unconsumed async generator and took the next request — so when enforcement
+landed on 2026-10-02 it looked like the strongest candidate yet for the
+unexplained Aug-22 step change. Before measuring, the prediction went in
+writing: *if unbounded dispatch caused or worsened the step, p25 should improve;
+if p25 stays at ~43–53 with concurrency capped, unbounded dispatch was not the
+cause.*
+
+p25 by day came back 53.1, 53.2, 54.2, 54.4, 51.3, 49.4, 52.2, 54.6, then
+**52.5** and **56.6** on the two enforced days. Inside a nine-day 49–55 band.
+Pre-Aug-22 was 73.4 and has never returned.
+
+**Insight — writing the falsification condition first is what made the null
+result usable.** 56.6 is the highest p25 in nine days. Read without the
+pre-registered band it is a tempting recovery story, and I would have had every
+incentive to tell it, having just shipped the change. Read against "~43–53 means
+not the cause", it is noise and the hypothesis is dead. The step change is now
+*more* tractable than before, because the candidate list is shorter and the
+surviving hypothesis has to explain something quite specific: a one-day step
+that survives Ollama upgrades, reboots, a co-tenant's removal and a concurrency
+semantics change, while leaving `conc=1` and the median untouched and depressing
+only the lower quartile.
+
+**Reinforced:** this fleet has now had three confident inferences reversed by
+measurement in two days — "openclaw removal restored the fleet", "`prompt_tokens`
+counts cache misses", and "unbounded dispatch explains Aug-22". The pattern is
+not carelessness, it is that plausible mechanisms are cheap and measurements are
+not. Record the eliminated hypotheses as carefully as the findings; `docs/issues.md`
+now carries an explicit **do not re-propose** list for exactly this reason.
+
+---
+
 ## 2026-10-02: A documented gotcha was wrong, and I nearly "fixed" a working check to match it
 
 **Evidence.** Auditing why `context_waste` had been a standing WARNING, I started
