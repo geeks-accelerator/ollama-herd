@@ -37,10 +37,10 @@ import logging
 import time
 
 from fleet_manager.models.config import ServerSettings
-from fleet_manager.server.mlx_proxy import is_mlx_model, strip_mlx_prefix
 from fleet_manager.server.model_knowledge import lookup_model
 from fleet_manager.server.pinned_models import PinnedModelsStore
 from fleet_manager.server.registry import NodeRegistry
+from fleet_manager.server.serializers import model_resident_on_node
 from fleet_manager.server.streaming import StreamingProxy
 from fleet_manager.server.trace_store import TraceStore
 
@@ -377,24 +377,11 @@ def _parse_pinned_models(setting: str) -> list[str]:
     return [m.strip() for m in (setting or "").split(",") if m.strip()]
 
 
-def _model_resident_on_node(model: str, node) -> bool:
-    """True if ``node`` currently has ``model`` resident and serving.
-
-    Covers both backends: Ollama (``models_loaded``) and MLX (``mlx_servers``
-    entry with a ``healthy`` status — MLX names carry the ``mlx:`` prefix,
-    which the server list stores stripped).  This is the SAME residency the
-    scorer gates on ([scorer.py](scorer.py) reads ``models_loaded``), so
-    "resident here" ⇒ routing won't fall back for it.
-    """
-    if is_mlx_model(model):
-        target = strip_mlx_prefix(model)
-        return any(
-            s.model == target and s.status == "healthy"
-            for s in (node.mlx_servers or [])
-        )
-    return bool(
-        node.ollama and model in [m.name for m in node.ollama.models_loaded]
-    )
+# Moved to ``serializers`` once the scorer needed it too -- it is the same
+# residency the scorer gates on, and duplicating it would let the two drift.
+# Re-exported under the original name so existing callers and tests are
+# unaffected.
+_model_resident_on_node = model_resident_on_node
 
 
 def _model_is_loaded_anywhere(model: str, nodes) -> bool:

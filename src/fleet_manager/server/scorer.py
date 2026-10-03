@@ -10,6 +10,7 @@ from fleet_manager.models.node import MemoryPressure, NodeState, NodeStatus
 from fleet_manager.models.request import RoutingResult
 from fleet_manager.server.model_knowledge import classify_model, lookup_model
 from fleet_manager.server.registry import NodeRegistry
+from fleet_manager.server.serializers import model_resident_on_node
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +134,12 @@ class ScoringEngine:
         for node in self._registry.get_all_nodes():
             if node.status == NodeStatus.OFFLINE or not node.ollama:
                 continue
-            if node.memory and node.memory.pressure == MemoryPressure.CRITICAL:
-                continue
+            # No memory-pressure elimination here, deliberately.  This function
+            # only ever considers models that are already HOT (see the docstring),
+            # and serving a resident model allocates no weights -- so under
+            # critical pressure these are exactly the requests that are still
+            # safe.  Dropping the node here refused them while the cold-load
+            # paths that actually consume memory were the real hazard.
             if node.capacity and node.capacity.mode in ("paused", "bootstrap"):
                 continue
 
@@ -198,8 +203,29 @@ class ScoringEngine:
             if node.ollama is None:
                 logger.debug(f"Eliminated {node.node_id}: no Ollama state")
                 continue
-            if node.memory and node.memory.pressure == MemoryPressure.CRITICAL:
-                logger.debug(f"Eliminated {node.node_id}: critical memory pressure")
+            # Critical memory pressure withholds *cold loads*, not service.
+            #
+            # Eliminating unconditionally made a tight node a dead node: on a
+            # one-node fleet it left no candidates, so every request 503'd.  And
+            # it bought nothing, because refusing a request frees no memory --
+            # the memory is held by Ollama's resident weights, not by herd's
+            # queue.  What refusal does prevent is loading something NEW, which
+            # on this fleet means a 66 GB cold load landing on a machine already
+            # in trouble.  So: keep serving what is resident, refuse what is not.
+            #
+            # This path had never executed on macOS before 2026-10-02 --
+            # ``_get_memory_pressure_darwin`` always returned NORMAL -- so the
+            # blanket version was never observed in production on herd's primary
+            # platform.  See docs/issues.md.
+            if (
+                node.memory
+                and node.memory.pressure == MemoryPressure.CRITICAL
+                and not model_resident_on_node(model, node)
+            ):
+                logger.debug(
+                    f"Eliminated {node.node_id}: critical memory pressure and "
+                    f"{model} is not resident (cold load withheld)"
+                )
                 continue
 
             # Capacity-aware elimination: nodes in hard-pause or bootstrap mode

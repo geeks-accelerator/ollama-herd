@@ -647,6 +647,10 @@ def _pick_pull_node(registry, model: str, scorer) -> str | None:
             continue
         if not node.ollama or not node.memory:
             continue
+        # Stays unconditional here, unlike the scorer's elimination: this
+        # function exists to choose a node to PULL a model onto, so every
+        # candidate is by definition a cold load -- the one thing critical
+        # pressure should actually withhold.
         if node.memory.pressure == MemoryPressure.CRITICAL:
             continue
         if node.capacity and node.capacity.mode == "paused":

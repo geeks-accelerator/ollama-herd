@@ -47,7 +47,7 @@ unloaded chat model is still flagged.
 
 ---
 
-### macOS memory pressure is always reported `normal` `OPEN`
+### macOS memory pressure is always reported `normal` `FIXED` (2026-10-02)
 
 **Severity:** high. The safety logic built on it has never run on macOS, herd's
 primary platform.
@@ -66,6 +66,41 @@ graph. Map it directly and add a test that pins the mapping.
 **Decide before enabling:** on a one-node fleet, CRITICAL elimination means herd refuses
 every request while memory is critical. That is the designed protection, but it is
 behavior no Mac has ever exhibited.
+
+**Fixed 2026-10-02**, probe and consequence together, because shipping the probe alone
+would have turned "memory is tight" into "fleet is down" on its first critical reading.
+
+*Probe:* `_get_memory_pressure_darwin` now reads
+`kern.memorystatus_vm_pressure_level` and maps 1/2/4 directly. Unknown or unreadable
+values fail open to NORMAL — deliberately, because a wrong CRITICAL now withholds cold
+loads, and degrading routing on the strength of a parse failure is worse than missing
+one reading. `_check_memory_pressure` already existed in the health engine and fires
+WARNING/WARN and CRITICAL as soon as the level is not normal, so the alarm came for free.
+
+*Consequence — the elimination was the wrong shape, not just untested.* Blanket
+elimination freed **nothing**: the memory is held by Ollama's resident weights, not by
+herd's queue, so refusing a request unloads no model. What refusal does prevent is
+loading something **new** — on this fleet a 66 GB `gpt-oss:120b` cold load landing on a
+machine already in trouble. So critical pressure now withholds cold loads and keeps
+serving what is resident. Per site:
+
+| Site | Before | Now | Why |
+|---|---|---|---|
+| `scorer.score_loaded_models` | eliminate node | **no pressure check** | Only ever considers HOT models, by its own docstring. Eliminating here refused exactly the safe requests, and emptied auto-routing on a pressured one-node fleet. |
+| `scorer._eliminate(model)` | eliminate node | eliminate **only if the model is not resident** | The split. Serve resident weights, withhold the cold load. |
+| `routing._pick_pull_node` | eliminate node | **unchanged** | Its whole job is choosing a node to pull a model onto, so every candidate *is* a cold load. Correct already. |
+
+Residency uses `serializers.model_resident_on_node`, moved there from
+`model_preloader` (which re-exports it) so the scorer and the preloader cannot drift on
+what "resident" means; it covers Ollama `models_loaded` and healthy `mlx_servers`.
+
+`tests/test_server/test_memory_pressure_gating.py` pins the 1/2/4 mapping, pins the
+*command* (a change back to `memory_pressure -Q` would silently restore "always
+NORMAL"), asserts the real `-Q` text contains neither word the old code searched for,
+and includes a live non-mocked read — the old version passed every mocked test while
+being unconditionally wrong in production, which is how it survived this long.
+`test_scorer.py` carries both branches of the split; the test that asserted the old
+blanket behavior was replaced, not deleted quietly.
 
 ---
 

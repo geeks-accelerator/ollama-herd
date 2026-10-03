@@ -9,6 +9,7 @@ this is the single serializer so new fields (``models_loaded_count``,
 from __future__ import annotations
 
 from fleet_manager.models.request import normalize_model_name
+from fleet_manager.server.mlx_proxy import is_mlx_model, strip_mlx_prefix
 
 # Fallback hot-model cap, used only when a node doesn't report its own.
 #
@@ -197,3 +198,26 @@ def serialize_node(node) -> dict:
         data["mlx_servers"] = [s.model_dump() for s in node.mlx_servers]
         data["mlx_bind_host"] = node.mlx_bind_host
     return data
+
+
+def model_resident_on_node(model: str, node) -> bool:
+    """True if ``node`` currently has ``model`` resident and serving.
+
+    Covers both backends: Ollama (``models_loaded``) and MLX (``mlx_servers``
+    entry with a ``healthy`` status -- MLX names carry the ``mlx:`` prefix,
+    which the server list stores stripped).
+
+    Lives here rather than in ``model_preloader`` because three callers now need
+    it and one of them is the scorer: residency is what separates "serve what is
+    already in memory" from "load something new", which is the distinction the
+    scorer's memory-pressure handling turns on.  ``serializers`` is the leaf
+    module the others can all import without a cycle.
+    """
+    if is_mlx_model(model):
+        target = strip_mlx_prefix(model)
+        return any(
+            s.model == target and s.status == "healthy"
+            for s in (getattr(node, "mlx_servers", None) or [])
+        )
+    ollama = getattr(node, "ollama", None)
+    return bool(ollama and model in [m.name for m in ollama.models_loaded])

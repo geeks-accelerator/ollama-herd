@@ -94,7 +94,21 @@ class TestScoringEngine:
         results = scorer.score_request("llama3.3:70b", {})
         assert results == []
 
-    async def test_critical_pressure_eliminated(self, scorer, registry):
+    async def test_critical_pressure_still_serves_a_resident_model(
+        self, scorer, registry
+    ):
+        """Critical pressure withholds cold loads, it does not stop service.
+
+        This replaces a test that asserted the opposite. Eliminating
+        unconditionally made a tight node a dead node -- on a one-node fleet it
+        left no candidates, so every request 503'd -- and it freed nothing,
+        because the memory is held by Ollama's resident weights, not by herd's
+        queue. Serving an already-resident model allocates no weights.
+
+        The old assertion had never been exercised in production on macOS:
+        ``_get_memory_pressure_darwin`` returned NORMAL unconditionally until
+        2026-10-02, so CRITICAL never reached this code on herd's main platform.
+        """
         hb = make_heartbeat(
             node_id="pressured",
             memory_total=64.0,
@@ -105,7 +119,29 @@ class TestScoringEngine:
         await registry.update_from_heartbeat(hb)
 
         results = scorer.score_request("phi4:14b", {})
-        assert results == []
+        assert [r.node_id for r in results] == ["pressured"]
+
+    async def test_critical_pressure_withholds_a_cold_load(self, scorer, registry):
+        """The hazard is loading something new onto a machine already in trouble.
+
+        ``phi4:14b`` is on disk but not resident, so serving it means a cold
+        load -- which is the one thing critical pressure should refuse.
+        """
+        hb = make_heartbeat(
+            node_id="pressured",
+            memory_total=64.0,
+            memory_used=60.0,
+            pressure=MemoryPressure.CRITICAL,
+            loaded_models=[("other:1b", 1.0)],
+            available_models=["other:1b", "phi4:14b"],
+        )
+        await registry.update_from_heartbeat(hb)
+
+        assert scorer.score_request("phi4:14b", {}) == []
+        # ...while the resident model on the same node is still served.
+        assert [r.node_id for r in scorer.score_request("other:1b", {})] == [
+            "pressured"
+        ]
 
     async def test_model_not_on_node_eliminated(self, scorer, registry):
         hb = make_heartbeat(
@@ -388,6 +424,30 @@ class TestScoringEngine:
 
 @pytest.mark.asyncio
 class TestScoreLoadedModels:
+    async def test_critical_pressure_does_not_hide_hot_models(
+        self, scorer, registry
+    ):
+        """This function only considers already-resident models, by contract.
+
+        So eliminating the node on critical pressure refused precisely the
+        requests that are still safe -- serving resident weights allocates
+        nothing. Auto-routing ("give me whatever is loaded") went empty on a
+        pressured one-node fleet, which is the worst possible moment to stop
+        answering: the caller then asks for a model by name and may trigger the
+        cold load this was supposed to prevent.
+        """
+        hb = make_heartbeat(
+            node_id="pressured",
+            memory_total=64.0,
+            memory_used=60.0,
+            pressure=MemoryPressure.CRITICAL,
+            loaded_models=[("qwen2.5-coder:32b", 20.0)],
+        )
+        await registry.update_from_heartbeat(hb)
+
+        results = scorer.score_loaded_models(None, {})
+        assert [m for _, m in results] == ["qwen2.5-coder:32b"]
+
     async def test_same_category_filter(self, scorer, registry):
         """Only return loaded models matching the requested category."""
         # Node with a coding model loaded

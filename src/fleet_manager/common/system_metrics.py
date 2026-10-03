@@ -69,22 +69,63 @@ def _get_memory_pressure() -> MemoryPressure:
     return MemoryPressure.NORMAL
 
 
+# kern.memorystatus_vm_pressure_level is the kernel's own pressure level and the
+# signal behind Activity Monitor's pressure graph.  The values are a bitmask-style
+# enum, not a scale: 1 = normal, 2 = warn, 4 = critical.
+_DARWIN_PRESSURE_LEVELS = {
+    1: MemoryPressure.NORMAL,
+    2: MemoryPressure.WARN,
+    4: MemoryPressure.CRITICAL,
+}
+
+
 def _get_memory_pressure_darwin() -> MemoryPressure:
+    """Read macOS memory pressure from the kernel.
+
+    This previously ran ``memory_pressure -Q`` and searched its output for
+    "critical" or "warn".  That could never work: ``-Q`` prints only a total and
+    ``System-wide memory free percentage: N%`` -- neither word ever appears --
+    so the function returned NORMAL unconditionally, on herd's primary platform.
+    Everything built on the signal was therefore dead code on every Mac: the
+    scorer's CRITICAL elimination and the ``memory_pressure`` health check had
+    never once fired.  On 2026-10-02 a Mac mini reported ``normal`` while sitting
+    at 50.9/51.2 GB of swap with load 340.
+
+    Unknown or unreadable levels return NORMAL deliberately.  That is the
+    fail-open direction, and it matters more now than it did while this was
+    broken: a wrong CRITICAL withholds cold loads (see
+    ``scorer._eliminate``), so guessing high on a value we do not recognise
+    would degrade routing on the strength of a parse failure.
+    """
     try:
         result = subprocess.run(
-            ["/usr/bin/memory_pressure", "-Q"],
+            ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
             capture_output=True,
             text=True,
             timeout=5,
         )
-        output = result.stdout.lower()
-        if "critical" in output:
-            return MemoryPressure.CRITICAL
-        if "warn" in output:
-            return MemoryPressure.WARN
-        return MemoryPressure.NORMAL
+        raw = (result.stdout or "").strip()
+        if not raw:
+            logger.warning(
+                "Empty kern.memorystatus_vm_pressure_level (defaulting to NORMAL); "
+                "stderr=%s",
+                (result.stderr or "").strip() or "(none)",
+            )
+            return MemoryPressure.NORMAL
+        level = int(raw)
+        pressure = _DARWIN_PRESSURE_LEVELS.get(level)
+        if pressure is None:
+            logger.warning(
+                f"Unrecognised macOS memory pressure level {level} "
+                f"(defaulting to NORMAL)"
+            )
+            return MemoryPressure.NORMAL
+        return pressure
     except Exception as e:
-        logger.warning(f"Could not read memory pressure (defaulting to NORMAL): {e}")
+        logger.warning(
+            f"Could not read memory pressure (defaulting to NORMAL): "
+            f"{type(e).__name__}: {e}"
+        )
         return MemoryPressure.NORMAL
 
 
