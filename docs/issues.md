@@ -71,11 +71,40 @@ test it.** The debug-body capture does not cover the embed path either.
 Now recorded, verified live: batch 1 → 5 tokens / 42 ms, batch 25 → 125 / 77 ms,
 batch 100 → 500 / 233 ms. The same question will answer itself from traces next time.
 
-**The original latency difference remains unexplained** and is expected to resolve on
-its own once enough post-fix traffic accumulates — group embed latency by
-`prompt_tokens` per model and the answer should be immediate. It is almost certainly
-two callers with different batch sizes (324 ms ≈ batch ~150, 1,624 ms ≈ batch ~600 at
-measured rates), but that is inference, not evidence.
+**Followed up 2026-10-02 with the recorded data. The batch-size inference above was
+wrong — it is inverted.** Over an 8 h window:
+
+| spelling | n | mean latency | mean `prompt_tokens` | range |
+|---|---|---|---|---|
+| `nomic-embed-text` | 115 | **1,441 ms** | **1.0** | 1–1 |
+| `nomic-embed-text:latest` | 66 | **127 ms** | 267.4 | 47–1,295 |
+
+The *slow* spelling sends **one token** and the fast one sends up to 1,295. Within
+`:latest`, latency scales sensibly with size (80 ms at ≤100 tokens, 178 ms at 101–500,
+323 ms above 500), so batching behaves exactly as measured — it just is not what
+separates the two names.
+
+**Routing is now positively ruled out, not merely "checked".** Sending identical input
+under both spellings returns identical results on the same path: 27–74 ms, 768 dims,
+`prompt_eval_count=45` for both. A 1-token input by hand takes 33–42 ms. So the names
+are interchangeable and the native server is fast for both.
+
+**What the gap tracks is *when* each workload arrives**, which the earlier "median
+concurrent LLM load was 0.0 for both" reading missed by using the median:
+
+- plain: **105 of 115 (91%)** arrived with an LLM request in flight → mean 1,508 ms;
+  the 10 that arrived idle → 738 ms.
+- `:latest`: only **11 of 66 (17%)** overlapped an LLM request.
+
+So these are two different callers with different timing, not two routing paths.
+**But co-occurrence is not yet causation, and the counter-evidence is in the same
+table:** the 11 `:latest` requests that *did* overlap an LLM ran in **83 ms** — faster
+than its idle ones. LLM concurrency alone therefore does not produce 1,508 ms, and a
+1-token embed by hand does not either. The residual is unexplained; the plain-name
+caller also self-overlaps more (mean 1.73 concurrent vs 1.11), so the leading
+hypothesis is now that specific caller's burst pattern (threes, ~15 s apart) rather
+than anything about the model name. **Do not close this as "batch size" or as "LLM
+contention" — both have now been measured and neither holds alone.**
 
 ---
 
