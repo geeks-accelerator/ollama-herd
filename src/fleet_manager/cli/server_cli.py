@@ -28,8 +28,15 @@ app = typer.Typer(
 @app.callback(invoke_without_command=True)
 def start(
     ctx: typer.Context,
-    host: str = typer.Option("0.0.0.0", help="Bind address"),
-    port: int = typer.Option(11435, help="Listen port"),
+    # Default None, not the real default: a typer Option always *has* a value,
+    # and passing it into ServerSettings unconditionally shadows the env lookup
+    # in pydantic -- which silently made FLEET_HOST and FLEET_PORT no-ops while
+    # docs/configuration-reference.md documented them as working.  Exactly the
+    # bug already fixed on the node side for --node-id / FLEET_NODE_ROUTER_URL;
+    # the router kept it.  Effective values are read back off `settings` below,
+    # so precedence is CLI flag > env > default.
+    host: str = typer.Option(None, help="Bind address  [env: FLEET_HOST]  [default: 0.0.0.0]"),
+    port: int = typer.Option(None, help="Listen port  [env: FLEET_PORT]  [default: 11435]"),
     log_level: str = typer.Option("INFO", help="Log level"),
     cloud: bool = typer.Option(False, "--cloud", help="Enable cloud tunnel to gotomy.ai"),
     cloud_token: str = typer.Option(
@@ -55,7 +62,16 @@ def start(
     from fleet_manager.models.config import ServerSettings
     from fleet_manager.server.app import create_app
 
-    settings = ServerSettings(host=host, port=port)
+    settings_kwargs: dict = {}
+    if host is not None:
+        settings_kwargs["host"] = host
+    if port is not None:
+        settings_kwargs["port"] = port
+    settings = ServerSettings(**settings_kwargs)
+    # Read back the resolved values: everything below (the banner, the cloud
+    # tunnel URL, uvicorn) must bind and advertise what settings actually say,
+    # not the CLI's unset placeholder.
+    host, port = settings.host, settings.port
     application = create_app(settings)
 
     typer.echo("")

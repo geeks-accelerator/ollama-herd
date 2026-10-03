@@ -9,13 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+### Upgrading
+
+Two changes need action; everything else is drop-in.
+
+- **MLX users must re-run `./scripts/setup-mlx.sh`.** The pinned mlx-lm moved to
+  `0.32.0`, which ships `--kv-bits` / `--quantized-kv-start` natively, and the local
+  patch the supervisor used to require has been retired. Without re-running setup,
+  MLX server auto-start fails — historically with `unrecognized arguments: --kv-bits`.
+- **Embedding inputs longer than 2,048 tokens are now truncated** rather than run at
+  up to 8,192. This is the fix for a 28 GB memory high-water mark (below), and it
+  changes results for long documents: chunk before embedding if you were relying on
+  the old limit. Sending `"truncate": false` now returns `400`, matching Ollama.
+
+Also worth knowing: `herd-node` retains roughly 3.7 GB once the embedding and rerank
+models have each served a long input, and does not release it until restart. That is
+the designed ceiling, not a leak, and it is negligible on a large machine — but on a
+16 GB node it is a meaningful share of RAM. Tracked as an open issue (idle eviction
+from `_slots`); `herd_process_memory` will tell you what the process actually holds.
+
 ### Added
 
 - **`backend_bypass_clients` health check — the one failure class herd could not see.** Every scoring signal (queue depth, free slots, session affinity, context fit) is derived from what herd itself dispatched, so a second process talking straight to `:11434` does not merely go unmeasured, it invalidates the arithmetic: `QueueManager`'s concurrency cap becomes an oversubscription of the backend it was meant to protect. On 2026-08-21 a co-located CLI daemon contributed ~27% of Ollama's load this way — fleet decode fell 15% with zero errors, zero retries and a clean dashboard, and it took hours and six wrong turns to find, because herd's own requests genuinely were healthy. Nodes now probe who holds established connections to their Ollama (`node/backend_clients.py`) and report any process that is not herd, a child herd spawned, or Ollama itself; the router fires WARNING naming the pid, process and **full argv** — argv rather than the process name because a Node daemon's name is only `process.title`, which in that incident matched an unrelated project folder. The remedy is *repoint, not kill*: herd is Ollama-API compatible, so moving the client from `:11434` to `:11435` restores the accounting at no cost, and the fix text also says to check whether the client arrived by **fallback** rather than configuration (a cloud provider losing its API key can silently redirect a whole workload onto a local fleet).
 
   Two alternative signals were tried and rejected on measurement, not taste: `/api/ps` `expires_at` drift is constant under the canonical `OLLAMA_KEEP_ALIVE=-1` (it pins `expires_at` to the year 2319), and `psutil.net_connections()` — the portable answer — raises `AccessDenied` on macOS for any process but our own unless the agent runs as root. Hence `lsof`. Probed at most once per 60 s rather than per heartbeat, and an empty result means "none seen" *or* "could not look", deliberately indistinguishable: the check only fires on a positive sighting, so a blind node is a missed detection and never a false alarm. Unimplemented on Windows rather than guessed at. Detects an **off-box** client too, by peer address rather than pid — its socket lives on its own machine, so the node sees only Ollama's server end, and Ollama binds `*:11434` by default; the router is excluded by address since it legitimately proxies to every node's Ollama. Verified end-to-end on a live fleet — fires within ~60 s of a foreign client appearing, clears ~48 s after it leaves, with the router not flagged.
-
-### Added
 
 - **herd now measures its own process memory** — the number whose absence made a 28 GB leak undiagnosable on two separate devices. Heartbeats carried *system* memory only, which on a 512 GB box is dominated by Ollama's ~91 GB of resident weights plus two `mlx_lm.server` children at 17 GB each, so a 20 GB leak inside `herd-node` was invisible in it. The system series even looked healthy: 205–246 GB oscillating over seven days with no climb, and the hours before a suspected incident among the lowest in the window.
 
@@ -24,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Visible three ways by design: the periodic heartbeat log line for greppable long-run history, `/fleet/status` unconditionally so the trend shows before it becomes a problem, and the health check on a threshold. Verified end to end rather than assumed — 0.112 GB → 3.684 GB over 1,920 embeddings through the router, independently matching the 3.71 GB ceiling measured by hand, with the mlx children correctly labelled and excluded.
 
 ### Fixed
+
+- **`FLEET_HOST` and `FLEET_PORT` were silent no-ops.** `herd` built `ServerSettings(host=host, port=port)` from typer options that always *have* a value, and an explicit kwarg shadows the env lookup in pydantic — so both variables were ignored while `docs/configuration-reference.md` documented them as working. This is the same shadowing already fixed on the node side for `--node-id` / `FLEET_NODE_ROUTER_URL`; the router kept it. Found while trying to start a second router on another port for release verification: `FLEET_PORT=11455` bound 11435 instead. Precedence is now CLI flag > env var > default, and the test pins the *call shape* as well as the settings class — a test on `ServerSettings` alone stayed green through the whole bug, because the model was never wrong.
 
 - **macOS memory pressure is read from the kernel, and critical pressure now withholds cold loads instead of stopping service.** Two defects that only made sense together. `_get_memory_pressure_darwin` ran `memory_pressure -Q` and searched the output for "critical" or "warn" — `-Q` prints only a total and `System-wide memory free percentage: N%`, so neither word can ever appear and the function returned NORMAL unconditionally. Everything built on the signal was therefore dead code on herd's primary platform: the scorer's elimination and the `memory_pressure` health check had never once fired, and a Mac mini reported `normal` while sitting at 50.9/51.2 GB of swap with load 340. It now reads `kern.memorystatus_vm_pressure_level` (1 = normal, 2 = warn, 4 = critical), failing open to NORMAL on anything unrecognised.
 
@@ -45,7 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Embed traces now record the request size.** `prompt_tokens` was NULL on every embed row (3,770 of them on the reference fleet), even though the backend computes `prompt_eval_count`, returns it, and `/v1/embeddings` already reports it as OpenAI `usage` — it was simply never passed to `record_trace`. Found by an investigation it blocked: two spellings of the same embedding model averaged 324 ms and 1,624 ms with identical routing, identical node, identical tags and zero concurrent LLM load, and there was no recorded way to test whether batch size explained it. Verified live: batch 1 → 5 tokens, batch 100 → 500.
 
 - **An embedding model in the usage-priority list is no longer pre-warmed forever.** Pre-warming posts to `/api/generate`, which Ollama refuses for an embedding model: `{"error": "\"nomic-embed-text:latest\" does not support generate"}`. That is permanent, not transient, so the preloader retried it every cycle — 81 warnings in 30 hours once new embed traffic made `nomic-embed-text:latest` a top-priority model, and a standing `priority_model_not_loaded` card for something that could never load. The proxy now learns which models the backend refuses to generate for (from the backend's own answer, not a name heuristic, so it covers any model with the same property), reports it once at INFO rather than every cycle at WARNING, and the preloader skips them before it even looks for a node.
-
 
 ## [0.9.6] - 2026-09-29
 

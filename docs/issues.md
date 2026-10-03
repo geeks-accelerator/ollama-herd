@@ -47,6 +47,50 @@ unloaded chat model is still flagged.
 
 ---
 
+### Importing a CLI module injects the operator's env file into the process `OPEN`
+
+**Severity:** medium — latent, but it fails in the direction that is hardest to
+diagnose: green on CI, red on a configured machine.
+
+`cli/server_cli.py` and `cli/node_cli.py` call `load_env_file()` at **module import
+time**, by design, so `FLEET_*` vars work under launchd and non-interactive shells.
+The side effect is that merely importing either module mutates `os.environ` for the
+rest of the process. On this machine that is **28 variables**, including
+`FLEET_DYNAMIC_NUM_CTX`, `FLEET_NUM_CTX_OVERRIDES` and `FLEET_NODE_NODE_ID`.
+
+Hit on 2026-10-03 while adding a test that used `inspect.getsource(server_cli.start)`
+to pin a call shape. The import broke **four unrelated tests** —
+`test_node_settings_defaults`, two dashboard settings-API tests, and
+`test_no_num_ctx_unchanged` — and every one of them **passed in isolation**, because
+pollution only exists once the CLI module has been imported earlier in the session.
+
+The trap is the asymmetry: CI has no `~/.fleet-manager/env`, so a test that imports
+the CLI is green there and red for any operator with a configured fleet. Verified both
+ways — the suite passes with the env file moved aside and with it restored, but only
+because the offending test was rewritten to read the CLI sources from disk instead of
+importing them.
+
+**Worked around, not fixed.** No test currently imports a CLI module;
+`tests/test_models/test_cli_env_precedence.py` reads the files as text and carries a
+comment explaining why.
+
+**Proposed fix,** in rough order of preference:
+
+1. A session-scoped autouse fixture in `tests/conftest.py` that snapshots and restores
+   `os.environ`, so no test can leak env to another regardless of cause. This also
+   covers the general case, not just the CLI.
+2. Move `load_env_file()` out of module scope into the typer callback, so importing is
+   inert and only *running* the CLI loads env. Changes nothing at runtime — the
+   callback runs before `ServerSettings` instantiates, which is the only ordering
+   requirement (`common/env_file.py` documents it).
+3. Have `load_env_file()` no-op when `PYTEST_CURRENT_TEST` is set. Cheapest, and the
+   worst of the three: it makes production and test behaviour diverge silently.
+
+Option 2 plus option 1 is the real fix. Neither is urgent while nothing imports the
+CLI, but the next person to write a CLI test will rediscover this.
+
+---
+
 ### herd measured everything except itself `FIXED` (2026-10-02)
 
 **Severity:** high — it is the reason a 28 GB process leak on two separate devices
