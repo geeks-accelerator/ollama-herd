@@ -113,6 +113,48 @@ class ModelTagMeta(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
 
 
+class ProcessMemoryEntry(BaseModel):
+    """One child process herd spawned, and what it is holding."""
+
+    pid: int = 0
+    # Role rather than process name: the transcription server reports as
+    # "Python" and the mlx children as "python3.14", so the name tells an
+    # operator nothing.  Derived from the full argv.
+    role: str = ""
+    footprint_gb: float = 0.0
+    peak_gb: float = 0.0
+    rss_gb: float = 0.0
+
+
+class ProcessMemory(BaseModel):
+    """What herd's own processes are holding -- the thing herd never measured.
+
+    When the native embedding server held 28 GB in one node agent there was no
+    recorded number anywhere to show it, because heartbeats carry *system*
+    memory and on a large box that is dominated by Ollama's resident weights.
+
+    ``peak_gb`` is the diagnostic field.  ONNX Runtime keeps the high-water mark
+    of the largest run a process ever does, so one oversized request raises the
+    process's memory permanently and the *current* figure then looks innocent.
+    Reported in footprint rather than RSS because **RSS is what hid the original
+    28 GB**; ``rss_gb`` is kept as the portable floor off macOS.
+
+    Children are separate from the agent's own numbers on purpose: two
+    ``mlx_lm.server`` processes at 17 GB each are legitimate model weights and
+    would swamp any combined total.  The embedding servers are *not* here --
+    they are asyncio tasks inside the agent, so their arenas land in
+    ``footprint_gb``/``peak_gb``.  Older agents send nothing and every field
+    defaults to 0.
+    """
+
+    footprint_gb: float = 0.0
+    peak_gb: float = 0.0
+    rss_gb: float = 0.0
+    children_footprint_gb: float = 0.0
+    children_peak_gb: float = 0.0
+    children: list[ProcessMemoryEntry] = Field(default_factory=list)
+
+
 class BackendClient(BaseModel):
     """A process other than herd holding an open connection to a node's Ollama.
 
@@ -307,6 +349,11 @@ class HeartbeatPayload(BaseModel):
     draining: bool = False
     capacity: CapacityMetrics | None = None
     agent_version: str = ""
+    # What herd's OWN processes are holding.  Separate from `memory`, which is
+    # system-wide and on a large box is dominated by Ollama's resident weights
+    # -- that is precisely why a 28 GB leak in this agent left no trace anywhere
+    # (docs/issues.md, 2026-10-02).  Empty on older agents.
+    process_memory: ProcessMemory = Field(default_factory=ProcessMemory)
     # Installed mlx-lm version, empty when MLX isn't in use.  Reported so the
     # fleet can see which MLX runtimes are out there before a model that needs
     # a newer one lands -- the same question ollama_version answers for GGUF.
@@ -384,6 +431,11 @@ class NodeState(BaseModel):
     capacity: CapacityMetrics | None = None
     # Software version reported by the node agent
     agent_version: str = ""
+    # Mirrors the heartbeat field.  This class assigns field by field in
+    # registry.update_from_heartbeat, so a new heartbeat field is invisible
+    # to the router until it is listed in BOTH places -- mlx_version shipped
+    # empty in the telemetry device row for exactly this reason.
+    process_memory: ProcessMemory = Field(default_factory=ProcessMemory)
     # Installed mlx-lm version, empty when MLX isn't in use.  Reported so the
     # fleet can see which MLX runtimes are out there before a model that needs
     # a newer one lands -- the same question ollama_version answers for GGUF.

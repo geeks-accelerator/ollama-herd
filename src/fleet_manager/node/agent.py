@@ -272,6 +272,15 @@ class NodeAgent:
                         f"cpu={payload.cpu.utilization_pct:.0f}%, "
                         f"mem={payload.memory.used_gb:.1f}/{payload.memory.total_gb:.0f}GB "
                         f"({payload.memory.pressure.value}), "
+                        # The agent's OWN memory, in the line that already gives
+                        # this file its only long-run history.  System memory
+                        # above is dominated by Ollama's resident weights, which
+                        # is exactly why a 28 GB leak in THIS process left no
+                        # trace anywhere (docs/issues.md, 2026-10-02).  `peak` is
+                        # the diagnostic half: ONNX Runtime keeps the high-water
+                        # mark, so current alone reads innocent afterwards.
+                        f"self={payload.process_memory.footprint_gb:.2f}GB "
+                        f"(peak {payload.process_memory.peak_gb:.2f}GB), "
                         f"models={models_loaded} loaded/{models_available} available"
                     )
 

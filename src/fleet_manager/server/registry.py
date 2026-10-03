@@ -86,6 +86,7 @@ class NodeRegistry:
             node.ollama = payload.ollama
             node.capacity = payload.capacity
             node.agent_version = payload.agent_version
+            node.process_memory = payload.process_memory
             # Copy explicitly: this method assigns field by field, so a new
             # heartbeat field is invisible to the router until it is listed
             # here.  mlx_version shipped empty in the telemetry device row for

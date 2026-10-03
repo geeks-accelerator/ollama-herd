@@ -129,6 +129,8 @@ class HealthEngine:
         # with no trace data, which is precisely when herd is least able to
         # explain a throughput drop any other way.
         recommendations.extend(self._check_backend_bypass_clients(nodes))
+        # Node state plus the router's own process; needs no trace data.
+        recommendations.extend(self._check_process_memory(nodes))
 
         # Trace-based checks (async, queries SQLite)
         if trace_store:
@@ -586,6 +588,123 @@ class HealthEngine:
                 )
             )
         return recs
+
+    # The agent process is a heartbeat loop plus bounded ONNX sessions.  Its
+    # documented ceiling with both embedding models resident is ~3.7 GB
+    # (docs/issues.md), so 8 GB is roughly double that -- and it is also the
+    # figure from the incident itself, where the leaking server passed "more
+    # than 8 GB within minutes" on its way to 28 GB.  Nothing legitimate in
+    # this process approaches it.
+    PROCESS_MEMORY_WARN_GB = 8.0
+    PROCESS_MEMORY_CRITICAL_GB = 16.0
+
+    def _check_process_memory(self, nodes) -> list[Recommendation]:
+        """herd's own processes holding more memory than they should.
+
+        The gap this closes: herd measured everything except itself.  When the
+        native embedding server held 28 GB in one node agent and took a 48 GB
+        Mac down with its co-tenants, no recorded number anywhere showed it --
+        heartbeats carry *system* memory, which on a 512 GB box is dominated by
+        Ollama's resident weights and hides a 20 GB process leak completely.
+        Two devices hit the same bug and neither could produce a growth curve.
+
+        Reads ``peak_gb``, not just current.  ONNX Runtime keeps the high-water
+        mark of the largest run a process ever does, so one oversized request
+        raises the process permanently and the *current* figure then reads as
+        innocent -- which is exactly how this hid.  A peak far above current is
+        the signature, and is reported as such rather than silently ignored.
+
+        The agent's own number is what matters: the vision and text embedding
+        servers are asyncio tasks inside it, so their arenas are charged there.
+        Children are excluded from the comparison on purpose -- two
+        ``mlx_lm.server`` processes at 17 GB each are legitimate model weights
+        and would trip any threshold worth setting.
+        """
+        offenders: list[dict] = []
+
+        def consider(label: str, node_id: str | None, pm) -> None:
+            if pm is None:
+                return
+            peak = float(getattr(pm, "peak_gb", 0.0) or 0.0)
+            current = float(getattr(pm, "footprint_gb", 0.0) or 0.0)
+            # RSS is the fallback only where footprint is unavailable (non-macOS,
+            # or an unreadable probe).  It is NOT preferred: RSS is the metric
+            # that hid the original 28 GB.
+            if peak <= 0 and current <= 0:
+                current = peak = float(getattr(pm, "rss_gb", 0.0) or 0.0)
+            worst = max(peak, current)
+            if worst < self.PROCESS_MEMORY_WARN_GB:
+                return
+            offenders.append({
+                "process": label,
+                "node_id": node_id,
+                "footprint_gb": round(current, 2),
+                "peak_gb": round(peak, 2),
+                "retained": peak > current * 1.5 and current > 0,
+            })
+
+        for node in nodes:
+            consider("herd-node", node.node_id, getattr(node, "process_memory", None))
+
+        # The router is a separate process that no heartbeat describes, so it
+        # measures itself -- this check runs inside it.
+        try:
+            from fleet_manager.common.process_memory import probe_process_memory
+
+            consider("herd (router)", None, probe_process_memory())
+        except Exception as exc:  # noqa: BLE001 -- never fail the health pass
+            logger.debug(
+                f"router self-memory probe failed: {type(exc).__name__}: {exc}"
+            )
+
+        if not offenders:
+            return []
+
+        worst = max(max(o["peak_gb"], o["footprint_gb"]) for o in offenders)
+        lines = "; ".join(
+            f"{o['process']}"
+            + (f" on {o['node_id']}" if o["node_id"] else "")
+            + f" at {o['footprint_gb']:.1f} GB (peak {o['peak_gb']:.1f} GB)"
+            for o in offenders
+        )
+        retained = [o for o in offenders if o["retained"]]
+        return [
+            Recommendation(
+                check_id="herd_process_memory",
+                severity=(
+                    Severity.CRITICAL
+                    if worst >= self.PROCESS_MEMORY_CRITICAL_GB
+                    else Severity.WARNING
+                ),
+                title=f"herd process holding {worst:.1f} GB",
+                description=(
+                    f"{lines}. These are herd's own processes, not Ollama's "
+                    f"resident models — the agent is a heartbeat loop plus "
+                    f"bounded embedding sessions and should sit near "
+                    f"{self.PROCESS_MEMORY_WARN_GB / 2:.0f} GB or below."
+                    + (
+                        " Peak is well above current, which is the ONNX Runtime "
+                        "signature: it keeps the high-water mark of the largest "
+                        "run a process ever does, so one oversized request "
+                        "raises the floor permanently and only a restart returns "
+                        "it. Current usage looking fine does not clear this."
+                        if retained
+                        else ""
+                    )
+                ),
+                fix=(
+                    "Restart the affected process to reclaim the high-water mark "
+                    "(`launchctl kickstart -k gui/$UID/"
+                    "com.geeksaccelerator.ollama-herd.node`), then find what "
+                    "raised it: oversized embedding inputs are the known cause, "
+                    "and `prompt_tokens` in request_traces now records real "
+                    "tokenizer counts. Confirm with `footprint -p <pid>` rather "
+                    "than RSS — RSS is what hid the original 28 GB."
+                ),
+                node_id=offenders[0]["node_id"],
+                data={"processes": offenders},
+            )
+        ]
 
     def _check_backend_bypass_clients(self, nodes) -> list[Recommendation]:
         """A process other than herd is talking straight to a node's Ollama.

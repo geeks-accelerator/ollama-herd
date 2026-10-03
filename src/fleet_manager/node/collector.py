@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 from fleet_manager import __version__
 from fleet_manager.common.binaries import which_extended
 from fleet_manager.common.ollama_client import OllamaClient
+from fleet_manager.common.process_memory import probe_process_memory
 from fleet_manager.common.system_metrics import (
     get_cpu_metrics,
     get_disk_metrics,
@@ -106,6 +107,14 @@ _LAUNCHCTL_CACHE: dict[str, str] = {}
 
 # 60 s, not the 5 s heartbeat interval: this spawns an `lsof` plus one `ps` per
 # unknown peer, and a bypassing client that matters is one that sticks around.
+# 60 s: `footprint` costs ~50 ms per process and the agent has several
+# children, so this is ~0.3 s -- fine once a minute, not every 5 s heartbeat.
+# A process leak that matters is visible on a one-minute grid.
+@_ttl_cache(ttl_seconds=60.0)
+def _collect_process_memory():
+    return probe_process_memory()
+
+
 @_ttl_cache(ttl_seconds=60.0)
 def _collect_backend_clients(ollama_host: str, router_url: str = ""):
     return probe_backend_clients(ollama_host, router_url)
@@ -743,6 +752,7 @@ async def collect_heartbeat(
         lan_ip=lan_ip,
         capacity=capacity,
         agent_version=__version__,
+        process_memory=_collect_process_memory(),
         arch=_detect_arch(),
         mlx_version=_detect_mlx_version(),
         image=image,

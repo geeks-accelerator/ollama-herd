@@ -72,7 +72,7 @@ router to report it. Ready-made launchd agents are in
 | **Smart Benchmarks** | Auto-discovers fleet, benchmarks all 5 model types, tracks performance over time |
 | **Dynamic Context** | Measures actual token usage, auto-adjusts context windows to free KV cache memory |
 | **Fleet Intelligence** | AI-generated fleet briefings with health summaries, trend analysis, and actionable recommendations |
-| **Health Engine** | 42 automated checks: memory, thermal, context waste, thrashing, timeouts, errors, zombies, priority models, and more |
+| **Health Engine** | 43 automated checks: memory, thermal, context waste, thrashing, timeouts, errors, zombies, priority models, and more |
 | **Request Tagging** | Per-app analytics via tags — track usage, latency, and errors per application or team |
 
 ## Usage

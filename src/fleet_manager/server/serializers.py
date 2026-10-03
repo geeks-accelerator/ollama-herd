@@ -163,6 +163,14 @@ def serialize_node(node) -> dict:
         data["cpu"] = node.cpu.model_dump()
     if node.memory:
         data["memory"] = node.memory.model_dump()
+    # herd's own process memory, distinct from `memory` above (system-wide).
+    # Exposed unconditionally rather than only when the health check fires at
+    # 8 GB: the point of this telemetry is the *trend*, and a number you can
+    # only see once it is already a problem would not have produced the growth
+    # curve that was missing when the embedding server held 28 GB.
+    pm = getattr(node, "process_memory", None)
+    if pm is not None:
+        data["process_memory"] = pm.model_dump()
     cap = hot_model_cap_for(node)
     data["hot_model_cap"] = cap
     if node.ollama:

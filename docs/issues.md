@@ -47,6 +47,63 @@ unloaded chat model is still flagged.
 
 ---
 
+### herd measured everything except itself `FIXED` (2026-10-02)
+
+**Severity:** high — it is the reason a 28 GB process leak on two separate devices
+left no diagnosable history on either.
+
+Heartbeats carried *system* memory only. On a 512 GB box that number is dominated
+by Ollama's resident weights (~91 GB) plus two `mlx_lm.server` children at 17 GB
+each, so a 20 GB leak inside `herd-node` is invisible in it. When the native
+embedding server held 28 GB and took a 48 GB Mac down with its co-tenants, there
+was no recorded number anywhere to show the growth — and by the time anyone looked,
+the processes had been restarted and the evidence was gone.
+
+Worse, the system-memory series *looked fine*: over the 7 days to 2026-10-02 this
+fleet oscillated 205–246 GB with no monotonic climb, and the two hours before a
+suspected incident were among the lowest in the window. That reading was built
+partly on `(normal)` memory pressure, which was itself unconditional on macOS (see
+the entry above).
+
+**Fixed** with `common/process_memory.py` → `HeartbeatPayload.process_memory`:
+
+- **Footprint, not RSS.** `phys_footprint` is what the kernel charges the process
+  and what Activity Monitor shows; `rss_gb` is kept only as the portable floor off
+  macOS. (Measured together here they came within 2% — 3.684 vs 3.773 GB — so RSS
+  is not useless, but footprint is the metric to reason about.)
+- **`peak_gb` is the diagnostic field.** ONNX Runtime keeps the high-water mark of
+  the largest run a process ever does, so one oversized request raises the floor
+  permanently and current usage afterwards tells you nothing. A peak far above
+  current is reported as `retained` and called out in the check text; current-only
+  monitoring is precisely how this class of bug reads as "fine now".
+- **The agent's own process is the signal.** The vision and text embedding servers
+  are `asyncio.Task`s inside it (`_ensure_embedding_server` /
+  `_ensure_text_embedding_server`), **not** subprocesses, so their ONNX arenas are
+  charged to the agent. Children are reported separately and labelled by **argv**,
+  not process name — the transcription server reports as `Python` and the mlx
+  children as `python3.14`, so a name tells an operator nothing.
+- **`psutil.memory_full_info()` is `AccessDenied` on macOS without root**, the same
+  wall `backend_clients` hit with `net_connections()`. `/usr/bin/footprint -p <pid>`
+  works as the ordinary user at ~50 ms, hence a 60 s TTL rather than a probe on
+  every 5 s heartbeat.
+- Visible three ways, deliberately: the periodic heartbeat log line (`self=…GB
+  (peak …)`) gives greppable long-run history in the file that already has it;
+  `/fleet/status` exposes it unconditionally, not only once it is a problem, because
+  the *trend* is the point; and the health check fires on a threshold.
+
+Verified end-to-end rather than asserted: baseline 0.112 GB → 3.684 GB after 1,920
+embeddings through the router, with the two mlx children correctly labelled and
+correctly excluded from the threshold. A probe that reports a constant is
+indistinguishable from a broken one, which is why the test suite also includes an
+unmocked read of the live process.
+
+**Still missing:** the router's own number is checked (it probes itself, since no
+heartbeat describes it) but is not persisted anywhere, so it has no history. And
+nothing writes these figures to `request_traces` or any time series — the heartbeat
+log line is the only durable record, and it rotates daily.
+
+---
+
 ### macOS memory pressure is always reported `normal` `FIXED` (2026-10-02)
 
 **Severity:** high. The safety logic built on it has never run on macOS, herd's
@@ -457,6 +514,22 @@ GB, flat thereafter. That is the designed ceiling, set by `_ATTENTION_BUDGET` an
 ONNX Runtime keeping its high-water mark. On a node that also runs a 27B model plus
 ordinary apps, it is a meaningful share of RAM, spent on a model that may serve a
 handful of requests a day (about 200 in 11 hours on the Mac mini).
+
+**Now measurable from telemetry (2026-10-02).** The node reports its own process
+memory in the heartbeat (`HeartbeatPayload.process_memory`, from
+`common/process_memory.py`), so this retention no longer needs a manual `footprint`
+invocation to see. Confirmed independently through the router: the agent went
+**0.112 GB → 3.684 GB** over 1,920 embeddings (60 requests, batch 32, long inputs)
+and stayed there — matching the 3.71 GB measured by hand, from a different direction.
+
+`peak_gb` is reported alongside current because ONNX Runtime keeps the high-water
+mark of the largest run a process ever does: one oversized request raises the floor
+permanently, and *current* then reads innocent. A `herd_process_memory` health check
+fires WARNING above 8 GB and CRITICAL above 16 GB for the agent's own process —
+children are excluded from that comparison on purpose, since two `mlx_lm.server`
+processes at 17 GB each are legitimate model weights and would trip any useful
+threshold. 8 GB is roughly double the designed ceiling and is also the figure from
+the incident, which passed "more than 8 GB within minutes" on its way to 28 GB.
 
 **Proposed fix:** evict an idle model from `_slots` after a few minutes without
 requests, and let the next request lazy-load it again. It is about 130 MB from the
