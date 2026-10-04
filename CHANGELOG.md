@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compared pressure against `'warning'`, but the value is `"warn"`. That was invisible
   while macOS pressure always read `normal`, and became a live bug once 0.10.0 made the
   signal real.
+- **A native embedding or rerank request that found no node returned a silent,
+  misleading 503.** The path answered "Install fastembed" whatever the cause, and
+  returned before logging or tracing anything. On 2026-10-04 a client hit a one-minute
+  herd-node restart and was told to install fastembed (already installed); its first
+  embed through herd had succeeded 4 s earlier, but it concluded herd could not embed
+  and reverted. The 503 now names the cause. A node that serves the model but is
+  restarting or offline, or a just-restarted router that has not heard from its nodes,
+  gets `Retry-After: 10` and says so. Only "online nodes exist and none run the native
+  server" keeps the install hint. Every such rejection is logged at WARNING and traced
+  as `rejected`, and `/v1/embeddings` passes the `Retry-After` header through.
 - **The reranker's Node Models card was labelled "undefined".** The label and color
   maps stopped at `embed`. Added `rerank`, plus a fallback that shows any unmapped
   type by its own name.

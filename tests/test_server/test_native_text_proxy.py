@@ -120,6 +120,52 @@ class TestEmbedTextProxy:
         resp = app_client.post("/api/embed", json={"model": "nomic-embed-text", "input": "x"})
         assert resp.status_code == 503
         assert "uv sync --extra embedding" in resp.json()["error"]
+        # Retrying cannot fix a missing install, so no retry hint.
+        assert "retry-after" not in resp.headers
+
+    def test_server_on_a_restarting_node_is_a_retryable_503_not_an_install_hint(self, app_client):
+        """2026-10-04: a one-minute herd-node restart told a client to install
+        fastembed (already installed), and it abandoned herd for embeddings."""
+        from fleet_manager.server.routes.text_embedding_compat import NATIVE_RETRY_AFTER_SECONDS
+
+        _with_text_server(app_client)
+        app_client.app.state.registry.handle_drain("mini")
+        resp = app_client.post("/api/embed", json={"model": "nomic-embed-text", "input": "x"})
+        assert resp.status_code == 503
+        assert resp.headers["retry-after"] == str(NATIVE_RETRY_AFTER_SECONDS)
+        error = resp.json()["error"]
+        assert "mini" in error and "not online" in error
+        assert "uv sync" not in error
+
+    def test_an_empty_registry_is_retryable(self, app_client):
+        """A router that just restarted knows no nodes until their next heartbeat."""
+        resp = app_client.post("/api/embed", json={"model": "nomic-embed-text", "input": "x"})
+        assert resp.status_code == 503
+        assert "retry-after" in resp.headers
+        assert "No node is online" in resp.json()["error"]
+
+    def test_every_rejection_is_logged_and_traced(self, app_client, caplog):
+        """This path returned before both, so a minute of failures left no record."""
+        import logging
+
+        _with_text_server(app_client)
+        app_client.app.state.registry.handle_drain("mini")
+        with caplog.at_level(logging.WARNING):
+            resp = app_client.post("/api/embed", json={"model": "nomic-embed-text", "input": "x"})
+        assert any("rejected (503)" in r.getMessage() for r in caplog.records)
+        trace = _trace(app_client)
+        assert (trace["status"], trace["node_id"]) == ("rejected", "")
+        assert trace["error_message"] == resp.json()["error"]
+        assert trace["model"] == "nomic-embed-text"
+
+    def test_v1_embeddings_keeps_the_retry_hint(self, app_client):
+        """The OpenAI route rebuilds error bodies; it must not drop Retry-After."""
+        _with_text_server(app_client)
+        app_client.app.state.registry.handle_drain("mini")
+        resp = app_client.post("/v1/embeddings", json={"model": "nomic-embed-text", "input": "x"})
+        assert resp.status_code == 503
+        assert "retry-after" in resp.headers
+        assert "not online" in resp.json()["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +221,14 @@ class TestRerankRoute:
         assert t["tags"] == ["rerank"]
         assert t["original_format"] == "rerank"
         assert t["prompt_tokens"] == 12
+
+    def test_reranker_on_a_restarting_node_is_retryable(self, app_client):
+        _with_rerank_server(app_client)
+        app_client.app.state.registry.handle_drain("mini")
+        resp = app_client.post("/v1/rerank", json={"query": "q", "documents": ["a"]})
+        assert resp.status_code == 503
+        assert "retry-after" in resp.headers
+        assert "not online" in resp.json()["error"]
 
     def test_node_without_a_reranker_is_not_a_candidate(self, app_client):
         """An older agent has a text server but no /rerank route — skip it."""

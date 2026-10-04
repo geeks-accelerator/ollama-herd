@@ -8,6 +8,43 @@ Identified via code review of the full codebase. Organized by priority.
 
 ## Correctness
 
+### A native embed or rerank with no node to serve it returned a silent 503 that blamed the wrong thing `FIXED` (2026-10-04)
+
+**Severity:** medium. It drove a client off herd entirely.
+
+`proxy_to_native_text_server` answered every "no online node serves this" case with
+"No node is running the native text embedding server... Install fastembed", and
+returned before logging or tracing.
+
+On 2026-10-04 openclaw was repointed at herd for memory embeddings:
+
+| Time | Event |
+|---|---|
+| 05:52:55 | Its first embed succeeded through herd (native, 270 ms) |
+| 05:52:59 | herd-node was taken down for a reboot-simulation test |
+| 05:53:55 | herd-node back |
+
+Every embed in between got the install-fastembed 503. fastembed was installed. The
+managing agent concluded "herd can't serve embeddings yet" and reverted at 05:54:16,
+20 s after herd recovered. herd itself had no log line and no trace of any of it.
+
+**Fixed:** `_no_native_server` classifies the cause, using the registry's retained
+heartbeat for offline nodes:
+
+- **A node serves it but is offline.** 503 + `Retry-After: 10`, naming the node.
+- **No node online at all** (a restarted router before re-registration). 503 +
+  `Retry-After`.
+- **Online nodes exist, none run the native server.** The install hint, with no
+  `Retry-After`.
+
+Each case logs a WARNING and records a `rejected` trace via `record_routing_rejection`.
+`/v1/embeddings` now passes `Retry-After` through; it rebuilt error bodies and dropped
+all headers. Verified live by restarting the router and probing: 503 + `Retry-After`
+at +1.6 s, 200 at +6.0 s once the node re-registered, with the WARNING and the trace
+present.
+
+---
+
 ### `priority_model_not_loaded` reported embedding models that can never be preloaded `FIXED` (2026-10-02)
 
 **Severity:** low (misleading dashboard), but it was a standing WARNING.

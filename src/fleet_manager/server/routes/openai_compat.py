@@ -596,10 +596,17 @@ async def openai_images_generations(request: Request):
         )
 
 
-def _openai_error(status: int, message: str, err_type: str, code: str | None = None):
+def _openai_error(
+    status: int,
+    message: str,
+    err_type: str,
+    code: str | None = None,
+    headers: dict[str, str] | None = None,
+):
     return JSONResponse(
         status_code=status,
         content={"error": {"message": message, "type": err_type, "param": None, "code": code}},
+        headers=headers,
     )
 
 
@@ -715,7 +722,15 @@ async def openai_embeddings(request: Request):
         if resp.status_code < 500:
             return _openai_error(resp.status_code, message, "invalid_request_error")
         if resp.status_code in (503, 504):
-            return _openai_error(resp.status_code, message, "model_overloaded")
+            # Keep the backend's retry hint: a client told when to come back
+            # retries instead of concluding the endpoint is broken.
+            retry_after = resp.headers.get("retry-after")
+            return _openai_error(
+                resp.status_code,
+                message,
+                "model_overloaded",
+                headers={"Retry-After": retry_after} if retry_after else None,
+            )
         return _openai_error(resp.status_code, message, "api_error")
 
     embeddings = data.get("embeddings") if isinstance(data, dict) else None

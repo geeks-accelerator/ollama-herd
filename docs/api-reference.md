@@ -326,7 +326,10 @@ cross-encoder runs one forward pass per document.
 **Errors:**
 - `400`: invalid request, from the node.
 - `404`: unknown `model`; the error lists the available ones.
-- `503`: no node runs a rerank-capable text server (`uv sync --extra embedding`).
+- `503`: no online node can serve it right now. With a `Retry-After` header, the node
+  that runs the reranker is restarting or offline, or the router has just restarted
+  and has not heard from its nodes yet: retry. Without one, no node runs a
+  rerank-capable text server at all (`uv sync --extra embedding`).
 - `504`: timed out, usually because a first request is still downloading weights.
 
 Traces carry the `rerank` tag.
@@ -637,7 +640,7 @@ The native text embedding backend (fastembed / ONNX Runtime) runs entirely outsi
 |--------|-----------|
 | 400 | Missing `model` or `input` field |
 | 404 | Model not found on any node |
-| 503 | Model exists but no node can serve it (native server not running) |
+| 503 | No online node can serve it. **With `Retry-After`:** the node running the native server is restarting or offline, or the router has just restarted. It is transient, so retry. **Without it:** no node runs the native server; install fastembed (`uv sync --extra embedding`). `/v1/embeddings` passes `Retry-After` through. |
 | 504 | Text embedding timed out — first request may trigger 130 MB model download; retry after 30s |
 
 ---

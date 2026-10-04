@@ -22,14 +22,17 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from fleet_manager.models.node import NodeStatus
 from fleet_manager.node.text_embedding_models import get_model_spec, is_text_embedding_model
 from fleet_manager.server.fleet_headers import fleet_headers
+from fleet_manager.server.routes.routing import record_routing_rejection
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +122,48 @@ def _size_mb(model: str) -> int | None:
         return None
 
 
+# How long to tell a client to wait when the node serving a native model is
+# away.  A restarted herd-node re-registers on its first heartbeat, and a
+# restarted router repopulates its registry the same way -- seconds, not minutes.
+NATIVE_RETRY_AFTER_SECONDS = 10
+
+
+def _no_native_server(registry, model: str, kind: _NativeKind) -> tuple[str, bool]:
+    """Why no online node can take this request, and whether retrying can help.
+
+    The registry keeps a drained or timed-out node with its last heartbeat, so a
+    node that serves ``kind`` but is restarting is still recognisable.  Telling
+    that apart from "no node has fastembed" is the point: on 2026-10-04 a client
+    hit a one-minute herd-node restart, was told to install fastembed (already
+    installed), and abandoned herd as unable to embed.
+    """
+    away = sorted(
+        n.node_id
+        for n in registry.get_all_nodes()
+        if n.status == NodeStatus.OFFLINE and kind.serves(n)
+    )
+    if away:
+        return (
+            f"The native {kind.label} server for '{model}' runs on "
+            f"{', '.join(away)}, which is not online right now (restarting or "
+            f"offline). Retry in {NATIVE_RETRY_AFTER_SECONDS}s.",
+            True,
+        )
+    if not registry.get_online_nodes():
+        return (
+            f"No node is online to serve '{model}' right now. A restarting node "
+            f"or router re-registers within seconds; retry in "
+            f"{NATIVE_RETRY_AFTER_SECONDS}s.",
+            True,
+        )
+    return (
+        f"No node is running the native {kind.label} server for '{model}'. "
+        "Install fastembed on a node: `uv sync --extra embedding`, "
+        "then restart herd-node.",
+        False,
+    )
+
+
 async def proxy_to_native_text_server(
     request: Request, *, model: str, body: dict, kind: _NativeKind
 ) -> JSONResponse:
@@ -130,17 +175,26 @@ async def proxy_to_native_text_server(
     both, leaving one trace per outcome.
     """
     registry = request.app.state.registry
+    trace_store = request.app.state.trace_store
+    client_ip = request.client.host if request.client else ""
     candidates = [n for n in registry.get_online_nodes() if kind.serves(n)]
     if not candidates:
+        # Logged and traced like any other rejection: this path used to return
+        # before both, so a minute of failed embeds left no record anywhere.
+        reason, transient = _no_native_server(registry, model, kind)
+        logger.warning(f"{kind.label.capitalize()} for '{model}' rejected (503): {reason}")
+        await record_routing_rejection(
+            trace_store,
+            SimpleNamespace(model=model, request_id=str(uuid.uuid4())),
+            reason=reason,
+            original_format=kind.original_format,
+            client_ip=client_ip,
+            tags=list(kind.tags),
+        )
         return JSONResponse(
             status_code=503,
-            content={
-                "error": (
-                    f"No node is running the native {kind.label} server for '{model}'. "
-                    "Install fastembed on a node: `uv sync --extra embedding`, "
-                    "then restart herd-node."
-                )
-            },
+            content={"error": reason},
+            headers={"Retry-After": str(NATIVE_RETRY_AFTER_SECONDS)} if transient else None,
         )
 
     best = _score_text_embedding_candidates(candidates)
@@ -152,8 +206,6 @@ async def proxy_to_native_text_server(
 
     logger.info(f"{kind.label.capitalize()}: model={model} → {best.node_id} ({te_url})")
 
-    trace_store = request.app.state.trace_store
-    client_ip = request.client.host if request.client else ""
     request_id = str(uuid.uuid4())
     start_ms = time.time() * 1000
 

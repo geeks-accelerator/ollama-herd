@@ -77,6 +77,30 @@ When you see a pattern, add it below with the date and evidence.
 
 ## Observations
 
+### 2026-10-04 — An error message that guesses the cause gets believed
+
+**Evidence:** openclaw was repointed at herd for embeddings at 05:51:56, and its first
+embed succeeded at 05:52:55. Four seconds later herd-node was taken down for a
+one-minute maintenance test. Every embed in that window got "No node is running the
+native text embedding server... Install fastembed". The managing agent reported that
+herd "can't serve embeddings yet" and reverted 20 s after herd came back. Neither
+agent's evidence was wrong; the message was. It stated a cause (missing fastembed)
+that herd had not checked.
+
+**Insight:** a 503 is read as a diagnosis, by humans and especially by agents. If the
+code cannot tell "temporarily away" from "not installed", it should say which one it
+saw, or neither. And it should never fail silently: herd held no record of a minute of
+failures it caused itself.
+
+**Pattern:**
+
+- Classify before blaming: a retained offline node, an empty registry, and a real gap
+  each get their own message.
+- Send `Retry-After` exactly when retrying can help.
+- Trace every rejection.
+- Separately: when doing maintenance on a node other agents use, say so first. Both
+  agents were operating the same Mac with no shared view of who was doing what.
+
 ### 2026-10-04 — A "29 GB" model was 21.5 GB of model and 7.8 GB of a cache with zero hits
 
 **Evidence:** Ollama's `/api/ps` reported gemma3:27b at 17.7 GB, and its `llama-server`
