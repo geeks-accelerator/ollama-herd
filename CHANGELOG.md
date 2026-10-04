@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Heartbeats report swap and compressed memory, and a `swap_usage` health check
+  flags memory committed well beyond RAM.** Pressure is a current signal: once paging
+  settles it reads `normal` with tens of GB still swapped out. On 2026-10-04 herd
+  showed a 48 GB node at `warn` with ~10 GB available while swap sat at 96.6% and a
+  29 GB model was 0.02 GB resident, and nothing in herd could say so. `MemoryMetrics`
+  gains `swap_used_gb` / `swap_total_gb`, and `compressed_gb` (hard-coded `0.0` until
+  now) reads `vm.compressor_bytes_used` on macOS. The check fires WARNING when swap in
+  use reaches half of physical RAM. It is not a percentage of swap total, because
+  macOS grows swap on demand and that ratio sits near 100% whenever any swap exists.
+  The node card shows `swap · compressed` under the memory bar. Older agents report
+  `0`, which is treated as "not reported".
+
+### Fixed
+
+- **The node card's memory-pressure outline could never appear.** The dashboard
+  compared pressure against `'warning'`, but the value is `"warn"`. That was invisible
+  while macOS pressure always read `normal`, and became a live bug once 0.10.0 made the
+  signal real.
+- **The reranker's Node Models card was labelled "undefined".** The label and color
+  maps stopped at `embed`. Added `rerank`, plus a fallback that shows any unmapped
+  type by its own name.
+
+### Documentation
+
+- **llama-server's prompt cache: up to 8 GiB per loaded model that nothing reports.**
+  Ollama shells out to upstream `llama-server`, whose host-RAM prompt cache defaults
+  to `--cache-ram 8192` MiB per process. Ollama never sets it, and `/api/ps` and herd's
+  estimates exclude it. It explained a gemma3:27b "17.7 GB" model with a 29 GB
+  footprint, 7.8 GB of it cache with 0 hits in 100 lookups. `llama-server` reads
+  `LLAMA_ARG_CACHE_RAM` from the environment Ollama passes down; `0` took that model to
+  21.8 GiB. The configuration reference covers measuring the hit rate first, and
+  persisting the setting across reboots in **both** places that start Ollama at login:
+  an env LaunchAgent (example added) and the node plist's `EnvironmentVariables`.
+- Troubleshooting: "The node is swapping, but pressure says normal", which explains how
+  to tell dormant swap from active thrashing.
+- Issues filed: herd's `keep_alive: -1` pins idle models into swap instead of letting
+  them unload.
+
 ## [0.10.0] - 2026-10-03
 
 

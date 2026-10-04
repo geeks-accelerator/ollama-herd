@@ -891,7 +891,11 @@ Full fleet state — nodes, queues, hardware metrics, and health summary.
         "total_gb": 192.0,
         "used_gb": 45.3,
         "available_gb": 146.7,
-        "pressure": "nominal"
+        "pressure": "normal",
+        "wired_gb": 12.1,
+        "compressed_gb": 1.4,
+        "swap_used_gb": 0.0,
+        "swap_total_gb": 0.0
       },
       "ollama": {
         "models_loaded": [
@@ -952,6 +956,23 @@ Full fleet state — nodes, queues, hardware metrics, and health summary.
   "timestamp": 1710000000.0
 }
 ```
+
+**`memory` field:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `total_gb` / `used_gb` / `available_gb` | float | System memory (psutil) |
+| `pressure` | `normal` \| `warn` \| `critical` | On macOS the kernel's own level (`kern.memorystatus_vm_pressure_level`). Critical withholds cold loads; resident models keep serving |
+| `wired_gb` | float | Wired (non-pageable) memory |
+| `compressed_gb` | float | RAM the macOS compressor occupies (`vm.compressor_bytes_used`), not the larger amount it holds logically. `0` off macOS |
+| `swap_used_gb` / `swap_total_gb` | float | Swap in use / allocated. On macOS swap grows on demand, so used/total is ~100% whenever any exists; compare `swap_used_gb` to `total_gb` instead |
+
+The swap and compressed fields are `0` from agents at 0.10.0 or earlier, meaning "not
+reported", not "healthy". Pressure drops back to `normal` once paging settles, even with
+tens of GB still swapped out, so read both. Related health checks: `memory_pressure`
+(WARNING/CRITICAL from `pressure`), and `swap_usage` (WARNING when `swap_used_gb` reaches
+half of `total_gb`: memory committed well beyond RAM, so models or other apps are paged
+out).
 
 **`mlx_servers` field** (optional — present only on nodes with MLX configured):
 
@@ -1030,7 +1051,7 @@ Receives heartbeats from node agents. Internal endpoint — not intended for ext
 {
   "node_id": "mac-studio-ultra",
   "cpu": {"cores_physical": 24, "utilization_pct": 15.2},
-  "memory": {"total_gb": 192.0, "used_gb": 45.3, "available_gb": 146.7, "pressure": "nominal"},
+  "memory": {"total_gb": 192.0, "used_gb": 45.3, "available_gb": 146.7, "pressure": "normal"},
   "ollama": {
     "models_loaded": [{"name": "llama3.3:70b", "size_gb": 40.0}],
     "models_available": ["llama3.3:70b", "qwen2.5:32b"],
