@@ -5,9 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status:** `0.9.6` is the current release on PyPI, git tags and Homebrew (published 2026-09-29) — desktop and web chat-client compatibility. `0.9.4` (2026-08-29) carried the leaderboard disclosure the site's pseudonymous-listing gate keys on; that listing is live (`docs/plans/pseudonymous-leaderboard.md`).
+> **Release status:** `0.10.0` is the current release on PyPI, git tags and Homebrew (published 2026-10-03). Prior: `0.9.6` (2026-09-29) — desktop and web chat-client compatibility. `0.9.4` (2026-08-29) carried the leaderboard disclosure the site's pseudonymous-listing gate keys on; that listing is live (`docs/plans/pseudonymous-leaderboard.md`).
 
 ## [Unreleased]
+
+## [0.10.0] - 2026-10-03
 
 
 ### Upgrading
