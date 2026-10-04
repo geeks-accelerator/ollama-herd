@@ -585,7 +585,7 @@ has the same lifetime and would take the same treatment.
 
 ---
 
-### Node memory oversubscription is invisible: no swap signal, and co-tenants are unaccounted `OPEN`
+### Node memory oversubscription is invisible: no swap signal, and co-tenants are unaccounted `FIXED` (2026-10-04)
 
 **Severity:** high on nodes shared with other workloads.
 
@@ -602,27 +602,157 @@ of 51.2 GB:
 Herd's picture of that node was `used 13.22 / 48 GB, available 8.82 GB,
 pressure=normal`. Three gaps let that happen:
 
-- **Pressure never leaves NORMAL on macOS.** See "macOS memory pressure is always
-  reported `normal`" under Correctness.
-- **The heartbeat has no swap or compressor figures.** `MemoryMetrics.compressed_gb` is
-  hard-coded `0.0` in `common/system_metrics.py`, and there is no swap field at all.
-  "99% of swap used" is therefore unreportable, and no health check can fire on it.
-- **Ollama's reported model size understated the real footprint.** `/api/ps` reported
-  gemma3:27b at **17.7 GB** while its `llama-server` showed a **29 GB** footprint, mostly
-  compressed. The preloader's memory gate trusts reported sizes. This is a single sample
-  taken under extreme pressure, so treat it as a lead: re-measure with
-  `footprint <llama-server pid>` on an idle node with gemma3 loaded before building on it.
+- **Pressure never left NORMAL on macOS.** Fixed in 0.10.0 (`3cc423d`, reads
+  `kern.memorystatus_vm_pressure_level`). Verified 2026-10-04: herd reported `warn`
+  when the kernel said level 2.
+- **The heartbeat has no swap or compressor figures.** Still open in 0.10.0.
+  `MemoryMetrics.compressed_gb` is hard-coded `0.0` in `common/system_metrics.py`,
+  nothing reads it, and there is no swap field. On 2026-10-04 herd showed `warn` and
+  `available 9.92 GB` while swap sat at **96.6% (30.1 of 31.1 GB)**, and nothing in
+  herd could say so.
+- **The model's real footprint is about 12 GB larger than Ollama reports.** Explained:
+  see the prompt-cache entry below.
 
-**Proposed fix:**
+**Sources, verified on macOS 26 (2026-10-04):**
 
-- Add `swap_used_gb` / `swap_total_gb` (`psutil.swap_memory()`) to the heartbeat.
-- Populate `compressed_gb`.
-- Add a health check that fires WARNING when swap is over ~80% of its total and names
-  the node's largest non-herd processes, so the operator sees the co-tenant without
-  having to reach for `top`.
+- Swap: `psutil.swap_memory()` works on macOS, Linux and Windows. It returned total
+  31.14 GB, used 30.08 GB, 96.6%, which agrees with `sysctl vm.swapusage`.
+- Compressor: `sysctl -n vm.compressor_bytes_used` gives the RAM the compressor
+  occupies (15.5 GB), matching `vm_stat`'s "occupied by compressor".
+  `vm.compressor.pages_compressed` x page size gives what it holds logically (58.8 GB).
+  Use the same subprocess pattern as `_get_memory_pressure_darwin`. psutil exposes
+  neither.
 
-Fix the pressure classifier first: it is the cheaper signal and already wired into
-scoring.
+**Fixed 2026-10-04:**
+
+- `MemoryMetrics` gained `swap_used_gb` / `swap_total_gb`, defaulting to 0.0 so older
+  agents validate. `compressed_gb` is now populated on macOS from
+  `vm.compressor_bytes_used`; `_run_sysctl` is shared with the pressure probe.
+- New `swap_usage` check: WARNING when swap in use reaches **half of physical RAM**.
+  It does not use ~80% of swap *total*, as first proposed: macOS grows swap on demand,
+  so used/total was 96.6% here at 30 GB and would read ~100% with 1 GB. Calibration:
+  2026-10-02 after recovery was 36% (quiet, 77% of memory free), 2026-10-04 was 62%
+  (fires; a 29 GB model fully paged out).
+- The node card shows `swap · compressed` under the memory bar.
+- **Also fixed: the card's memory-pressure outline could never appear.** The JS
+  compared against `'warning'`, but the enum value is `"warn"`. That was invisible while
+  pressure was always `normal` on macOS, and became a live bug once 0.10.0 made the
+  signal real.
+
+Live on the Mac mini after deploy, the heartbeat matched the OS: swap 11.19 / 12.0 GB
+(`vm.swapusage` 11,457 MiB) and compressed 6.72 GB (`vm.compressor_bytes_used` 7.1 GB).
+`swap_usage` was correctly quiet at 23% of RAM. Swap had fallen from 28 GB when
+Ollama's restart released the paged-out gemma3. Firing is covered by
+`tests/test_server/test_swap_visibility.py`.
+psutil's `sin`/`sout` are deliberately unused: on macOS they are vm_stat's file-backed
+pageins/pageouts, not swap. Not done, deliberately: naming the largest non-herd
+processes, which needs a process scan per heartbeat. Add it only if the swap check
+alone proves insufficient.
+
+---
+
+### llama-server's prompt cache holds up to 8 GiB per loaded model, unseen by Ollama and herd `OPEN`
+
+**Severity:** high on small nodes, and it scales with the number of loaded models
+everywhere.
+
+Since Ollama shells out to upstream `llama-server`, every loaded model also runs
+llama.cpp's **host-RAM prompt cache** (llama.cpp PR #16391). Its default limit is
+`--cache-ram 8192` MiB *per process*, and Ollama does not pass `--cache-ram` at all.
+gemma3:27b's server logged `prompt cache is enabled, size limit: 8192 MiB` at load.
+
+**This is the "29 GB vs 17.7 GB" gap**, accounted for line by line from that
+`llama-server`'s own log (`-c 32768 -np 1`, `load_mode = none`, so the weights are
+anonymous memory and fully compressible):
+
+| Part | Size |
+|---|---|
+| Weights, MTL0 + CPU | 15,768 + 1,103 MiB |
+| KV, full + sliding-window | 2,560 + 624 MiB |
+| Compute, text + vision | 556 MiB |
+| **Prompt cache** | **~7,800 MiB** (15 prompts; peak 8,178 MiB) |
+| **Total** | **≈ 28,400 MiB**, matching the observed 29 GB |
+
+Ollama's `/api/ps` reported 17.7 GB. herd's own estimate was ~21 GB "@ 32768 ctx".
+Neither includes the cache. The vision projector does *not* load the combined GGUF a
+second time, despite `model size: 16586 MiB` in its log; it adds only compute buffers.
+
+**On this workload the cache was pure cost.** Since load:
+
+- 100 cache lookups and **0 hits**: `looking for better prompt` 100, `found better
+  prompt` 0.
+- 99 prompts saved at about 290 MiB each, for roughly 600-token prompts. gemma3's
+  saved state includes the full sliding-window cache.
+- The `restored context checkpoint` lines (87) are a different mechanism of 5–6 MiB
+  each, unaffected.
+
+**The lever exists without an Ollama change.** The bundled `llama-server` reads
+`LLAMA_ARG_CACHE_RAM` (and `LLAMA_ARG_CTX_CHECKPOINTS`) from its environment, and
+Ollama passes its environment down: the running server shows `OLLAMA_MODELS` and
+`LLAMA_ARG_FIT_TARGET`. Setting `LLAMA_ARG_CACHE_RAM=0` the way the `OLLAMA_*` variables
+are set (`launchctl setenv` plus `~/.zshrc`, then quit the Electron parent and relaunch)
+should free about 8 GB per loaded model.
+
+**Applied and verified on the Mac mini, 2026-10-04:**
+
+- `LLAMA_ARG_CACHE_RAM=0` was set via `launchctl setenv` (persisted by
+  `docs/examples/launchd/com.geeksaccelerator.ollama-env.plist`) and `~/.zshrc`, then
+  Ollama was relaunched.
+- The `ollama serve` and `llama-server` processes both carry it.
+- The load log says `prompt cache is disabled`.
+- Over three distinct prompts there were 0 `saving prompt` lines, and gemma3 held at
+  **21.8 GiB, against 29 GiB before**.
+- The Mac Studio is unchanged; measure its hit rate first.
+
+**Proposed:**
+
+1. Measure the hit rate per fleet before choosing a value: `grep -c "found better
+   prompt"` vs `grep -c "looking for better prompt"` in `~/.ollama/logs/server.log`.
+   The Mac Studio's agentic sessions may get real hits where this Mac got none; a cap
+   such as 2048 is the middle ground.
+2. Make herd's resident estimates include it. The preloader's memory gate and
+   `measured_resident_gb` are low by up to 8 GiB per loaded Ollama model. The more
+   direct fix is for `herd-node` to report each `llama-server`'s footprint, the same
+   way 0.10.0 reports its own: ground truth instead of three different estimates.
+3. ~~Document it in `docs/configuration-reference.md` § Ollama environment.~~ Done.
+
+---
+
+### herd pins every model forever, so under memory pressure an idle model goes to swap instead of unloading `OPEN`
+
+**Severity:** medium. Wasted swap and slow first requests on constrained nodes.
+
+herd sends `"keep_alive": -1` on every request and pre-warm (`streaming.py`:
+`body.setdefault("keep_alive", -1)`, and the pre-warm body). The Mac mini has no
+`OLLAMA_KEEP_ALIVE` at all, yet gemma3's `expires_at` reads **2319-01-13**. So a model
+idle for hours is never unloaded. When memory gets tight, macOS cannot unload it either
+and has to page it out.
+
+That is expensive here specifically. Ollama loaded gemma3 with `load_mode = none` (nomic
+got `mmap`), so its weights are anonymous memory, not clean file pages macOS could drop
+and re-read from the GGUF. Measured 2026-10-04:
+
+- gemma3's `llama-server` was **0.02 GB resident** of a ~29 GB footprint.
+- Its last request was 10 h earlier (10-03 19:03).
+- It sat in the compressor and swap alongside a Chrome tab (9.5 GB), Docker's VM
+  (13 GB) and a dev server (8.6 GB): 58.8 GB compressed in all, with swap at 96.6%.
+
+The system was **not** thrashing at that moment: 0 swapouts and 0 compressions in a
+10 s window. The cost lands later. The next request pages ~17 GB of weights back in
+from swap, where a cold load would be a sequential read of the file. Warm requests were
+steady at TTFT ~6.3 s and decode ~14 tok/s.
+
+**Proposed:** make pinning conditional on memory, using the pressure signal 0.10.0 made
+real. While a node reports WARN or CRITICAL (or high swap, once reported), stop sending
+`keep_alive: -1` for that node, and unload models idle past a threshold. An idle model
+should leave memory by unloading, not by being swapped out. No flag (greenfield):
+pinning when memory is plentiful and releasing when it is not is simply the correct
+behavior. Check the interaction with priority pins and the preloader before building.
+
+**Diagnosing swap correctly:** judge thrashing by the *live* Swapins/Swapouts and
+Compressions deltas in `vm_stat` sampled seconds apart. `Pageins`/`Pageouts` count
+file-backed paging, not swap, and the totals are cumulative since boot (here 24 days:
+84M swapins vs 105M swapouts).
 
 ---
 

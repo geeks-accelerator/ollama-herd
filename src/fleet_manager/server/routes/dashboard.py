@@ -185,6 +185,9 @@ async def dashboard_events(request: Request):
                         "used_gb": round(node.memory.used_gb, 1),
                         "available_gb": round(node.memory.available_gb, 1),
                         "pressure": node.memory.pressure.value,
+                        "compressed_gb": round(node.memory.compressed_gb, 1),
+                        "swap_used_gb": round(node.memory.swap_used_gb, 1),
+                        "swap_total_gb": round(node.memory.swap_total_gb, 1),
                     }
                 if node.thermal:
                     node_data["thermal"] = {
@@ -2185,10 +2188,13 @@ _OVERVIEW_BODY = """
 .metric { flex: 1; }
 .metric .label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
 .metric .value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.metric .mem-extra { font-size: 11px; color: var(--text-dim); margin-top: 4px; font-variant-numeric: tabular-nums; }
+.metric .mem-extra:empty { display: none; }
 .bar-container { height: 6px; background: var(--border); border-radius: 3px; margin-top: 6px; overflow: hidden; position: relative; }
 .bar-fill { height: 100%; border-radius: 3px; transition: width 0.8s ease, background 0.5s ease; }
 /* Axis B — warning-state overlays that fire INDEPENDENTLY of bar fill.
- * .bar-warning fires on psutil-reported memory pressure = "warning"
+ * .bar-warning fires on node-reported memory pressure = "warn" (the
+ *   MemoryPressure enum value; it compared against "warning" and never fired)
  * .bar-critical fires on pressure = "critical"
  * .bar-thermal fires when CPU sustained >= 95% (throttling proxy)
  * See docs/plans/dashboard-color-semantics.md. */
@@ -2282,6 +2288,17 @@ function formatGB(gb) {
   return gb.toFixed(2) + ' GB';
 }
 
+// Swap and compressor occupancy under the memory bar -- what pressure stops
+// showing once paging settles, e.g. a pinned model swapped out wholesale.
+// Older agents report neither, and get no line rather than a false zero.
+function memExtras(m) {
+  if (!m) return '';
+  var parts = [];
+  if (m.swap_used_gb > 0) parts.push('swap ' + formatGB(m.swap_used_gb));
+  if (m.compressed_gb > 0) parts.push('compressed ' + formatGB(m.compressed_gb));
+  return parts.join(' \u00b7 ');
+}
+
 var _lastNodeIds = '';
 function renderNodes(nodes) {
   const container = document.getElementById('nodes-container');
@@ -2317,12 +2334,13 @@ function renderNodes(nodes) {
       el = card.querySelector('.cpu-bar'); if (el) { el.style.width = cpu + '%'; el.style.background = utilizationColor(cpu, 'cpu'); }
       el = card.querySelector('.mem-val'); if (el) el.textContent = formatGB(memUsed) + ' / ' + formatGB(memTotal);
       el = card.querySelector('.mem-bar'); if (el) { el.style.width = memPct + '%'; el.style.background = utilizationColor(memPct, 'mem'); }
+      el = card.querySelector('.mem-extra'); if (el) el.textContent = memExtras(node.memory);
       // Axis B — pressure-driven warning outlines, independent of % fill
       var cpuOuter = card.querySelector('.cpu-outer');
       var memOuter = card.querySelector('.mem-outer');
       var pressure = node.memory ? node.memory.pressure : 'normal';
       if (memOuter) {
-        memOuter.classList.toggle('bar-warning', pressure === 'warning');
+        memOuter.classList.toggle('bar-warning', pressure === 'warn');
         memOuter.classList.toggle('bar-critical', pressure === 'critical');
       }
       if (cpuOuter) {
@@ -2436,7 +2454,8 @@ function renderNodes(nodes) {
           <div class="metric">
             <div class="label">Memory (${pressure})</div>
             <div class="value mem-val">${formatGB(memUsed)} / ${formatGB(memTotal)}</div>
-            <div class="bar-container mem-outer ${pressure === 'critical' ? 'bar-critical' : pressure === 'warning' ? 'bar-warning' : ''}"><div class="bar-fill mem-bar" style="width:${memPct}%;background:${utilizationColor(memPct, 'mem')}"></div></div>
+            <div class="bar-container mem-outer ${pressure === 'critical' ? 'bar-critical' : pressure === 'warn' ? 'bar-warning' : ''}"><div class="bar-fill mem-bar" style="width:${memPct}%;background:${utilizationColor(memPct, 'mem')}"></div></div>
+            <div class="mem-extra">${memExtras(node.memory)}</div>
           </div>
           <div class="metric">
             <div class="label">Cores</div>
@@ -5252,7 +5271,7 @@ _COLOR_STATES_BODY = """
   // State cards — same utilization %, different Axis B classes.
   var states = [
     { name: 'Normal',          klass: '',             label: 'pressure=normal — no outline; just the utilization fill' },
-    { name: 'Memory Warning',  klass: 'bar-warning',  label: 'pressure=warning — yellow outline + soft glow' },
+    { name: 'Memory Warning',  klass: 'bar-warning',  label: 'pressure=warn — yellow outline + soft glow' },
     { name: 'Memory Critical', klass: 'bar-critical', label: 'pressure=critical — red outline + pulsing glow (1.8s)' },
     { name: 'CPU Thermal',     klass: 'bar-thermal',  label: 'sustained CPU >=95% (throttling proxy) — orange outline' },
   ];

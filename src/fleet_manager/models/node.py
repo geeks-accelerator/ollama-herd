@@ -52,7 +52,12 @@ class MemoryMetrics(BaseModel):
     available_gb: float
     pressure: MemoryPressure = MemoryPressure.NORMAL
     wired_gb: float = 0.0
+    # RAM the macOS compressor occupies (0 elsewhere), and swap in use.  Both
+    # default to 0 so heartbeats from older agents still validate; 0 reads as
+    # "not reported", never as "healthy".
     compressed_gb: float = 0.0
+    swap_used_gb: float = 0.0
+    swap_total_gb: float = 0.0
 
 
 class ThermalMetrics(BaseModel):

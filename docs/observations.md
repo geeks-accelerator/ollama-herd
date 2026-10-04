@@ -77,6 +77,41 @@ When you see a pattern, add it below with the date and evidence.
 
 ## Observations
 
+### 2026-10-04 — A "29 GB" model was 21.5 GB of model and 7.8 GB of a cache with zero hits
+
+**Evidence:** Ollama's `/api/ps` reported gemma3:27b at 17.7 GB, and its `llama-server`
+had a 29 GB footprint. Its own load log accounts for all of it:
+
+| Part | Size |
+|---|---|
+| Weights | 16,871 MiB |
+| KV | 3,184 MiB |
+| Compute | 556 MiB |
+| llama.cpp's host-RAM **prompt cache** | **~7,800 MiB** |
+
+The prompt cache defaults to `--cache-ram 8192` MiB per server, and Ollama never sets
+it. In 100 lookups it found a reusable prompt **0 times**, while saving 99 prompts at
+~290 MiB each.
+
+The model was also **0.02 GB resident**: herd's `keep_alive: -1` had pinned it through
+10 idle hours, and `load_mode = none` (anonymous weights) meant macOS had to page all of
+it to swap. A cold load would have been a clean re-read of the file.
+
+**Insight:** "how big is this model in memory" now has three wrong answers: Ollama's
+`size`, herd's estimate, and the weights file. The bundled `llama-server` reads
+`LLAMA_ARG_CACHE_RAM` and inherits Ollama's environment, so the cache is controllable
+without an Ollama change. Verified the same day: with `LLAMA_ARG_CACHE_RAM=0`, gemma3
+went from 29 to 21.8 GiB and logged `prompt cache is disabled`. Measure the hit rate first, with
+`found better prompt` vs `looking for better prompt` in the server log, because an
+agentic fleet may profit where this one did not.
+
+**Pattern:** a second agent read the same swap as harmless, using cumulative
+`Pageins`/`Pageouts`. The conclusion (not thrashing *now*) was right, and the evidence
+for it was wrong: those counters are file-backed and cumulative since boot. The
+evidence that holds is live `Swapouts`/`Compressions` deltas, and the cost that matters
+is the next request paging 17 GB back in. See `docs/issues.md`: the prompt-cache,
+keep-alive and oversubscription entries.
+
 ### 2026-10-02 — The node agent held 28 GB because ONNX Runtime keeps the largest run it ever did
 
 **Evidence:** The Mac mini (48 GB) ran out of memory: swap 50.9 of 51.2 GB, load average

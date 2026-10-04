@@ -351,6 +351,31 @@ and it rotates daily — good for a day's curve, not a week's.
 
 ---
 
+## The node is swapping, but pressure says normal
+
+Pressure is a *current* signal. Once macOS stops actively paging it drops back to
+`normal`, even with tens of GB still in swap. What that leaves behind, usually a pinned
+model paged out wholesale, costs the next request to that model a page-in of its
+weights. The heartbeat therefore also reports `swap_used_gb` / `swap_total_gb` and, on
+macOS, `compressed_gb` (the RAM the compressor occupies, `vm.compressor_bytes_used`).
+The node card shows them under the memory bar. The `swap_usage` check fires WARNING
+when swap in use passes half of physical RAM.
+
+Two things to know when reading them:
+
+- **Ignore used/total on macOS.** macOS grows swap files on demand, so swap is ~100%
+  "full" whenever any of it exists. The check compares swap to RAM for that reason.
+- **Active thrashing or dormant pages?** Sample `vm_stat` twice a few seconds apart and
+  compare the `Swapouts` and `Compressions` deltas. Near zero means dormant. Do not use
+  `Pageins`/`Pageouts`: those are file-backed, not swap, and both are cumulative since
+  boot.
+
+Then find what is paged out: `top -l 1 -o mem -stats pid,command,mem,cmprs`. A
+`llama-server` at ~0 resident with a large CMPRS is a pinned model that has been
+swapped out. Each Ollama `llama-server` can also hold up to 8 GiB of llama.cpp prompt
+cache that no size figure includes; see `docs/issues.md` (prompt-cache entry) and
+`LLAMA_ARG_CACHE_RAM`.
+
 ## Fleet-wide throughput dropped and nothing in the dashboard explains it
 
 **Check this first — before tuning anything, and before suspecting an Ollama or

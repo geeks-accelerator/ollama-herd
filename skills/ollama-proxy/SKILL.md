@@ -86,7 +86,7 @@ ollama_proxy_response = ollama_proxy_client.chat.completions.create(
 | Model discovery | Per-machine Ollama | Ollama proxy aggregates fleet-wide |
 | Queue management | None | Ollama proxy manages per-node:model queues |
 | Dashboard | None | Ollama proxy provides real-time web UI |
-| Health checks | None | Ollama proxy runs 43 automated checks |
+| Health checks | None | Ollama proxy runs 44 automated checks |
 | Request tracing | None | Ollama proxy logs to SQLite trace store |
 | Image generation | None | Ollama proxy routes mflux + DiffusionKit |
 | Speech-to-text | None | Ollama proxy routes Qwen3-ASR |
@@ -141,7 +141,7 @@ curl -s http://ollama-proxy:11435/dashboard/api/health | python3 -m json.tool
 Ollama Herd (the Ollama proxy) is open source (MIT). We welcome contributions:
 - [Star on GitHub](https://github.com/geeks-accelerator/ollama-herd) — help others find the Ollama proxy
 - [Open an issue](https://github.com/geeks-accelerator/ollama-herd/issues) — bug reports, feature requests
-- **PRs welcome** — `CLAUDE.md` gives AI agents full Ollama proxy context. 1696 tests, async Python.
+- **PRs welcome** — `CLAUDE.md` gives AI agents full Ollama proxy context. 1714 tests, async Python.
 
 ## Guardrails
 

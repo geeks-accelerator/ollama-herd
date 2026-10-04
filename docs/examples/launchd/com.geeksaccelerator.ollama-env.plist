@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Re-applies llama.cpp settings for Ollama's llama-server children at every
+     login: `launchctl setenv` does not survive a reboot.  LLAMA_ARG_CACHE_RAM=0
+     disables llama-server's host-RAM prompt cache (default 8 GiB per loaded
+     model; 0 hits in 100 lookups on this Mac, 2026-10-04).  See ollama-herd
+     docs/issues.md.  Remove: launchctl bootout gui/$UID/com.geeksaccelerator.ollama-env
+     && rm this file && launchctl unsetenv LLAMA_ARG_CACHE_RAM -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.geeksaccelerator.ollama-env</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/launchctl</string>
+    <string>setenv</string>
+    <string>LLAMA_ARG_CACHE_RAM</string>
+    <string>0</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>

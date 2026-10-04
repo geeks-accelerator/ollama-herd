@@ -106,6 +106,7 @@ class HealthEngine:
         # Registry-based checks (synchronous, in-memory)
         recommendations.extend(self._check_degraded_offline_nodes(nodes))
         recommendations.extend(self._check_memory_pressure(nodes))
+        recommendations.extend(self._check_swap_usage(nodes))
         recommendations.extend(self._check_underutilized_memory(nodes))
         recommendations.extend(self._check_vram_fallbacks())
         recommendations.extend(self._check_version_mismatch(nodes))
@@ -333,6 +334,61 @@ class HealthEngine:
                         "used_gb": round(node.memory.used_gb, 1),
                         "total_gb": round(node.memory.total_gb, 1),
                         "pressure": pressure,
+                    },
+                )
+            )
+        return recs
+
+    # Swap in use, as a share of physical RAM, at which a node is flagged.  RAM,
+    # not swap total: macOS grows swap on demand, so used/total is ~100% the
+    # moment any swap exists.  Half of RAM is well past "a few idle pages" --
+    # 2026-10-02 after recovery sat at 36% with 77% of memory free -- and was
+    # passed on 2026-10-04 (62%) with a 29 GB model fully paged out.
+    SWAP_WARN_FRACTION_OF_RAM = 0.5
+
+    def _check_swap_usage(self, nodes) -> list[Recommendation]:
+        """Memory committed well beyond RAM, which pressure alone does not show.
+
+        Pressure is a *current* signal and drops back to normal once the system
+        stops actively paging.  What it leaves behind -- a pinned model swapped
+        out wholesale -- is invisible to it, and costs the next request to that
+        model a page-in of its weights.  Nodes reporting no swap (older agents)
+        are skipped, never treated as healthy evidence.
+        """
+        recs = []
+        for node in nodes:
+            m = node.memory
+            if not m or m.total_gb <= 0:
+                continue
+            if m.swap_used_gb < m.total_gb * self.SWAP_WARN_FRACTION_OF_RAM:
+                continue
+            compressed = (
+                f", plus {m.compressed_gb:.1f} GB of RAM holding compressed memory"
+                if m.compressed_gb > 0
+                else ""
+            )
+            recs.append(
+                Recommendation(
+                    check_id="swap_usage",
+                    severity=Severity.WARNING,
+                    title=f"{m.swap_used_gb:.0f} GB swapped out on {node.node_id}",
+                    description=(
+                        f"{m.swap_used_gb:.1f} GB of swap in use on a "
+                        f"{m.total_gb:.0f} GB node{compressed}. Memory is committed "
+                        f"well beyond RAM: loaded models or other applications are "
+                        f"paged out, and the next request to a paged-out model waits "
+                        f"while its weights are paged back in."
+                    ),
+                    fix=(
+                        f"Close large applications on {node.node_id}, or unload "
+                        f"models it no longer needs."
+                    ),
+                    node_id=node.node_id,
+                    data={
+                        "swap_used_gb": round(m.swap_used_gb, 1),
+                        "swap_total_gb": round(m.swap_total_gb, 1),
+                        "compressed_gb": round(m.compressed_gb, 1),
+                        "total_gb": round(m.total_gb, 1),
                     },
                 )
             )

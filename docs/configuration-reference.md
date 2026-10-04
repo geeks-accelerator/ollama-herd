@@ -17,6 +17,7 @@ interact multiplicatively.
 | `OLLAMA_KEEP_ALIVE` | `-1` | Never unload. Note `-1` IS valid here, unlike `OLLAMA_MAX_LOADED_MODELS`. |
 | `OLLAMA_MAX_LOADED_MODELS` | a positive integer (e.g. `10`) | `-1` is parsed as unsigned, fails, and silently falls back to a 3-model cap. |
 | `OLLAMA_FLASH_ATTENTION` | `1` | |
+| `LLAMA_ARG_CACHE_RAM` | measure first; `0` where it gets no hits | llama.cpp's own variable, read by the `llama-server` Ollama spawns. Caps its host-RAM prompt cache, default **8 GiB per loaded model**, which no size figure includes. See below. |
 
 ### ⚠️ `OLLAMA_CONTEXT_LENGTH` overrides herd's per-request `num_ctx`
 
@@ -53,6 +54,30 @@ whose launch args were `-c 524288 -np 4` (i.e. 131,072 per slot) *and* for one a
 ps -Ao args | grep llama-server | grep -oE '\-c [0-9]+ \-np [0-9]+'
 # per-slot context = -c divided by -np
 ```
+
+### `LLAMA_ARG_CACHE_RAM`: llama-server's prompt cache, up to 8 GiB per model
+
+Every model Ollama loads runs in its own upstream `llama-server`, and each one keeps a
+host-RAM **prompt cache**: saved KV states of earlier prompts, restored when a similar
+prompt returns. The default limit is `--cache-ram 8192` MiB per process. Ollama never
+passes the flag, `/api/ps` does not count the cache, and herd's resident estimates do
+not either. On the Mac mini it was 7.8 GB of a 29 GB gemma3:27b, and got **0 hits in
+100 lookups**.
+
+Ollama passes its environment through to `llama-server`, which reads
+`LLAMA_ARG_CACHE_RAM` (MiB; `0` disables it). **Measure the hit rate before choosing a
+value.** A fleet whose conversations alternate on one slot may profit:
+
+```bash
+grep -c "found better prompt" ~/.ollama/logs/server.log        # hits
+grep -c "looking for better prompt" ~/.ollama/logs/server.log  # lookups
+```
+
+Apply it like any `OLLAMA_*` variable (below), then confirm the load log says
+`prompt cache is disabled` (or shows the new limit). `launchctl setenv` does not survive
+a reboot; `docs/examples/launchd/com.geeksaccelerator.ollama-env.plist` re-applies it at
+login. Verified on the Mac mini 2026-10-04: gemma3 went from 29 GiB to 21.8 GiB, flat
+over distinct prompts.
 
 ### Applying a change
 

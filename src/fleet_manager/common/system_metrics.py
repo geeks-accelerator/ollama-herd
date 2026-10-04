@@ -39,13 +39,59 @@ def get_memory_metrics() -> MemoryMetrics:
     vm = psutil.virtual_memory()
     pressure = _get_memory_pressure()
     wired = getattr(vm, "wired", 0)
+    swap_used, swap_total = _get_swap_bytes()
     return MemoryMetrics(
         total_gb=round(vm.total / (1024**3), 2),
         used_gb=round(vm.used / (1024**3), 2),
         available_gb=round(vm.available / (1024**3), 2),
         pressure=pressure,
         wired_gb=round(wired / (1024**3), 2),
-        compressed_gb=0.0,
+        compressed_gb=round(_get_compressed_bytes() / (1024**3), 2),
+        swap_used_gb=round(swap_used / (1024**3), 2),
+        swap_total_gb=round(swap_total / (1024**3), 2),
+    )
+
+
+def _get_swap_bytes() -> tuple[int, int]:
+    """Swap ``(used, total)`` in bytes, or zeros if the platform won't say.
+
+    Only ``used`` is meaningful as a load signal on macOS, which grows swap
+    files on demand: ``total`` is just what is allocated so far, so used/total
+    sits near 100% whenever any swap exists (96.6% on 2026-10-04).  psutil's
+    ``sin``/``sout`` are deliberately not read -- on macOS they are vm_stat's
+    file-backed pageins/pageouts, not swap traffic.
+    """
+    try:
+        swap = psutil.swap_memory()
+        return swap.used, swap.total
+    except Exception as e:
+        logger.debug(f"Could not read swap usage: {e}")
+        return 0, 0
+
+
+def _get_compressed_bytes() -> int:
+    """RAM the macOS memory compressor occupies, in bytes; 0 elsewhere.
+
+    Occupancy (``vm.compressor_bytes_used``), not the logical amount it holds:
+    vm_stat's "stored in compressor" was 58.8 GB when this was 15.5 GB.  The
+    occupancy is what the rest of the system cannot use.
+    """
+    if platform.system() != "Darwin":
+        return 0
+    try:
+        return int((_run_sysctl("vm.compressor_bytes_used").stdout or "0").strip() or 0)
+    except Exception as e:
+        logger.debug(f"Could not read vm.compressor_bytes_used: {e}")
+        return 0
+
+
+def _run_sysctl(name: str) -> subprocess.CompletedProcess:
+    """``sysctl -n <name>``, by absolute path -- launchd's PATH may lack /usr/sbin."""
+    return subprocess.run(
+        ["/usr/sbin/sysctl", "-n", name],
+        capture_output=True,
+        text=True,
+        timeout=5,
     )
 
 
@@ -98,12 +144,7 @@ def _get_memory_pressure_darwin() -> MemoryPressure:
     would degrade routing on the strength of a parse failure.
     """
     try:
-        result = subprocess.run(
-            ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        result = _run_sysctl("kern.memorystatus_vm_pressure_level")
         raw = (result.stdout or "").strip()
         if not raw:
             logger.warning(
