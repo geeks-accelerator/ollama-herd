@@ -704,6 +704,12 @@ should free about 8 GB per loaded model.
   **21.8 GiB, against 29 GiB before**.
 - The Mac Studio is unchanged; measure its hit rate first.
 
+**Reboot-proofed the same day.** It is also set in the node plist's
+`EnvironmentVariables`, because at boot `herd-node` may spawn `ollama serve` with its
+own environment before the env agent runs. Verified by simulation: `unsetenv`, Ollama
+stopped, node agent started. The spawned `ollama serve` and gemma3's `llama-server`
+both carried the value. See `docs/configuration-reference.md`.
+
 **Proposed:**
 
 1. Measure the hit rate per fleet before choosing a value: `grep -c "found better

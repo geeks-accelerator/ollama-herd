@@ -48,7 +48,9 @@ plists set `PATH` explicitly. Omit it and MLX servers silently fail to spawn.
 LLAMA_ARG_CACHE_RAM 0` at every login, because `launchctl setenv` does not survive a
 reboot. That variable disables llama-server's host-RAM prompt cache (default 8 GiB per
 loaded model); see `docs/configuration-reference.md` § Ollama environment before using
-it, because the right value depends on the measured hit rate. Ollama launched at login
-can win the race against this agent. After a reboot, check with
-`ps -E -ww -o command= -p $(pgrep -f "ollama serve") | tr ' ' '\n' | grep LLAMA_ARG`,
-and relaunch Ollama if it is missing.
+it, because the right value depends on the measured hit rate.
+
+**Also add it to the node plist's `EnvironmentVariables`.** At boot `herd-node` may
+start `ollama serve` itself, with its own environment, which depends on launch order
+unless the plist sets it. The configuration reference has the one-line `PlistBuddy`
+command, and the reboot check.

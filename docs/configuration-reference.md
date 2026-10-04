@@ -74,10 +74,38 @@ grep -c "looking for better prompt" ~/.ollama/logs/server.log  # lookups
 ```
 
 Apply it like any `OLLAMA_*` variable (below), then confirm the load log says
-`prompt cache is disabled` (or shows the new limit). `launchctl setenv` does not survive
-a reboot; `docs/examples/launchd/com.geeksaccelerator.ollama-env.plist` re-applies it at
-login. Verified on the Mac mini 2026-10-04: gemma3 went from 29 GiB to 21.8 GiB, flat
-over distinct prompts.
+`prompt cache is disabled` (or shows the new limit). Verified on the Mac mini
+2026-10-04: gemma3 went from 29 GiB to 21.8 GiB, flat over distinct prompts.
+
+**Making it survive a reboot takes two places, because two things can start Ollama at
+login:**
+
+1. **The Ollama app**, which reads launchd's user environment. `launchctl setenv` does
+   not survive a reboot, so `docs/examples/launchd/com.geeksaccelerator.ollama-env.plist`
+   re-applies it at every login.
+2. **`herd-node` itself.** If Ollama is not up yet, it starts `ollama serve` with *its
+   own* environment. That environment is fixed when launchd spawns `herd-node`, so
+   whether it includes the `setenv` value depends on which login agent launchd starts
+   first. Put the variable in the node plist's `EnvironmentVariables` as well, which
+   does not depend on order:
+
+   ```bash
+   /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:LLAMA_ARG_CACHE_RAM string 0" \
+     ~/Library/LaunchAgents/com.geeksaccelerator.ollama-herd.node.plist
+   ```
+
+   Then `bootout` + `bootstrap` the node agent; `kickstart` does not re-read the plist.
+
+Verified by simulating the worst case, without a reboot: `launchctl unsetenv` (agent
+not yet run), Ollama stopped, then the node agent started. `herd-node`, the `ollama
+serve` it spawned, and gemma3's `llama-server` all carried `LLAMA_ARG_CACHE_RAM=0`. One
+order remains unguaranteed: the Ollama app as a login item racing the env agent. Login
+items normally launch after RunAtLoad agents, but macOS does not promise it. After a
+reboot:
+
+```bash
+ps -E -ww -o command= -p $(pgrep -f "ollama serve" | head -1) | tr ' ' '\n' | grep LLAMA_ARG
+```
 
 ### Applying a change
 

@@ -2535,9 +2535,13 @@ function renderQueues(queues) {
     totalCompleted += q.completed;
     const pendingColor = q.pending > 3 ? 'var(--orange)' : q.pending > 0 ? 'var(--yellow)' : 'var(--text-dim)';
     const inflightColor = q.in_flight > 0 ? 'var(--blue)' : 'var(--text-dim)';
-    const typeColors = {text:'var(--accent)',image:'var(--orange)',stt:'var(--blue)',embed:'var(--purple,#a855f7)'};
-    const typeLabels = {text:'TEXT',image:'IMAGE',stt:'STT',embed:'EMBED'};
+    const typeColors = {text:'var(--accent)',image:'var(--orange)',stt:'var(--blue)',embed:'var(--purple,#a855f7)',rerank:'var(--green,#22c55e)'};
+    const typeLabels = {text:'TEXT',image:'IMAGE',stt:'STT',embed:'EMBED',rerank:'RERANK'};
     const rt = q.request_type || 'text';
+    // A type the server learns before this map does shows its own name, not
+    // "undefined" (how the reranker card rendered until 2026-10-04).
+    const rtColor = typeColors[rt] || 'var(--text-dim)';
+    const rtLabel = typeLabels[rt] || String(rt).toUpperCase();
     const backend = q.backend || 'ollama';
     const isInstant = q.instant === true;
     // Backend badge colours:
@@ -2613,7 +2617,7 @@ function renderQueues(queues) {
     }
     return `
       <div class="queue-card">
-        <div class="queue-name"><span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${typeColors[rt]}22;color:${typeColors[rt]}">${typeLabels[rt]}</span>${backendBadge}${key}${cacheChip}</div>
+        <div class="queue-name"><span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.5px;margin-right:6px;background:${rtColor}22;color:${rtColor}">${rtLabel}</span>${backendBadge}${key}${cacheChip}</div>
         ${mainStats}${secondRow}
       </div>`;
   }).join('');
