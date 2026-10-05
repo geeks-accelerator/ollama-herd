@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A timed-out image render no longer keeps running, and no longer writes its output after cleanup** ([#6](https://github.com/geeks-accelerator/ollama-herd/issues/6)). `asyncio.wait_for` cancels the *await* on `communicate()`, not the subprocess, so a render that exceeded the 180 s budget returned 504 with mflux still running — holding GPU and memory on the node with nothing left to reap it — and the handler's `finally` then deleted the output path while the child was still alive, so mflux wrote its PNG afterwards and left a stray file. The renderer is now terminated, escalated to SIGKILL if it ignores SIGTERM, and reaped **before** the delete; the ordering was the defect. Done in `finally` rather than in the timeout branch, so a client disconnect — which raises `CancelledError` through the same path — is covered by construction. Thanks to Krivo-dero for a report with a standalone reproduction.
+
+
 ### Added
 
 - **Heartbeats report swap and compressed memory, and a `swap_usage` health check

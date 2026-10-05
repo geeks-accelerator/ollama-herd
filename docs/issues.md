@@ -84,6 +84,106 @@ unloaded chat model is still flagged.
 
 ---
 
+### A timed-out image render kept running and wrote output after cleanup `FIXED` (2026-10-05)
+
+**Severity:** medium — an orphaned renderer holds GPU and memory on a node with
+nothing left to reap it, and this project has precedent: `mlx_lm.server` orphans
+held ports 11440/11441 for hours (2026-04-27).
+
+Reported as [#6](https://github.com/geeks-accelerator/ollama-herd/issues/6) by
+Krivo-dero with a standalone harness, and confirmed exactly as described.
+`generate_image` awaited `asyncio.wait_for(proc.communicate(), timeout=180.0)` and,
+on `TimeoutError`, returned 504 without signalling the child. **`wait_for` cancels
+the await, not the process.** Two consequences:
+
+1. mflux kept running after the request was answered, unreaped.
+2. The `finally` unlinked `output_path` while the child was still alive, so mflux
+   wrote its PNG *after* cleanup — a stray file left on disk.
+
+The reporter's own table, which the new tests reproduce:
+
+| case | response | child alive on return | files after child exits |
+|---|---|---|---|
+| normal completion | 200 | no | 0 |
+| timeout (before fix) | 504 | **yes** | **1** |
+
+**Fixed in `node/image_server.py`:**
+
+- `_reap_renderer(proc)` — SIGTERM, bounded wait, SIGKILL, bounded wait. Bounded
+  because it runs in the request's `finally`, where an unbounded wait would hang
+  the handler it is cleaning up after. It never raises: a failed reap must not
+  replace the response the caller is already getting.
+- **Called from `finally`, not from `except TimeoutError`.** That is the part worth
+  keeping: client disconnect raises `CancelledError` through the same `finally`, so
+  an abandoned render is reaped by construction rather than needing its own branch.
+  The reporter asked whether there was an existing renderer lifecycle contract to
+  align with — there wasn't; this establishes one.
+- **Reap before unlink.** The ordering *is* the defect; deleting first and reaping
+  second still leaves the stray file. A test pins the ordering, not just the calls.
+- `proc = None` before the `try`, so a failure in `create_subprocess_exec` itself
+  reaches cleanup instead of raising `NameError` from the `finally`.
+- `IMAGE_TIMEOUT_S` replaces the hardcoded `180.0`; the log line quoted "180s"
+  literally, so changing one without the other would have reported a wrong number.
+
+Only one instance of the pattern exists in the codebase (verified by grepping
+`wait_for(.*communicate())`), so no sibling fix was needed. Tests use a real
+subprocess, including one that ignores SIGTERM, because the bug is about signal
+delivery and reaping and a mock proves nothing about either.
+
+---
+
+### `brew install` fails on macOS 27 while building `flit_core` `OPEN` (not reproduced)
+
+**Severity:** high for affected users — install is the first thing anyone does.
+
+Reported as [#7](https://github.com/geeks-accelerator/ollama-herd/issues/7) by
+kerkenit against 0.10.0 on macOS 27. The real error, buried under ~200 lines of
+Homebrew sandbox dump:
+
+```
+ERROR: Failed to build 'flit_core' when getting requirements to build wheel
+ERROR: Failed to build '.../aiosqlite-0.22.1' when installing build dependencies
+```
+
+`aiosqlite 0.22.1` declares `requires = ["flit_core >=3.8,<4"]`, so under
+Homebrew's `pip install --no-binary=:all:` pip must obtain and build `flit_core`
+before it can build `aiosqlite`.
+
+**Not reproduced on macOS 26.3.1 / Homebrew 7.0.7.** Everything below passed here:
+
+- fresh tap, trust revoked with `brew untrust` and re-granted
+- **both** pip caches moved aside (`~/Library/Caches/pip` and
+  `~/Library/Caches/Homebrew/pip_cache`) — a genuinely cold machine
+- the reporter's exact pip flags, including `--uploaded-prior-to=P1D`
+- `flit_core>=3.8,<4` built from sdist (resolves 3.12.0, builds clean)
+- `aiosqlite 0.22.1` built from sdist
+- full `brew install` end to end, EXIT 0
+
+Two hypotheses were tested and **eliminated**: a warm `flit_core` wheel in
+Homebrew's pip cache masking the failure (install still succeeds with it removed,
+so pip can reach PyPI from inside the build sandbox), and `--uploaded-prior-to=P1D`
+changing resolution (no effect).
+
+**Their log also contains a Homebrew bug, not ours:**
+`Pathname not allowed in JSON (JSON::GeneratorError)` raised from
+`Utils.report_forked_child_error`. Homebrew crashed *inside its own error
+reporter* while printing the child failure, so the actual `flit_core` error text
+was very likely never shown. That may be the only reason this looks mysterious.
+
+**Known fragility, worth fixing regardless:** the formula vendors **zero** build
+backends — no `flit-core`, `hatchling`, `setuptools` or `poetry-core` resource
+blocks among its 39. Every source build therefore depends on pip fetching backends
+mid-build. That works here, and Homebrew's own Python formulae vendor them anyway.
+Vendoring would make the install immune to whether the sandbox permits that fetch.
+
+**Not applied on a guess.** It is a plausible fix for an unconfirmed cause, and
+adding ~17 resource blocks to a formula that currently installs correctly can
+break the thing that works. Next step is to ask the reporter for `brew config`,
+`brew doctor`, and `brew install --verbose` output so the masked `flit_core` error
+is visible before changing anything.
+
+---
+
 ### Importing a CLI module injects the operator's env file into the process `OPEN`
 
 **Severity:** medium — latent, but it fails in the direction that is hardest to
