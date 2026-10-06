@@ -84,6 +84,69 @@ unloaded chat model is still flagged.
 
 ---
 
+### The stale reaper killed the slot of a healthy long-running request `FIXED` (2026-10-06)
+
+**Severity:** medium, and rising with load — the trigger is a fixed time limit on
+a system whose decode rate swings 3–10x.
+
+```
+04:31:52  Enqueued 15b9be80 to bb:gpt-oss:120b (depth=2)
+04:42:38  WARNING  Reaped stale in-flight 15b9be80 (stuck for 645s)
+04:43:53  Completed 15b9be80 on bb in 720.2s (prompt=1943, completion=9610)
+```
+
+The request was never stuck. It produced **9,610 tokens** and finished normally 75
+seconds after being declared dead. Three consequences:
+
+1. **Its concurrency slot was released while it still held one**, so herd briefly
+   ran 5 real in-flight against a cap of 4. Only consequential since 2026-10-02,
+   when the cap started actually binding — before that it bounded nothing anyway.
+2. **Queue stats and traces disagreed**: `bb:gpt-oss:120b` reported `failed=1` for
+   a request `request_traces` records as `completed`.
+3. A standing WARNING card and health score 85 → 75 for correct behaviour. The
+   third instance of that pattern in a week, after `priority_model_not_loaded` on
+   embedding models and `context_waste` on deliberately pinned ones.
+
+**Root cause:** the reaper's only signal was `started_at`, so its test was
+`now - started_at > stale_timeout`. That cannot distinguish a slow stream from a
+dead one — and the code comment said it existed for "a request whose stream was
+never consumed (so no `mark_*` ever runs)", which is exactly *not* this case. The
+intent was right; the implementation could not express it.
+
+**And it was getting worse, not better.** The threshold is 600 s:
+
+| | gpt-oss decode | time for an 8,080-token reply |
+|---|---|---|
+| 2026-09-29 | 76.5 tok/s | ~106 s |
+| 2026-10-06 (saturated) | 24.5 tok/s | ~330 s |
+
+The load documented on 2026-10-05 is what walked legitimate work toward a fixed
+limit. An absolute timeout is the wrong *shape* for this: nothing about 600 s
+describes a wedged request, it only describes a slow one on a busy box.
+
+**Fixed:**
+
+- `QueueEntry.last_progress_at`, stamped by **both** streaming loops in
+  `streaming.py` — the retry path at ~line 491 is the easy one to miss, and a
+  test counts the stamps rather than trusting that.
+- The reaper now tests `now - (last_progress_at or started_at) > stale_timeout`.
+  The fallback to `started_at` is deliberate: a request that has produced
+  *nothing* is still reaped on age, which is the genuine zombie this exists for.
+- Reaper events record `stuck_seconds`, `age_seconds` **and** `produced_output`,
+  because the difference between idle and age is the diagnosis — idle ≈ age means
+  it never produced anything, idle << age means it stalled mid-stream. One number
+  cannot say which.
+- Removed a silent drift: `_STALE_IN_FLIGHT_SECONDS = 900` carried a "15 minutes"
+  comment while `ServerSettings.stale_timeout = 600.0` always won, so the constant
+  was dead code *and* the comment was wrong by five minutes. Renamed to
+  `_STALE_NO_PROGRESS_SECONDS`, aligned at 600, with a test pinning the two equal.
+
+Tests pin both directions. A reaper that stops false-positiving by never firing
+would be worse than the bug, so genuine zombies — never produced output, or
+produced some then went silent for 900 s — are asserted to still be reaped.
+
+---
+
 ### A timed-out image render kept running and wrote output after cleanup `FIXED` (2026-10-05)
 
 **Severity:** medium — an orphaned renderer holds GPU and memory on a node with

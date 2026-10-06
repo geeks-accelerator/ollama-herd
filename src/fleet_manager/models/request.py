@@ -111,6 +111,14 @@ class QueueEntry(BaseModel):
     enqueued_at: float = Field(default_factory=time.time)
     started_at: float | None = None
     completed_at: float | None = None
+    # Last time this request produced anything, stamped by the streaming loops.
+    # The stale reaper needs *progress*, not age: it used to reap on elapsed
+    # time alone, which cannot tell a slow stream from a wedged one.  On
+    # 2026-10-06 it killed the slot of a request that was mid-stream and went on
+    # to return 9,610 tokens successfully -- see docs/issues.md.  None means
+    # "nothing yet", so the reaper falls back to started_at for a request that
+    # has produced no output at all, which is the genuine zombie case.
+    last_progress_at: float | None = None
     # Routing context for traces
     routing_score: float | None = None
     routing_breakdown: dict[str, float] | None = None

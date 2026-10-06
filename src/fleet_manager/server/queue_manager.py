@@ -45,9 +45,12 @@ _KV_CACHE_PER_REQUEST_GB = 2.0
 _MIN_CONCURRENCY = 1
 _MAX_CONCURRENCY = 8
 
-# In-flight entries older than this are considered stale/zombied (seconds).
-# Ollama's read timeout is 600s; add headroom for slow generation.
-_STALE_IN_FLIGHT_SECONDS = 900  # 15 minutes
+# Fallback only: an in-flight entry that has made no PROGRESS for this long is
+# considered wedged.  `ServerSettings.stale_timeout` always wins when present,
+# which it is, so this value was dead code -- and it read 900 with a "15 minutes"
+# comment while the effective threshold was 600.  Kept aligned so the two cannot
+# disagree again.
+_STALE_NO_PROGRESS_SECONDS = 600.0
 
 # How often to run the stale reaper (seconds).
 _REAPER_INTERVAL_SECONDS = 60
@@ -99,7 +102,7 @@ class QueueManager:
         self._settings = settings
         self._stale_timeout = (
             settings.stale_timeout if settings and hasattr(settings, "stale_timeout")
-            else _STALE_IN_FLIGHT_SECONDS
+            else _STALE_NO_PROGRESS_SECONDS
         )
         self._reaper_task: asyncio.Task | None = None
         # Per-client concurrency accounting.  ``_client_in_flight`` counts
@@ -154,9 +157,28 @@ class QueueManager:
                 await asyncio.sleep(_REAPER_INTERVAL_SECONDS)
                 now = time.time()
                 for key, q in list(self._queues.items()):
+                    # Stale means "produced nothing recently", NOT "has been
+                    # running a long time".  The old test was
+                    # `now - started_at > timeout`, which cannot distinguish a
+                    # slow stream from a dead one -- and on a saturated box the
+                    # two are easy to confuse: gpt-oss decode fell 76 -> 24
+                    # tok/s under load here, so the same 8,000-token reply went
+                    # from ~106s to ~330s of entirely healthy work.  On
+                    # 2026-10-06 that reaped the slot of a request still
+                    # mid-stream, which then completed normally with 9,610
+                    # tokens, releasing a concurrency slot the request still
+                    # held and recording a failure the trace store denied.
+                    #
+                    # `last_progress_at` falls back to `started_at` so a request
+                    # that has produced *nothing* is still reaped on age: that is
+                    # the genuine zombie this exists for -- a stream that was
+                    # never consumed, so no mark_* will ever run.
                     stale = [
-                        (rid, e) for rid, e in q.in_flight.items()
-                        if e.started_at and (now - e.started_at) > self._stale_timeout
+                        (rid, e)
+                        for rid, e in q.in_flight.items()
+                        if (e.last_progress_at or e.started_at)
+                        and (now - (e.last_progress_at or e.started_at))
+                        > self._stale_timeout
                     ]
                     for rid, entry in stale:
                         del q.in_flight[rid]
@@ -168,18 +190,26 @@ class QueueManager:
                         entry.status = RequestStatus.FAILED
                         entry.completed_at = now
                         q.failed_count += 1
-                        age = int(now - entry.started_at)
+                        last = entry.last_progress_at or entry.started_at
+                        idle = int(now - last)
+                        age = int(now - entry.started_at) if entry.started_at else idle
                         _reaper_events.append({
                             "timestamp": now,
                             "request_id": entry.request.request_id,
                             "queue_key": key,
-                            "stuck_seconds": age,
+                            "stuck_seconds": idle,
+                            # Both, because they differ and the difference is the
+                            # diagnosis: idle ~= age means it never produced
+                            # anything; idle << age means it stalled mid-stream.
+                            "age_seconds": age,
+                            "produced_output": entry.last_progress_at is not None,
                         })
                         if len(_reaper_events) > 100:
                             _reaper_events.pop(0)
                         logger.warning(
                             f"Reaped stale in-flight {entry.request.request_id[:8]} "
-                            f"from {key} (stuck for {age}s)"
+                            f"from {key} (no output for {idle}s, age {age}s, "
+                            f"produced_output={entry.last_progress_at is not None})"
                         )
             except asyncio.CancelledError:
                 return

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The stale in-flight reaper no longer kills healthy long-running requests.** Its only signal was elapsed time, so on 2026-10-06 it declared a request stuck after 645 s — and that request went on to finish normally 75 s later with 9,610 tokens. It released a concurrency slot the request still held (herd briefly ran 5 in-flight against a cap of 4) and recorded `failed=1` for something the trace store calls `completed`. The reaper now keys on **progress**: `QueueEntry.last_progress_at`, stamped by both streaming loops, with a fallback to `started_at` so a request that produced *nothing* is still reaped on age — the genuine zombie the reaper exists for. Reaper events now carry idle time, total age and whether any output was produced, since idle ≈ age and idle << age are different failures. This mattered more as load rose: gpt-oss decode fell 76 → 24 tok/s under saturation, so the same 8,000-token reply went from ~106 s to ~330 s of entirely healthy work, walking toward a fixed 600 s limit. Also removed a drift where `_STALE_IN_FLIGHT_SECONDS = 900` carried a "15 minutes" comment while `ServerSettings.stale_timeout = 600.0` always won.
+
+
 ## [0.10.1] - 2026-10-05
 
 ### Added
