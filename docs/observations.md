@@ -382,6 +382,72 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+## 2026-10-05: What two hot models cost each other, and why "raise the concurrency" is the wrong lever
+
+**Prompted by a suggestion** to raise the router's `gemma3:27b` concurrency above
+4 so a distillation workload would wait less. The symptom behind it was real; the
+fix was not. Measured over 24 h with ~12,300 gemma3 and ~7,600 gpt-oss requests
+on one M3 Ultra, both models resident and both serving.
+
+**The wait is real and it is admission, not prefill.** gemma3 median TTFT was
+**2,568 ms** on a uniform ~500-token prompt. A 500-token prefill on a 27B model
+here is a few hundred ms, so roughly 90% of that is queueing.
+
+**But the box is bandwidth-bound, not slot-starved:**
+
+| | decode |
+|---|---|
+| gemma3 single-stream (conc=1 windows) | 22.5 tok/s |
+| gemma3 delivered at full load, 4 slots | **27.1 tok/s** |
+
+Four slots buy **1.2x** of one slot. If admission were the constraint that ratio
+would approach 4x. Note each model has its *own* four slots — two separate
+`llama-server` processes, each `-np 4` — so gemma3 was never short of slots.
+
+**And herd's concurrency is not a tunable here.** It is derived from
+`OLLAMA_NUM_PARALLEL` via `decode_parallelism_for`, so raising it does not make
+Ollama decode more: it relocates the queue from herd, where it is visible and
+rejectable, into Ollama, where it is neither. Raising `OLLAMA_NUM_PARALLEL`
+instead would lower per-request TTFT while each stream decodes proportionally
+slower — same batch wall-clock — and doubles KV, since Ollama launches
+`-c NumCtx x numParallel` (ollama#14116).
+
+**The lever that does measure is co-residency.** Splitting gemma3's requests by
+whether a gpt-oss request overlapped them:
+
+| gemma3 requests | n | decode | TTFT |
+|---|---|---|---|
+| with gpt-oss active | 9,592 | 6.2 tok/s | 2,619 ms |
+| with the box to itself | 2,672 | **7.7 tok/s** | **2,175 ms** |
+
+**Keeping gpt-oss hot costs the other model ~24% of its decode and ~17% of its
+TTFT.** That is the first clean number for this on this fleet. It was an accepted
+trade, not a regression: gpt-oss served 7,552 requests in the same window.
+
+**Insight 1 — "requests are waiting" and "requests need more slots" are different
+claims.** The first was true and measurable; the second did not follow. The
+discriminator is cheap: compare single-stream decode against delivered throughput
+at full load. A ratio near the slot count means admission-bound; a ratio near 1
+means the bus is already full and more slots only redistribute it.
+
+**Insight 2 — I got this wrong first, in the direction that would have confirmed
+the suggestion.** My initial pass bucketed requests by *observed trace overlap*
+and multiplied per-request throughput by the bucket, showing aggregate still
+climbing to 61 tok/s at conc=10 — apparently strong support for admitting more.
+But herd caps in-flight at 4, and a trace interval spans queue wait as well as
+decode, so most of that "concurrency" was queued requests counted as parallel
+decode. Measuring tokens emitted against wall clock gave 27.1 tok/s and the
+conclusion inverted. **Any concurrency metric derived from overlapping trace
+intervals measures occupancy, not parallelism** — the same trap the `conc=N`
+buckets in the Aug-22 issue fell into, where they turned out to be measuring
+unbounded dispatch rather than managed concurrency.
+
+**What remains, given gpt-oss stays resident:** less work per item. A 4–12B
+distiller would be bandwidth-cheaper, and bandwidth is the binding constraint.
+Nothing in herd's configuration surface moves this.
+
+---
+
 ## 2026-10-03: Measuring yourself, and the value of a prediction that fails
 
 Two results from the same 24 hours, both only possible because something was
