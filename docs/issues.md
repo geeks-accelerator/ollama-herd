@@ -84,7 +84,7 @@ unloaded chat model is still flagged.
 
 ---
 
-### The stale reaper killed the slot of a healthy long-running request `FIXED` (2026-10-06)
+### The stale reaper killed the slot of a healthy long-running request `FIXED` (2026-10-06, completed 2026-10-07)
 
 **Severity:** medium, and rising with load — the trigger is a fixed time limit on
 a system whose decode rate swings 3–10x.
@@ -140,6 +140,42 @@ describes a wedged request, it only describes a slow one on a busy box.
   comment while `ServerSettings.stale_timeout = 600.0` always won, so the constant
   was dead code *and* the comment was wrong by five minutes. Renamed to
   `_STALE_NO_PROGRESS_SECONDS`, aligned at 600, with a test pinning the two equal.
+
+**Incomplete on the first pass — the fix moved the bug instead of removing it
+(2026-10-07).** There were *two* fixed timeouts that release a slot, and I fixed
+only the reaper. The queue worker's belt-and-braces wait was
+`wait_for(released.wait(), timeout=stale_timeout + _REAPER_INTERVAL_SECONDS)` =
+**660 s**, deliberately sized to fire 60 s *after* the reaper so the reaper always
+acted first and the worker's path stayed dead code. Its own comment said so:
+"this only fires if the reaper isn't running."
+
+Making the reaper correctly decline to fire **promoted that dead code to the
+thing that fires.** Within a day of deploying the reaper fix:
+
+```
+10-06 20:31:48  Enqueued 4cee7305
+10-06 20:42:48  WARNING  worker 3: 4cee7305 never left the queue — releasing the slot
+10-06 20:44:20  Completed 4cee7305 in 751.6s (completion=6557)
+
+10-07 02:31:41  Enqueued 0f79d0ec
+10-07 02:42:41  WARNING  worker 1: 0f79d0ec never left the queue — releasing the slot
+10-07 02:46:48  Completed 0f79d0ec in 907.6s (completion=12809)
+```
+
+Identical defect, 60 seconds later. Both warnings appeared *only after* the
+reaper fix deployed at 06:58 on 10-06, which is what identified the cause: before
+it, the reaper fired first at 600 s and this path never ran.
+
+The worker now wakes on the reaper's cadence and gives up only when the entry has
+produced nothing for `stale_timeout`, with the same `last_progress_at or
+started_at` fallback. A test asserts **no path offsets the shared threshold**
+(`"_stale_timeout +" not in src`), because two paths carrying two numbers is what
+let this hide.
+
+**Lesson worth more than the fix:** when a timeout is deliberately ordered behind
+another ("belt and braces", "this only fires if X isn't running"), changing X's
+behaviour activates it. Grep for every path that releases the resource, not just
+the one in the traceback.
 
 Tests pin both directions. A reaper that stops false-positiving by never firing
 would be worse than the bug, so genuine zombies — never produced output, or

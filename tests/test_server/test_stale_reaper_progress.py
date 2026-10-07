@@ -126,3 +126,57 @@ class TestEntryDefaults:
         """None must mean "nothing yet", so age-fallback applies to new entries."""
         e = QueueEntry(request=InferenceRequest(model="m", prompt="p"))
         assert e.last_progress_at is None
+
+
+class TestTheWorkerUsesTheSameRule:
+    """Fixing one timeout and leaving the other just moves the bug.
+
+    The worker's belt-and-braces wait was `stale_timeout + interval`, sized to
+    fire 60 s *after* the reaper so the reaper always acted first and this path
+    stayed dead code. Making the reaper progress-aware removed its false
+    positives and promoted this one: on 2026-10-06 20:42 and 2026-10-07 02:42 it
+    released the slots of two requests still mid-stream, which went on to return
+    6,557 and 12,809 tokens. Both warnings appeared only *after* the reaper fix
+    deployed, which is how it was caught.
+    """
+
+    def test_the_worker_no_longer_waits_a_single_fixed_timeout(self):
+        import pathlib as _p
+
+        src = _p.Path("src/fleet_manager/server/queue_manager.py").read_text()
+        assert "timeout=self._stale_timeout + _REAPER_INTERVAL_SECONDS" not in src, (
+            "a fixed worker timeout re-creates the bug the reaper fix removed"
+        )
+
+    def test_the_worker_checks_progress_before_releasing(self):
+        import pathlib as _p
+
+        src = _p.Path("src/fleet_manager/server/queue_manager.py").read_text()
+        worker = src[src.index("Belt and braces for a request"):]
+        worker = worker[: worker.index("def mark_completed")]
+        assert "entry.last_progress_at" in worker
+        assert "entry.started_at" in worker, "must fall back to age when nothing produced"
+        assert "idle > self._stale_timeout" in worker
+
+    def test_both_release_paths_share_one_threshold(self):
+        """Two paths with two thresholds is what let this hide for a day.
+
+        Neither may carry its own number.
+        """
+        import pathlib as _p
+
+        src = _p.Path("src/fleet_manager/server/queue_manager.py").read_text()
+        # the reaper's test and the worker's test must both read _stale_timeout
+        assert src.count("self._stale_timeout") >= 2
+        assert "_stale_timeout +" not in src, "no path may offset the shared threshold"
+
+    def test_the_worker_wakes_on_the_reaper_cadence(self):
+        """It polls rather than sleeping through the whole budget, so a long
+        generation is re-checked instead of judged once."""
+        import pathlib as _p
+
+        src = _p.Path("src/fleet_manager/server/queue_manager.py").read_text()
+        worker = src[src.index("Belt and braces for a request"):]
+        worker = worker[: worker.index("def mark_completed")]
+        assert "timeout=_REAPER_INTERVAL_SECONDS" in worker
+        assert "while True" in worker

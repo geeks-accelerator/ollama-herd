@@ -422,17 +422,43 @@ class QueueManager:
             # (~11 min) and the model's queue would freeze.  Found live.
             stream = future = None
 
+            # Belt and braces for a request that never leaves the queue at
+            # all.  This MUST use the same no-progress rule as the reaper.
+            #
+            # It used to be a single `wait_for(..., stale_timeout + interval)`,
+            # sized to fire 60 s *after* the reaper so the reaper would always
+            # act first and this path stayed dead code.  Making the reaper
+            # progress-aware (2026-10-06) removed its false positives and
+            # promoted this one: on 10-06 20:42 and 10-07 02:42 it released the
+            # slots of two requests still mid-stream, which went on to return
+            # 6,557 and 12,809 tokens.  Fixing one timeout and leaving the other
+            # just moved the bug 60 s later.
+            #
+            # So: wake on the reaper's cadence, and only give up when the entry
+            # has produced nothing for `stale_timeout`.  `last_progress_at`
+            # falls back to `started_at`, so a request that never produced
+            # anything is still released on age -- the genuine stuck case.
             try:
-                # Belt and braces: the reaper releases stale entries after
-                # stale_timeout, so this only fires if the reaper isn't running.
-                await asyncio.wait_for(
-                    released.wait(), timeout=self._stale_timeout + _REAPER_INTERVAL_SECONDS
-                )
-            except TimeoutError:
-                logger.warning(
-                    f"Queue {q.node_id}:{q.model} worker {worker_id}: {rid[:8]} never "
-                    f"left the queue — releasing the slot"
-                )
+                while True:
+                    try:
+                        await asyncio.wait_for(
+                            released.wait(), timeout=_REAPER_INTERVAL_SECONDS
+                        )
+                        break
+                    except TimeoutError:
+                        last = (
+                            entry.last_progress_at
+                            or entry.started_at
+                            or time.time()
+                        )
+                        idle = time.time() - last
+                        if idle > self._stale_timeout:
+                            logger.warning(
+                                f"Queue {q.node_id}:{q.model} worker {worker_id}: "
+                                f"{rid[:8]} produced nothing for {int(idle)}s "
+                                f"— releasing the slot"
+                            )
+                            break
             finally:
                 q.slots.pop(rid, None)
 
