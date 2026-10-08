@@ -1250,6 +1250,23 @@ class StreamingProxy:
         ``health_engine._check_num_ctx_override_inert`` turns this into a visible,
         actionable card.
         """
+        # Equal is not inert.  The caller's condition is `override <=
+        # already_loaded_ctx`, which is right for *injection* -- there is no
+        # point sending a value the strip branch would remove -- but at equality
+        # the override is SATISFIED, not deferred.  Warning here told an operator
+        # "cannot apply ... already resident at 32768" about a model resident at
+        # exactly its configured 32768, with remediation steps for a problem that
+        # did not exist, and recorded an `override_inert` event for it.  Fourth
+        # instance of a check firing on correct behaviour in two weeks, after
+        # priority_model_not_loaded, context_waste and the stale reaper.
+        if override > 0 and loaded_ctx == override:
+            logger.debug(
+                "Dynamic num_ctx: %s already resident at its configured %d; "
+                "nothing to inject",
+                model, override,
+            )
+            return
+
         key = (model, loaded_ctx)
         if key in self._inert_override_logged:
             return

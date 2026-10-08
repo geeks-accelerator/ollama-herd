@@ -5,16 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status:** `0.10.1` is the current release on PyPI, git tags and Homebrew (published 2026-10-05). Prior: `0.10.0` (2026-10-03), `0.9.6` (2026-09-29) — desktop and web chat-client compatibility. `0.9.4` (2026-08-29) carried the leaderboard disclosure the site's pseudonymous-listing gate keys on; that listing is live (`docs/plans/pseudonymous-leaderboard.md`).
+> **Release status:** `0.10.2` is the current release on PyPI, git tags and Homebrew (published 2026-10-08). Prior: `0.10.1` (2026-10-05), `0.10.0` (2026-10-03) — desktop and web chat-client compatibility. `0.9.4` (2026-08-29) carried the leaderboard disclosure the site's pseudonymous-listing gate keys on; that listing is live (`docs/plans/pseudonymous-leaderboard.md`).
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-08
+
 ### Fixed
+
+- **`"num_ctx override cannot apply"` no longer warns about overrides that had applied.** The injection gate is `override <= already_loaded_ctx`, correct for deciding whether to inject a value the strip branch would otherwise remove — but it was reused as the *warning* condition, and at equality the override is in effect rather than deferred. It logged WARNING about `gemma3:27b` resident at exactly its configured 32768, with remediation steps for a problem that did not exist, and recorded an `override_inert` event for it. The health check was always right here (`have != want`), which is why the dashboard card and the log disagreed. Real mismatches still warn, with the ratio and the remedy.
 
 - **Both slot-release paths now key on progress, not elapsed time.** The stale reaper's fix (below) was incomplete: the queue worker had its own belt-and-braces timeout of `stale_timeout + reaper_interval` = 660 s, sized to fire *after* the reaper so the reaper always acted first and the worker's path stayed dead code. Making the reaper correctly decline to fire promoted that dead code, and within a day it released the slots of two requests still mid-stream, which went on to return 6,557 and 12,809 tokens. The worker now wakes on the reaper's cadence and gives up only when the entry has produced nothing for `stale_timeout`; a test asserts no path offsets the shared threshold, since two paths with two numbers is what let this hide.
 
 - **The stale in-flight reaper no longer kills healthy long-running requests.** Its only signal was elapsed time, so on 2026-10-06 it declared a request stuck after 645 s — and that request went on to finish normally 75 s later with 9,610 tokens. It released a concurrency slot the request still held (herd briefly ran 5 in-flight against a cap of 4) and recorded `failed=1` for something the trace store calls `completed`. The reaper now keys on **progress**: `QueueEntry.last_progress_at`, stamped by both streaming loops, with a fallback to `started_at` so a request that produced *nothing* is still reaped on age — the genuine zombie the reaper exists for. Reaper events now carry idle time, total age and whether any output was produced, since idle ≈ age and idle << age are different failures. This mattered more as load rose: gpt-oss decode fell 76 → 24 tok/s under saturation, so the same 8,000-token reply went from ~106 s to ~330 s of entirely healthy work, walking toward a fixed 600 s limit. Also removed a drift where `_STALE_IN_FLIGHT_SECONDS = 900` carried a "15 minutes" comment while `ServerSettings.stale_timeout = 600.0` always won.
-
 
 ## [0.10.1] - 2026-10-05
 

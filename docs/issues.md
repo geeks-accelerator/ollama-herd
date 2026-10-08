@@ -84,6 +84,59 @@ unloaded chat model is still flagged.
 
 ---
 
+### "num_ctx override cannot apply" warned about overrides that had applied `FIXED` (2026-10-08)
+
+**Severity:** low, but it is the fourth check in two weeks firing on correct
+behaviour, which is the part worth noting.
+
+```
+Dynamic num_ctx: override num_ctx=32768 for gemma3:27b cannot apply
+  — already resident at 32768. Shrinking would force an unload/reload, so the
+  override is deferred to the next cold load. To apply it now: `ollama stop
+  gemma3:27b` on bb, then send one request through the router.
+```
+
+Resident **equals** configured. The override was satisfied; nothing was deferred;
+there was nothing to do. It logged WARNING anyway, with remediation steps for a
+problem that did not exist, and recorded an `override_inert` event for it.
+
+The cause is a condition that is right for one purpose and reused for another.
+`_apply_context_protection` gates injection on `override <= already_loaded_ctx`,
+which is correct — there is no point injecting a value the strip branch would
+remove. But it then calls `_log_override_inert_once` on that same condition, and
+**equality belongs on the injection side only**: at equality the override is in
+effect, not inert.
+
+`_log_override_inert_once` now returns early (DEBUG, not WARNING) when
+`loaded_ctx == override`. The real mismatch case is untouched and still warns
+with the ratio and the remedy.
+
+**The health check was always correct here** — `_check_num_ctx_override_inert`
+compares `have != want`, so it never flagged equality. Only the log and the event
+were wrong, which is why the dashboard card and the log disagreed.
+
+**A pre-existing test had to change**, and that is worth recording: the dedupe
+test opened with `(32768, 32768)` as its "first" line purely for convenience, so
+it depended on equality warning. It now uses two genuine mismatches (65536 then
+131072) and tests the same thing — relog when the resident context changes —
+without relying on behaviour that was a bug.
+
+**The pattern, four instances in two weeks:**
+
+| check | fired on |
+|---|---|
+| `priority_model_not_loaded` | a correct refusal to preload an embedding model |
+| `context_waste` | a context deliberately pinned by the operator |
+| stale reaper / queue worker | a healthy request that was merely slow |
+| this one | an override that had already applied |
+
+The shared shape is a threshold or condition that encodes an assumption about
+what "wrong" looks like, applied to a state the system reaches legitimately.
+Worth asking of any new check: **what does this fire on when everything is
+working?**
+
+---
+
 ### The stale reaper killed the slot of a healthy long-running request `FIXED` (2026-10-06, completed 2026-10-07)
 
 **Severity:** medium, and rising with load — the trigger is a fixed time limit on

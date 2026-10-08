@@ -128,10 +128,14 @@ class TestInertLogDedupe:
         """
         import logging
 
+        # Both values must be genuine MISMATCHES.  This used to open with
+        # (32768, 32768), which is equality -- and equality is the override
+        # working, so it is now deliberately silent (see TestEqualIsNotInert).
+        # Using it as the "first" line here only ever worked by accident.
         p = self._proxy()
         with caplog.at_level(logging.WARNING):
-            p._log_override_inert_once("gemma3:27b", 32768, 32768, "bb")
-            p._log_override_inert_once("gemma3:27b", 32768, 32768, "bb")   # dupe
+            p._log_override_inert_once("gemma3:27b", 32768, 65536, "bb")
+            p._log_override_inert_once("gemma3:27b", 32768, 65536, "bb")   # dupe
             p._log_override_inert_once("gemma3:27b", 32768, 131072, "bb")  # changed
         msgs = [r.getMessage() for r in caplog.records]
         assert len(msgs) == 2, f"expected 2 distinct lines, got {msgs}"
@@ -203,3 +207,72 @@ class TestRemediationDirection:
                   "request_count": 500}]
         fix = HealthEngine()._check_num_ctx_override_inert(self._nodes(131072), stats)[0].fix
         assert "context_waste" in fix
+
+
+class TestEqualIsNotInert:
+    """A model resident at exactly its configured context is not a problem.
+
+    The injection condition is `override <= already_loaded_ctx`, which is
+    correct for deciding whether to inject -- no point sending a value the strip
+    branch removes -- but it includes equality, and at equality the override is
+    SATISFIED. The log said "cannot apply ... already resident at 32768" about a
+    model resident at exactly its configured 32768, with remediation steps for a
+    problem that did not exist, and recorded an `override_inert` event for it.
+
+    The health check was always right here (`have != want`); only the log and
+    the event were wrong.
+    """
+
+    def _proxy(self, overrides):
+        from types import SimpleNamespace
+
+        from fleet_manager.server.streaming import StreamingProxy
+
+        px = StreamingProxy(
+            SimpleNamespace(
+                dynamic_num_ctx=True,
+                num_ctx_overrides=overrides,
+                max_retries=0,
+                debug_request_bodies=False,
+            )
+        )
+        return px
+
+    def test_no_warning_when_resident_equals_configured(self, caplog):
+        import logging
+
+        px = self._proxy({"gemma3:27b": 32768})
+        with caplog.at_level(logging.WARNING, logger="fleet_manager.server.streaming"):
+            px._log_override_inert_once("gemma3:27b", 32768, 32768, "bb")
+        assert "cannot apply" not in caplog.text, (
+            "equality is the override working, not failing to apply"
+        )
+
+    def test_no_event_recorded_when_resident_equals_configured(self):
+        from fleet_manager.server.streaming import get_context_protection_events
+
+        px = self._proxy({"gemma3:27b": 32768})
+        before = len(get_context_protection_events(hours=24))
+        px._log_override_inert_once("gemma3:27b", 32768, 32768, "bb")
+        assert len(get_context_protection_events(hours=24)) == before, (
+            "an override_inert event for a satisfied override is a false record"
+        )
+
+    def test_a_real_mismatch_still_warns(self, caplog):
+        """The useful case must survive: resident 4x the configured value."""
+        import logging
+
+        px = self._proxy({"gemma3:27b": 32768})
+        with caplog.at_level(logging.WARNING, logger="fleet_manager.server.streaming"):
+            px._log_override_inert_once("gemma3:27b", 32768, 131072, "bb")
+        assert "cannot apply" in caplog.text
+        assert "4.0x the configured context" in caplog.text
+
+    def test_the_health_check_never_flagged_equality(self):
+        """Pin that the check and the log now agree on what "inert" means."""
+        import inspect
+
+        from fleet_manager.server.health_engine import HealthEngine
+
+        src = inspect.getsource(HealthEngine._check_num_ctx_override_inert)
+        assert "have != want" in src
