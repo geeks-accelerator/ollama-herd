@@ -391,12 +391,12 @@ class TestContextProtectionCheck:
         assert len(ctx_recs) == 0
 
     @pytest.mark.asyncio
-    async def test_stripped_events_info(self):
+    async def test_pinned_events_info(self):
         from fleet_manager.server.streaming import _context_protection_events, _record_context_protection
 
         _context_protection_events.clear()
         for _ in range(5):
-            _record_context_protection("stripped", "gpt-oss:120b", "studio", 4096, 32768)
+            _record_context_protection("pinned", "gpt-oss:120b", "studio", 4096, 32768)
 
         engine = HealthEngine()
         node = make_node("studio")
@@ -404,7 +404,28 @@ class TestContextProtectionCheck:
         active = [r for r in report.recommendations if r.check_id == "context_protection_active"]
         assert len(active) == 1
         assert active[0].severity == Severity.INFO
-        assert active[0].data["stripped"] == 5
+        assert active[0].data["pinned"] == 5
+
+        _context_protection_events.clear()
+
+    @pytest.mark.asyncio
+    async def test_counts_pre_rename_stripped_events_too(self):
+        """"stripped" became "pinned" on 2026-10-09; the 24h window spans both.
+
+        Counting only the new name would drop this card to zero for a day after
+        a deploy and read as "context protection stopped working".
+        """
+        from fleet_manager.server.streaming import _context_protection_events, _record_context_protection
+
+        _context_protection_events.clear()
+        for _ in range(3):
+            _record_context_protection("stripped", "gpt-oss:120b", "studio", 4096, 32768)
+        for _ in range(2):
+            _record_context_protection("pinned", "gpt-oss:120b", "studio", 4096, 32768)
+
+        report = await HealthEngine().analyze(FakeRegistry([make_node("studio")]), None)
+        active = [r for r in report.recommendations if r.check_id == "context_protection_active"]
+        assert active[0].data["pinned"] == 5
 
         _context_protection_events.clear()
 

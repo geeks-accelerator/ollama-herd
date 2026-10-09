@@ -382,6 +382,106 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+## 2026-10-09: "Send nothing" is a decision, and it had been quietly reloading models for weeks
+
+**Context.** The `0.10.2` day-after check reported `gemma3:27b` resident at
+131072 against its configured 32768 — a condition herd already names
+(`num_ctx_override_inert`) and documents a fix for. The fix worked. Then it
+undid itself while I was still watching.
+
+**Evidence.** With `OLLAMA_CONTEXT_LENGTH=131072`, reproducible in two requests:
+
+| step | action | result |
+|------|--------|--------|
+| 1 | `ollama stop gemma3:27b`, one request via `:11435` | `-c 131072 -np 4` = **32768**/slot — the override applied |
+| 2 | one more request via `:11435` | `-c 524288 -np 4` = **131072**/slot — reverted, and `gpt-oss:120b` evicted |
+
+Step 2 is the whole finding. Once the model was resident at exactly its
+configured context, herd's injection branch correctly concluded there was
+nothing to inject, and the request went to Ollama with no `num_ctx` field.
+Ollama does not read that as "keep what you have" — it fills the field from
+`OLLAMA_CONTEXT_LENGTH` and reloads the model when the result differs from what
+is resident. **The branch written to avoid a reload was the one causing it.**
+
+**Insight.** Omitting a parameter is not the absence of a decision; it delegates
+the decision to whoever fills the default. Every layer here was individually
+correct — inject only when it would change something, strip what the backend
+would ignore, don't force a shrink onto a hot model — and the composition was a
+loop that could not hold a setting for two requests.
+
+**What makes this worth recording is that it had already been caught.** The
+2026-09-29 investigation captured request bodies and measured that **199 of 203**
+gemma3 requests reached Ollama with no `num_ctx`. That is the entire mechanism,
+measured, written down. It was then framed as a trade — "enforce the override and
+pay a multi-minute reload, or accept a larger context and pay only KV" — and
+closed as *do not enforce*, with the fix applied to the reporting. The trade was
+not real. The fleet was already paying a reload on every residency flip, and
+running the wrong context as well. A correct measurement reached the wrong
+conclusion because the model of what absence means was never stated as an
+assumption, so it was never tested.
+
+The fix is not to force the override: sending the **resident** value pins the
+model where it is, cannot trigger a reload (it is the value Ollama is already
+running), and leaves the "never shrink a hot model" rule intact. Verified over
+five requests including ones sending `num_ctx=1024` and `num_ctx=8192`; for the
+first time both models held their configured contexts at once.
+
+**Generalization for this fleet:** a parameter herd declines to send still has a
+value by the time it reaches a backend. The question is never "should we send
+this?" but "what happens if we don't?" — and on this box the answer was in
+`launchctl getenv OLLAMA_CONTEXT_LENGTH` the whole time.
+
+---
+
+## 2026-10-09: A check invented 12 GB by guessing a number the node was already reporting
+
+**Context.** The same day-after check surfaced `kv_cache_bloat`: ~12 GB of KV
+cache overhead on `bb`, with the fix "set `OLLAMA_NUM_PARALLEL=2`". That advice
+was suspect on its face — the 2026-10-05 measurement says this box is
+bandwidth-bound, so lowering parallelism trades TTFT for little — which is what
+prompted looking at how the number was produced.
+
+**Evidence.** The check estimated weights as `parameter_count x 0.5 bytes`:
+
+| model | guessed weights | **reported on-disk** | resident | ratio vs guess | ratio vs real |
+|-------|----------------|---------------------|----------|----------------|---------------|
+| `gemma3:27b` | 13.7 GB | **17.4 GB** | 24.2 GB | 1.77x → fires | 1.39x → silent |
+| `gpt-oss:120b` | 58.4 GB | **65.4 GB** | 66.4 GB | 1.14x | 1.02x |
+
+`0.5 bytes/param` is Q4_0. gemma3 is Q4_K_M at ~0.64, so 3.7 GB of *weights*
+were counted as KV cache and carried a 1.39x model over the 1.5x threshold. The
+node reports true per-model on-disk size in `models_available_sizes`, straight
+from `/api/tags`, and has since the preloader needed it. The check never read it.
+
+**Then the replacement prediction failed too, usefully.** Having attributed the
+bloat to the un-applied context override, the rewritten check predicted ~6.4 GB
+would return once the override applied. Measured: resident size went 22.2 GB →
+**24.2 GB**. It did not move. `ollama show` explains it —
+`gemma3.attention.sliding_window = 1024` across 62 blocks, so most layers cap
+their KV at the local window and never scale with context at all; only the global
+layers do.
+
+**Insight.** Two different ways to be wrong, one shape. `context x parallel`
+*bounds* KV and does not predict it, and `params x bytes` *approximates* weights
+that are already measured upstream. A check that derives a quantity the system
+already reports will drift from reality and sound authoritative while doing it —
+the card named a model, a GB figure and a remediation, all three wrong, for an
+unknown number of weeks.
+
+So the question to ask of a new check is not only the one from 2026-10-08 — what
+does it fire on when everything is working — but also: **is it computing
+something it could instead be told?** And when it must estimate, bias the
+estimate in the direction that loses sensitivity rather than the direction that
+invents findings.
+
+The GB figure is now `recoverable_gb_max`, worded "at most ~N GB, and possibly
+none", with the sliding-window measurement pinned in the docstring by a test that
+fails if it is deleted. The check had zero tests while carrying impossible
+arithmetic (a promised `kv / 8` beside a 4 → 2 recommendation that can only halve
+it); it has twelve now.
+
+---
+
 ## 2026-10-05: What two hot models cost each other, and why "raise the concurrency" is the wrong lever
 
 **Prompted by a suggestion** to raise the router's `gemma3:27b` concurrency above

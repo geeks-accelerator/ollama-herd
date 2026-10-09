@@ -430,15 +430,59 @@ class HealthEngine:
                 )
         return recs
 
-    def _check_kv_cache_bloat(self, nodes) -> list[Recommendation]:
-        """Detect OLLAMA_NUM_PARALLEL being too high, causing KV cache bloat.
+    # Parallelism worth recommending as a floor.  Ollama's own default is 1, but
+    # 1 serialises every request for the model, so 2 is the lowest value that
+    # still overlaps decode with the next request's prefill.
+    _KV_TARGET_PARALLELISM = 2
 
-        When OLLAMA_NUM_PARALLEL is high (e.g., 16), each parallel slot
-        pre-allocates KV cache for the full context window. A single model
-        can consume 100+ GB of KV cache on top of its weights, preventing
-        other models from loading. This check compares VRAM used by loaded
-        models against expected weight sizes to detect the bloat.
+    def _check_kv_cache_bloat(self, nodes) -> list[Recommendation]:
+        """VRAM well above model weights -- and *which* of the two causes it is.
+
+        KV cache is ``context x parallel``, so bloat has two independent levers
+        and this check used to name only one: it asserted
+        ``OLLAMA_NUM_PARALLEL`` was too high and told the operator to set it to
+        2 node-wide, whatever the real cause.
+
+        On 2026-10-09 that advice was strictly worse than the available action.
+        ``gemma3:27b`` was bloated because it sat resident at 131072 against its
+        *configured* 32768 -- an un-applied ``FLEET_NUM_CTX_OVERRIDES`` entry,
+        already reported by ``num_ctx_override_inert`` -- so the fix was a
+        single-model reload costing ~8.5 GB -> ~2.1 GB.  Dropping the node's
+        parallelism to 2 instead would have reached ~4.3 GB, slowed every other
+        model on the node, and left the actual misconfiguration in place.
+
+        So attribute per model before advising:
+
+        * resident context above what the operator configured -> the lever is a
+          cold load of that one model; defer to ``num_ctx_override_inert``.
+        * otherwise -> parallelism is the lever, and only when it is actually
+          above the floor.  Lowering it is not free: on a bandwidth-bound box
+          each stream decodes proportionally slower (measured 2026-10-05 --
+          four slots deliver 1.2x of one, not 4x), so the memory is bought with
+          latency, not found.
+        * context as configured and parallelism already at the floor -> the
+          allocation *is* the configuration.  Nothing to recommend here;
+          ``context_waste`` owns whether the configured number is right.
+
+        Savings come from the node's reported parallelism via the shared
+        ``decode_parallelism_for``, not a hardcoded divisor.  The old text
+        promised ``kv / 8`` beside a 4->2 recommendation that can only ever
+        halve it.
+
+        **The GB figure is a ceiling, not a forecast, and it was measured
+        wrong first.**  Applying gemma3:27b's configured 32768 on 2026-10-09
+        was predicted here to return ~6.4 GB.  Resident size went 22.2 GB ->
+        24.2 GB: it did not move.  Gemma 3 reports
+        ``gemma3.attention.sliding_window = 1024`` over 62 blocks, so most
+        layers cap their KV at the local window and never scale with context
+        at all -- only the global layers do.  ``context x parallel`` is
+        therefore an upper bound on KV, exact only for models whose attention
+        is global in every layer.  Do not restore a point estimate here
+        without per-architecture KV math.
         """
+        from fleet_manager.server.serializers import decode_parallelism_for
+
+        overrides = self._operator_num_ctx_overrides()
         recs = []
         for node in nodes:
             if not node.ollama or not node.memory:
@@ -451,24 +495,51 @@ class HealthEngine:
             if total_vram_gb == 0:
                 continue
 
-            # Estimate expected weight sizes from parameter counts
-            # Rough heuristic: parameter_size like "116.8B" at Q4 ≈ 0.5 bytes/param
+            # True on-disk size per model, which the node reports straight from
+            # /api/tags.  The parameter-count heuristic is only the fallback for
+            # agents that don't send it -- see _weight_size_gb for why guessing
+            # low is what manufactured this check's 2026-10-09 finding.
+            disk_sizes = getattr(node.ollama, "models_available_sizes", None) or {}
             total_expected_gb = 0.0
             bloated_models = []
             for m in node.ollama.models_loaded:
-                # Estimate expected size from parameter count
-                expected_gb = self._estimate_weight_size(m.parameter_size)
+                expected_gb = self._weight_size_gb(m, disk_sizes)
                 if expected_gb > 0:
                     overhead_ratio = m.size_gb / expected_gb
                     if overhead_ratio > 1.5:
                         # VRAM is 50%+ more than expected weights = KV cache bloat
-                        bloated_models.append({
-                            "name": m.name,
-                            "vram_gb": round(m.size_gb, 1),
-                            "expected_gb": round(expected_gb, 1),
-                            "overhead_pct": round((overhead_ratio - 1) * 100),
-                            "context_length": m.context_length,
-                        })
+                        resident_ctx = m.context_length or 0
+                        configured_ctx = overrides.get(m.name, 0)
+                        parallelism = decode_parallelism_for(node, m.name)
+                        # This model's own overhead, so a ceiling can be
+                        # attributed to the model whose lever would move it.
+                        model_kv_gb = max(m.size_gb - expected_gb, 0.0)
+                        if configured_ctx > 0 and resident_ctx > configured_ctx:
+                            cause = "inert_override"
+                            ceiling_gb = model_kv_gb * (1 - configured_ctx / resident_ctx)
+                        elif parallelism > self._KV_TARGET_PARALLELISM:
+                            cause = "parallelism"
+                            ceiling_gb = model_kv_gb * (
+                                1 - self._KV_TARGET_PARALLELISM / parallelism
+                            )
+                        else:
+                            cause = "as_configured"
+                            ceiling_gb = 0.0
+                        bloated_models.append(
+                            {
+                                "name": m.name,
+                                "vram_gb": round(m.size_gb, 1),
+                                "expected_gb": round(expected_gb, 1),
+                                "overhead_pct": round((overhead_ratio - 1) * 100),
+                                "context_length": resident_ctx,
+                                "configured_context": configured_ctx or None,
+                                "num_parallel": parallelism,
+                                "cause": cause,
+                                # Ceiling, never a forecast -- a 4x context
+                                # cut on gemma3:27b moved nothing.
+                                "recoverable_gb_max": round(ceiling_gb, 1),
+                            }
+                        )
                     total_expected_gb += expected_gb
 
             if not bloated_models:
@@ -478,11 +549,11 @@ class HealthEngine:
             kv_cache_gb = total_vram_gb - total_expected_gb
             kv_pct = (kv_cache_gb / total_vram_gb) * 100 if total_vram_gb > 0 else 0
 
-            model_lines = ", ".join(
-                f"{m['name']} ({m['vram_gb']}GB VRAM, ~{m['expected_gb']}GB "
-                f"weights, {m['overhead_pct']}% overhead, ctx={m['context_length']})"
-                for m in bloated_models
-            )
+            inert = [m for m in bloated_models if m["cause"] == "inert_override"]
+            parallel_driven = [m for m in bloated_models if m["cause"] == "parallelism"]
+            ceiling_gb = sum(m["recoverable_gb_max"] for m in bloated_models)
+
+            model_lines = ", ".join(self._describe_bloated_model(m) for m in bloated_models)
 
             # Severity: WARNING if KV cache > 30% of VRAM, CRITICAL if >50%
             severity = Severity.INFO
@@ -490,43 +561,145 @@ class HealthEngine:
                 severity = Severity.CRITICAL
             elif kv_pct > 30:
                 severity = Severity.WARNING
+            # Nothing is actionable when every bloated model is holding exactly
+            # the context it was configured for at the floor parallelism -- the
+            # allocation is the configuration, and a standing WARNING with no
+            # available action is how a board stops being read.
+            if not inert and not parallel_driven:
+                severity = Severity.INFO
+
+            causes = []
+            if inert:
+                causes.append(
+                    f"{len(inert)} resident above the context configured in "
+                    f"FLEET_NUM_CTX_OVERRIDES (an override only applies on a "
+                    f"cold load, so these keep what they were loaded with)"
+                )
+            if parallel_driven:
+                causes.append(
+                    f"{len(parallel_driven)} holding "
+                    f"{self._KV_TARGET_PARALLELISM}+ extra slots of their "
+                    f"configured context via OLLAMA_NUM_PARALLEL"
+                )
+            if not causes:
+                causes.append(
+                    "every model is holding exactly the context it was "
+                    "configured for, at the lowest useful parallelism — this "
+                    "allocation IS the configuration"
+                )
+
+            fixes = []
+            if inert:
+                fixes.append(
+                    "Apply the configured context: "
+                    + "; ".join(f"`ollama stop {m['name']}`" for m in inert)
+                    + ", then send one request per model through the "
+                    "router (:11435), which injects num_ctx on the cold load. "
+                    "Per-model and reversible — see "
+                    "num_ctx_override_inert, which owns this condition. "
+                    "Verify with the launch args, not `ollama ps`: "
+                    "ps -Ao args | grep llama-server | "
+                    "grep -oE '-c [0-9]+ -np [0-9]+' (per-slot = -c / -np)."
+                )
+            if parallel_driven:
+                np_now = max(m["num_parallel"] for m in parallel_driven)
+                fixes.append(
+                    f"Or lower parallelism on {node.node_id} from {np_now} to "
+                    f"{self._KV_TARGET_PARALLELISM}: "
+                    f"`launchctl setenv OLLAMA_NUM_PARALLEL "
+                    f"{self._KV_TARGET_PARALLELISM}` (macOS), "
+                    f"`sudo systemctl edit ollama` and add Environment= "
+                    f"(Linux), or the system environment variable (Windows), "
+                    f"then restart Ollama. This is node-wide and not free: it "
+                    f"raises per-request TTFT for every model here, and on a "
+                    f"bandwidth-bound box buys less throughput than the slot "
+                    f"count suggests (measured 2026-10-05: four slots deliver "
+                    f"1.2x of one). Prefer the per-model reload above when it "
+                    f"is available."
+                )
+            if not fixes:
+                fixes.append(
+                    "No action needed for the parallelism — it is already at "
+                    f"{self._KV_TARGET_PARALLELISM} or below. Whether the "
+                    "configured context itself is larger than needed is "
+                    "context_waste's question, and shrinking it trades "
+                    "prefix-cache residency for memory."
+                )
 
             recs.append(
                 Recommendation(
                     check_id="kv_cache_bloat",
                     severity=severity,
-                    title=(
-                        f"KV cache bloat on {node.node_id}: "
-                        f"~{kv_cache_gb:.0f} GB overhead"
-                    ),
+                    title=(f"KV cache bloat on {node.node_id}: ~{kv_cache_gb:.0f} GB overhead"),
                     description=(
                         f"Loaded models use {total_vram_gb:.1f} GB VRAM but only "
                         f"~{total_expected_gb:.0f} GB is model weights. "
                         f"The remaining ~{kv_cache_gb:.0f} GB ({kv_pct:.0f}%) is "
-                        f"KV cache from OLLAMA_NUM_PARALLEL being too high. "
-                        f"Bloated models: {model_lines}. "
-                        f"This prevents other models from loading."
+                        f"KV cache, which Ollama allocates as context x "
+                        f"OLLAMA_NUM_PARALLEL. Cause here: "
+                        + "; ".join(causes)
+                        + f". Bloated models: {model_lines}. "
+                        + (
+                            f"At most ~{ceiling_gb:.0f} GB of that is "
+                            f"recoverable, and possibly none: context bounds "
+                            f"KV only for layers whose attention is global."
+                            if ceiling_gb >= 0.5
+                            else "Nothing is recoverable without changing the configured context."
+                        )
                     ),
-                    fix=(
-                        f"Set OLLAMA_NUM_PARALLEL=2 on {node.node_id}: "
-                        f"`launchctl setenv OLLAMA_NUM_PARALLEL 2` (macOS), "
-                        f"`sudo systemctl edit ollama` and add Environment= (Linux), "
-                        f"or set system environment variable (Windows), "
-                        f"then restart Ollama. "
-                        f"This reduces KV cache from ~{kv_cache_gb:.0f} GB to "
-                        f"~{kv_cache_gb / 8:.0f} GB, freeing memory for more models."
-                    ),
+                    fix=" ".join(fixes),
                     node_id=node.node_id,
                     data={
                         "total_vram_gb": round(total_vram_gb, 1),
                         "estimated_weights_gb": round(total_expected_gb, 1),
                         "kv_cache_gb": round(kv_cache_gb, 1),
                         "kv_cache_pct": round(kv_pct, 1),
+                        "recoverable_gb_max": round(ceiling_gb, 1),
                         "bloated_models": bloated_models,
                     },
                 )
             )
         return recs
+
+
+    @staticmethod
+    def _weight_size_gb(loaded, disk_sizes: dict[str, float]) -> float:
+        """This model's weights in GB -- reported if possible, guessed if not.
+
+        Ollama reports true on-disk size per model in ``/api/tags`` and the node
+        forwards it as ``models_available_sizes``.  Use it.  The
+        parameter-count heuristic is a fallback for agents that don't send it,
+        and it is biased *low*: 0.5 bytes/param is Q4_0, while Ollama's common
+        default is Q4_K_M at ~0.64.  On 2026-10-09 that bias alone manufactured
+        this check's entire finding -- ``gemma3:27b`` guessed at 13.7 GB
+        against a real 17.4 GB, so 3.7 GB of weights were reported as KV cache
+        and pushed a 1.39x model over the 1.5x bloat threshold.  With the
+        reported size, nothing on the fleet fired.
+
+        Low bias is the dangerous direction here: understating weights invents
+        overhead, while overstating it only costs sensitivity.
+        """
+        reported = disk_sizes.get(loaded.name, 0.0) or 0.0
+        if reported > 0:
+            return float(reported)
+        return HealthEngine._estimate_weight_size(loaded.parameter_size)
+
+    @staticmethod
+    def _describe_bloated_model(m: dict) -> str:
+        """One bloated model, naming the configured context only when it differs.
+
+        Printing "vs configured" on every model would imply a mismatch where
+        there is none -- the common case is a model holding exactly what it was
+        asked to hold.
+        """
+        versus = (
+            f" vs configured {m['configured_context']}" if m["cause"] == "inert_override" else ""
+        )
+        return (
+            f"{m['name']} ({m['vram_gb']}GB VRAM, ~{m['expected_gb']}GB weights, "
+            f"{m['overhead_pct']}% overhead, ctx={m['context_length']}{versus}, "
+            f"np={m['num_parallel']})"
+        )
 
     @staticmethod
     def _estimate_weight_size(parameter_size: str) -> float:
@@ -1204,7 +1377,12 @@ class HealthEngine:
         from collections import Counter
 
         actions = Counter(e["action"] for e in events)
-        stripped = actions.get("stripped", 0)
+        # "pinned" replaced "stripped" on 2026-10-09: the router now sends the
+        # resident context instead of removing num_ctx, because removing it let
+        # OLLAMA_CONTEXT_LENGTH reload the model.  Older events in the 24h
+        # window still carry the old name, so count both rather than showing a
+        # card that drops to zero for a day.
+        pinned = actions.get("pinned", 0) + actions.get("stripped", 0)
         upgraded = actions.get("upgraded", 0)
         warnings = actions.get("warning", 0)
 
@@ -1225,8 +1403,11 @@ class HealthEngine:
                         f"the requested num_ctx, which may trigger Ollama model reloads."
                     ),
                     fix=(
-                        "Load models with larger context windows, or tell clients to "
-                        "omit num_ctx and use the model's default context."
+                        "Load models with larger context windows, or set the model's "
+                        "context in FLEET_NUM_CTX_OVERRIDES. Telling clients to omit "
+                        "num_ctx does NOT avoid a reload — an absent num_ctx is filled "
+                        "in from OLLAMA_CONTEXT_LENGTH, which reloads the model when it "
+                        "differs from the resident context (measured 2026-10-09)."
                     ),
                     data={
                         "warning_count": warnings,
@@ -1235,10 +1416,10 @@ class HealthEngine:
                 )
             )
 
-        if stripped > 0 or upgraded > 0:
+        if pinned > 0 or upgraded > 0:
             parts = []
-            if stripped:
-                parts.append(f"{stripped} had num_ctx stripped")
+            if pinned:
+                parts.append(f"{pinned} had num_ctx pinned to the resident context")
             if upgraded:
                 parts.append(f"{upgraded} were upgraded to a larger model")
             recs.append(
@@ -1252,11 +1433,13 @@ class HealthEngine:
                         f"prevents multi-minute hangs."
                     ),
                     fix=(
-                        "No action needed. To reduce events, tell clients to stop sending "
-                        "num_ctx in requests — the model's default context is usually sufficient."
+                        "No action needed. Note these events do not drop if clients stop "
+                        "sending num_ctx: the router pins the resident context either "
+                        "way, because an absent num_ctx is not neutral — Ollama fills it "
+                        "from OLLAMA_CONTEXT_LENGTH and reloads on a mismatch."
                     ),
                     data={
-                        "stripped": stripped,
+                        "pinned": pinned,
                         "upgraded": upgraded,
                         "warnings": warnings,
                         "total": len(events),

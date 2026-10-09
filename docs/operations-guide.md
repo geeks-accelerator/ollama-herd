@@ -567,13 +567,15 @@ When a client sends `num_ctx` in Ollama request options, Ollama reloads the enti
 
 **Default behavior** (`FLEET_CONTEXT_PROTECTION=strip`):
 
-- **`num_ctx` ≤ loaded context**: Stripped from the request. The model already supports that context window — no resize needed.
-- **`num_ctx` > loaded context**: Router searches for a loaded model with sufficient context and more parameters. If found, auto-switches to it (logged). If not, preserves `num_ctx` with a warning.
+- **`num_ctx` ≤ loaded context**: Replaced with the resident context. The model already supports that window, so the client's smaller value is not honoured — but the field is *not removed*. An absent `num_ctx` is filled in by Ollama from `OLLAMA_CONTEXT_LENGTH`, which reloads the model whenever that differs from what is resident, so removing it caused the reload this branch exists to prevent (measured 2026-10-09).
+- **`num_ctx` absent entirely**: Also set to the resident context, for the same reason. Omitting the field delegates the decision to Ollama's default rather than avoiding one.
+- **`num_ctx` > loaded context**: Router searches for a loaded model with sufficient context and more parameters. If found, auto-switches to it and pins *that* model's resident context (logged). If not, preserves `num_ctx` with a warning.
+- **Resident context unknown** (no heartbeat for that model yet): nothing is asserted, and the request passes through untouched.
 
 Look for `Context protection:` in logs to see when it activates:
 
 ```
-Context protection: stripped num_ctx=4096 for gpt-oss:120b on Neons-Mac-Studio (loaded context=32768)
+Context protection: raised num_ctx=4096 to the resident 32768 for gpt-oss:120b on Neons-Mac-Studio (a smaller value, or none at all, would force a reload)
 Context protection: switched small-model:7b → big-model:70b for num_ctx=65536 on Neons-Mac-Studio (original context=32768)
 ```
 

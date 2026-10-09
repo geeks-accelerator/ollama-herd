@@ -311,6 +311,37 @@ reasoning tokens — verified: `num_predict=24` gave `eval_count=24` with zero
 content), and the 48,000-odd traces that carry `NULL` counts because their route
 never surfaces them (embeddings, MLX). `NULL` is not zero.
 
+## A model keeps coming back at the wrong context
+
+If `FLEET_NUM_CTX_OVERRIDES` sets a model to one value and
+`ps -Ao args | grep llama-server` keeps showing another, the override is being
+reverted rather than never applied. Before 0.10.3 that happened on the request
+*after* a correct cold load, because the request went to Ollama with no
+`num_ctx` field at all and Ollama fills a missing one from
+`OLLAMA_CONTEXT_LENGTH` — reloading the model whenever the two differ, and
+evicting its co-resident peer to make room.
+
+Check the two values against each other:
+
+```bash
+launchctl getenv OLLAMA_CONTEXT_LENGTH          # what Ollama substitutes
+grep NUM_CTX_OVERRIDES ~/.fleet-manager/env     # what herd intends
+ps -Ao args | grep llama-server | grep -oE '\-c [0-9]+ \-np [0-9]+'   # what is running
+```
+
+Since 0.10.3 the router pins the resident context on every request
+(`pinned` protection events, visible on the `context_protection_active` card),
+so a resident model holds its window. It still will not *shrink* a hot model —
+that reload is the multi-minute stall context protection exists to prevent — so
+to change a resident model's context, `ollama stop <model>` and send one request
+through the router.
+
+**Reproducing the old failure** (useful if a similar revert ever appears): stop
+the model, send one request, read the launch args, send one more request, read
+them again. Two requests is all it took.
+
+---
+
 **`num_ctx_unmanaged` — nobody chose this model's window.** herd injects `num_ctx`
 only for models in `FLEET_NUM_CTX_OVERRIDES`; everything else gets Ollama's
 GPU-memory heuristic, which on a node with ≥47 GiB picks 262,144 and ignores

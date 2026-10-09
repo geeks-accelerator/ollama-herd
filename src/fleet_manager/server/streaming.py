@@ -1303,7 +1303,7 @@ class StreamingProxy:
         if override > 0 and loaded_ctx == override:
             logger.debug(
                 "Dynamic num_ctx: %s already resident at its configured %d; "
-                "nothing to inject",
+                "the pin below sends it rather than injecting it here",
                 model, override,
             )
             return
@@ -1332,6 +1332,53 @@ class StreamingProxy:
         _record_context_protection(
             "override_inert", model, node_id, override, loaded_ctx
         )
+
+    def _pin_resident_num_ctx(
+        self, body: dict, model: str, node_id: str, reason: str
+    ) -> int:
+        """Send ``num_ctx`` equal to the context the model is already resident at.
+
+        **An absent ``num_ctx`` is not neutral.**  Ollama fills it in from
+        ``OLLAMA_CONTEXT_LENGTH`` (or, unset, its GPU-memory heuristic), and if
+        that differs from the resident context it unloads and reloads the model
+        -- the multi-minute stall this whole method exists to prevent.  Three
+        places here used to leave the field absent on the belief that absence
+        meant "keep what is loaded".
+
+        Measured on the live fleet 2026-10-09, reproducible in two requests with
+        ``OLLAMA_CONTEXT_LENGTH=131072`` and ``gemma3:27b`` pinned to 32768:
+
+        1. cold load through the router injects 32768 -> ``-c 131072 -np 4``
+           (32768 per slot).  Correct.
+        2. one more request: resident now *equals* the override, so the inject
+           branch declined and sent nothing -> Ollama applied 131072 -> the
+           model reloaded at ``-c 524288 -np 4``, evicting ``gpt-oss:120b``.
+
+        So the override could never hold for more than one request, which is the
+        real reason ``gemma3:27b`` was found at 4x its configured context for
+        days.  CLAUDE.md recorded that as "the override only applies on a cold
+        load and nothing triggers one"; the cold load was in fact happening and
+        being reverted immediately.
+
+        Sending the resident value is strictly safer than omitting it: it is the
+        value Ollama is already running, so its scheduler reuses the runner
+        instead of reloading.  Returns the pinned value, or 0 when the resident
+        context is unknown (no heartbeat yet) and nothing can be asserted.
+        """
+        resident = self._get_loaded_context(model, node_id)
+        if resident <= 0:
+            return 0
+        options = body.setdefault("options", {})
+        if options.get("num_ctx") == resident:
+            return resident
+        options["num_ctx"] = resident
+        logger.info(
+            f"Context protection: pinned num_ctx={resident} for {model} on "
+            f"{node_id} ({reason}) — an absent num_ctx would let Ollama apply "
+            f"its own default and reload the model"
+        )
+        _record_context_protection("pinned", model, node_id, resident, resident)
+        return resident
 
     def _apply_context_protection(self, body: dict, model: str, node_id: str) -> None:
         """Strip or warn about num_ctx values that would trigger Ollama model reloads.
@@ -1380,6 +1427,11 @@ class StreamingProxy:
 
         options = body.get("options")
         if not options or "num_ctx" not in options:
+            # No num_ctx to protect -- but absence is not a no-op, so pin the
+            # model where it is rather than letting Ollama's default decide.
+            # Covers both the no-override case and an override already
+            # satisfied by the resident context.
+            self._pin_resident_num_ctx(body, model, node_id, "client sent none")
             return
 
         client_num_ctx = options["num_ctx"]
@@ -1390,15 +1442,18 @@ class StreamingProxy:
 
         if client_num_ctx <= loaded_ctx:
             if mode == "strip":
-                del options["num_ctx"]
-                # Clean up empty options dict
-                if not options:
-                    body.pop("options", None)
+                # Replace, don't remove.  Removing it hands the decision to
+                # OLLAMA_CONTEXT_LENGTH, which reloads the model when it
+                # differs from the resident context -- the exact reload this
+                # branch exists to avoid.  The client's smaller request is
+                # still not honoured; it just gets the resident window.
+                options["num_ctx"] = loaded_ctx
                 logger.info(
-                    f"Context protection: stripped num_ctx={client_num_ctx} for {model} on "
-                    f"{node_id} (loaded context={loaded_ctx})"
+                    f"Context protection: raised num_ctx={client_num_ctx} to the "
+                    f"resident {loaded_ctx} for {model} on {node_id} "
+                    f"(a smaller value, or none at all, would force a reload)"
                 )
-                _record_context_protection("stripped", model, node_id, client_num_ctx, loaded_ctx)
+                _record_context_protection("pinned", model, node_id, client_num_ctx, loaded_ctx)
             else:
                 logger.warning(
                     f"Context protection: client sent num_ctx={client_num_ctx} for {model} on "
@@ -1411,9 +1466,16 @@ class StreamingProxy:
                 upgrade = self._find_context_upgrade(model, client_num_ctx, node_id)
                 if upgrade:
                     body["model"] = upgrade
-                    del options["num_ctx"]
-                    if not options:
-                        body.pop("options", None)
+                    # Pin the *upgrade's* resident context, for the same reason:
+                    # removing num_ctx would let Ollama's default reload the
+                    # model we just switched to.
+                    upgrade_ctx = self._get_loaded_context(upgrade, node_id)
+                    if upgrade_ctx > 0:
+                        options["num_ctx"] = upgrade_ctx
+                    else:
+                        del options["num_ctx"]
+                        if not options:
+                            body.pop("options", None)
                     logger.info(
                         f"Context protection: switched {model} → {upgrade} for "
                         f"num_ctx={client_num_ctx} on {node_id} (original context={loaded_ctx})"

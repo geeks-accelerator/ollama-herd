@@ -147,8 +147,14 @@ class TestBuildOllamaBody:
 class TestContextProtection:
     """Tests for context-size protection that prevents Ollama model reloads."""
 
-    def test_strips_small_num_ctx(self):
-        """num_ctx smaller than loaded context should be stripped to prevent reload."""
+    def test_small_num_ctx_is_raised_to_the_resident_context(self):
+        """A num_ctx below the resident context is replaced, not removed.
+
+        Removing it was the bug: an absent num_ctx is filled in by Ollama from
+        OLLAMA_CONTEXT_LENGTH, which reloads the model whenever that differs
+        from what is resident -- the reload this branch exists to prevent.
+        Measured 2026-10-09; see StreamingProxy._pin_resident_num_ctx.
+        """
         proxy = _make_proxy_with_loaded_model(context_length=32768, context_protection="strip")
         req = InferenceRequest(
             model="gpt-oss:120b",
@@ -161,11 +167,10 @@ class TestContextProtection:
             },
         )
         body = proxy._build_ollama_body(req, "test-node")
-        # num_ctx should be stripped — the model already has 32768 context
-        assert "options" not in body or "num_ctx" not in body.get("options", {})
+        assert body["options"]["num_ctx"] == 32768
 
-    def test_strips_equal_num_ctx(self):
-        """num_ctx equal to loaded context should also be stripped (no resize needed)."""
+    def test_equal_num_ctx_is_kept_not_removed(self):
+        """Equal is the case that must survive: it is already a no-op for Ollama."""
         proxy = _make_proxy_with_loaded_model(context_length=32768, context_protection="strip")
         req = InferenceRequest(
             model="gpt-oss:120b",
@@ -178,16 +183,19 @@ class TestContextProtection:
             },
         )
         body = proxy._build_ollama_body(req, "test-node")
-        assert "num_ctx" not in body.get("options", {})
+        assert body["options"]["num_ctx"] == 32768
         # Other options should be preserved
         assert body["options"]["temperature"] == 0.5
 
-    def test_inert_override_is_not_injected(self, caplog):
-        """A num_ctx override below the loaded context can't apply — Ollama would
-        have to unload and reload. Don't inject a value the strip branch is
-        guaranteed to remove; that produced 393 injected/393 stripped log pairs
-        in 9 hours and made a dead knob look active.
-        See docs/plans/codex-code-mode-escalation.md (soak findings)."""
+    def test_inert_override_pins_the_resident_context(self, caplog):
+        """An override below the resident context still must not leave num_ctx absent.
+
+        The override itself cannot apply -- shrinking a resident model means an
+        unload/reload -- so it is not injected, and that part is unchanged.
+        What changed on 2026-10-09 is that the request no longer goes out with
+        num_ctx missing: that let OLLAMA_CONTEXT_LENGTH decide and reloaded the
+        model anyway.  The resident value is sent instead.
+        """
         proxy = _make_proxy_with_loaded_model(context_length=262144, context_protection="strip")
         proxy._settings.dynamic_num_ctx = True
         proxy._settings.num_ctx_overrides = {"gpt-oss:120b": 32768}
@@ -199,7 +207,8 @@ class TestContextProtection:
         )
         with caplog.at_level(logging.WARNING):
             body = proxy._build_ollama_body(req, "test-node")
-        assert "num_ctx" not in body.get("options", {})
+        # The override (32768) is NOT applied; the resident context is sent.
+        assert body["options"]["num_ctx"] == 262144
         assert "cannot apply" in caplog.text
         assert "injected" not in caplog.text
 
@@ -277,8 +286,15 @@ class TestContextProtection:
         assert body["options"]["num_ctx"] == 4096
         assert "would trigger reload" in caplog.text
 
-    def test_no_num_ctx_unchanged(self):
-        """Requests without num_ctx should pass through unchanged."""
+    def test_no_num_ctx_gets_the_resident_context(self):
+        """A request that omits num_ctx is NOT passed through untouched.
+
+        This is the heart of the 2026-10-09 bug: "send nothing" reads as
+        neutral and is not.  Ollama fills an absent num_ctx from
+        OLLAMA_CONTEXT_LENGTH and reloads the model when the two differ, so
+        herd pins the resident context explicitly.  Other options are
+        untouched.
+        """
         proxy = _make_proxy_with_loaded_model(context_length=32768, context_protection="strip")
         req = InferenceRequest(
             model="gpt-oss:120b",
@@ -292,7 +308,7 @@ class TestContextProtection:
         )
         body = proxy._build_ollama_body(req, "test-node")
         assert body["options"]["temperature"] == 0.5
-        assert "num_ctx" not in body["options"]
+        assert body["options"]["num_ctx"] == 32768
 
     def test_unknown_model_passthrough(self):
         """If model isn't in loaded list, num_ctx should pass through."""
@@ -358,8 +374,9 @@ class TestContextProtection:
 
         # Should switch to big-model:70b which has 131072 context
         assert body["model"] == "big-model:70b"
-        # num_ctx should be stripped since the upgrade model has enough context
-        assert "options" not in body or "num_ctx" not in body.get("options", {})
+        # num_ctx becomes the UPGRADE's resident context, not absent: removing
+        # it would let Ollama's default reload the model just switched to.
+        assert body["options"]["num_ctx"] == 131072
         assert "switched small-model:7b → big-model:70b" in caplog.text
 
     def test_context_upgrade_no_suitable_model(self, caplog):

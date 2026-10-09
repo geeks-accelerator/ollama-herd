@@ -64,7 +64,7 @@ uv run herd-node --router-url http://localhost:11435  # explicit URL
 
 ```bash
 uv sync --extra dev
-uv run pytest                          # 1773 tests, ~15s
+uv run pytest                          # 1804 tests, ~15s
 uv run pytest tests/test_server/       # server tests only
 uv run pytest tests/test_node/         # node agent tests only
 uv run pytest -k "test_scorer"         # single test module

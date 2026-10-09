@@ -123,6 +123,119 @@ which on this fleet is 4x.
 
 ---
 
+### An absent `num_ctx` is not neutral, so the override could never survive one request `FIXED` (2026-10-09)
+
+**Severity:** HIGH — a per-model context setting had no lasting effect, and the
+mechanism was a model reload on an arbitrary request.
+
+Found while acting on the `0.10.2` day-after check, which reported `gemma3:27b`
+resident at 131072 against its configured 32768. Applying the documented fix
+(`ollama stop`, then one request through the router) worked, and then **reverted
+within two requests**. Reproduced deliberately, with `OLLAMA_CONTEXT_LENGTH=131072`:
+
+```
+ollama stop gemma3:27b; <one request via :11435>   ->  -c 131072 -np 4   (32768/slot)  correct
+<one more request via :11435>                      ->  -c 524288 -np 4  (131072/slot)  reverted
+```
+
+The second request also evicted `gpt-oss:120b`.
+
+**Root cause.** Three paths in `_apply_context_protection` left `num_ctx` absent
+on the belief that absence means "keep what is loaded". It does not: Ollama fills
+a missing `num_ctx` from `OLLAMA_CONTEXT_LENGTH`, or from its GPU-memory
+heuristic when that is unset, and **reloads the model when the result differs
+from the resident context**. So the branch written to avoid a reload was causing
+one.
+
+1. Injection skipped when `override <= already_loaded_ctx` — at equality the
+   model is exactly where it should be, and the request went out bare.
+2. The strip branch deleted any `num_ctx <= loaded_ctx`.
+3. The model-upgrade branch deleted `num_ctx` after switching models.
+
+**This revises the 2026-09-29 entry below, which found the right evidence and
+drew the wrong conclusion.** That investigation captured request bodies and
+measured that 199 of 203 gemma3 requests reached Ollama with no `num_ctx` — the
+decisive measurement — then framed the choice as "enforce the override and pay a
+reload, or accept a larger context". It recorded "do not enforce it" and fixed
+only the reporting. But absence was never the no-reload option: the fleet was
+already paying a reload on every residency flip *and* running the wrong context.
+There was no trade to accept.
+
+**Fix.** `StreamingProxy._pin_resident_num_ctx` — when the resident context is
+known, send it. Sending the resident value cannot trigger a reload, because it
+is the value Ollama is already running, so its scheduler reuses the runner. The
+override is still **not** forced onto a resident model (shrinking still means an
+unload/reload, and that part of the earlier decision stands); what changed is
+that the request now pins the model where it is instead of letting
+`OLLAMA_CONTEXT_LENGTH` decide. All three paths route through the one helper.
+`passthrough` mode is untouched, and an unknown resident context asserts nothing.
+
+**Verified live.** Five consecutive requests, including ones sending
+`num_ctx=1024` and `num_ctx=8192`, left gemma3 at 32768/slot, and for the first
+time both models held their configured contexts simultaneously
+(`gpt-oss:120b` 131072, `gemma3:27b` 32768). `num_ctx_override_inert` cleared.
+
+The `stripped` protection event is now `pinned`; `_check_context_protection`
+counts both so the card does not read as zero for a day after a deploy.
+
+Covered by `tests/test_server/test_num_ctx_absence_is_not_neutral.py`, whose
+central test is parametrized over all five ways a request can arrive without a
+usable `num_ctx`. Six existing tests asserted the old behaviour by name
+(`test_strips_small_num_ctx`, `test_no_num_ctx_unchanged`, ...) and were rewritten
+— a reminder that a test named after a mechanism will outlive the reasoning for it.
+
+---
+
+### `kv_cache_bloat` invented 12 GB of KV cache by guessing weights it was told `FIXED` (2026-10-09)
+
+**Severity:** MEDIUM — a standing INFO card with remediation that was strictly
+worse than the available action.
+
+The check compared resident VRAM against weights estimated from the parameter
+count at 0.5 bytes/param, then attributed the whole difference to KV cache and
+prescribed `OLLAMA_NUM_PARALLEL=2` node-wide.
+
+Three defects, in increasing order of consequence:
+
+1. **The savings arithmetic was impossible.** It promised `kv / 8` beside a 4 → 2
+   recommendation, which can only ever halve it.
+2. **It asserted one cause.** KV is `context x parallel`. On 2026-10-09 the real
+   driver for `gemma3:27b` was an un-applied context override, so the correct fix
+   was a single-model reload (~8.5 → ~2.1 GB, nothing else affected) while the
+   advice given — node-wide parallelism — would have reached ~4.3 GB and slowed
+   every co-resident model on a box measured to be bandwidth-bound.
+3. **The bloat was not real.** `0.5 bytes/param` is Q4_0; Ollama's common default
+   is Q4_K_M at ~0.64. `gemma3:27b` was guessed at 13.7 GB against a true 17.4 GB,
+   so 3.7 GB of *weights* were counted as KV cache and pushed a 1.39x model over
+   the 1.5x threshold. The node already reports true on-disk size per model in
+   `models_available_sizes`, straight from `/api/tags`. With it, nothing on the
+   fleet fires.
+
+Understating weights invents overhead; overstating only costs sensitivity, so the
+fallback heuristic is the dangerous direction and is now only a fallback.
+
+**The GB figure is now a ceiling, not a forecast — because the forecast was
+measured wrong.** Applying gemma3's configured 32768 was predicted here to return
+~6.4 GB. Resident size went 22.2 → 24.2 GB: it did not move. Gemma 3 reports
+`gemma3.attention.sliding_window = 1024` across 62 blocks, so most layers cap
+their KV at the local window and never scale with context at all. `context x
+parallel` bounds KV; it does not predict it.
+
+The check had **zero tests** when it carried all three defects. It now has
+`tests/test_server/test_kv_cache_bloat_attribution.py`, including one that
+reproduces the exact false positive from the parameter-count path and one that
+fails if the sliding-window counter-evidence is deleted from the docstring.
+
+**Fifth and sixth instances of a check firing on correct behaviour** in two
+weeks, after `priority_model_not_loaded`, `context_waste`, the stale reaper and
+the `num_ctx` equality warning. The recurring shape: a condition that encodes an
+assumption about what "wrong" looks like, meeting a state the system reaches
+legitimately. The new question to ask of a check is not only what it fires on
+when everything is working, but **whether its own measurement is something the
+system already reports.**
+
+---
+
 ### herd cannot see a truncated prompt, an unmanaged window, or a failed load `FIXED` (2026-10-09, one step deferred)
 
 **Severity:** medium — four invisible conditions, none of them currently failing, all
@@ -427,6 +540,34 @@ is visible before changing anything.
 
 ---
 
+### Three health-engine tests fail when `test_streaming.py` runs first `OPEN`
+
+**Severity:** LOW (test-only) — but it is the kind that hides a real regression.
+
+`_context_protection_events` in `streaming.py` is a module-global list, and
+`test_streaming.py` records into it without clearing. Run the two modules in that
+order and three tests in `test_health_engine.py` fail on leaked events:
+
+```bash
+uv run pytest tests/test_server/test_streaming.py tests/test_server/test_health_engine.py -q
+# -> test_healthy_fleet_no_recommendations, test_empty_fleet,
+#    test_no_events_no_recommendation
+```
+
+Each passes alone, and the full suite passes because of the order pytest happens
+to pick. Confirmed pre-existing: reproduced on unmodified `main` via
+`git stash`, while investigating the 2026-10-09 `num_ctx` fix — the failures
+appeared mid-investigation and looked for a moment like my own breakage, which is
+the actual cost of this one.
+
+**Proposed fix:** an autouse fixture in `tests/conftest.py` that clears
+`_context_protection_events` around every test, rather than the current
+pattern of individual tests clearing it at both ends and the rest not at all.
+Same hazard class as the CLI env-file import issue above: suite-order-dependent
+state that makes an unrelated change look guilty.
+
+---
+
 ### Importing a CLI module injects the operator's env file into the process `OPEN`
 
 **Severity:** medium — latent, but it fails in the direction that is hardest to
@@ -728,7 +869,17 @@ accurate.
 ---
 
 
-### A `num_ctx` override that can never apply is visible, and deliberately not enforced `FIXED` (2026-09-29)
+### A `num_ctx` override that can never apply is visible, and deliberately not enforced `FIXED` (2026-09-29) `SUPERSEDED` (2026-10-09)
+
+> **Read the 2026-10-09 entry above first.** The measurement in this entry — 199
+> of 203 requests reaching Ollama with no `num_ctx` — was correct and decisive.
+> The conclusion drawn from it was not: this entry treats an absent `num_ctx` as
+> the option that avoids a reload, and it is the option that *causes* one, because
+> Ollama fills the gap from `OLLAMA_CONTEXT_LENGTH`. The "accept a larger context
+> to avoid a multi-minute stall" trade described below did not exist. Kept intact
+> because the evidence-gathering and the still-valid part of the decision (never
+> force a *shrink* onto a resident model) are both worth preserving.
+
 
 **Severity:** medium — silently wastes KV memory and defeats `FLEET_NUM_CTX_OVERRIDES`.
 
