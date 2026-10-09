@@ -84,6 +84,49 @@ unloaded chat model is still flagged.
 
 ---
 
+### herd cannot see a truncated prompt, an unmanaged window, or a failed load `OPEN`
+
+**Severity:** medium — four invisible conditions, none of them currently failing, all
+of which have precedent on this fleet or an adjacent one.
+
+Raised by a field report from an unrelated project whose provider layer lost control
+of the context window by talking to Ollama over `/v1`, where an OpenAI-format request
+has **no field for the window** so the server's own applies. Their harness sized
+prompts for 32k, got Ollama's 4k GPU-memory default, and silently truncated prompts
+while exiting 0 and printing `input truncation: NOT CHECKED`.
+
+**That root cause does not apply to herd** — it calls `/api/chat` and `/api/generate`,
+never `/v1`, so it has a `num_ctx` field and uses it. herd is their recommended fix
+already implemented. But four adjacent gaps are real:
+
+1. **No truncation detection.** Nothing compares recorded `prompt_tokens` against what
+   was sent. The 2026-10-02 verification that `prompt_eval_count` is the *full* prompt
+   length is what makes the comparison possible.
+2. **21 of 30 models on this node have no `FLEET_NUM_CTX_OVERRIDES` entry**, so
+   Ollama's GPU-memory heuristic decides their window — and on a ≥47 GiB box that is
+   the ollama#14116 trap (`defaultNumCtx = 262144`, no `numParallel` term, so
+   `-c 1048576`). Their report shows the small-window failure; this is the large-window
+   one.
+3. **`completion_tokens == 0` with a 200 is recorded as `completed`.** Their report hit
+   exactly this — a failed model load read as a refusal and "pointed in the wrong
+   direction." Precedent here: the 2026-09-22 model-load deadlock.
+4. **The MLX path genuinely is in their situation** — `mlx_lm.server` is OpenAI-native
+   and its window is fixed at launch, so herd cannot set it per request and cannot ask
+   what it is. The wall-clock 413 is a symptom-side guard, not a window.
+
+Also found: **seven separate `len(text) // 4` token estimators** across six files, plus
+a tiktoken-backed one. Any truncation check needs an estimate, so this matters — but
+`context_management`'s copy is *deliberately* chars/4 to match the compactor's trigger,
+so unifying them changes compaction behaviour and is not free.
+
+Full analysis, phasing, thresholds and open questions:
+[`docs/plans/context-window-blindness.md`](plans/context-window-blindness.md).
+**Nothing started.** Phases 2 and 3 are the cheap ones; Phase 4 is the one most likely
+to fire on correct behaviour, since thinking models legitimately emit zero *content*
+tokens.
+
+---
+
 ### "num_ctx override cannot apply" warned about overrides that had applied `FIXED` (2026-10-08)
 
 **Severity:** low, but it is the fourth check in two weeks firing on correct
