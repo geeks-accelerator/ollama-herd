@@ -198,6 +198,9 @@ class HealthEngine:
             recommendations.extend(
                 self._check_num_ctx_override_inert(nodes, prompt_stats)
             )
+            recommendations.extend(
+                self._check_num_ctx_unmanaged(nodes, prompt_stats)
+            )
 
             # Priority model check
             priorities = await trace_store.get_model_priority_scores()
@@ -901,6 +904,129 @@ class HealthEngine:
             except (TypeError, ValueError):
                 continue
         return out
+
+    def _check_num_ctx_unmanaged(
+        self, nodes, prompt_stats: list[dict] | None = None
+    ) -> list[Recommendation]:
+        """Models serving traffic with no explicit context window.
+
+        herd injects ``num_ctx`` only for models named in
+        ``FLEET_NUM_CTX_OVERRIDES``.  Everything else gets Ollama's own
+        GPU-memory heuristic -- and that heuristic is a trap on a large box:
+        ``server/routes.go`` picks ``defaultNumCtx = 262144`` for any node with
+        >=47 GiB VRAM **with no numParallel term**, while ``llm/llama_server.go``
+        launches with ``-c NumCtx x numParallel``.  So an unmanaged request on a
+        512 GB machine asks for ``-c 1048576`` and KV scales until it spills
+        (ollama#14116, open; the community fix #14120 closed unmerged).
+
+        Measured on this fleet 2026-10-09: 5 override entries covering 9 of 30
+        models, so 21 were unmanaged.
+
+        **Traffic-gated deliberately.**  Unused models on disk are not a
+        problem, and a card listing 21 of them would be exactly the noise this
+        project has spent two weeks removing.  Only models that actually served
+        requests in the window can appear.
+
+        Reads the operator's declared overrides through the same
+        ``_operator_num_ctx_overrides`` helper as ``context_waste`` and
+        ``num_ctx_override_inert``, so the three cannot disagree about what is
+        configured.
+        """
+        # Local imports, matching _check_priority_models -- the engine keeps its
+        # module-level imports minimal.
+        from fleet_manager.node.text_embedding_models import is_text_embedding_model
+        from fleet_manager.server.serializers import model_has_capability
+
+        if not prompt_stats:
+            return []
+        pinned = self._operator_num_ctx_overrides()
+
+        # Resident context per model, so the card can say what the heuristic
+        # actually produced rather than only that nothing was configured.
+        resident: dict[str, int] = {}
+        for node in nodes:
+            if not node.ollama:
+                continue
+            for loaded in node.ollama.models_loaded:
+                resident[loaded.name] = max(
+                    resident.get(loaded.name, 0), loaded.context_length or 0
+                )
+
+        unmanaged = [
+            {
+                "model": st["model"],
+                "requests": st.get("request_count", 0),
+                "resident_ctx": resident.get(st["model"], 0),
+            }
+            for st in prompt_stats
+            if st.get("model")
+            and st["model"] not in pinned
+            and st.get("request_count", 0) > 0
+            # Nothing with no num_ctx to manage.  Three exclusions, and the
+            # order matters because the first one alone was wrong:
+            #
+            #  - native text-embedding models.  `model_has_capability` is
+            #    presence-only by contract, and these are served by the
+            #    fastembed server rather than Ollama, so Ollama reports no
+            #    capability for them at all and the capability test returns
+            #    False.  On the first live run this check fired on
+            #    nomic-embed-text:latest with 2,829 requests for exactly that
+            #    reason.  `is_text_embedding_model` is the registry that routes
+            #    them and is therefore the authoritative answer.
+            #  - models Ollama *does* report as embedders.
+            #  - mlx: models, whose window is fixed at server launch and which
+            #    herd cannot set per request anyway.
+            and not is_text_embedding_model(st["model"])
+            and not any(
+                model_has_capability(node, st["model"], "embedding") for node in nodes
+            )
+            and not st["model"].startswith("mlx:")
+        ]
+        if not unmanaged:
+            return []
+
+        unmanaged.sort(key=lambda u: -u["requests"])
+        # Severity follows impact, not count -- the same shape as
+        # num_ctx_override_inert.  An unmanaged model on a box with headroom is
+        # a note; on one without, the oversized KV is the thing that bites.
+        threatens_capacity = _free_memory_gb(nodes) < _OVERSIZE_HEADROOM_GB
+        lines = ", ".join(
+            f"{u['model']} ({u['requests']:,} req"
+            + (f", resident at {u['resident_ctx']:,}" if u["resident_ctx"] else "")
+            + ")"
+            for u in unmanaged[:4]
+        )
+        return [
+            Recommendation(
+                check_id="num_ctx_unmanaged",
+                severity=(
+                    Severity.WARNING if threatens_capacity else Severity.INFO
+                ),
+                title=f"No explicit context window on {len(unmanaged)} model(s)",
+                description=(
+                    f"{lines}. These served traffic with no FLEET_NUM_CTX_OVERRIDES "
+                    f"entry, so Ollama's own GPU-memory heuristic chose their "
+                    f"window. On a node with >=47 GiB that heuristic picks 262,144 "
+                    f"and does not account for OLLAMA_NUM_PARALLEL, while Ollama "
+                    f"launches llama-server with context x parallel — so the "
+                    f"allocation can be several times what the number suggests, "
+                    f"and KV scales with it until it spills to RAM "
+                    f"(ollama#14116). This is a deliberate state if you chose it; "
+                    f"the risk is choosing it by omission."
+                ),
+                fix=(
+                    "Add an entry to FLEET_NUM_CTX_OVERRIDES for any of these that "
+                    "matters, sized from observed usage — `context_waste` reports "
+                    "measured prompt sizes per model. Verify with the launch args "
+                    "rather than `ollama ps`: "
+                    "`ps -Ao args | grep llama-server | grep -oE '-c [0-9]+ -np [0-9]+'`, "
+                    "where the per-request window is -c divided by -np. Leaving a "
+                    "model unmanaged is a valid choice; this card exists so it is "
+                    "a choice."
+                ),
+                data={"unmanaged_models": unmanaged},
+            )
+        ]
 
     def _check_num_ctx_override_inert(
         self, nodes, prompt_stats: list[dict] | None = None
@@ -2643,14 +2769,69 @@ class HealthEngine:
     def _check_stream_reliability(
         self, reliability, recent_reliability
     ) -> list[Recommendation]:
-        """Surface client disconnects and incomplete streams as health cards."""
+        """Surface client disconnects, incomplete streams, and empty generations.
+
+        All three are "the HTTP exchange succeeded but the output was wrong",
+        which is why they share one check and one query rather than each getting
+        their own -- they differ in *how* the output was wrong, not in kind.
+        """
         recs = []
         disconnected = reliability["client_disconnected"]
         incomplete = reliability["incomplete"]
+        # .get() rather than [] -- an older router's reliability dict predates
+        # this key, and a KeyError here would take out the whole health pass.
+        no_output = reliability.get("no_output", 0)
         total = reliability["total_requests"]
 
         if total == 0:
             return recs
+
+        # Zero generated tokens on a clean done:true.  The backend answered and
+        # the model produced nothing, which from a client's side is
+        # indistinguishable from a refusal -- an external project reported
+        # exactly that misreading of a failed model load.  Low threshold on
+        # purpose: this had never occurred on the reference fleet in 48k
+        # completed requests, so even one is worth seeing.
+        if no_output >= 1:
+            recent_no_output = recent_reliability.get("no_output", 0)
+            model_lines = ", ".join(
+                f"{m} ({v.get('no_output', 0)}x)"
+                for m, v in sorted(
+                    reliability["by_model"].items(),
+                    key=lambda x: x[1].get("no_output", 0),
+                    reverse=True,
+                )[:5]
+                if v.get("no_output", 0) > 0
+            )
+            recs.append(
+                Recommendation(
+                    check_id="empty_generations",
+                    severity=(
+                        Severity.WARNING if recent_no_output >= 1 else Severity.INFO
+                    ),
+                    title=f"{no_output} request(s) produced no output in 24h",
+                    description=(
+                        f"{model_lines or 'unknown model'}. The backend returned a "
+                        f"clean response and the model generated zero tokens — "
+                        f"counted from Ollama's own eval_count, which includes "
+                        f"reasoning, so a thinking model that spent its budget "
+                        f"deliberating is not this. The usual cause is a model "
+                        f"that failed to load, which looks like a refusal from "
+                        f"the client side and sends debugging the wrong way."
+                    ),
+                    fix=(
+                        "Check that node's llama-server log around the "
+                        "timestamp: a load failure appears there while the HTTP "
+                        "exchange looks clean. On a large-memory box the common "
+                        "trigger is an oversized context — Ollama launches with "
+                        "`-c NumCtx x OLLAMA_NUM_PARALLEL`, so an unmanaged "
+                        "window can ask for far more KV than intended "
+                        "(ollama#14116). `num_ctx_unmanaged` lists models with "
+                        "no explicit window."
+                    ),
+                    data={"no_output": no_output, "recent": recent_no_output},
+                )
+            )
 
         # Client disconnects — clients timing out or dropping connections
         if disconnected >= 3:

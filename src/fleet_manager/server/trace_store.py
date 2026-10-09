@@ -121,6 +121,24 @@ class TraceStore:
             logger.info("Added 'finish_reason' column to request_traces")
         except Exception:
             pass  # Column already exists
+        # Schema migration: estimated_tokens is what the ROUTER thought the
+        # request was, next to prompt_tokens which is what the backend actually
+        # evaluated.  The pair is the only way to answer "is input being
+        # truncated?" after the fact: routing.py already compares an estimate
+        # against the node's context_length and returns an
+        # X-Fleet-Context-Overflow header, but that comparison was
+        # fire-and-forget, so the question could not be asked across requests.
+        # It also supplies the calibration data for a truncation threshold --
+        # our estimator is chars/4 plus 150/image, the model's is its own, and
+        # guessing that disagreement is how context_waste went wrong.
+        # See docs/plans/context-window-blindness.md.
+        try:
+            await self._db.execute(
+                "ALTER TABLE request_traces ADD COLUMN estimated_tokens INTEGER"
+            )
+            logger.info("Added 'estimated_tokens' column to request_traces")
+        except Exception:
+            pass  # Column already exists
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_traces_tags ON request_traces(tags)")
 
         # Benchmark runs table
@@ -246,6 +264,7 @@ class TraceStore:
         error_message: str | None = None,
         tags: list[str] | None = None,
         finish_reason: str | None = None,
+        estimated_tokens: int | None = None,
     ):
         """Insert a single trace record.
 
@@ -279,14 +298,15 @@ class TraceStore:
             json.dumps(tags) if tags else None,
             time.time(),
             finish_reason,
+            estimated_tokens,
         )
         sql = (
             "INSERT INTO request_traces "
             "(request_id, model, original_model, node_id, score, scores_breakdown, "
             "status, latency_ms, time_to_first_token_ms, prompt_tokens, completion_tokens, "
             "retry_count, fallback_used, excluded_nodes, client_ip, original_format, "
-            "error_message, tags, timestamp, finish_reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "error_message, tags, timestamp, finish_reason, estimated_tokens) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         # Retry-on-locked: the busy_timeout PRAGMA above absorbs short
         # contention, but a stuck-reader scenario can still expire it.
@@ -970,6 +990,7 @@ class TraceStore:
             return {
                 "client_disconnected": 0,
                 "incomplete": 0,
+                "no_output": 0,
                 "total_requests": 0,
                 "by_model": {},
             }
@@ -981,7 +1002,8 @@ class TraceStore:
                 model,
                 COUNT(*) AS cnt
             FROM request_traces
-            WHERE timestamp >= ? AND status IN ('client_disconnected', 'incomplete')
+            WHERE timestamp >= ?
+              AND status IN ('client_disconnected', 'incomplete', 'no_output')
             GROUP BY status, model
             """,
             (cutoff,),
@@ -989,14 +1011,21 @@ class TraceStore:
         rows = await cursor.fetchall()
         disconnected = 0
         incomplete = 0
+        no_output = 0
         by_model: dict[str, dict] = {}
         for status, model, cnt in rows:
             if status == "client_disconnected":
                 disconnected += cnt
+            elif status == "no_output":
+                no_output += cnt
             elif status == "incomplete":
                 incomplete += cnt
             if model not in by_model:
-                by_model[model] = {"client_disconnected": 0, "incomplete": 0}
+                by_model[model] = {
+                    "client_disconnected": 0,
+                    "incomplete": 0,
+                    "no_output": 0,
+                }
             by_model[model][status] = cnt
 
         # Get total requests for rate calculation
@@ -1010,6 +1039,11 @@ class TraceStore:
         return {
             "client_disconnected": disconnected,
             "incomplete": incomplete,
+            # A clean done:true with zero generated tokens.  Distinct from
+            # `incomplete` (stream cut short) and from `failed` (the exchange
+            # errored): the backend answered correctly and the model emitted
+            # nothing, which is what a failed load looks like to a client.
+            "no_output": no_output,
             "total_requests": total,
             "by_model": by_model,
         }

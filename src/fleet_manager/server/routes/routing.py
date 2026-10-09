@@ -203,6 +203,12 @@ async def score_with_fallbacks(
     """
     models_to_try = [inference_req.model] + inference_req.fallback_models
     estimated_tokens = ScoringEngine.estimate_tokens(inference_req.messages)
+    # Stash it on the request so the trace can carry it.  Computed here anyway
+    # for the context_fit signal, so this costs nothing and avoids a fourth
+    # token estimator -- there are already three with different consumers
+    # (routing, compaction triggers, the client-facing count_tokens endpoint),
+    # and adding one is the debt this project keeps removing.
+    inference_req.estimated_tokens = estimated_tokens
     if allow_fallback is not None:
         vram_fallback_enabled = allow_fallback
     else:
@@ -696,6 +702,23 @@ def check_context_overflow(
         f"Context overflow: ~{estimated_tokens} estimated tokens exceeds "
         f"{ctx_length} context window on {winner.node_id} — "
         f"input may be truncated by Ollama"
+    )
+    # Persist it.  This detection has existed as long as the context_fit signal
+    # has, and it already tells the *client* via the header below -- but it was
+    # fire-and-forget, so "how often is input being truncated?" had no answer.
+    # Recorded through the same channel as every other context condition so
+    # health_engine can aggregate it the way it aggregates override_inert.
+    # Import is local: routing is imported by the route modules at startup and
+    # streaming imports none of them, but a module-level edge here would make
+    # that ordering load-bearing for no benefit.
+    from fleet_manager.server.streaming import _record_context_protection
+
+    _record_context_protection(
+        "overflow",
+        inference_req.model,
+        winner.node_id,
+        estimated_tokens,
+        ctx_length,
     )
     return {
         "X-Fleet-Context-Overflow": (

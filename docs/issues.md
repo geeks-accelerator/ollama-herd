@@ -123,7 +123,7 @@ which on this fleet is 4x.
 
 ---
 
-### herd cannot see a truncated prompt, an unmanaged window, or a failed load `OPEN`
+### herd cannot see a truncated prompt, an unmanaged window, or a failed load `FIXED` (2026-10-09, one step deferred)
 
 **Severity:** medium — four invisible conditions, none of them currently failing, all
 of which have precedent on this fleet or an adjacent one.

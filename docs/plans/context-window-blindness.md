@@ -1,6 +1,15 @@
 # Context-window blindness — truncation, unmanaged windows, and empty-completion misattribution
 
-**Status**: **PROPOSED, not started.** Revised 2026-10-09 after a codebase audit that cut the plan roughly in half: one phase was already built, one was based on a finding that didn't survive checking, and the remaining three are assembly from existing helpers rather than new machinery.
+**Status**: **IMPLEMENTED 2026-10-09**, except Phase 1 step 3, which is deliberately deferred until the trace field it depends on has produced calibration data. Deployed and verified live. Revised earlier the same day after a codebase audit that cut the plan roughly in half.
+
+**What landed:** `estimated_tokens` on the request, the trace and the schema; the pre-existing overflow detection in `routing.py` now persisted as an `overflow` event; `num_ctx_unmanaged`; `MlxServerInfo.context_length = None` as an explicit unknown; and `no_output` as a fourth `status` value folded into the existing `_check_stream_reliability` as `empty_generations`. 46 health checks, 1,773 tests.
+
+**Two things the build changed, both caught by running it rather than reasoning about it:**
+
+1. **`num_ctx_unmanaged` fired on `nomic-embed-text` with 2,829 requests on its first live run.** The embedding exclusion used `model_has_capability`, which is presence-only by contract — and native-server models are not in Ollama's metadata at all, so it returned False for exactly the models that most needed excluding. Fixed by using `is_text_embedding_model`, the registry that actually routes them.
+2. **Phase 4's documented trap turned out not to apply, and a different one did.** `completion_tokens` is Ollama's `eval_count`, which *includes* reasoning tokens — verified live: a thinking model at `num_predict=24` returned `eval_count=24` with zero content and 41 chars of thinking. So reading that field cannot misfire on a thinking model. But **48,449 completed traces carry NULL counts** (embeddings, MLX), so conflating NULL with zero would have classified all of them. The guard is `is not None`, not the comparison to zero.
+
+**Calibration data already arriving**, and it justifies deferring step 3: measured pairs are `est 5,685 / actual 4,288` (75%) on a real request and `est 10 / actual 73` (730%) on a tiny one. The estimator overestimates long prompts and badly underestimates short ones, because the chat template dominates when the prompt is small. A single ratio threshold in either direction would be wrong.
 **Date**: 2026-10-09 (revised same day)
 **Trigger**: A field report from an unrelated project (a code-scanning harness) whose provider layer lost control of the context window by talking to Ollama over `/v1`. Notes sent back to them: [`../handoffs/2026-10-09-context-window-notes-for-external-scanner.md`](../handoffs/2026-10-09-context-window-notes-for-external-scanner.md).
 **Prereq context**: the `OLLAMA_CONTEXT_LENGTH` and context-sizing gotchas in [`../../CLAUDE.md`](../../CLAUDE.md), the 2026-09-28 autopsy in [`../observations.md`](../observations.md), and [`context-size-protection.md`](context-size-protection.md).

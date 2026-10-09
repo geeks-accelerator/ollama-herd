@@ -90,6 +90,14 @@ class InferenceRequest(BaseModel):
     has_images: bool = False
     # Caller IP for per-client concurrency accounting (empty = anonymous).
     client_ip: str = ""
+    # What the ROUTER thought this request was, from
+    # ScoringEngine.estimate_tokens -- which routing already computes for the
+    # context_fit signal.  Carried here so the trace can hold it next to
+    # prompt_tokens (what the backend actually evaluated); the pair is what
+    # makes truncation answerable after the fact, and supplies the calibration
+    # data for a threshold rather than guessing one.  None on paths that never
+    # score (embeddings, images).
+    estimated_tokens: int | None = None
 
     @model_validator(mode="after")
     def _normalize_model_names(self) -> InferenceRequest:

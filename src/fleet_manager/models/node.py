@@ -324,6 +324,16 @@ class MlxServerInfo(BaseModel):
     status: str
     status_reason: str = ""
     kv_bits: int = 0
+    # The context window this server loaded, or None for "cannot be known".
+    #
+    # None is the honest value and is the expected one today: mlx_lm.server is
+    # OpenAI-native, so herd cannot set a window per request, and the server
+    # exposes no endpoint reporting the one it launched with.  A 0 here would
+    # read as a real zero-length window; None says "we could not ask", which is
+    # the same convention OllamaMetrics.backend_clients uses for "none seen or
+    # could not look".  Populated if a future mlx_lm ever reports it.
+    # See docs/plans/context-window-blindness.md.
+    context_length: int | None = None
     model_size_gb: float = 0.0
     last_ok_ts: float = 0.0
     # Distributed execution (multi-node via mlx.launch).  Defaults keep the

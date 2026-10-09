@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Four context-window conditions herd could not see are now visible** ([`docs/plans/context-window-blindness.md`](docs/plans/context-window-blindness.md)). Prompted by a field report from an unrelated project whose provider layer lost control of the window by talking to Ollama over `/v1`, where an OpenAI-format request has no field for it. That root cause doesn't reach herd — it calls `/api/chat` downstream — but four adjacent gaps did, and an audit first found that two were already built and merely unrecorded.
+
+  - **`estimated_tokens` on every trace**, beside `prompt_tokens`. The router already computed it for the `context_fit` signal; it just never reached the trace. The pair is what makes "was this truncated?" answerable after the fact. No fourth token estimator was added — three already exist with different consumers.
+  - **The overflow detection is persisted.** `routing.py` has long compared the estimate against the node's `context_length`, logged `"input may be truncated by Ollama"` and returned an `X-Fleet-Context-Overflow` header — but fire-and-forget, so nobody could ask how often it fires. It now records through the same channel as every other context condition.
+  - **`num_ctx_unmanaged`** flags models that served traffic with no `FLEET_NUM_CTX_OVERRIDES` entry, so Ollama's GPU-memory heuristic chose their window. On a ≥47 GiB node that heuristic picks 262,144 and ignores `OLLAMA_NUM_PARALLEL` while Ollama launches with context × parallel (ollama#14116). Traffic-gated, and the text says unmanaged is a valid choice — the risk is choosing it by omission.
+  - **`MlxServerInfo.context_length` is `None`, not `0`.** `mlx_lm.server` is OpenAI-native and exposes no window, so "cannot be known" is the honest value; a zero would read as a real zero-length window.
+  - **`empty_generations`**: a clean `done:true` with zero generated tokens is now its own `no_output` status rather than a normal completion. From the client side that is indistinguishable from a refusal, which is how the reporting project misdiagnosed a failed model load. It reads Ollama's `eval_count`, which includes reasoning tokens, so it cannot misfire on a thinking model that spent its budget deliberating — and it distinguishes zero from NULL, since 48,449 completed traces carry NULL counts.
+
+  Folded into the existing `_check_stream_reliability` and its existing query rather than adding a check: `client_disconnected`, `incomplete` and `no_output` are all "the exchange succeeded but the output was wrong", differing in how rather than in kind.
+
+
 ### Fixed
 
 - **Multi-turn tool calling no longer 400s** ([#5](https://github.com/geeks-accelerator/ollama-herd/pull/5), thanks @pettersandvand; likely also fixes [#2](https://github.com/geeks-accelerator/ollama-herd/issues/2)). OpenAI's wire format encodes `tool_calls[].function.arguments` as a JSON **string**; Ollama's `/api/chat` expects an **object**. An OpenAI-format client replaying its own history (assistant tool call → tool result → next turn) sent that string back verbatim and `_convert_messages_for_ollama` forwarded it unchanged, so Ollama rejected the entire request with `"Value looks like object, but can't find closing '}' symbol"` on *every* follow-up turn — surfacing as an unhandled `ExceptionGroup`, because `stream_from_node`'s `raise_for_status()` fires after the outer response has already begun streaming. `_normalize_tool_call_arguments` now parses it back into an object before dispatch, passing malformed strings through unchanged rather than raising (a throw here would trade a 400 for a torn stream). This completes a pair: the outbound half — Ollama object → OpenAI string — has been in `streaming.py` since 2026-07-18, when tool calls were being dropped entirely.

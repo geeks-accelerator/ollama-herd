@@ -308,13 +308,48 @@ class StreamingProxy:
                             ),
                             name=f"latency-record-{entry.request.request_id[:8]}",
                         )
-                    # Record completed trace
+                    # A clean done:true with zero generated tokens is not a
+                    # completion -- the backend answered and the model produced
+                    # nothing, which is what a failed load looks like from the
+                    # client side.  Recorded distinctly so it stops being
+                    # counted as a normal response and stops reading as a model
+                    # refusal (the mistake an external project reported: a
+                    # failed load "pointed in the wrong direction").
+                    #
+                    # `completion_tokens` is Ollama's eval_count, which INCLUDES
+                    # reasoning tokens -- verified live: a thinking model given
+                    # num_predict=24 returned eval_count=24 with zero content
+                    # and 41 chars of thinking.  So this cannot misfire on a
+                    # thinking model that spent its budget reasoning, which it
+                    # would if it read content length instead.
+                    #
+                    # `is not None` matters more than the zero: 48,449 completed
+                    # traces on this fleet carry NULL counts (embeddings, MLX),
+                    # and treating NULL as zero would have classified every one
+                    # of them.  See docs/plans/context-window-blindness.md.
+                    produced_nothing = (
+                        completion_tokens is not None and completion_tokens == 0
+                    )
+                    if produced_nothing:
+                        # Non-destructive read: _record_trace pops this below.
+                        why = (
+                            self._request_done_reason.get(entry.request.request_id)
+                            or "unknown"
+                        )
+                        logger.warning(
+                            f"Request {entry.request.request_id[:8]} on "
+                            f"{entry.assigned_node} completed with zero generated "
+                            f"tokens (model={entry.request.model}, "
+                            f"done_reason={why}) — the backend answered but the "
+                            f"model produced nothing; check that node's "
+                            f"llama-server log for a load failure"
+                        )
                     self._record_trace(
                         entry,
                         entry.assigned_node,
                         start_time,
                         first_token_time,
-                        "completed",
+                        "no_output" if produced_nothing else "completed",
                         response_chunks=capture_chunks,
                     )
                 else:
@@ -389,6 +424,12 @@ class StreamingProxy:
                     error_message=error_message,
                     tags=entry.request.tags if entry.request.tags else None,
                     finish_reason=finish_reason,
+                    # What the router thought the request was, beside what the
+                    # backend actually evaluated.  The pair answers "was this
+                    # truncated?" after the fact and supplies the calibration
+                    # data for a threshold -- see
+                    # docs/plans/context-window-blindness.md.
+                    estimated_tokens=entry.request.estimated_tokens,
                 ),
                 name=f"trace-record-{entry.request.request_id[:8]}",
             )
