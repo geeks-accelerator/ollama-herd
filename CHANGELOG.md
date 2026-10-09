@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Multi-turn tool calling no longer 400s** ([#5](https://github.com/geeks-accelerator/ollama-herd/pull/5), thanks @pettersandvand; likely also fixes [#2](https://github.com/geeks-accelerator/ollama-herd/issues/2)). OpenAI's wire format encodes `tool_calls[].function.arguments` as a JSON **string**; Ollama's `/api/chat` expects an **object**. An OpenAI-format client replaying its own history (assistant tool call → tool result → next turn) sent that string back verbatim and `_convert_messages_for_ollama` forwarded it unchanged, so Ollama rejected the entire request with `"Value looks like object, but can't find closing '}' symbol"` on *every* follow-up turn — surfacing as an unhandled `ExceptionGroup`, because `stream_from_node`'s `raise_for_status()` fires after the outer response has already begun streaming. `_normalize_tool_call_arguments` now parses it back into an object before dispatch, passing malformed strings through unchanged rather than raising (a throw here would trade a 400 for a torn stream). This completes a pair: the outbound half — Ollama object → OpenAI string — has been in `streaming.py` since 2026-07-18, when tool calls were being dropped entirely.
+
+
 ## [0.10.2] - 2026-10-08
 
 ### Fixed
