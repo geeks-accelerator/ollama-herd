@@ -160,9 +160,18 @@ so unifying them changes compaction behaviour and is not free.
 
 Full analysis, phasing, thresholds and open questions:
 [`docs/plans/context-window-blindness.md`](plans/context-window-blindness.md).
-**Nothing started.** Phases 2 and 3 are the cheap ones; Phase 4 is the one most likely
-to fire on correct behaviour, since thinking models legitimately emit zero *content*
-tokens.
+**Nothing started.**
+
+**Revised 2026-10-09 after a codebase audit that halved it.** Two of the four gaps were
+already covered: `routing.py:680–704` *already* compares `ScoringEngine.estimate_tokens`
+against the node's `context_length`, logs `"input may be truncated by Ollama"` and
+returns an `X-Fleet-Context-Overflow` header — it simply never records the event, so
+nobody can ask how often it happens. And `_record_context_protection` already stores
+requested-vs-reported window. The "seven duplicate token estimators" finding also did
+not survive: they are three tiers with different consumers and accuracy needs, and the
+two `_total_tokens` are not duplicates (28 lines vs 162). What remains is one event
+call, one trace field, one check, one status value (joining the existing
+`incomplete` / `client_disconnected` set) and one explicit unknown for MLX.
 
 ---
 
