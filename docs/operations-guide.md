@@ -107,6 +107,7 @@ Every routing decision is recorded in SQLite (`~/.fleet-manager/latency.db`) wit
 | `status` | `completed`, `failed`, or `retried` |
 | `latency_ms` | Total time from request to response complete |
 | `time_to_first_token_ms` | Time until first response chunk |
+| `estimated_tokens` | What the **router** thought the request was, from `ScoringEngine.estimate_tokens` — the same value the `context_fit` signal scores on. Recorded beside `prompt_tokens` so "was this input truncated?" is answerable after the fact: the router's estimate against what the backend actually evaluated. Expect disagreement in **both** directions — measured pairs include `5,685 / 4,288` (the estimator running high on a long prompt) and `10 / 73` (running low on a short one, where the chat template dominates). `NULL` on paths that never score, such as embeddings and images |
 | `prompt_tokens` | Tokens in the prompt, from Ollama's `prompt_eval_count`. This is the **full prompt length**, not just the part that missed the prefix cache — verified on 0.34.4 by resending an identical prompt (count unchanged at 4074 while `prompt_eval_duration` fell 2.235 s → 0.021 s). So it is a valid basis for context sizing, which is what `context_waste` and `context_optimizer` compute from |
 | `completion_tokens` | Tokens generated (from Ollama) |
 | `retry_count` | Number of retries before success |

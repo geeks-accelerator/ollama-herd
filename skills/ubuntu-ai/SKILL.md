@@ -167,7 +167,7 @@ sudo ufw reload
 # Ubuntu AI fleet status
 curl -s http://localhost:11435/fleet/status | python3 -m json.tool
 
-# Ubuntu AI health — 44 automated checks
+# Ubuntu AI health — 46 automated checks
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 
 # Ubuntu AI logs

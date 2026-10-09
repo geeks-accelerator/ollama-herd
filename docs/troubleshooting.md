@@ -284,6 +284,72 @@ small model means the context math went wrong (`predicted_num_ctx` = context ×
 Ollama to clear it, and fix the context so the prediction is sane — see
 `docs/configuration-reference.md` § Ollama environment.
 
+## A model is answering, but the output looks wrong or truncated
+
+Three checks cover the ways a context window goes wrong without anything erroring.
+All three were invisible before 0.10.3, and all three read data herd already had.
+
+**`empty_generations` — the model produced nothing.** A clean `done:true` with
+zero generated tokens. The HTTP exchange succeeded, so this is not a failure, and
+the model emitted nothing, so it is not a completion either. From a client's side
+it is indistinguishable from a refusal, which is how a model that failed to *load*
+gets misdiagnosed as a model that declined to answer.
+
+```bash
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT model, COUNT(*) FROM request_traces WHERE status='no_output' GROUP BY model"
+```
+
+Look in that node's `llama-server` log around the timestamp — a load failure
+appears there while the HTTP exchange looks clean. On a large-memory box the usual
+trigger is an oversized context, since Ollama launches with
+`-c NumCtx x OLLAMA_NUM_PARALLEL`.
+
+Two things it will **not** misfire on, by construction: a thinking model that spent
+its whole budget reasoning (the count is Ollama's `eval_count`, which includes
+reasoning tokens — verified: `num_predict=24` gave `eval_count=24` with zero
+content), and the 48,000-odd traces that carry `NULL` counts because their route
+never surfaces them (embeddings, MLX). `NULL` is not zero.
+
+**`num_ctx_unmanaged` — nobody chose this model's window.** herd injects `num_ctx`
+only for models in `FLEET_NUM_CTX_OVERRIDES`; everything else gets Ollama's
+GPU-memory heuristic, which on a node with ≥47 GiB picks 262,144 and ignores
+`OLLAMA_NUM_PARALLEL` (ollama#14116). Leaving a model unmanaged is a valid choice
+— the card exists so it is a *choice* rather than an omission.
+
+```bash
+# what the window actually is — read the launch args, not `ollama ps`
+ps -Ao args | grep llama-server | grep -oE '\-c [0-9]+ \-np [0-9]+'
+# per-request window = -c divided by -np
+```
+
+**`estimated_tokens` vs `prompt_tokens` — was the input cut?** Every trace now
+carries what the router thought the request was next to what the backend actually
+evaluated:
+
+```bash
+sqlite3 -header -column ~/.fleet-manager/latency.db \
+  "SELECT model, estimated_tokens, prompt_tokens,
+          ROUND(100.0*prompt_tokens/NULLIF(estimated_tokens,0)) pct
+   FROM request_traces WHERE estimated_tokens IS NOT NULL
+   ORDER BY timestamp DESC LIMIT 20"
+```
+
+**Do not read a single row as evidence.** The two disagree in both directions for
+honest reasons: the estimator is chars/4 plus 150 per image, the model's tokenizer
+is its own, and the chat template adds tokens the client never sent. Measured
+pairs include `5,685 / 4,288` (estimate high on a long prompt) and `10 / 73`
+(estimate low on a short one, where the template dominates). The signature of real
+truncation is **every** request to one model clipping at the same ceiling, not one
+short count. There is deliberately no automated threshold yet for this reason.
+
+Separately, `routing.py` has always warned at dispatch when the estimate exceeds
+the node's window — `grep "Context overflow"` in `herd.jsonl`, and clients get an
+`X-Fleet-Context-Overflow` header. Since 0.10.3 that also records an event, so
+`get_context_protection_events()` can be asked how often it happens.
+
+---
+
 ## Is herd itself leaking memory?
 
 **Do not start from system memory — it cannot answer this.** On a large box that

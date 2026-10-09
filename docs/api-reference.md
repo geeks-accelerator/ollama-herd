@@ -977,7 +977,11 @@ tens of GB still swapped out, so read both. Related health checks: `memory_press
 half of `total_gb`: memory committed well beyond RAM, so models or other apps are paged
 out).
 
-**`mlx_servers` field** (optional — present only on nodes with MLX configured):
+**`mlx_servers` field** (optional — present only on nodes with MLX configured).
+Note `context_length` is **`null`**, not `0`: `mlx_lm.server` is OpenAI-native, so
+herd can neither set a window per request nor ask which one the server launched
+with. `null` means "cannot be known"; a `0` would read as a real zero-length
+window. It is populated only if a future `mlx_lm` reports one:
 
 One entry per `mlx_lm.server` subprocess on that node.  Lets operators and
 downstream tooling see per-URL health without polling each port individually.

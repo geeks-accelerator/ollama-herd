@@ -148,7 +148,7 @@ Returns every Apple Silicon node with hardware specs, loaded models, image/STT c
 curl http://localhost:11435/dashboard/api/health
 ```
 
-44 automated checks: offline Apple Silicon nodes, memory pressure, thermal throttling, VRAM fallbacks, error rates, and more.
+46 automated checks: offline Apple Silicon nodes, memory pressure, thermal throttling, VRAM fallbacks, error rates, and more.
 
 ## Recommended Models by Apple Silicon Hardware
 
