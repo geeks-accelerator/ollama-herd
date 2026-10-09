@@ -84,6 +84,45 @@ unloaded chat model is still flagged.
 
 ---
 
+### CLAUDE.md's claim about `/api/ps` context_length contradicts a live measurement `OPEN`
+
+**Severity:** low, but it is a documented fact other agents act on, and one of the two
+readings is wrong.
+
+Found 2026-10-09 while verifying facts to send to an external project. CLAUDE.md's
+`OLLAMA_CONTEXT_LENGTH` gotcha states:
+
+> **Verify with the launch args, not `ollama ps`** — `ollama ps` shows the total `-c`,
+> so `-c 131072 -np 4` displays as "131072" while each slot really has 32768
+
+Measured today on Ollama **0.35.1**:
+
+| source | value |
+|---|---|
+| `llama-server` launch args | `-c 524288 -np 4` |
+| per-slot (`-c ÷ -np`) | **131072** |
+| `/api/ps` `context_length` | **131072** |
+
+So today `/api/ps` matches the **per-slot** value. The documented claim says it matches
+the **total**. Both cannot be right.
+
+Three possibilities, unresolved: the field's meaning changed between the version behind
+the 2026-09-22/28 incident and `0.35.1`; the original observation conflated the two; or
+it differs by how the model was loaded. The original claim came from a six-day incident
+where the per-slot context really was 32768, so the *conclusion* of that gotcha (read
+the launch args) stands either way — it is the stated reason that is in doubt.
+
+**Resolve before relying on the field.** The launch-args method is unambiguous and is
+what the gotcha already recommends, so nothing depends on this today. But a future
+check that reads `context_length` and assumes a total would be off by `numParallel`,
+which on this fleet is 4x.
+
+**Do not "fix" the doc by picking a side.** Reproduce it: set a known
+`FLEET_NUM_CTX_OVERRIDES` value, cold-load the model, and compare launch args against
+`/api/ps` on the current Ollama. One measurement settles it.
+
+---
+
 ### herd cannot see a truncated prompt, an unmanaged window, or a failed load `OPEN`
 
 **Severity:** medium — four invisible conditions, none of them currently failing, all
