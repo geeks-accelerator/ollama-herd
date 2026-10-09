@@ -121,9 +121,9 @@ The biggest risk is skills going out of sync when the API changes. Mitigate this
 4. Only the framing/voice sections need manual updates per skill
 
 When new features are added (like context protection, VRAM fallback, settings dashboard), update all skills to include them — but frame each feature differently per audience:
-- Core: "Context protection strips `num_ctx` to prevent reload hangs"
-- ML engineer: "Context-size protection prevents Ollama from reloading models when `num_ctx` changes"
-- DevOps: "Auto-strips dangerous `num_ctx` parameters that would trigger multi-minute model reloads"
+- Core: "Context protection pins `num_ctx` to the loaded window to prevent reload hangs"
+- ML engineer: "Context-size protection prevents Ollama from reloading models when `num_ctx` changes — including when it is omitted, which Ollama fills from `OLLAMA_CONTEXT_LENGTH`"
+- DevOps: "Rewrites `num_ctx` parameters that would trigger multi-minute model reloads"
 - Home lab: "Automatically prevents your 89GB model from reloading when apps send different context sizes"
 
 ## Results to expect

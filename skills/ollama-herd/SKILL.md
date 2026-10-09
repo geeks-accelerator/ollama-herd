@@ -152,7 +152,7 @@ Direct the user to open this URL in their browser for visual Ollama monitoring.
 
 - **Auto-retry** — if an Ollama node fails before the first response chunk, re-scores and retries on the next-best Ollama node (up to 2 retries)
 - **Ollama model fallbacks** — clients specify backup Ollama models; tries alternatives when the primary is unavailable
-- **Context protection** — strips `num_ctx` from Ollama requests when unnecessary to prevent Ollama model reload hangs; auto-upgrades to a larger loaded model
+- **Context protection** — pins `num_ctx` to the resident context on Ollama requests (including ones that omit it, which Ollama would otherwise fill from `OLLAMA_CONTEXT_LENGTH` and reload the model for); auto-upgrades to a larger loaded model when more context is genuinely needed
 - **VRAM-aware fallback** — routes to an already-loaded Ollama model in the same category instead of cold-loading
 - **Zombie reaper** — background task detects and cleans up stuck in-flight Ollama requests
 - **Auto-pull** — automatically pulls missing Ollama models onto the best available node

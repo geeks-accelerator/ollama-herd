@@ -348,7 +348,23 @@ Silent failures are dishonest. Fail fast, fail loud.
 - `docs/observations.md` — patterns from operating the fleet. Add with date, evidence, insight. Never deleted.
 - After significant changes: check if work produced a new observation or revealed a new issue. Append to the right file.
 
-## Current State (as of 2026-10-03)
+## Current State (as of 2026-10-09)
+
+- **UNRELEASED WORK IS ON `main`, awaiting a soak verdict — do not publish without one.** `pyproject.toml` and PyPI are both `0.10.2`; `main` is three commits ahead (`34d0501`, `4904d47`, `b2ba3b2`). Contents: the four context-window visibility conditions, and two fixes found by acting on the `0.10.2` day-after check — the absent-`num_ctx` reload and `kv_cache_bloat`'s invented 12 GB (both in the gotchas above, `docs/issues.md` and `docs/observations.md` under 2026-10-09). **1804 tests, ruff clean, deployed on this fleet since 2026-10-09 10:13 local.** The release checklist has not been started: no version bump, no CHANGELOG rename, no build.
+
+  **What the soak is for.** The `num_ctx` pin touches the request path for *every* model, not just the one that was broken, and the cases I could not reproduce by hand are model evictions, the ~5 s heartbeat window where herd still believes an evicted model is resident, and preloader cold loads. The check:
+
+  ```bash
+  ps -Ao args | grep llama-server | grep -oE '\-c [0-9]+ \-np [0-9]+'   # want 131072/4 and 32768/4
+  grep -c "pinned num_ctx" ~/.fleet-manager/logs/herd.jsonl             # the new path doing work
+  grep -c '"level": "ERROR"' ~/.fleet-manager/logs/herd.jsonl           # want 0 (note the space)
+  curl -s localhost:11435/dashboard/api/health | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['vitals']['health_score'], sorted(c['check_id'] for c in d['recommendations']))"
+  ```
+
+  Holding = both models at their configured per-slot contexts, `num_ctx_override_inert` and `kv_cache_bloat` both absent, health ≥88. Regression = a model drifting off its configured context, or `pinned` events going to zero.
+
+- **Still owed:** the `0.10.0` week-after check (due 2026-10-10), and Phase 1 step 3 of `docs/plans/context-window-blindness.md` — the truncation threshold, deliberately unbuilt. Its calibration data now argues against a single ratio: 176 `estimated_tokens`/`prompt_tokens` pairs give a 0.94 median above 100 estimated tokens and ~8x below it, where the chat template dominates. A size-banded rule, not one number.
+- **Six checks in two weeks have fired on correct behaviour** — `priority_model_not_loaded`, `context_waste`, the stale reaper/worker pair, the `num_ctx` equality warning, and on 2026-10-09 `kv_cache_bloat` twice over (phantom weights, wrong lever). Two questions to ask of any new check: **what does it fire on when everything is working**, and **is it deriving a quantity the system already reports?** Both of 2026-10-09's bugs were a layer computing something it could have been told — on-disk model size, and the resident context.
 
 - **Memory incident, resolved 2026-10-02/03 (two devices).** The native text embedding server kept ONNX Runtime's high-water mark forever — `batch x seq_len^2`, with 8,192-token inputs, flat batches of 32 and concurrent runs on one session — reaching **28 GB in one node agent** and taking a 48 GB Mac out along with its co-tenants. Fixed by truncating to the registry `max_tokens` (2048), sizing batches against an attention budget, and serialising ONNX runs per model; measured peak with both models now **3.71 GB**, previously >8 GB within minutes. `prompt_eval_count` is now a real tokenizer count rather than `len(t.split())` — which also explains the long-standing embed-latency gap, since an unspaced 8 K-char input recorded as `1`. **Still open:** memory is bounded but not *released* (~3.7 GB retained until restart; proposed fix is idle eviction from `_slots`, and **measure with `footprint`, not RSS** — RSS is what hid the 28 GB).
 - **herd now measures its own processes (2026-10-03).** `HeartbeatPayload.process_memory` carries the agent's `phys_footprint`, its **peak**, and labelled children — the number whose absence made the 28 GB undiagnosable on both devices, because heartbeats carried only *system* memory, which here is dominated by Ollama's ~91 GB plus two mlx children at 17 GB each. First 9 h soak: peak rose once to 3.80 GB then held **exactly flat for 10 h** while current drifted down 3.53 → 3.47. See the memory gotcha above and `docs/observations.md` (2026-10-03).

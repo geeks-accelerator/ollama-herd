@@ -343,10 +343,13 @@ them again. Two requests is all it took.
 ---
 
 **`num_ctx_unmanaged` — nobody chose this model's window.** herd injects `num_ctx`
-only for models in `FLEET_NUM_CTX_OVERRIDES`; everything else gets Ollama's
-GPU-memory heuristic, which on a node with ≥47 GiB picks 262,144 and ignores
-`OLLAMA_NUM_PARALLEL` (ollama#14116). Leaving a model unmanaged is a valid choice
-— the card exists so it is a *choice* rather than an omission.
+only for models in `FLEET_NUM_CTX_OVERRIDES`; everything else has its window
+chosen on first load by Ollama's GPU-memory heuristic, which on a node with
+≥47 GiB picks 262,144 and ignores `OLLAMA_NUM_PARALLEL` (ollama#14116). herd then
+pins the model at whatever that produced, so an unmanaged window is stable — but
+it was still picked by a heuristic rather than by anyone. Leaving a model
+unmanaged is a valid choice; the card exists so it is a *choice* rather than an
+omission.
 
 ```bash
 # what the window actually is — read the launch args, not `ollama ps`
@@ -687,7 +690,9 @@ If kills persist, the next layer of defense was previously the Ollama watchdog's
 
 **Cause:** When `num_ctx` differs from the model's loaded context window, Ollama unloads and reloads the entire model. For large models (89GB+), this takes minutes and often deadlocks — the runner startup timeout expires and the request hangs indefinitely.
 
-**Fix:** Context protection is enabled by default (`FLEET_CONTEXT_PROTECTION=strip`). The router automatically strips `num_ctx` when it's ≤ the loaded context, and auto-upgrades to a bigger loaded model when more context is needed. If you see this issue, check that context protection hasn't been disabled:
+**An omitted `num_ctx` differs too.** Ollama fills a missing value from `OLLAMA_CONTEXT_LENGTH` (or its GPU-memory heuristic), so a request that simply leaves the field out can trigger the same reload. Sending nothing is not the safe option.
+
+**Fix:** Context protection is enabled by default (`FLEET_CONTEXT_PROTECTION=strip`). The router replaces any `num_ctx` ≤ the resident context — and any absent one — with the resident value, which cannot trigger a reload because it is what Ollama is already running. When more context is genuinely needed it auto-upgrades to a bigger loaded model. If you see this issue, check that context protection hasn't been disabled:
 
 ```bash
 # Verify context protection is active

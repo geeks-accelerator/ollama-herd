@@ -26,6 +26,11 @@ Ollama launches llama-server with **`-c NumCtx × OLLAMA_NUM_PARALLEL`**, and
 "unless otherwise specified", in practice it wins over the `num_ctx` herd injects
 per request.
 
+**It is also what fills an absent `num_ctx`** — which made it the active cause of
+a model reverting its own configured context on every request until 2026-10-09.
+Any request herd sends without the field gets this value, and Ollama reloads the
+model when it differs from what is resident. See § Context Protection below.
+
 Setting it *below* what a model needs is a silent, expensive mistake. Measured on
 the reference fleet (2026-09-22 → 09-28), setting `32768` while `gpt-oss:120b`
 needed `131072`:
@@ -215,16 +220,20 @@ The router selects the online node with the most available memory that can fit t
 
 Prevents clients from triggering expensive Ollama model reloads by sending `num_ctx` in request options. When Ollama receives a `num_ctx` different from the loaded model's context window, it unloads and reloads the entire model — which can cause multi-minute hangs or deadlocks on large models.
 
+**An absent `num_ctx` is not exempt from that.** Ollama fills a missing value from `OLLAMA_CONTEXT_LENGTH`, or from its GPU-memory heuristic when that is unset, and reloads the model when the result differs from what is resident. So "don't send it" is not the safe option — it delegates the choice to the environment. This is why `strip` mode **replaces** rather than removes (changed 2026-10-09; before that the override set by `FLEET_NUM_CTX_OVERRIDES` could not survive a single request after a correct cold load — see `docs/issues.md`).
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLEET_CONTEXT_PROTECTION` | `strip` | How to handle client `num_ctx` values: `strip`, `warn`, or `passthrough` |
 
 Modes:
-- **`strip`** (default): Remove `num_ctx` from requests when it's ≤ the loaded model's context window. Logs an info message. If `num_ctx` exceeds the loaded context, it's preserved with a warning (client genuinely needs more context).
-- **`warn`**: Keep `num_ctx` but log warnings about potential reload triggers.
-- **`passthrough`**: No intervention — pass `num_ctx` through to Ollama as-is.
+- **`strip`** (default — "pin" would be the better name now): any request whose `num_ctx` is ≤ the resident context, *or absent entirely*, is sent with `num_ctx` set to the resident context. The client's smaller value is still not honoured; the field is just never left empty. Logs `Context protection: pinned/raised num_ctx=…` and records a `pinned` event. If `num_ctx` exceeds the resident context it is preserved with a warning, and the router first looks for a larger loaded model to switch to (whose own resident context is then pinned).
+- **`warn`**: Keep `num_ctx` but log warnings about potential reload triggers. No pinning.
+- **`passthrough`**: No intervention — pass `num_ctx` through to Ollama as-is, including leaving it absent.
 
-Only applies to Ollama-format requests (`/api/chat`, `/api/generate`). OpenAI-format requests don't have a `num_ctx` equivalent.
+A model with no heartbeat yet has no known resident context, so nothing is pinned and the request passes through untouched.
+
+Only applies to Ollama-format requests (`/api/chat`, `/api/generate`). OpenAI-format requests don't have a `num_ctx` equivalent — which is the root cause of the field report in `docs/plans/context-window-blindness.md`; herd calls `/api/chat` downstream, so its own window control is unaffected.
 
 ### Pre-Warm
 
@@ -273,7 +282,7 @@ Replay captured requests with `scripts/replay-debug-requests.py` — e.g. `--lis
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FLEET_DYNAMIC_NUM_CTX` | `false` | Enable dynamic num_ctx injection on requests. When enabled, the router injects per-model num_ctx overrides to reduce KV cache waste |
+| `FLEET_DYNAMIC_NUM_CTX` | `false` | Enable dynamic num_ctx injection on requests. When enabled, the router injects per-model num_ctx overrides to reduce KV cache waste. Note the override sets what a *cold* load comes up with; a resident model is pinned at its current context rather than reloaded (§ Context Protection) |
 | `FLEET_NUM_CTX_AUTO_CALCULATE` | `false` | Auto-calculate optimal num_ctx from trace data. The context optimizer analyzes p99 total token usage (prompt + completion) and updates overrides every 5 minutes |
 
 Per-model overrides are set at runtime via `POST /dashboard/api/settings` with `{"num_ctx_overrides": {"model-name": 16384}}`. When `dynamic_num_ctx` is enabled and `num_ctx_auto_calculate` is true, the optimizer auto-initializes overrides from 7-day trace history on startup.
