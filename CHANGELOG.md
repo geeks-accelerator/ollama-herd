@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`herd --version` and `herd-node --version`** (also `-V`) print `ollama-herd X.Y.Z` and exit. Until now the only ways to check an install were `pip show ollama-herd` or opening the dashboard. The option is eager, so it runs before the env file loads or anything binds a port, which makes it safe as the post-install check on [ollamaherd.com/download](https://ollamaherd.com/download).
+
 ## [0.11.2] - 2026-10-14
 
 ### Fixed

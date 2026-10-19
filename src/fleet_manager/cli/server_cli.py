@@ -25,6 +25,7 @@ from rich.logging import RichHandler
 # *inside* ``start()``, so the env file is loaded before any settings class
 # instantiates on every path.
 # See ``fleet_manager/common/env_file.py`` for the rationale.
+from fleet_manager.cli import version_callback
 from fleet_manager.common.env_file import load_env_file
 
 app = typer.Typer(
@@ -55,6 +56,14 @@ def start(
     cloud_url: str = typer.Option(
         "https://gotomy.ai", "--cloud-url",
         help="Platform URL (default: https://gotomy.ai)",
+    ),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=version_callback,
+        is_eager=True,
+        help="Show the installed version and exit",
     ),
 ):
     """Start the Ollama Herd router and API server."""

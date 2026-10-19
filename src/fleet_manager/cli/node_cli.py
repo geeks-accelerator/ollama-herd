@@ -14,6 +14,7 @@ from rich.logging import RichHandler
 # still holds — pydantic-settings reads ``os.environ`` at instantiation, Typer
 # runs this group callback before any subcommand, and ``NodeSettings`` is
 # imported *inside* ``start()``.  See ``common/env_file.py``.
+from fleet_manager.cli import version_callback
 from fleet_manager.common.env_file import load_env_file
 
 app = typer.Typer(
@@ -71,6 +72,14 @@ def start(
         ),
     ),
     log_level: str = typer.Option("INFO", help="Log level"),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=version_callback,
+        is_eager=True,
+        help="Show the installed version and exit",
+    ),
 ):
     """Start the Herd Node agent on this device."""
     load_env_file()
