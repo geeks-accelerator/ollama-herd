@@ -25,6 +25,46 @@ from fleet_manager.server.registry import NodeRegistry
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_env(monkeypatch):
+    """Hide the operator's own ``FLEET_*`` environment from every test.
+
+    ``ServerSettings`` and ``NodeSettings`` read the whole ``FLEET_`` /
+    ``FLEET_NODE_`` namespace through pydantic, and six places read
+    ``os.environ`` directly (``FLEET_ANTHROPIC_MODEL_MAP``,
+    ``FLEET_NUM_CTX_OVERRIDES``, ``FLEET_DYNAMIC_NUM_CTX``,
+    ``FLEET_MLX_ENABLED``, ``FLEET_EMBEDDING_USE_COREML``, the log levels).  So
+    on a machine that actually *runs* a herd, the suite tests the operator's
+    configuration rather than the defaults, and which tests fail depends on
+    whose shell it is.
+
+    Found 2026-10-22: three tests went red on this fleet and passed in CI,
+    because ``~/.zshrc`` exports ``FLEET_ANTHROPIC_MODEL_MAP`` and
+    ``_check_mapped_model_missing`` reads it straight from ``os.environ`` --
+    ``mapped_model_missing`` fired CRITICAL inside ``test_empty_fleet``, taking
+    the health score to 80, and ``/v1/responses`` answered 503 (no node hosts
+    the mapped model) where the test wanted the empty-fleet 404.  Nothing was
+    wrong with the code.
+
+    Three modules had already hit this and each patched it locally, listing the
+    variables its own author remembered -- which is why the fourth caller was
+    exposed.  One definition instead, for the same reason
+    ``resident_context_for`` is one: several callers need the answer and must
+    not drift.  ``CLOUD_FLEET_TOKEN`` goes too; a test has no business reading
+    the operator's platform credential.
+
+    Tests that want a variable set it with ``monkeypatch.setenv``, which runs
+    after this (autouse fixtures are ordered before the test body and before
+    explicitly requested fixtures of the same scope).
+    """
+    import os
+
+    for key in list(os.environ):
+        if key.startswith("FLEET_") or key == "CLOUD_FLEET_TOKEN":
+            monkeypatch.delenv(key, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _clear_context_protection_events():
     """Reset the module-global context-protection event list between tests.
 

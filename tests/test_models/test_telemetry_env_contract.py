@@ -13,19 +13,7 @@ the next relocation fails the build instead of the user.
 
 from __future__ import annotations
 
-import pytest
-
 from fleet_manager.models.config import NodeSettings, ServerSettings
-
-
-@pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
-    for key in (
-        "FLEET_NODE_TELEMETRY", "FLEET_TELEMETRY",
-        "FLEET_NODE_HERD_NICKNAME", "FLEET_HERD_NICKNAME",
-        "FLEET_NODE_TELEMETRY_URL", "FLEET_TELEMETRY_URL",
-    ):
-        monkeypatch.delenv(key, raising=False)
 
 
 class TestPublishedOptOut:

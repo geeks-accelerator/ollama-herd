@@ -11,10 +11,12 @@ from fleet_manager.common.env_file import load_env_file
 
 @pytest.fixture
 def clean_env(monkeypatch):
-    """Remove any FLEET_TEST_* vars before each test."""
-    for k in list(os.environ):
-        if k.startswith("FLEET_TEST_"):
-            monkeypatch.delenv(k, raising=False)
+    """A monkeypatch handle, named for what these tests rely on.
+
+    The clearing itself is the autouse ``_hermetic_env`` in the root
+    ``conftest.py``, which strips every ``FLEET_*`` var -- ``FLEET_TEST_*``
+    included -- so this no longer does it twice.
+    """
     yield monkeypatch
 
 

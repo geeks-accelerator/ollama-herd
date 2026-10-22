@@ -418,6 +418,89 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+## 2026-10-22: Three tests failed on this machine and passed in CI, and the code was right
+
+**Context.** A `git pull` brought in seven commits from another session — a
+security dependency pass, vision-embedding traces, `herd --version`. The first
+thing to do with someone else's merged work is run the suite. Three failed:
+two in `test_health_engine.py::TestRegistryChecks` and one in
+`test_responses_route.py`.
+
+**Evidence.** All three concerned an *empty* fleet, which is a suspicious
+coincidence, and the failure data named the cause if you read it rather than
+the assertion:
+
+```
+assert 80 == 100
+  data={'missing': ['gpt-oss:120b', 'mlx:mlx-community/Qwen3-Coder-Next-4bit']}
+```
+
+Those two model names are not in any fixture. They are this operator's, from
+`~/.zshrc`:
+
+```bash
+$ env | grep -c '^FLEET_'
+19
+$ grep -n FLEET_ANTHROPIC_MODEL_MAP ~/.zshrc
+34:export FLEET_ANTHROPIC_MODEL_MAP='{"default":"mlx:...Qwen3-Coder-Next-4bit", ...}'
+```
+
+`_check_mapped_model_missing` reads that variable straight from `os.environ`,
+found two mapped models, found no node hosting them in a fleet with no nodes,
+and fired `mapped_model_missing` at CRITICAL — which took the health score to
+80 inside a test asserting 100. The third failure is the same variable one
+layer up: `/v1/responses` resolved `gpt-5-codex` through the map's `default`,
+found nothing serving it and returned 503, where the test wanted the
+empty-fleet 404 with its pull hint. One `env -u` settled it:
+
+```
+$ env -u FLEET_ANTHROPIC_MODEL_MAP uv run pytest ... -q
+16 passed in 0.70s
+```
+
+**Insight.** *A test that fails on your machine and passes in CI is first a
+question about the environment, not the code.* The reflex here is to read the
+diff that arrived and look for what it broke — and seven commits of dependency
+upgrades, with Starlette 0.52 → 1.9 among them, is a very inviting suspect. It
+had nothing to do with it. The suite had been reading the operator's
+configuration all along; this fleet simply had an export the three tests
+happened to care about, and the other machine did not.
+
+**The second insight is about how it survived.** Three modules had already met
+this and each one patched it locally:
+
+| module | cleared |
+|--------|---------|
+| `test_telemetry_env_contract.py` | six telemetry keys, hand-listed |
+| `test_node_id_resolution.py` | `FLEET_NODE_NODE_ID` |
+| `test_env_file.py` | `FLEET_TEST_*` |
+
+Each author enumerated the variables *their* test cared about, which is the
+natural thing to write and guarantees only that one module is safe. The
+condition is process-wide; the patches were per-site. So the fourth caller was
+exposed by construction, and the three fixtures stand as a record of people
+hitting the same wall three times without anyone naming it. **A per-site patch
+for a process-wide condition is not a fix, it is a sample.** They are now one
+autouse fixture in the root `conftest.py`, clearing the whole `FLEET_*`
+namespace — which covers both settings prefixes, since `FLEET_NODE_` starts
+with `FLEET_` — plus `CLOUD_FLEET_TOKEN`, because a test that can read the
+operator's platform credential can leak it. Same reasoning that centralised
+`resident_context_for`: several callers need one answer, so one definition or
+they drift.
+
+**And the pinning test earns its place for an unusual reason.**
+`tests/test_hermetic_env.py` asserts that no `FLEET_*` variable is visible
+during a test. On every clean machine it passes trivially and looks like
+dead weight — which is exactly why it is needed, because the regression it
+guards is invisible to everyone whose shell is empty. The people who would
+notice its removal are the only people who cannot.
+
+**Verified both ways**, which is now the standing check when touching test
+setup: 1949 pass with this fleet's 19 `FLEET_*` variables exported, and 1949
+pass with them stripped.
+
+---
+
 ## 2026-10-10: An upgrade duplicated every resident model, and "is herd running?" was the only reason anyone looked
 
 **Context.** A reboot. The question asked was whether herd needed starting; it

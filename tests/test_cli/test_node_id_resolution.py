@@ -11,14 +11,7 @@ fell through to that volatile hostname.
 
 from __future__ import annotations
 
-import pytest
-
 from fleet_manager.models.config import NodeSettings
-
-
-@pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
-    monkeypatch.delenv("FLEET_NODE_NODE_ID", raising=False)
 
 
 def test_env_var_sets_node_id_when_no_cli_override(monkeypatch):
