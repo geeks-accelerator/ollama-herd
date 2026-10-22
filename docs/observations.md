@@ -418,6 +418,62 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+## 2026-10-22: The day-after check was a week late, and it was the thing that found the Windows outage
+
+**Context.** `0.11.2` published 2026-10-14. The checklist's day-after check was
+due 10-15 and the week-after 10-21; both were run on 10-22, prompted by nothing
+more than a `git pull` surfacing the dates.
+
+**Evidence.** Four of the five things the check looks at were clean and one was
+not:
+
+| signal | result |
+|---|---|
+| PyPI downloads | 31 last day, 275 last week, 719 last month |
+| PyPI latest | `0.11.2`, as published |
+| Ollama version | `0.40.2`, unchanged — no silent reboot drift |
+| ERROR / WARNING lines | **0 and 0** across every live log |
+| 24 h traces | 7,953 requests, **100% completed** |
+| health | 91, one node online, 0.0% error rate, three INFO recs, no duplicate runners |
+| **new GitHub issues** | **#8, filed 2026-10-16 — `herd-node` cannot start on Windows** |
+
+`herd-node` had never started on Windows, on any version: `start()` called
+POSIX-only `loop.add_signal_handler` before the heartbeat loop, so the node
+never registered. **The report had been sitting for six days.**
+
+**Insight.** *The day-after check's cheapest line is `gh issue list`, and it is
+the only one that can tell you something the fleet cannot.* Every other signal
+measures this box, which is self-reporting and was perfectly healthy throughout
+— zero errors, zero warnings, 100% completion — while the platform we advertise
+as supported was completely broken for everyone on it. A healthy local fleet is
+not evidence about the release; it is evidence about the local fleet. The six
+days cost nothing recoverable here, but they are the exact failure mode the
+check exists to prevent, and it is worth noticing that the delay was invisible:
+nothing escalates, and the checklist dates live only in `CLAUDE.md`.
+
+**Second finding, from running it properly: the check's own healthy criterion
+was wrong.** Step 16 said a p25 far below the median means a degrading tail.
+Today: median 76.9, p25 41.9, on a fleet with zero errors and zero warnings.
+That gap is the *healthy* signature of the bimodal decode distribution measured
+on 2026-10-13, not a tail problem — and the criterion would have raised a false
+alarm on a clean fleet, which is the same class as the seven health checks that
+fired on correct behaviour. Replaced with the fast-mode share, the statistic
+that 10-13 analysis already identified as the right one: **54.6% today, 43.0-69.9%
+across 23 full hours.** The quoted healthy band was **47-61% from a single day**
+and is now 43-70% from two; one day's range had been written down as if it were
+the distribution.
+
+**And a third, costing nothing to note:** `glm-4.7-flash:latest` is resident in
+Ollama at 26.8 GB with **zero requests in 24 h**, held by `KEEP_ALIVE=-1`. Its
+all-time record on that path is 31 completions against 235 retries and 12
+failures — the measurement that resolved the MLX subsystem decision to *hold* —
+while the working MLX copy serves on :11442. So GLM is resident twice, and the
+26.8 GB copy is the one that does not work. Harmless on a 512 GB box with
+`underutilized_memory` advising more models, and worth knowing before anyone
+reads it as capacity.
+
+---
+
 ## 2026-10-22: Three tests failed on this machine and passed in CI, and the code was right
 
 **Context.** A `git pull` brought in seven commits from another session — a

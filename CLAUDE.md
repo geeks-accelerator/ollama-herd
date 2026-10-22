@@ -129,9 +129,34 @@ EOF
     EOF
     ```
     Healthy: downloads >0, no new issues, ERROR count flat, success rate >99%,
-    Ollama version as expected, backend/router task counts within ~5%, and **p25
-    close to the median** — a p25 far below the median means the tail is degrading
-    (co-tenant on `:11434`, or long-context requests starving co-resident decode).
+    Ollama version as expected, backend/router task counts within ~5%.
+
+    **Do NOT read p25-against-median here — that criterion was wrong and this
+    check carried it.** The decode distribution is bimodal (see the gotcha), so a
+    p25 far below the median is the *healthy* signature, not a degrading tail:
+    measured 2026-10-22 on a fleet with zero errors and zero warnings, median
+    76.9 and p25 41.9. By the old wording that reads as an alarm. **Read the
+    fast-mode share instead** — the fraction of requests at >=70 tok/s:
+
+    ```bash
+    uv run python - <<'EOF'
+    import sqlite3, os
+    c=sqlite3.connect(os.path.expanduser("~/.fleet-manager/latency.db"))
+    v=[1000.0*(ct-1)/(l-t) for l,t,ct in c.execute(
+      "SELECT latency_ms,time_to_first_token_ms,completion_tokens FROM request_traces "
+      "WHERE status='completed' AND timestamp>strftime('%s','now')-86400 "
+      "AND completion_tokens>20 AND latency_ms>time_to_first_token_ms")]
+    f=sum(1 for x in v if x>=70)
+    print(f"n={len(v)} fast={100*f/len(v):.1f}% (healthy 43-70%)")
+    EOF
+    ```
+
+    Healthy is **43-70%** across full hours. That band is two measurements, not
+    one: 47-61% on 2026-10-13 (n=6,554) and 43.0-69.9% on 2026-10-22 (n=7,923,
+    23 full hours) on a fleet whose logs carried zero errors and zero warnings.
+    The first band was quoted here from a single day and was narrower than
+    reality — widen it again rather than treating an excursion as a regression,
+    and confirm a real one by concurrency, never by the median.
 
 17. **Week-after check** (7 days after `uv publish`):
     ```bash
