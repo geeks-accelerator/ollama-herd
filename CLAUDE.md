@@ -213,6 +213,16 @@ launchctl list | grep ollama-herd
 `start_new_session=True`, so they survive its death and must be reaped separately —
 `pkill -9 -f mlx_lm.server` — exactly as the manual recipe warns.
 
+**A back-to-back kickstart of both agents logs exactly two WARNINGs, and they are
+the restart, not a fault.** Measured 2026-10-22: `herd-node.jsonl` gets
+`Failed to send drain signal to router: All connection attempts failed` — the old
+node's SIGTERM drain handler firing correctly at a router that is also restarting —
+and `herd.jsonl` gets `No nodes for model=... fallbacks=[]` for whatever request
+arrives before the node re-registers. Both are self-explaining and clear within
+seconds. **This matters because soak notes claim "zero warnings"**, so a check run
+too soon after a deploy will find two and look like a regression; count from after
+the restart settles, or kickstart the node first so its drain reaches a live router.
+
 ### Local deployment
 
 Still the right recipe when the agents are NOT loaded (fresh clone, another machine).
