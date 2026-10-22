@@ -77,6 +77,42 @@ When you see a pattern, add it below with the date and evidence.
 
 ## Observations
 
+### 2026-10-22 — The biggest exposure was in the file every release touched and nobody read
+
+**Evidence:** a dependency audit prompted by the 2026-10-21 PHP and Node.js security
+releases (neither reaches herd) found the venv clean except for one package. The
+Homebrew formula carried **25 known vulnerabilities across 9 packages**, among them
+Starlette, python-multipart and zeroconf, all on herd's network surface. pip users were
+unaffected, because a fresh resolve picks fixed versions; every brew user ran the
+vulnerable pins. The previous three releases had each bumped the formula's `url` and
+`sha256` and noted "no dependency changes, version + sha256 only". That was true of
+*herd's* dependencies and irrelevant to the 39 transitive pins below them, which had aged
+for months. The same hand-curation had also dropped `requests`, which tiktoken needs, so
+brew installs very likely counted tokens as `len(text) // 4` without saying so. A real
+`brew install` of the regenerated formula is where tiktoken first returned a real count.
+
+**Insight:** a file you edit every release can still be one nobody reviews. The edit
+looks like maintenance, so the rest of the file goes unread. The fix was not more care:
+Homebrew already ships `brew update-python-resources`, which derives the blocks from the
+package's real closure, and the checklist now regenerates and audits them every release.
+**Prefer a derivation over a curation for anything that pins exact versions.** A
+curated list goes stale and gives no sign of it.
+
+**Second finding — read whether a floor is reachable, not just whether it has an advisory.**
+Four packages looked like they deserved raised minimums. Three did: their advisories sit
+in code herd runs on untrusted input (mDNS packets, multipart uploads, every request).
+The fourth, json-repair, had one advisory in `SchemaRepairer.resolve_schema`, and herd
+calls `repair_json` without a schema. A floor forces every user to upgrade, so it should
+cost something to add one. Judging it by the advisory's title would have added this one.
+
+**Third finding — a dependency's cap can hold a fix away from users, and the mitigation
+then has to live in our code.** fastembed 0.9 caps `pillow<13`, which keeps the 28
+advisories Pillow 13 fixes on every `[embedding]` install from PyPI
+([qdrant/fastembed#829](https://github.com/qdrant/fastembed/issues/829)). A
+`[tool.uv]` override fixes this repo and nobody else. What protects users is restricting
+the vision server to the three decoders it needs, which removes most of the advisories
+from reach.
+
 ### 2026-10-04 — An error message that guesses the cause gets believed
 
 **Evidence:** openclaw was repointed at herd for embeddings at 05:51:56, and its first

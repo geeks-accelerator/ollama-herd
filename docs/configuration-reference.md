@@ -335,6 +335,8 @@ No environment variables needed — the server starts whenever fastembed is impo
 
 Serves image embeddings via `/api/embed-image` on `:11438` internally (proxied through the router on `:11435`).  Used for frame deduplication, image similarity, and visual search.
 
+**Accepted image formats: JPEG, PNG and WebP.** Anything else gets a `400` before any decoder runs. There's no setting for this: the server takes unauthenticated bytes from the LAN, and the other Pillow decoders (EPS via Ghostscript, TIFF, GIF, ...) carry most of Pillow's security advisories. Convert other formats on the client. Every request leaves a row in `request_traces` with the tag `vision-embed`.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLEET_VISION_EMBEDDING` | `true` | Enable `/api/embed-image` endpoint |

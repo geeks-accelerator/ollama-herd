@@ -227,6 +227,8 @@ This means Community News can keep calling `/api/embed` with `model=dinov2-vit-s
 
 **File:** `src/fleet_manager/server/streaming.py`
 
+> **Removed 2026-10-22.** `make_embedding_process_fn` was never called: the route proxies straight through `embed_image_on_node`. It would also have counted a client's bad image as a node failure. See CHANGELOG `[Unreleased]` → Removed.
+
 New method `make_embedding_process_fn()` following image/STT pattern:
 
 ```python

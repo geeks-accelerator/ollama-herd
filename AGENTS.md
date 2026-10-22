@@ -21,7 +21,7 @@ uv sync --all-extras          # core + all optional deps (recommended for develo
 | Extra | What it adds | Command |
 |-------|-------------|---------|
 | `dev` | pytest, pytest-asyncio | `uv sync --extra dev` |
-| `embedding` | onnxruntime, Pillow, numpy, huggingface-hub, fastembed | `uv sync --extra embedding` |
+| `embedding` | onnxruntime, Pillow, numpy, huggingface-hub, fastembed | `uv sync --extra embedding` (Pillow resolves to ≥13 in this repo via a `[tool.uv]` override; fastembed caps it below 13 for PyPI installs — see `docs/issues.md`) |
 
 **macOS-only system deps** (not required for core routing):
 - `uv tool install mflux` — FLUX image generation
@@ -69,6 +69,7 @@ uv run pytest tests/test_server/       # server tests only
 uv run pytest tests/test_node/         # node agent tests only
 uv run pytest -k "test_scorer"         # single test module
 uv run pytest --tb=short -q            # compact output
+./scripts/health.sh                    # tests + lint + format + doc test counts + dependency CVE audit
 ```
 
 **No real Ollama required.** All tests are mocked. `tests/conftest.py` sets up in-memory SQLite, fake registries, and mock httpx transports — the full test suite runs offline with no network calls.

@@ -207,7 +207,7 @@ The agent does set `OLLAMA_HOST=0.0.0.0` when it starts Ollama itself. But if Ol
 **Why?**
 - Zero build step — no webpack, no npm, no frontend toolchain
 - Single-file deployment — everything is in the Python package
-- Chart.js via CDN — the only external dependency
+- Chart.js via CDN — the only external dependency, pinned to an exact file with a Subresource Integrity hash (`_CHART_JS_HEAD` in `routes/dashboard.py`), so a bad npm publish cannot run in the dashboard's origin
 - Pragmatic for the current scope (5 pages)
 
 **When to extract:** When the dashboard grows beyond ~6-7 pages or needs interactive features like tag-based filtering on the Trends/Models views, it should be extracted to either Jinja2 templates or a separate React/Vue frontend with its own build.

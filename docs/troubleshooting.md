@@ -515,6 +515,57 @@ one failed load that reads to a client as a refusal is what they exist to show.
 
 ---
 
+## A vision embed returns `400 "Image N is not one of: JPEG, PNG, WEBP"`
+
+The vision embedding server (`:11438`) decodes only JPEG, PNG and WebP, by design and
+with no setting to change it (see `docs/plans/security-dependency-upgrades-2026-10.md`).
+Most of Pillow's advisories are in the other decoders, and this server takes
+unauthenticated bytes from the LAN. `N` is the zero-based index of the first rejected
+image in the request; no image in the request is embedded. **Fix it on the client:**
+convert to JPEG or PNG before base64-encoding.
+
+The rejection is recorded on the node that answered it, as `status='failed'` with
+`error_message` starting `HTTP 400`, the same way every directly proxied backend
+error is recorded. So **a client that keeps sending an unsupported format looks like a
+node with a high error rate.** Before treating a `high_error_rate` card on a
+vision-serving node as a node problem, check what failed:
+
+```bash
+sqlite3 ~/.fleet-manager/latency.db \
+  "SELECT node_id, substr(error_message,1,70), COUNT(*) FROM request_traces
+   WHERE tags LIKE '%vision-embed%' AND status != 'completed'
+     AND timestamp > strftime('%s','now') - 86400
+   GROUP BY 1, 2 ORDER BY 3 DESC"
+```
+
+If those rows say `not one of: JPEG, PNG, WEBP`, the node is healthy and one client
+needs fixing. `client_ip` on the same rows identifies the client.
+
+---
+
+## `scripts/health.sh` fails "known vulnerabilities (pip-audit)"
+
+Check 6 audits the locked dependency set (all extras) and fails on any known
+vulnerability. It prints the findings below the summary. To clear it:
+
+1. **Upgrade the package** if a fixed version is compatible: `uv lock
+   --upgrade-package <name> && uv sync --all-extras`, then re-run `./scripts/health.sh`.
+2. **If a dependency caps it** (`uv tree --invert --package <name>` shows who), check
+   upstream for a release that lifts the cap. Pillow is the standing example:
+   fastembed 0.9 caps it below 13, so a `[tool.uv] override-dependencies` entry in
+   `pyproject.toml` holds the local fleet on 13. The override and its removal
+   condition are tracked in `docs/issues.md`. Treat an override as temporary, and
+   never use one in place of a fix that exists.
+3. **Decide whether a minimum version needs raising** for PyPI users, who don't get
+   the lock file. Raise it only if herd actually reaches the vulnerable code path.
+   Read the advisory, not just its title.
+
+**If this check fails right after removing the Pillow override,** fastembed probably
+still caps Pillow. Restore the override and re-check
+[qdrant/fastembed#829](https://github.com/qdrant/fastembed/issues/829).
+
+---
+
 ## A model keeps coming back at the wrong context
 
 If `FLEET_NUM_CTX_OVERRIDES` sets a model to one value and
