@@ -250,9 +250,7 @@ class ModelRecommender:
         if node.ollama:
             current_models = list(node.ollama.models_available)
         if node.vision_embedding:
-            current_models.extend(
-                ve.name for ve in node.vision_embedding.models_available
-            )
+            current_models.extend(ve.name for ve in node.vision_embedding.models_available)
 
         recommendations: list[ModelRecommendation] = []
         ram_used = 0.0

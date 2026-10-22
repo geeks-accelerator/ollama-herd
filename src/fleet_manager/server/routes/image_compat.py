@@ -32,16 +32,18 @@ def _record_image_gen(
     error: str = "",
 ) -> None:
     """Record an image generation event for health monitoring."""
-    _image_gen_events.append({
-        "timestamp": time.time(),
-        "model": model,
-        "node_id": node_id,
-        "status": status,
-        "generation_ms": generation_ms,
-        "width": width,
-        "height": height,
-        "error": error,
-    })
+    _image_gen_events.append(
+        {
+            "timestamp": time.time(),
+            "model": model,
+            "node_id": node_id,
+            "status": status,
+            "generation_ms": generation_ms,
+            "width": width,
+            "height": height,
+            "error": error,
+        }
+    )
     if len(_image_gen_events) > _MAX_IMAGE_EVENTS:
         del _image_gen_events[: len(_image_gen_events) - _MAX_IMAGE_EVENTS]
 
@@ -141,9 +143,7 @@ async def generate_image(request: Request):
     candidates = [
         n
         for n in registry.get_online_nodes()
-        if n.image
-        and n.image_port > 0
-        and any(m.name == model for m in n.image.models_available)
+        if n.image and n.image_port > 0 and any(m.name == model for m in n.image.models_available)
     ]
 
     if not candidates and is_image_model(model):
@@ -209,9 +209,7 @@ async def generate_image(request: Request):
 
     proxy = request.app.state.streaming_proxy
     queue_mgr = request.app.state.queue_mgr
-    process_fn = proxy.make_image_process_fn(
-        queue_key, queue_mgr, timeout=settings.image_timeout
-    )
+    process_fn = proxy.make_image_process_fn(queue_key, queue_mgr, timeout=settings.image_timeout)
     response_future = await queue_mgr.enqueue(entry, process_fn)
 
     start = time.monotonic()
@@ -227,8 +225,12 @@ async def generate_image(request: Request):
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
         _record_image_gen(
-            model, best.node_id, "completed",
-            generation_ms=elapsed_ms, width=width, height=height,
+            model,
+            best.node_id,
+            "completed",
+            generation_ms=elapsed_ms,
+            width=width,
+            height=height,
         )
         return Response(
             content=png_bytes,
@@ -244,8 +246,12 @@ async def generate_image(request: Request):
     except Exception as e:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         _record_image_gen(
-            model, best.node_id, "failed",
-            generation_ms=elapsed_ms, width=width, height=height,
+            model,
+            best.node_id,
+            "failed",
+            generation_ms=elapsed_ms,
+            width=width,
+            height=height,
             error=repr(e),
         )
         logger.error(f"Image generation failed on {best.node_id}: {repr(e)}")

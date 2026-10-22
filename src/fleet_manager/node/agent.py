@@ -266,7 +266,9 @@ class NodeAgent:
                     capacity_learner=self._capacity_learner,
                     mlx_supervisor_set=self._mlx_supervisor_set,
                     mlx_bind_host=getattr(
-                        self.settings, "mlx_bind_host", "127.0.0.1",
+                        self.settings,
+                        "mlx_bind_host",
+                        "127.0.0.1",
                     ),
                     # So the backend-client probe can exclude the router: it
                     # proxies to our Ollama over the LAN and is the one remote
@@ -417,18 +419,13 @@ class NodeAgent:
             app = FastAPI(title="Herd Image Server")
             app.include_router(image_router)
 
-            config = uvicorn.Config(
-                app, host="0.0.0.0", port=image_port, log_level="warning"
-            )
+            config = uvicorn.Config(app, host="0.0.0.0", port=image_port, log_level="warning")
             server = uvicorn.Server(config)
             self._image_server_task = asyncio.create_task(server.serve())
             self._image_port = image_port
 
             models = ", ".join(m.name for m in image_metrics.models_available)
-            logger.info(
-                f"Image server started on 0.0.0.0:{image_port} "
-                f"(models: {models})"
-            )
+            logger.info(f"Image server started on 0.0.0.0:{image_port} (models: {models})")
         except Exception as e:
             logger.warning(f"Failed to start image server: {repr(e)}")
             self._image_port = 0
@@ -477,9 +474,7 @@ class NodeAgent:
             logger.warning(f"Failed to start transcription server: {repr(e)}")
             self._transcription_port = 0
 
-    def _bind_sidecar_socket(
-        self, host: str, port: int, label: str
-    ) -> socket.socket | None:
+    def _bind_sidecar_socket(self, host: str, port: int, label: str) -> socket.socket | None:
         """Eagerly bind a listening socket for an in-process uvicorn sidecar.
 
         Returns the bound socket, or ``None`` if the port is unavailable.
@@ -540,17 +535,14 @@ class NodeAgent:
             app = FastAPI(title="Herd Vision Embedding Server")
             app.include_router(embed_router)
 
-            config = uvicorn.Config(
-                app, host="0.0.0.0", port=embedding_port, log_level="warning"
-            )
+            config = uvicorn.Config(app, host="0.0.0.0", port=embedding_port, log_level="warning")
             server = uvicorn.Server(config)
             self._embedding_server_task = asyncio.create_task(server.serve(sockets=[sock]))
             self._embedding_port = embedding_port
 
             models = ", ".join(m.name for m in embedding_metrics.models_available)
             logger.info(
-                f"Vision embedding server started on 0.0.0.0:{embedding_port} "
-                f"(models: {models})"
+                f"Vision embedding server started on 0.0.0.0:{embedding_port} (models: {models})"
             )
         except Exception as e:
             sock.close()
@@ -582,9 +574,7 @@ class NodeAgent:
 
         # Bind eagerly so a port conflict fails soft (this method returns) rather
         # than crashing the node via SystemExit from inside the uvicorn task.
-        sock = self._bind_sidecar_socket(
-            "0.0.0.0", text_embedding_port, "text embedding server"
-        )
+        sock = self._bind_sidecar_socket("0.0.0.0", text_embedding_port, "text embedding server")
         if sock is None:
             self._text_embedding_port = 0
             return
@@ -602,9 +592,7 @@ class NodeAgent:
                 app, host="0.0.0.0", port=text_embedding_port, log_level="warning"
             )
             server = uvicorn.Server(config)
-            self._text_embedding_server_task = asyncio.create_task(
-                server.serve(sockets=[sock])
-            )
+            self._text_embedding_server_task = asyncio.create_task(server.serve(sockets=[sock]))
             self._text_embedding_port = text_embedding_port
 
             logger.info(
@@ -693,8 +681,7 @@ class NodeAgent:
             return []
         if not isinstance(data, list):
             logger.error(
-                f"FLEET_NODE_MLX_SERVERS must be a JSON array, got "
-                f"{type(data).__name__}; ignoring."
+                f"FLEET_NODE_MLX_SERVERS must be a JSON array, got {type(data).__name__}; ignoring."
             )
             return []
         specs = []
@@ -724,8 +711,7 @@ class NodeAgent:
         token_secret = getattr(self.settings, "platform_token", None)
         token = token_secret.get_secret_value() if token_secret else ""
         platform_url = (
-            getattr(self.settings, "platform_url", None)
-            or platform_connection.DEFAULT_PLATFORM_URL
+            getattr(self.settings, "platform_url", None) or platform_connection.DEFAULT_PLATFORM_URL
         )
 
         existing = platform_connection.load_state()
@@ -752,9 +738,7 @@ class NodeAgent:
             return
 
         # Case 4: token configured but not connected (or token changed) → connect
-        logger.info(
-            f"Platform: connecting to {platform_url} via configured token…"
-        )
+        logger.info(f"Platform: connecting to {platform_url} via configured token…")
         try:
             state = await platform_connection.connect_to_platform(
                 token=token,
@@ -769,8 +753,7 @@ class NodeAgent:
         except platform_connection.InvalidTokenError as exc:
             logger.warning(f"Platform: invalid token — {exc}")
         except platform_connection.PlatformUnreachableError as exc:
-            logger.warning(f"Platform: unreachable — {exc}. "
-                           f"Will retry on next restart.")
+            logger.warning(f"Platform: unreachable — {exc}. Will retry on next restart.")
         except Exception as exc:
             logger.warning(f"Platform: connection failed — {exc}")
 
@@ -786,8 +769,7 @@ class NodeAgent:
         telemetry_on = getattr(self.settings, "telemetry_local_summary", False)
         if not telemetry_on:
             logger.debug(
-                "telemetry: disabled "
-                "(set FLEET_NODE_TELEMETRY_LOCAL_SUMMARY=true to enable)"
+                "telemetry: disabled (set FLEET_NODE_TELEMETRY_LOCAL_SUMMARY=true to enable)"
             )
             return None
 
@@ -824,9 +806,7 @@ class NodeAgent:
         from fleet_manager.node import platform_connection
 
         if not platform_connection.is_connected():
-            logger.debug(
-                "platform heartbeat: not connected to platform, skipping"
-            )
+            logger.debug("platform heartbeat: not connected to platform, skipping")
             return None
 
         from fleet_manager.node.platform_heartbeat import run_scheduler
@@ -879,6 +859,7 @@ class NodeAgent:
             except Exception as e:
                 logger.warning(f"Error stopping Ollama: {e}")
                 import contextlib
+
                 with contextlib.suppress(Exception):
                     self._ollama_process.kill()
             self._ollama_process = None

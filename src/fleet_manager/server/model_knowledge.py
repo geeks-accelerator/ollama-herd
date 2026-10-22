@@ -906,8 +906,12 @@ def is_thinking_model(name: str) -> bool:
         return True
     # Heuristic fallback for unknown models
     thinking_patterns = (
-        "deepseek-r1", "gpt-oss", "qwq", "phi-4-reasoning",
-        "phi4-reasoning", "reasoning",
+        "deepseek-r1",
+        "gpt-oss",
+        "qwq",
+        "phi-4-reasoning",
+        "phi4-reasoning",
+        "reasoning",
         # muse-glimmer emits a `thinking` field and eats the num_predict budget
         # on reasoning — verified 2026-08-14: a 50-token budget returned empty,
         # 300 tokens produced the answer. Without this it never gets the 4x

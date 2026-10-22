@@ -16,6 +16,7 @@ Protocol:
         {"type": "error",     "request_id": "...", "error": "..."}
         {"type": "heartbeat"}
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -107,11 +108,14 @@ class CloudConnector:
                 await self._json_request(ws, req_id, url, body)
         except Exception as e:
             logger.exception(f"[cloud] Request {req_id} failed")
-            await self._safe_send(ws, {
-                "type": "error",
-                "request_id": req_id,
-                "error": str(e),
-            })
+            await self._safe_send(
+                ws,
+                {
+                    "type": "error",
+                    "request_id": req_id,
+                    "error": str(e),
+                },
+            )
 
     async def _stream_request(self, ws, req_id: str, url: str, body: dict) -> None:
         """Forward a streaming request to local herd and stream chunks back."""
@@ -124,15 +128,15 @@ class CloudConnector:
         ):
             if response.status_code >= 400:
                 err = await response.aread()
-                err_text = err[:500].decode(errors='replace')
-                await self._safe_send(ws, {
-                    "type": "error",
-                    "request_id": req_id,
-                    "error": (
-                        f"Local herd returned {response.status_code}: "
-                        f"{err_text}"
-                    ),
-                })
+                err_text = err[:500].decode(errors="replace")
+                await self._safe_send(
+                    ws,
+                    {
+                        "type": "error",
+                        "request_id": req_id,
+                        "error": (f"Local herd returned {response.status_code}: {err_text}"),
+                    },
+                )
                 return
 
             tokens_in = None
@@ -162,40 +166,54 @@ class CloudConnector:
                     tokens_in = usage.get("prompt_tokens")
                     tokens_out = usage.get("completion_tokens")
 
-                await self._safe_send(ws, {
-                    "type": "chunk",
-                    "request_id": req_id,
-                    "data": chunk,
-                })
+                await self._safe_send(
+                    ws,
+                    {
+                        "type": "chunk",
+                        "request_id": req_id,
+                        "data": chunk,
+                    },
+                )
 
-            await self._safe_send(ws, {
-                "type": "done",
-                "request_id": req_id,
-                "tokens_in": tokens_in,
-                "tokens_out": tokens_out,
-            })
+            await self._safe_send(
+                ws,
+                {
+                    "type": "done",
+                    "request_id": req_id,
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                },
+            )
 
     async def _json_request(self, ws, req_id: str, url: str, body: dict) -> None:
         """Forward a non-streaming request and return full JSON response."""
         async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
             response = await client.post(url, json=body)
             if response.status_code >= 400:
-                await self._safe_send(ws, {
-                    "type": "error",
-                    "request_id": req_id,
-                    "error": f"Local herd returned {response.status_code}: {response.text[:500]}",
-                })
+                # Bound to a local because `ruff format` joins this f-string
+                # onto one line inside the dict literal and `ruff check` then
+                # rejects it as E501 -- the two disagree, and only taking it out
+                # of the nesting satisfies both.  Wording matches the sibling
+                # error path above.
+                detail = f"Local herd returned {response.status_code}: {response.text[:500]}"
+                await self._safe_send(
+                    ws,
+                    {"type": "error", "request_id": req_id, "error": detail},
+                )
                 return
 
             data = response.json()
             usage = data.get("usage", {}) if isinstance(data, dict) else {}
-            await self._safe_send(ws, {
-                "type": "response",
-                "request_id": req_id,
-                "data": data,
-                "tokens_in": usage.get("prompt_tokens"),
-                "tokens_out": usage.get("completion_tokens"),
-            })
+            await self._safe_send(
+                ws,
+                {
+                    "type": "response",
+                    "request_id": req_id,
+                    "data": data,
+                    "tokens_in": usage.get("prompt_tokens"),
+                    "tokens_out": usage.get("completion_tokens"),
+                },
+            )
 
     async def _safe_send(self, ws, msg: dict) -> None:
         try:

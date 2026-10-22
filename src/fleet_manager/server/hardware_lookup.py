@@ -26,9 +26,9 @@ from __future__ import annotations
 # against the output of ``sysctl -n machdep.cpu.brand_string`` after lowering).
 APPLE_SILICON_BANDWIDTH_GBPS: dict[str, float] = {
     # M3 generation
-    "apple m3 ultra": 819.0,   # 32-core GPU variant; Mac Studio 2025
-    "apple m3 max": 400.0,     # 40-core GPU; 14-core GPU is ~300
-    "apple m3 pro": 150.0,     # 18-core GPU variant; 14-core is ~120
+    "apple m3 ultra": 819.0,  # 32-core GPU variant; Mac Studio 2025
+    "apple m3 max": 400.0,  # 40-core GPU; 14-core GPU is ~300
+    "apple m3 pro": 150.0,  # 18-core GPU variant; 14-core is ~120
     "apple m3": 100.0,
     # M2 generation
     "apple m2 ultra": 800.0,
@@ -111,11 +111,11 @@ def bandwidth_tier(bw_gbps: float) -> str:
     Not used in scoring — scoring treats bandwidth as a continuous number.
     """
     if bw_gbps >= 700:
-        return "extreme"   # M*/Ultra, datacenter GPUs
+        return "extreme"  # M*/Ultra, datacenter GPUs
     if bw_gbps >= 350:
-        return "high"      # M*/Max, RTX 3080+
+        return "high"  # M*/Max, RTX 3080+
     if bw_gbps >= 150:
-        return "mid"       # M*/Pro
+        return "mid"  # M*/Pro
     if bw_gbps >= 80:
-        return "entry"     # Base Apple Silicon, budget GPUs
+        return "entry"  # Base Apple Silicon, budget GPUs
     return "low"

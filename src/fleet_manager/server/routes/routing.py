@@ -237,8 +237,7 @@ async def score_with_fallbacks(
                 # Model is loaded in VRAM — use it directly
                 if model != inference_req.model:
                     logger.info(
-                        f"Fallback: '{inference_req.model}' unavailable, "
-                        f"using '{model}' instead"
+                        f"Fallback: '{inference_req.model}' unavailable, using '{model}' instead"
                     )
                 _remember_session_node(scorer, session_key, results, prefix_key)
                 return results, model
@@ -249,7 +248,11 @@ async def score_with_fallbacks(
     # --- VRAM-aware fallback: route to a loaded model instead of cold-loading ---
     if vram_fallback_enabled and cold_results is not None:
         fallback_result = _try_vram_fallback(
-            inference_req, scorer, queue_depths, estimated_tokens, models_to_try,
+            inference_req,
+            scorer,
+            queue_depths,
+            estimated_tokens,
+            models_to_try,
         )
         if fallback_result:
             _remember_session_node(scorer, session_key, fallback_result[0], prefix_key)
@@ -267,13 +270,16 @@ async def score_with_fallbacks(
         for model in models_to_try:
             queue_depths = queue_mgr.get_queue_depths()
             results = scorer.score_request(
-            model, queue_depths, estimated_tokens, session_key=session_key, prefix_key=prefix_key
-        )
+                model,
+                queue_depths,
+                estimated_tokens,
+                session_key=session_key,
+                prefix_key=prefix_key,
+            )
             if results:
                 if model != inference_req.model:
                     logger.info(
-                        f"Fallback: '{inference_req.model}' unavailable, "
-                        f"using '{model}' instead"
+                        f"Fallback: '{inference_req.model}' unavailable, using '{model}' instead"
                     )
                 _remember_session_node(scorer, session_key, results, prefix_key)
                 return results, model
@@ -312,7 +318,12 @@ async def score_with_fallbacks(
     # Auto-pull: model doesn't exist on any node — try pulling it
     if proxy and settings and getattr(settings, "auto_pull", False):
         pulled_model = await _try_auto_pull(
-            models_to_try, scorer, queue_mgr, registry, proxy, settings,
+            models_to_try,
+            scorer,
+            queue_mgr,
+            registry,
+            proxy,
+            settings,
             estimated_tokens,
         )
         if pulled_model:
@@ -444,16 +455,22 @@ def direct_proxy_tracer(
 
     def trace(status: str, *, error: str | None = None, prompt_tokens=None) -> None:
         if trace_store:
-            asyncio.ensure_future(trace_store.record_trace(
-                request_id=request_id,
-                model=model, original_model=model,
-                node_id=node_id, score=None,
-                status=status, latency_ms=time.time() * 1000 - start_ms,
-                prompt_tokens=prompt_tokens,
-                client_ip=client_ip, original_format=original_format,
-                error_message=error,
-                tags=tags,
-            ))
+            asyncio.ensure_future(
+                trace_store.record_trace(
+                    request_id=request_id,
+                    model=model,
+                    original_model=model,
+                    node_id=node_id,
+                    score=None,
+                    status=status,
+                    latency_ms=time.time() * 1000 - start_ms,
+                    prompt_tokens=prompt_tokens,
+                    client_ip=client_ip,
+                    original_format=original_format,
+                    error_message=error,
+                    tags=tags,
+                )
+            )
 
     return trace
 
@@ -478,7 +495,9 @@ def _try_vram_fallback(
 
     # Try same category first
     loaded_options = scorer.score_loaded_models(
-        category.value, queue_depths, estimated_tokens,
+        category.value,
+        queue_depths,
+        estimated_tokens,
         exclude_models=exclude_models,
     )
     if loaded_options:
@@ -504,14 +523,19 @@ def _try_vram_fallback(
             f"routing to loaded '{best_model}' instead"
         )
         _record_vram_fallback(
-            inference_req.model, best_model, category.value,
-            cross_category=False, fallback_category=category.value,
+            inference_req.model,
+            best_model,
+            category.value,
+            cross_category=False,
+            fallback_category=category.value,
         )
         return [best_result], best_model
 
     # No loaded model in same category — try ANY loaded model (with priority check)
     all_loaded = scorer.score_loaded_models(
-        None, queue_depths, estimated_tokens,
+        None,
+        queue_depths,
+        estimated_tokens,
         exclude_models=exclude_models,
     )
     if all_loaded:
@@ -571,8 +595,11 @@ def _try_vram_fallback(
             f"available, using '{best_model}' ({fallback_cat}){risk_note}"
         )
         _record_vram_fallback(
-            inference_req.model, best_model, category.value,
-            cross_category=True, fallback_category=fallback_cat,
+            inference_req.model,
+            best_model,
+            category.value,
+            cross_category=True,
+            fallback_category=fallback_cat,
         )
         return [best_result], best_model
 
@@ -595,14 +622,16 @@ def _record_vram_fallback(
     cross-category substitutions are a quality risk, not just a
     latency/memory optimization.
     """
-    _vram_fallback_events.append({
-        "timestamp": time.time(),
-        "requested_model": requested,
-        "actual_model": actual,
-        "category": category,
-        "cross_category": cross_category,
-        "fallback_category": fallback_category or category,
-    })
+    _vram_fallback_events.append(
+        {
+            "timestamp": time.time(),
+            "requested_model": requested,
+            "actual_model": actual,
+            "category": category,
+            "cross_category": cross_category,
+            "fallback_category": fallback_category or category,
+        }
+    )
     # Keep last 100 events
     if len(_vram_fallback_events) > 100:
         _vram_fallback_events.pop(0)
@@ -615,7 +644,12 @@ def get_vram_fallback_events(hours: float = 24) -> list[dict]:
 
 
 async def _try_auto_pull(
-    models_to_try, scorer, queue_mgr, registry, proxy, settings,
+    models_to_try,
+    scorer,
+    queue_mgr,
+    registry,
+    proxy,
+    settings,
     estimated_tokens,
 ) -> tuple[list[RoutingResult], str] | None:
     """Attempt to auto-pull the first model and retry scoring."""
@@ -672,8 +706,7 @@ async def _try_auto_pull(
         return None
     except TimeoutError:
         logger.warning(
-            f"Auto-pull {model} on {node_id} timed out "
-            f"after {settings.auto_pull_timeout}s"
+            f"Auto-pull {model} on {node_id} timed out after {settings.auto_pull_timeout}s"
         )
         return None
     finally:

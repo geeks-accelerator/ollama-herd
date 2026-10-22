@@ -28,28 +28,32 @@ logger = logging.getLogger(__name__)
 # Structural privacy: the ONLY keys permitted in entries sent to the
 # platform.  Tests enforce this list is never exceeded.  Adding a new
 # field requires updating this list AND the privacy test.
-ALLOWED_ENTRY_KEYS = frozenset({
-    "model",
-    "local_requests",
-    "local_prompt_tokens",
-    "local_completion_tokens",
-    "p2p_served_requests",
-    "p2p_served_tokens",
-    "avg_latency_ms",
-    "p95_latency_ms",
-    "request_count_by_tag",  # only when include_tags=True
-    "success_count",
-    "error_count",
-    "error_breakdown",  # {"context_too_long": 1, "vram_exceeded": 2, ...}
-})
+ALLOWED_ENTRY_KEYS = frozenset(
+    {
+        "model",
+        "local_requests",
+        "local_prompt_tokens",
+        "local_completion_tokens",
+        "p2p_served_requests",
+        "p2p_served_tokens",
+        "avg_latency_ms",
+        "p95_latency_ms",
+        "request_count_by_tag",  # only when include_tags=True
+        "success_count",
+        "error_count",
+        "error_breakdown",  # {"context_too_long": 1, "vram_exceeded": 2, ...}
+    }
+)
 
 # Top-level payload keys
-ALLOWED_PAYLOAD_KEYS = frozenset({
-    "day",
-    "node_id",
-    "agent_version",
-    "entries",
-})
+ALLOWED_PAYLOAD_KEYS = frozenset(
+    {
+        "day",
+        "node_id",
+        "agent_version",
+        "entries",
+    }
+)
 
 
 def _yesterday_utc_bounds() -> tuple[str, float, float]:
@@ -114,12 +118,7 @@ def _categorize_error(error_message: str | None) -> str:
         or "writeerror" in msg
         or (
             "connection" in msg
-            and (
-                "refused" in msg
-                or "reset" in msg
-                or "closed" in msg
-                or "aborted" in msg
-            )
+            and ("refused" in msg or "reset" in msg or "closed" in msg or "aborted" in msg)
         )
     ):
         return "connection_error"

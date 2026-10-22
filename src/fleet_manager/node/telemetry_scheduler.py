@@ -136,14 +136,11 @@ async def _emit_once(include_tags: bool) -> bool:
         return False
     except platform_connection.PlatformUnreachableError as exc:
         logger.warning(
-            f"telemetry: platform unreachable for {day} — will retry tomorrow. "
-            f"Error: {exc}"
+            f"telemetry: platform unreachable for {day} — will retry tomorrow. Error: {exc}"
         )
         return False
     except Exception as exc:
-        logger.warning(
-            f"telemetry: unexpected error sending {day} summary: {exc}"
-        )
+        logger.warning(f"telemetry: unexpected error sending {day} summary: {exc}")
         return False
 
 
@@ -172,10 +169,7 @@ async def run_scheduler(
 
     while True:
         delay = _seconds_until_next_run()
-        logger.debug(
-            f"telemetry: next emit in {delay:.0f}s "
-            f"(~{delay/3600:.1f} hours)"
-        )
+        logger.debug(f"telemetry: next emit in {delay:.0f}s (~{delay / 3600:.1f} hours)")
         try:
             await asyncio.sleep(delay)
         except asyncio.CancelledError:

@@ -262,9 +262,7 @@ def _resolve_host(url_or_host: str) -> set[str]:
     return out
 
 
-def probe_backend_clients(
-    ollama_host: str, router_host: str = ""
-) -> list[BackendClient]:
+def probe_backend_clients(ollama_host: str, router_host: str = "") -> list[BackendClient]:
     """Processes other than herd holding open connections to this node's Ollama.
 
     Returns an empty list on any failure -- a probe that cannot run must never

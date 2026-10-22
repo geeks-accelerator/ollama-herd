@@ -191,19 +191,13 @@ def _build_ollama_request_body(
     # by Claude Code will surface an error on the client side (tool not
     # in schema) — same behavior as if the user had set permissions.deny
     # in ~/.claude/settings.json.
-    source_tools: list[dict] | None = (
-        [t.model_dump() for t in body.tools] if body.tools else None
-    )
+    source_tools: list[dict] | None = [t.model_dump() for t in body.tools] if body.tools else None
     deny_csv = getattr(settings, "anthropic_tools_deny", "") if settings else ""
     if source_tools and deny_csv:
-        deny_set = {
-            name.strip() for name in deny_csv.split(",") if name.strip()
-        }
+        deny_set = {name.strip() for name in deny_csv.split(",") if name.strip()}
         if deny_set:
             before = len(source_tools)
-            source_tools = [
-                t for t in source_tools if t.get("name") not in deny_set
-            ]
+            source_tools = [t for t in source_tools if t.get("name") not in deny_set]
             removed = before - len(source_tools)
             if removed > 0:
                 logger.info(
@@ -234,11 +228,16 @@ def _build_ollama_request_body(
     clearing_report = None
     if settings is not None:
         from fleet_manager.server.context_management import clear_if_over_budget
+
         clear_trigger = getattr(
-            settings, "anthropic_auto_clear_tool_uses_trigger_tokens", 100_000,
+            settings,
+            "anthropic_auto_clear_tool_uses_trigger_tokens",
+            100_000,
         )
         clear_keep = getattr(
-            settings, "anthropic_auto_clear_tool_uses_keep_recent", 3,
+            settings,
+            "anthropic_auto_clear_tool_uses_keep_recent",
+            3,
         )
         if clear_trigger > 0 and clear_keep >= 0:
             try:
@@ -250,12 +249,12 @@ def _build_ollama_request_body(
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    f"Tool-result clearing failed, passing through: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"Tool-result clearing failed, passing through: {type(exc).__name__}: {exc}"
                 )
 
     ollama_messages = anthropic_to_ollama_messages(
-        anthropic_msgs, system=system_text,
+        anthropic_msgs,
+        system=system_text,
     )
 
     options: dict = {}
@@ -338,7 +337,11 @@ async def _serve_via_mlx(
                     f"(model={exc.model_key}) — returning 503"
                 )
                 record_trace_mlx(
-                    trace_store, inference_req, t_start, None, "failed",
+                    trace_store,
+                    inference_req,
+                    t_start,
+                    None,
+                    "failed",
                     error_message=describe_exception(exc),
                 )
                 return JSONResponse(
@@ -363,7 +366,11 @@ async def _serve_via_mlx(
                     f"(model={exc.model_key}) — returning 413"
                 )
                 record_trace_mlx(
-                    trace_store, inference_req, t_start, None, "failed",
+                    trace_store,
+                    inference_req,
+                    t_start,
+                    None,
+                    "failed",
                     error_message=describe_exception(exc),
                 )
                 return JSONResponse(
@@ -388,7 +395,11 @@ async def _serve_via_mlx(
                 ns_error = exc
                 logger.error(f"Anthropic[{rid}] MLX model-missing guard fired: {exc}")
                 record_trace_mlx(
-                    trace_store, inference_req, t_start, None, "failed",
+                    trace_store,
+                    inference_req,
+                    t_start,
+                    None,
+                    "failed",
                     error_message=describe_exception(exc),
                 )
                 return JSONResponse(
@@ -405,7 +416,11 @@ async def _serve_via_mlx(
                 ns_error = exc
                 logger.exception(f"Anthropic[{rid}] MLX non-streaming failed: {exc}")
                 record_trace_mlx(
-                    trace_store, inference_req, t_start, None, "failed",
+                    trace_store,
+                    inference_req,
+                    t_start,
+                    None,
+                    "failed",
                     error_message=describe_exception(exc),
                 )
                 return JSONResponse(
@@ -419,24 +434,27 @@ async def _serve_via_mlx(
                     },
                 )
             record_trace_mlx(
-                trace_store, inference_req, t_start, time.time(), "completed",
+                trace_store,
+                inference_req,
+                t_start,
+                time.time(),
+                "completed",
             )
             # Build a {tool_name: input_schema} map so the JSON repair
             # path can structurally validate any tool-call arguments the
             # model produced with minor syntax errors.
             tool_schema_map: dict[str, dict] = {}
-            for t in (body.tools or []):
+            for t in body.tools or []:
                 t_dict = t.model_dump(exclude_none=True)
                 name = t_dict.get("name")
                 sch = t_dict.get("input_schema")
                 if name and isinstance(sch, dict):
                     tool_schema_map[name] = sch
             # Accumulate repair stats on the proxy for /fleet/queue exposure.
-            repair_stats = mlx_proxy.get_repair_stats(
-                strip_mlx_prefix(inference_req.model)
-            )
+            repair_stats = mlx_proxy.get_repair_stats(strip_mlx_prefix(inference_req.model))
             ns_response_body = build_anthropic_non_streaming_response(
-                openai_resp, body.model,
+                openai_resp,
+                body.model,
                 tool_schemas=tool_schema_map,
                 repair_stats=repair_stats,
             )
@@ -452,7 +470,7 @@ async def _serve_via_mlx(
                 logger.info(
                     f"Anthropic[{rid}] MLX non-stream: "
                     f"prompt_tok={ns_prompt_tok} cached_tok={ns_cached_tok} "
-                    f"({100*ns_cached_tok/ns_prompt_tok:.0f}% hit)"
+                    f"({100 * ns_cached_tok / ns_prompt_tok:.0f}% hit)"
                 )
             if debug_enabled and debug_data_dir:
                 debug_log.append_request(
@@ -495,7 +513,11 @@ async def _serve_via_mlx(
     except MlxModelMissingError as exc:
         logger.error(f"Anthropic[{rid}] MLX model-missing (stream): {exc}")
         record_trace_mlx(
-            trace_store, inference_req, t_start, None, "failed",
+            trace_store,
+            inference_req,
+            t_start,
+            None,
+            "failed",
             error_message=describe_exception(exc),
         )
         return JSONResponse(
@@ -509,7 +531,11 @@ async def _serve_via_mlx(
             f"(model={exc.model_key}) — returning 503"
         )
         record_trace_mlx(
-            trace_store, inference_req, t_start, None, "failed",
+            trace_store,
+            inference_req,
+            t_start,
+            None,
+            "failed",
             error_message=describe_exception(exc),
         )
         if debug_enabled and debug_data_dir:
@@ -592,15 +618,11 @@ async def _serve_via_mlx(
                     + "\n\n"
                 )
                 yield (
-                    "event: message_stop\ndata: "
-                    + json.dumps({"type": "message_stop"})
-                    + "\n\n"
+                    "event: message_stop\ndata: " + json.dumps({"type": "message_stop"}) + "\n\n"
                 )
         except Exception as exc:
             error = exc
-            logger.exception(
-                f"Anthropic[{rid}] MLX stream aborted: {type(exc).__name__}: {exc}"
-            )
+            logger.exception(f"Anthropic[{rid}] MLX stream aborted: {type(exc).__name__}: {exc}")
             raise
         finally:
             # Release the admission slot we acquired before entering the
@@ -615,16 +637,21 @@ async def _serve_via_mlx(
             status = "failed" if error else "completed"
             err_msg = describe_exception(error)
             record_trace_mlx(
-                trace_store, inference_req, t_start, first_token_time,
-                status, error_message=err_msg,
+                trace_store,
+                inference_req,
+                t_start,
+                first_token_time,
+                status,
+                error_message=err_msg,
             )
             elapsed_ms = (time.time() - t_start) * 1000
             if error is None:
                 # Include cache hit rate when available — instantly visible
                 # in the live router log when watching real Claude Code load.
                 cache_pct = (
-                    f" cache={100*cached_tok/prompt_tok:.0f}%"
-                    if cached_tok and prompt_tok else ""
+                    f" cache={100 * cached_tok / prompt_tok:.0f}%"
+                    if cached_tok and prompt_tok
+                    else ""
                 )
                 logger.info(
                     f"Anthropic[{rid}] MLX stream done: tools={len(state.emitted_tools)} "
@@ -632,10 +659,7 @@ async def _serve_via_mlx(
                     f"cached_tok={cached_tok}{cache_pct} elapsed_ms={elapsed_ms:.0f}"
                 )
             if debug_enabled and debug_data_dir:
-                ttft_ms = (
-                    int((first_token_time - t_start) * 1000)
-                    if first_token_time else None
-                )
+                ttft_ms = int((first_token_time - t_start) * 1000) if first_token_time else None
                 debug_log.append_request(
                     enabled=True,
                     data_dir=str(debug_data_dir),
@@ -698,13 +722,13 @@ async def messages(
     try:
         raw = await request.json()
     except json.JSONDecodeError as exc:
-        logger.warning(
-            f"Anthropic 400: invalid JSON from {client_host}: {exc}"
-        )
+        logger.warning(f"Anthropic 400: invalid JSON from {client_host}: {exc}")
         return JSONResponse(
             status_code=400,
-            content={"type": "error", "error": {"type": "invalid_request_error",
-                                                "message": "Invalid JSON body"}},
+            content={
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": "Invalid JSON body"},
+            },
         )
     try:
         body = AnthropicMessagesRequest.model_validate(raw)
@@ -731,12 +755,14 @@ async def messages(
     model_map = getattr(settings, "anthropic_model_map", {}) or {}
     auto_route = getattr(settings, "anthropic_auto_route", True)
     has_images = _request_has_images(body)
-    loaded_names, ondisk_names = get_fleet_loaded_and_ondisk(
-        request.app.state.registry
-    )
+    loaded_names, ondisk_names = get_fleet_loaded_and_ondisk(request.app.state.registry)
     local_model, route_reason = resolve_model(
-        body.model, model_map, loaded_names, ondisk_names,
-        auto_route=auto_route, has_images=has_images,
+        body.model,
+        model_map,
+        loaded_names,
+        ondisk_names,
+        auto_route=auto_route,
+        has_images=has_images,
         capabilities=get_fleet_capabilities(request.app.state.registry),
     )
     if not local_model:
@@ -754,9 +780,7 @@ async def messages(
                 },
             },
         )
-    logger.info(
-        f"Anthropic resolved {body.model} → {local_model} ({route_reason})"
-    )
+    logger.info(f"Anthropic resolved {body.model} → {local_model} ({route_reason})")
 
     # Vision override — if the request contains image content blocks and an
     # explicit vision model is configured, route there regardless of tier.
@@ -777,16 +801,24 @@ async def messages(
     # while short requests ride the fast/cheap default.  Matches
     # ``musistudio/claude-code-router``'s longContext pattern.  No-op when
     # the setting is empty.  See ``docs/plans/claude-code-enhancements-from-field-survey.md``.
-    size_escalation_model = getattr(
-        settings, "anthropic_size_escalation_model", "",
-    ) or ""
+    size_escalation_model = (
+        getattr(
+            settings,
+            "anthropic_size_escalation_model",
+            "",
+        )
+        or ""
+    )
     size_escalation_threshold = getattr(
-        settings, "anthropic_size_escalation_tokens", 0,
+        settings,
+        "anthropic_size_escalation_tokens",
+        0,
     )
     if size_escalation_model and size_escalation_threshold > 0:
         # Estimate tokens on the raw Anthropic-shape body.  Reuse the
         # tool-result clearing helper to avoid a second tokenizer pass.
         from fleet_manager.server.context_management import _total_tokens
+
         raw_msgs = [m.model_dump() for m in body.messages]
         raw_tokens = _total_tokens(raw_msgs)
         if raw_tokens > size_escalation_threshold:
@@ -809,7 +841,9 @@ async def messages(
     # clearing_report is carried on the body dict as ``_clearing_report``
     # (stripped before anything downstream sees it, just for logging).
     ollama_body = _build_ollama_request_body(
-        body, local_model, settings=settings,
+        body,
+        local_model,
+        settings=settings,
         clearing_store=getattr(request.app.state, "clearing_store", None),
     )
     clearing_report = ollama_body.pop("_clearing_report", None)
@@ -828,11 +862,14 @@ async def messages(
         # of per-strategy min_bloat gates — otherwise many small-ish results
         # pass through and we hit the pre-inference cap for nothing.
         force_trigger = getattr(
-            settings, "context_compaction_force_trigger_tokens", 150_000,
+            settings,
+            "context_compaction_force_trigger_tokens",
+            150_000,
         )
         from fleet_manager.server.context_management import _total_tokens
+
         current_tokens = _total_tokens(ollama_body["messages"])
-        force_all = (force_trigger > 0 and current_tokens > force_trigger)
+        force_all = force_trigger > 0 and current_tokens > force_trigger
         if force_all:
             logger.info(
                 f"Anthropic[pre-inference]: post-clearing prompt still "
@@ -847,8 +884,7 @@ async def messages(
             ollama_body["messages"] = compacted_messages
         except Exception as exc:  # noqa: BLE001 — compactor failure must fail-open
             logger.warning(
-                f"Context compactor failed, passing through: "
-                f"{type(exc).__name__}: {exc}"
+                f"Context compactor failed, passing through: {type(exc).__name__}: {exc}"
             )
 
     # Pre-inference cap: after BOTH layers, if the prompt is still larger
@@ -857,6 +893,7 @@ async def messages(
     # Client-driven retry via /compact is correct here — server shouldn't
     # silently retry with altered context.
     from fleet_manager.server.context_management import _total_tokens
+
     hard_cap = getattr(settings, "anthropic_max_prompt_tokens", 180_000)
     if hard_cap > 0:
         final_tokens = _total_tokens(ollama_body["messages"])
@@ -994,7 +1031,12 @@ async def messages(
         inference_req.client_ip = request.client.host if request.client else ""
     allow_fallback = parse_allow_fallback(inference_req.raw_body, request.headers)
     results, actual_model = await score_with_fallbacks(
-        inference_req, scorer, queue_mgr, registry, proxy=proxy, settings=settings,
+        inference_req,
+        scorer,
+        queue_mgr,
+        registry,
+        proxy=proxy,
+        settings=settings,
         allow_fallback=allow_fallback,
     )
 
@@ -1049,9 +1091,7 @@ async def messages(
 
     fallback_used = actual_model != local_model
     if fallback_used:
-        logger.info(
-            f"Anthropic[{rid}] fallback: {local_model} → {actual_model}"
-        )
+        logger.info(f"Anthropic[{rid}] fallback: {local_model} → {actual_model}")
         inference_req.model = actual_model
         inference_req.raw_body["model"] = actual_model
 
@@ -1074,9 +1114,7 @@ async def messages(
         response_future = await queue_mgr.enqueue(entry, process_fn)
     except ClientConcurrencyExceeded as e:
         return client_concurrency_response(e)
-    stream = await dispatched_stream(
-        request, response_future, entry, request.app.state.trace_store
-    )
+    stream = await dispatched_stream(request, response_future, entry, request.app.state.trace_store)
     if stream is None:
         return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
 
@@ -1084,18 +1122,21 @@ async def messages(
     if anthropic_version:
         _extra["anthropic-version"] = anthropic_version
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
-    headers.update(fleet_headers(
-        node_id=winner.node_id,
-        served_model=actual_model,
-        requested_model=local_model,
-        backend="mlx" if actual_model.startswith("mlx:") else "ollama",
-        score=winner.score,
-        retries=entry.retry_count,
-        affinity=affinity_from_breakdown(winner.scores_breakdown),
-        extra=_extra,
-    ))
+    headers.update(
+        fleet_headers(
+            node_id=winner.node_id,
+            served_model=actual_model,
+            requested_model=local_model,
+            backend="mlx" if actual_model.startswith("mlx:") else "ollama",
+            score=winner.score,
+            retries=entry.retry_count,
+            affinity=affinity_from_breakdown(winner.scores_breakdown),
+            extra=_extra,
+        )
+    )
 
     if body.stream:
+
         async def _sse_generator():
             state = AnthropicSSEState(model=body.model)
             synthesized = False
@@ -1103,7 +1144,9 @@ async def messages(
             try:
                 async for line in stream:
                     for event in ollama_chunk_to_anthropic_events(
-                        line, state, stop_sequences=body.stop_sequences,
+                        line,
+                        state,
+                        stop_sequences=body.stop_sequences,
                     ):
                         yield event
                 # If Ollama dropped without done, synthesize a stop so the client doesn't hang
@@ -1112,19 +1155,23 @@ async def messages(
                     if state.text_open:
                         yield (
                             "event: content_block_stop\ndata: "
-                            + json.dumps({
-                                "type": "content_block_stop",
-                                "index": state.text_block_index,
-                            })
+                            + json.dumps(
+                                {
+                                    "type": "content_block_stop",
+                                    "index": state.text_block_index,
+                                }
+                            )
                             + "\n\n"
                         )
                     yield (
                         "event: message_delta\ndata: "
-                        + json.dumps({
-                            "type": "message_delta",
-                            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                            "usage": {"output_tokens": state.output_tokens},
-                        })
+                        + json.dumps(
+                            {
+                                "type": "message_delta",
+                                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                                "usage": {"output_tokens": state.output_tokens},
+                            }
+                        )
                         + "\n\n"
                     )
                     stop_data = json.dumps({"type": "message_stop"})
@@ -1156,7 +1203,8 @@ async def messages(
                         f"elapsed_ms={elapsed_ms:.0f}"
                         + (
                             f" tool_names={[t['name'] for t in state.emitted_tools]}"
-                            if state.emitted_tools else ""
+                            if state.emitted_tools
+                            else ""
                         )
                     )
 
@@ -1185,7 +1233,9 @@ async def messages(
         proxy.pop_request_meta(inference_req.request_id)
 
     response = accumulate_anthropic_response(
-        chunks, model=body.model, stop_sequences=body.stop_sequences,
+        chunks,
+        model=body.model,
+        stop_sequences=body.stop_sequences,
     )
     elapsed_ms = (time.time() - t_start) * 1000
     blocks = response.get("content") or []
@@ -1196,8 +1246,7 @@ async def messages(
         f"Anthropic[{rid}] done: node={winner.node_id} "
         f"stop={response.get('stop_reason')} blocks={block_types} "
         f"in_tok={usage.get('input_tokens', 0)} out_tok={usage.get('output_tokens', 0)} "
-        f"elapsed_ms={elapsed_ms:.0f}"
-        + (f" tool_names={tool_names}" if tool_names else "")
+        f"elapsed_ms={elapsed_ms:.0f}" + (f" tool_names={tool_names}" if tool_names else "")
     )
     return JSONResponse(content=response, headers=headers)
 
@@ -1216,15 +1265,16 @@ async def count_tokens(request: Request):
         logger.warning("Anthropic count_tokens 400: invalid JSON body")
         return JSONResponse(
             status_code=400,
-            content={"type": "error", "error": {"type": "invalid_request_error",
-                                                "message": "Invalid JSON body"}},
+            content={
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": "Invalid JSON body"},
+            },
         )
     try:
         body = AnthropicMessagesRequest.model_validate(raw)
     except ValidationError as exc:
         logger.warning(
-            f"Anthropic count_tokens 400: validation — "
-            f"{exc.errors()[0] if exc.errors() else 'n/a'}"
+            f"Anthropic count_tokens 400: validation — {exc.errors()[0] if exc.errors() else 'n/a'}"
         )
         return JSONResponse(
             status_code=400,
@@ -1235,7 +1285,8 @@ async def count_tokens(request: Request):
         )
 
     text = flatten_text_for_count(
-        [m.model_dump() for m in body.messages], system=body.system,
+        [m.model_dump() for m in body.messages],
+        system=body.system,
     )
     n = estimate_tokens(text)
     logger.debug(

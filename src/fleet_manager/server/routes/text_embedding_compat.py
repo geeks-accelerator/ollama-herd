@@ -38,8 +38,11 @@ router = APIRouter(tags=["text-embedding"])
 
 # Re-export so ollama_compat.py only needs one import from this module
 __all__ = [
-    "RERANK", "is_text_embedding_model", "embed_text",
-    "proxy_to_native_text_server", "router",
+    "RERANK",
+    "is_text_embedding_model",
+    "embed_text",
+    "proxy_to_native_text_server",
+    "router",
 ]
 
 
@@ -63,13 +66,13 @@ def _score_text_embedding_candidates(candidates):
 class _NativeKind:
     """What differs between the requests the native text server answers."""
 
-    label: str                          # used in messages: "text embedding"
-    path: str                           # node route
-    original_format: str                # trace field
-    tags: tuple[str, ...]               # trace tags
-    serves: Callable                    # node -> bool: can this node answer?
-    count_tokens: Callable              # backend result -> int | None
-    node_in_body: bool                  # add "node" to the JSON body?
+    label: str  # used in messages: "text embedding"
+    path: str  # node route
+    original_format: str  # trace field
+    tags: tuple[str, ...]  # trace tags
+    serves: Callable  # node -> bool: can this node answer?
+    count_tokens: Callable  # backend result -> int | None
+    node_in_body: bool  # add "node" to the JSON body?
 
 
 def _int_or_none(value) -> int | None:
@@ -102,8 +105,10 @@ RERANK = _NativeKind(
     tags=("rerank",),
     # Only nodes that advertise a reranker: an older agent's server has no
     # /rerank route, so routing to it would 404 for no reason.
-    serves=lambda n: n.text_embedding_port > 0 and bool(n.text_embedding) and any(
-        getattr(m, "kind", "embed") == "rerank" for m in n.text_embedding.models_available
+    serves=lambda n: (
+        n.text_embedding_port > 0
+        and bool(n.text_embedding)
+        and any(getattr(m, "kind", "embed") == "rerank" for m in n.text_embedding.models_available)
     ),
     count_tokens=lambda result: _int_or_none((result.get("usage") or {}).get("total_tokens")),
     # Jina/Cohere response shape — the node is in X-Fleet-Node, not the body,
@@ -206,8 +211,11 @@ async def proxy_to_native_text_server(
 
     trace = direct_proxy_tracer(
         trace_store,
-        model=model, node_id=best.node_id, client_ip=client_ip,
-        original_format=kind.original_format, tags=list(kind.tags),
+        model=model,
+        node_id=best.node_id,
+        client_ip=client_ip,
+        original_format=kind.original_format,
+        tags=list(kind.tags),
     )
 
     size = _size_mb(model)

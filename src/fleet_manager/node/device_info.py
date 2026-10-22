@@ -58,9 +58,7 @@ def _probe_macos() -> dict:
     # system_profiler for richer info — parsed from human-readable text
     # (JSON mode is available but the text parser is simpler and
     # resistant to version drift)
-    profile = _safe_run(
-        ["system_profiler", "SPHardwareDataType"], timeout=8.0
-    )
+    profile = _safe_run(["system_profiler", "SPHardwareDataType"], timeout=8.0)
     if profile:
         for line in profile.splitlines():
             s = line.strip()

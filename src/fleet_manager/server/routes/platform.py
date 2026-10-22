@@ -48,12 +48,8 @@ async def platform_status(request: Request):
         "p2p_serve": False,  # disabled until P2P routing ships
     }
     if settings is not None:
-        features["telemetry_local_summary"] = getattr(
-            settings, "telemetry_local_summary", False
-        )
-        features["telemetry_include_tags"] = getattr(
-            settings, "telemetry_include_tags", False
-        )
+        features["telemetry_local_summary"] = getattr(settings, "telemetry_local_summary", False)
+        features["telemetry_include_tags"] = getattr(settings, "telemetry_include_tags", False)
 
     if state is None:
         return {

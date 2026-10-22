@@ -120,7 +120,8 @@ class PinnedModelsStore:
         }
         # Temp file in same dir to guarantee rename stays on the same FS
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8",
+            mode="w",
+            encoding="utf-8",
             dir=str(self._path.parent),
             delete=False,
             prefix=".pinned-",
@@ -141,7 +142,8 @@ class PinnedModelsStore:
 
 
 def merge_pins(
-    env_pins: list[str], per_node_pins: list[str],
+    env_pins: list[str],
+    per_node_pins: list[str],
 ) -> list[str]:
     """Union env-level + per-node pins, preserving order (env first).
 

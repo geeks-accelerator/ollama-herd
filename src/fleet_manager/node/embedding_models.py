@@ -79,9 +79,7 @@ def is_model_downloaded(model_name: str) -> bool:
     if not model_dir.exists():
         return False
     # Check for any ONNX file (may have custom names or be in subdirs)
-    return bool(list(model_dir.rglob("*.onnx"))) or any(
-        model_dir.rglob("*.safetensors")
-    )
+    return bool(list(model_dir.rglob("*.onnx"))) or any(model_dir.rglob("*.safetensors"))
 
 
 def download_model(model_name: str) -> Path:
@@ -100,10 +98,7 @@ def download_model(model_name: str) -> Path:
         logger.info(f"Model {model_name} already cached at {model_dir}")
         return model_dir
 
-    logger.info(
-        f"Downloading {model_name} ({spec['size_mb']}MB) "
-        f"from {spec['hf_repo']}..."
-    )
+    logger.info(f"Downloading {model_name} ({spec['size_mb']}MB) from {spec['hf_repo']}...")
 
     if spec["runtime"] == "onnx":
         _download_onnx_model(model_name, spec, model_dir)
@@ -280,10 +275,7 @@ class ONNXBackend:
         """
         import numpy as np
 
-        tensors = [
-            preprocess_image(img, self.input_size, self._mean, self._std)
-            for img in images
-        ]
+        tensors = [preprocess_image(img, self.input_size, self._mean, self._std) for img in images]
         if self._fixed_batch:
             # One run per image — the graph refuses anything but batch size 1.
             embeddings = np.concatenate(

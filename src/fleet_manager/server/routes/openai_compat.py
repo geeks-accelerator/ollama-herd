@@ -88,8 +88,7 @@ async def list_models(request: Request):
     reported = get_fleet_capabilities(registry)
     # `data` — the OpenAI standard shape. Kept pure.
     entries = [
-        {"id": m, "object": "model", "created": now, "owned_by": "ollama"}
-        for m in sorted(models)
+        {"id": m, "object": "model", "created": now, "owned_by": "ollama"} for m in sorted(models)
     ]
     # `models` — Codex requires its own richer schema and rejects the OpenAI
     # one, so we emit a second key; `data` above stays OpenAI-pure and neither
@@ -185,7 +184,11 @@ async def _serve_openai_via_mlx(
         except MlxQueueFullError as exc:
             logger.warning(f"OpenAI MLX queue full: {exc} — returning 503")
             record_trace_mlx(
-                trace_store, inference_req, t_start, None, "failed",
+                trace_store,
+                inference_req,
+                t_start,
+                None,
+                "failed",
                 error_message=describe_exception(exc),
             )
             return JSONResponse(
@@ -197,7 +200,11 @@ async def _serve_openai_via_mlx(
             status = 500 if isinstance(exc, MlxModelMissingError) else 502
             logger.error(f"OpenAI MLX error ({status}): {type(exc).__name__}: {exc}")
             record_trace_mlx(
-                trace_store, inference_req, t_start, None, "failed",
+                trace_store,
+                inference_req,
+                t_start,
+                None,
+                "failed",
                 error_message=describe_exception(exc),
             )
             return JSONResponse(
@@ -216,7 +223,11 @@ async def _serve_openai_via_mlx(
         await mlx_proxy._acquire_slot(model_key)
     except MlxModelMissingError as exc:
         record_trace_mlx(
-            trace_store, inference_req, t_start, None, "failed",
+            trace_store,
+            inference_req,
+            t_start,
+            None,
+            "failed",
             error_message=describe_exception(exc),
         )
         return JSONResponse(
@@ -226,7 +237,11 @@ async def _serve_openai_via_mlx(
     except MlxQueueFullError as exc:
         logger.warning(f"OpenAI MLX queue full (stream): {exc} — returning 503")
         record_trace_mlx(
-            trace_store, inference_req, t_start, None, "failed",
+            trace_store,
+            inference_req,
+            t_start,
+            None,
+            "failed",
             error_message=describe_exception(exc),
         )
         return JSONResponse(
@@ -255,13 +270,18 @@ async def _serve_openai_via_mlx(
             mlx_proxy._release_slot(model_key)
             mlx_proxy.pop_token_counts(inference_req.request_id)
             record_trace_mlx(
-                trace_store, inference_req, t_start, first_token_time,
+                trace_store,
+                inference_req,
+                t_start,
+                first_token_time,
                 "failed" if error else "completed",
                 error_message=describe_exception(error),
             )
 
     return StreamingResponse(
-        _passthrough(), media_type="text/event-stream", headers=headers,
+        _passthrough(),
+        media_type="text/event-stream",
+        headers=headers,
     )
 
 
@@ -333,7 +353,10 @@ async def chat_completions(request: Request):
                 headers={"Retry-After": "10"} if retryable else None,
             )
         return await _serve_openai_via_mlx(
-            request=request, inference_req=inference_req, mlx_proxy=mlx_proxy, model=model,
+            request=request,
+            inference_req=inference_req,
+            mlx_proxy=mlx_proxy,
+            model=model,
         )
 
     scorer = request.app.state.scorer
@@ -347,8 +370,13 @@ async def chat_completions(request: Request):
     # the global vram_fallback setting for this call only.
     allow_fallback = parse_allow_fallback(body, request.headers)
     results, actual_model = await score_with_fallbacks(
-        inference_req, scorer, queue_mgr, registry,
-        proxy=proxy, settings=settings, allow_fallback=allow_fallback,
+        inference_req,
+        scorer,
+        queue_mgr,
+        registry,
+        proxy=proxy,
+        settings=settings,
+        allow_fallback=allow_fallback,
     )
 
     if not results:
@@ -415,24 +443,24 @@ async def chat_completions(request: Request):
         response_future = await queue_mgr.enqueue(entry, process_fn)
     except ClientConcurrencyExceeded as e:
         return client_concurrency_response(e)
-    stream = await dispatched_stream(
-        request, response_future, entry, request.app.state.trace_store
-    )
+    stream = await dispatched_stream(request, response_future, entry, request.app.state.trace_store)
     if stream is None:
         return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
 
     # Build response headers — canonical X-Fleet-* set via the shared builder.
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
-    headers.update(fleet_headers(
-        node_id=winner.node_id,
-        served_model=actual_model,
-        requested_model=model,
-        backend="mlx" if actual_model.startswith("mlx:") else "ollama",
-        score=winner.score,
-        retries=entry.retry_count,
-        affinity=affinity_from_breakdown(winner.scores_breakdown),
-        extra=check_context_overflow(winner, inference_req, registry),
-    ))
+    headers.update(
+        fleet_headers(
+            node_id=winner.node_id,
+            served_model=actual_model,
+            requested_model=model,
+            backend="mlx" if actual_model.startswith("mlx:") else "ollama",
+            score=winner.score,
+            retries=entry.retry_count,
+            affinity=affinity_from_breakdown(winner.scores_breakdown),
+            extra=check_context_overflow(winner, inference_req, registry),
+        )
+    )
 
     if inference_req.stream:
 
@@ -511,9 +539,7 @@ async def chat_completions(request: Request):
                             if collected_tool_calls
                             else {"role": "assistant", "content": full_content}
                         ),
-                        "finish_reason": (
-                            "tool_calls" if collected_tool_calls else "stop"
-                        ),
+                        "finish_reason": ("tool_calls" if collected_tool_calls else "stop"),
                     }
                 ],
                 # cached_tokens is present only when the backend actually
@@ -643,7 +669,10 @@ async def rerank(request: Request):
         return JSONResponse(status_code=400, content={"error": "invalid JSON body"})
     model = str(body.get("model") or DEFAULT_RERANK_MODEL).lower().strip()
     return await proxy_to_native_text_server(
-        request, model=model, body={**body, "model": model}, kind=RERANK,
+        request,
+        model=model,
+        body={**body, "model": model},
+        kind=RERANK,
     )
 
 
@@ -682,15 +711,15 @@ async def openai_embeddings(request: Request):
     else:
         return _openai_error(
             400,
-            "'input' must be a string or a list of strings "
-            "(token-id arrays are not supported)",
+            "'input' must be a string or a list of strings (token-id arrays are not supported)",
             "invalid_request_error",
         )
     # Empty strings are rejected like OpenAI does — and because the fastembed
     # backend drops them, which would silently shift every later index.
     if not texts or any(not t for t in texts):
         return _openai_error(
-            400, "'input' must be non-empty and contain no empty strings",
+            400,
+            "'input' must be non-empty and contain no empty strings",
             "invalid_request_error",
         )
 
@@ -705,7 +734,9 @@ async def openai_embeddings(request: Request):
     dimensions = body.get("dimensions")
     if dimensions is not None and (not isinstance(dimensions, int) or dimensions <= 0):
         return _openai_error(
-            400, "'dimensions' must be a positive integer", "invalid_request_error",
+            400,
+            "'dimensions' must be a positive integer",
+            "invalid_request_error",
         )
 
     embed_body: dict = {"model": model, "input": texts}
@@ -719,8 +750,7 @@ async def openai_embeddings(request: Request):
     # Keep the X-Fleet-* headers the embed path set; drop the ones Starlette
     # recomputes for the new body.
     passthrough_headers = {
-        k: v for k, v in resp.headers.items()
-        if k.lower() not in ("content-length", "content-type")
+        k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")
     }
 
     try:
@@ -814,7 +844,8 @@ async def systemone(request: Request):
     raw = await request.body()
     if len(raw) > _SYSTEMONE_MAX_BYTES:
         return JSONResponse(
-            status_code=413, content={"error": "request body must not exceed 32 MiB"},
+            status_code=413,
+            content={"error": "request body must not exceed 32 MiB"},
         )
     try:
         body = json.loads(raw)
@@ -846,31 +877,39 @@ async def systemone(request: Request):
             f"and a local GGUF decision model (e.g. `ollama pull nimble`)"
         )
         await record_routing_rejection(
-            trace_store, InferenceRequest(model=model, tags=tags), reason=reason,
-            original_format="systemone", client_ip=client_ip,
+            trace_store,
+            InferenceRequest(model=model, tags=tags),
+            reason=reason,
+            original_format="systemone",
+            client_ip=client_ip,
         )
         return JSONResponse(status_code=404, content={"error": reason})
 
     started = time.time()
     resp = await _post_with_failover(
-        request.app.state.streaming_proxy, candidates, "/v1/systemone", body,
+        request.app.state.streaming_proxy,
+        candidates,
+        "/v1/systemone",
+        body,
         timeout=_SYSTEMONE_TIMEOUT,
     )
     if trace_store is not None:
         ok = resp.status_code == 200
         usage = json.loads(resp.body).get("usage", {}) if ok else {}
-        asyncio.ensure_future(trace_store.record_trace(
-            request_id=str(uuid.uuid4()),
-            model=model,
-            original_model=model,
-            node_id=resp.headers.get("X-Fleet-Node", ""),
-            status="completed" if ok else "failed",
-            latency_ms=(time.time() - started) * 1000,
-            prompt_tokens=usage.get("input_tokens"),
-            completion_tokens=usage.get("output_tokens"),
-            client_ip=client_ip,
-            original_format="systemone",
-            error_message=None if ok else resp.body.decode(errors="replace")[:500],
-            tags=tags,
-        ))
+        asyncio.ensure_future(
+            trace_store.record_trace(
+                request_id=str(uuid.uuid4()),
+                model=model,
+                original_model=model,
+                node_id=resp.headers.get("X-Fleet-Node", ""),
+                status="completed" if ok else "failed",
+                latency_ms=(time.time() - started) * 1000,
+                prompt_tokens=usage.get("input_tokens"),
+                completion_tokens=usage.get("output_tokens"),
+                client_ip=client_ip,
+                original_format="systemone",
+                error_message=None if ok else resp.body.decode(errors="replace")[:500],
+                tags=tags,
+            )
+        )
     return resp

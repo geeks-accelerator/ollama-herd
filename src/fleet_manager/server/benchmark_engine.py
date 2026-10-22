@@ -121,15 +121,17 @@ async def discover_fleet(
         for m in loaded:
             model_sizes[m["name"]] = m.get("size_gb", 0)
 
-        nodes_info.append(NodeInfo(
-            node_id=node_id,
-            cores=cpu.get("cores_physical", 0),
-            memory_total_gb=mem.get("total_gb", 0),
-            memory_used_gb=mem.get("used_gb", 0),
-            memory_available_gb=available_gb,
-            models=[m["name"] for m in loaded],
-            model_sizes=model_sizes,
-        ))
+        nodes_info.append(
+            NodeInfo(
+                node_id=node_id,
+                cores=cpu.get("cores_physical", 0),
+                memory_total_gb=mem.get("total_gb", 0),
+                memory_used_gb=mem.get("used_gb", 0),
+                memory_available_gb=available_gb,
+                models=[m["name"] for m in loaded],
+                model_sizes=model_sizes,
+            )
+        )
 
         if not loaded:
             continue
@@ -154,9 +156,7 @@ async def discover_fleet(
                     name=name, size_gb=size_gb, concurrency=per_model_conc
                 )
             else:
-                model_map[name].concurrency = max(
-                    model_map[name].concurrency, per_model_conc
-                )
+                model_map[name].concurrency = max(model_map[name].concurrency, per_model_conc)
             model_map[name].nodes.append(node_id)
 
     return list(model_map.values()), nodes_info
@@ -181,11 +181,15 @@ async def discover_embed_models(
             is_embed = any(p in name.lower() for p in embed_patterns)
             already_found = any(t.name == name for t in targets)
             if is_embed and not already_found:
-                    targets.append(ModelTarget(
-                        name=name, size_gb=m.get("size_gb", 0),
-                        concurrency=2, nodes=[node["node_id"]],
+                targets.append(
+                    ModelTarget(
+                        name=name,
+                        size_gb=m.get("size_gb", 0),
+                        concurrency=2,
+                        nodes=[node["node_id"]],
                         model_type="embed",
-                    ))
+                    )
+                )
     return targets
 
 
@@ -203,12 +207,15 @@ async def discover_image_models(
             name = m["name"]
             # Only benchmark one image model to avoid long runs
             if not targets:
-                targets.append(ModelTarget(
-                    name=name, size_gb=0,
-                    concurrency=1,  # Image gen is slow, 1 at a time
-                    nodes=m.get("fleet_nodes", []),
-                    model_type="image",
-                ))
+                targets.append(
+                    ModelTarget(
+                        name=name,
+                        size_gb=0,
+                        concurrency=1,  # Image gen is slow, 1 at a time
+                        nodes=m.get("fleet_nodes", []),
+                        model_type="image",
+                    )
+                )
         return targets
     except Exception:
         return []
@@ -231,23 +238,38 @@ async def send_embed_request(
         latency_ms = (time.monotonic() - start) * 1000
         if resp.status_code != 200:
             return RequestResult(
-                model=model, node_id="unknown", latency_ms=latency_ms,
-                ttft_ms=0, prompt_tokens=0, completion_tokens=0,
-                success=False, error=f"HTTP {resp.status_code}",
+                model=model,
+                node_id="unknown",
+                latency_ms=latency_ms,
+                ttft_ms=0,
+                prompt_tokens=0,
+                completion_tokens=0,
+                success=False,
+                error=f"HTTP {resp.status_code}",
                 model_type="embed",
             )
         node_id = resp.headers.get("x-fleet-node", "unknown")
         return RequestResult(
-            model=model, node_id=node_id, latency_ms=latency_ms,
-            ttft_ms=latency_ms, prompt_tokens=0, completion_tokens=1,
-            success=True, model_type="embed",
+            model=model,
+            node_id=node_id,
+            latency_ms=latency_ms,
+            ttft_ms=latency_ms,
+            prompt_tokens=0,
+            completion_tokens=1,
+            success=True,
+            model_type="embed",
         )
     except Exception as e:
         return RequestResult(
-            model=model, node_id="unknown",
+            model=model,
+            node_id="unknown",
             latency_ms=(time.monotonic() - start) * 1000,
-            ttft_ms=0, prompt_tokens=0, completion_tokens=0,
-            success=False, error=str(e)[:120], model_type="embed",
+            ttft_ms=0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            success=False,
+            error=str(e)[:120],
+            model_type="embed",
         )
 
 
@@ -266,29 +288,42 @@ async def send_image_request(
     }
     start = time.monotonic()
     try:
-        resp = await client.post(
-            "/api/generate-image", json=body, timeout=timeout
-        )
+        resp = await client.post("/api/generate-image", json=body, timeout=timeout)
         latency_ms = (time.monotonic() - start) * 1000
         node_id = resp.headers.get("x-fleet-node", "unknown")
         if resp.status_code != 200:
             return RequestResult(
-                model=model, node_id=node_id, latency_ms=latency_ms,
-                ttft_ms=0, prompt_tokens=0, completion_tokens=0,
-                success=False, error=f"HTTP {resp.status_code}",
+                model=model,
+                node_id=node_id,
+                latency_ms=latency_ms,
+                ttft_ms=0,
+                prompt_tokens=0,
+                completion_tokens=0,
+                success=False,
+                error=f"HTTP {resp.status_code}",
                 model_type="image",
             )
         return RequestResult(
-            model=model, node_id=node_id, latency_ms=latency_ms,
-            ttft_ms=latency_ms, prompt_tokens=0, completion_tokens=1,
-            success=True, model_type="image",
+            model=model,
+            node_id=node_id,
+            latency_ms=latency_ms,
+            ttft_ms=latency_ms,
+            prompt_tokens=0,
+            completion_tokens=1,
+            success=True,
+            model_type="image",
         )
     except Exception as e:
         return RequestResult(
-            model=model, node_id="unknown",
+            model=model,
+            node_id="unknown",
             latency_ms=(time.monotonic() - start) * 1000,
-            ttft_ms=0, prompt_tokens=0, completion_tokens=0,
-            success=False, error=str(e)[:120], model_type="image",
+            ttft_ms=0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            success=False,
+            error=str(e)[:120],
+            model_type="image",
         )
 
 
@@ -528,14 +563,16 @@ def build_report(
             )
             # Determine model type from results
             m_type = mr[0].model_type if mr else "llm"
-            per_model.append({
-                "model": model,
-                "model_type": m_type,
-                "requests": len(mr),
-                "tok_s": round(m_tok_s, 1),
-                "avg_latency_ms": round(m_lat, 1),
-                "avg_ttft_ms": round(m_ttft, 1),
-            })
+            per_model.append(
+                {
+                    "model": model,
+                    "model_type": m_type,
+                    "requests": len(mr),
+                    "tok_s": round(m_tok_s, 1),
+                    "avg_latency_ms": round(m_lat, 1),
+                    "avg_ttft_ms": round(m_ttft, 1),
+                }
+            )
 
     # Build per-node results
     per_node = []
@@ -545,13 +582,15 @@ def build_report(
             n_pct = len(nr) / len(success) * 100
             n_tok = sum(r.completion_tokens for r in nr)
             n_tok_s = n_tok / duration if duration > 0 else 0
-            per_node.append({
-                "node_id": node,
-                "requests": len(nr),
-                "pct": round(n_pct, 1),
-                "tok_s": round(n_tok_s, 1),
-                "tokens": n_tok,
-            })
+            per_node.append(
+                {
+                    "node_id": node,
+                    "requests": len(nr),
+                    "pct": round(n_pct, 1),
+                    "tok_s": round(n_tok_s, 1),
+                    "tokens": n_tok,
+                }
+            )
 
     # Build peak utilization
     peak_util = []
@@ -576,14 +615,16 @@ def build_report(
                 node_mem_samples.setdefault(nid, []).append(mem_pct)
 
         for nid in sorted(node_cpu_max.keys()):
-            peak_util.append({
-                "node_id": nid,
-                "cpu_avg": round(statistics.mean(node_cpu_samples.get(nid, [0])), 1),
-                "cpu_peak": round(node_cpu_max[nid], 1),
-                "mem_avg": round(statistics.mean(node_mem_samples.get(nid, [0])), 1),
-                "mem_peak": round(node_mem_max[nid], 1),
-                "active_peak": node_active_max[nid],
-            })
+            peak_util.append(
+                {
+                    "node_id": nid,
+                    "cpu_avg": round(statistics.mean(node_cpu_samples.get(nid, [0])), 1),
+                    "cpu_peak": round(node_cpu_max[nid], 1),
+                    "mem_avg": round(statistics.mean(node_mem_samples.get(nid, [0])), 1),
+                    "mem_peak": round(node_mem_max[nid], 1),
+                    "active_peak": node_active_max[nid],
+                }
+            )
 
     # Fleet snapshot for storage
     fleet_snapshot = {
@@ -598,8 +639,10 @@ def build_report(
         ],
         "models": [
             {
-                "name": t.name, "size_gb": t.size_gb,
-                "concurrency": t.concurrency, "model_type": t.model_type,
+                "name": t.name,
+                "size_gb": t.size_gb,
+                "concurrency": t.concurrency,
+                "model_type": t.model_type,
             }
             for t in targets
         ],

@@ -154,7 +154,8 @@ async def embed_image(request: Request):
     # Filter for specific model if requested
     if model:
         model_candidates = [
-            n for n in candidates
+            n
+            for n in candidates
             if any(m.name == model for m in n.vision_embedding.models_available)
         ]
         if model_candidates:
@@ -164,7 +165,7 @@ async def embed_image(request: Request):
         return await reject(
             404,
             "No vision embedding models available on any node. "
-            "Download a model first: POST /api/pull {\"model\": \"dinov2-vit-s14\"}",
+            'Download a model first: POST /api/pull {"model": "dinov2-vit-s14"}',
         )
 
     best = _score_embedding_candidates(candidates)
@@ -179,8 +180,11 @@ async def embed_image(request: Request):
     proxy = request.app.state.streaming_proxy
     trace = direct_proxy_tracer(
         trace_store,
-        model=model, node_id=best.node_id, client_ip=client_ip,
-        original_format=_ORIGINAL_FORMAT, tags=list(_TAGS),
+        model=model,
+        node_id=best.node_id,
+        client_ip=client_ip,
+        original_format=_ORIGINAL_FORMAT,
+        tags=list(_TAGS),
     )
     try:
         result = await proxy.embed_image_on_node(

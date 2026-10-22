@@ -68,9 +68,7 @@ def _save_last_sent_day(day: str, state_file: Path | None = None) -> None:
 def _seconds_until_next_run(now: datetime | None = None) -> float:
     if now is None:
         now = datetime.now(UTC)
-    today_run = now.replace(
-        hour=_RUN_HOUR_UTC, minute=_RUN_MINUTE_UTC, second=0, microsecond=0
-    )
+    today_run = now.replace(hour=_RUN_HOUR_UTC, minute=_RUN_MINUTE_UTC, second=0, microsecond=0)
     next_run = today_run if now < today_run else today_run + timedelta(days=1)
     return (next_run - now).total_seconds() + random.uniform(0, _MAX_JITTER_S)
 

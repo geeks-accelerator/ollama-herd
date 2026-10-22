@@ -64,13 +64,15 @@ _pin_fit_failures: list[dict] = []
 def _record_pin_fit_failure(
     model: str, node_id: str, needed_gb: float, available_gb: float
 ) -> None:
-    _pin_fit_failures.append({
-        "timestamp": time.time(),
-        "model": model,
-        "node_id": node_id,
-        "needed_gb": needed_gb,
-        "available_gb": available_gb,
-    })
+    _pin_fit_failures.append(
+        {
+            "timestamp": time.time(),
+            "model": model,
+            "node_id": node_id,
+            "needed_gb": needed_gb,
+            "available_gb": available_gb,
+        }
+    )
     if len(_pin_fit_failures) > 200:
         _pin_fit_failures.pop(0)
 
@@ -350,11 +352,27 @@ def _estimate_model_size(model: str, node=None) -> float:
     if "embed" in lower or "nomic" in lower:
         return 0.5
     for token, gb in (
-        ("671b", 400.0), ("480b", 290.0), ("405b", 230.0), ("235b", 140.0),
-        ("122b", 75.0), ("120b", 72.0), ("70b", 45.0), ("72b", 45.0),
-        ("32b", 20.0), ("30b", 19.0), ("27b", 19.0), ("22b", 14.0),
-        ("14b", 10.0), ("13b", 10.0), ("8b", 5.0), ("7b", 5.0),
-        ("4b", 3.0), ("3b", 3.0), ("1b", 1.0), ("0.6b", 1.0), ("0.5b", 1.0),
+        ("671b", 400.0),
+        ("480b", 290.0),
+        ("405b", 230.0),
+        ("235b", 140.0),
+        ("122b", 75.0),
+        ("120b", 72.0),
+        ("70b", 45.0),
+        ("72b", 45.0),
+        ("32b", 20.0),
+        ("30b", 19.0),
+        ("27b", 19.0),
+        ("22b", 14.0),
+        ("14b", 10.0),
+        ("13b", 10.0),
+        ("8b", 5.0),
+        ("7b", 5.0),
+        ("4b", 3.0),
+        ("3b", 3.0),
+        ("1b", 1.0),
+        ("0.6b", 1.0),
+        ("0.5b", 1.0),
     ):
         if token in lower:
             return gb
@@ -390,7 +408,10 @@ def _model_is_loaded_anywhere(model: str, nodes) -> bool:
 
 
 async def _wait_until_resident(
-    registry, node_id: str | None, model: str, timeout_s: float,
+    registry,
+    node_id: str | None,
+    model: str,
+    timeout_s: float,
 ) -> tuple[bool, int]:
     """Poll the registry until ``model`` is resident, or ``timeout_s`` elapses.
 
@@ -427,8 +448,12 @@ def _nodes_with_model_on_disk(model: str, nodes):
 
 
 async def _load_model_on_best_node(
-    model: str, nodes, proxy: StreamingProxy, *,
-    why: str = "preload", target_node_id: str | None = None,
+    model: str,
+    nodes,
+    proxy: StreamingProxy,
+    *,
+    why: str = "preload",
+    target_node_id: str | None = None,
     settings=None,
 ) -> bool:
     """Pre-warm model; prefer ``target_node_id`` if given, else pick best-mem node.
@@ -599,7 +624,11 @@ async def preload_priority_models(
             continue
         why = f"pinned:{target}" if target else "pinned"
         if await _load_model_on_best_node(
-            model, nodes, proxy, why=why, target_node_id=target,
+            model,
+            nodes,
+            proxy,
+            why=why,
+            target_node_id=target,
             settings=settings,
         ):
             loaded_count += 1
@@ -629,7 +658,10 @@ async def preload_priority_models(
             if _model_is_loaded_anywhere(model, nodes):
                 continue  # already hot, no need to load
             if await _load_model_on_best_node(
-                model, nodes, proxy, why=f"priority score={score}",
+                model,
+                nodes,
+                proxy,
+                why=f"priority score={score}",
                 settings=settings,
             ):
                 loaded_count += 1
@@ -650,13 +682,17 @@ async def preload_priority_models(
             # Re-read per-node pins so dashboard toggles land within a cycle
             if pinned_store is not None:
                 refreshed_plan = _build_pinned_plan(
-                    env_pins, pinned_store.load(),
+                    env_pins,
+                    pinned_store.load(),
                 )
             else:
                 refreshed_plan = pinned_plan
             await _refresh_priority_models(
-                registry, trace_store, proxy,
-                pinned_plan=refreshed_plan, max_count=max_count,
+                registry,
+                trace_store,
+                proxy,
+                pinned_plan=refreshed_plan,
+                max_count=max_count,
                 settings=settings,
             )
         except Exception as exc:
@@ -715,7 +751,11 @@ async def _refresh_priority_models(
         )
         why = f"pinned-refresh:{target}" if target else "pinned-refresh"
         if await _load_model_on_best_node(
-            model, nodes, proxy, why=why, target_node_id=target,
+            model,
+            nodes,
+            proxy,
+            why=why,
+            target_node_id=target,
             settings=settings,
         ):
             loaded_this_cycle += 1
@@ -742,9 +782,8 @@ async def _refresh_priority_models(
         return
 
     top_priorities = [
-        p for p in priorities
-        if p["priority_score"] >= 10 and p["model"] not in pinned_names
-    ][: max_count]  # cap search scope
+        p for p in priorities if p["priority_score"] >= 10 and p["model"] not in pinned_names
+    ][:max_count]  # cap search scope
 
     for entry in top_priorities:
         if remaining_budget <= 0:
@@ -753,12 +792,13 @@ async def _refresh_priority_models(
         if model in hot_models:
             continue
         if model not in recent_models:
-            logger.info(
-                f"Preloader refresh: skipping {model} — no requests in last hour"
-            )
+            logger.info(f"Preloader refresh: skipping {model} — no requests in last hour")
             continue
         if await _load_model_on_best_node(
-            model, nodes, proxy, why=f"priority-refresh score={entry['priority_score']}",
+            model,
+            nodes,
+            proxy,
+            why=f"priority-refresh score={entry['priority_score']}",
             settings=settings,
         ):
             remaining_budget -= 1

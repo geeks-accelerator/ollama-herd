@@ -119,9 +119,7 @@ def load_or_generate_keypair() -> tuple[bytes, bytes]:
         # Load existing
         with open(KEYPAIR_FILE, "rb") as f:
             priv_bytes = f.read()
-        private_key = serialization.load_pem_private_key(
-            priv_bytes, password=None
-        )
+        private_key = serialization.load_pem_private_key(priv_bytes, password=None)
         public_key = private_key.public_key()
         pub_bytes = public_key.public_bytes(
             encoding=serialization.Encoding.Raw,
@@ -169,27 +167,18 @@ async def validate_token(platform_url: str, token: str) -> PlatformIdentity:
     url = f"{platform_url.rstrip('/')}/api/auth/me"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                url, headers={"Authorization": f"Bearer {token}"}
-            )
+            resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
     except httpx.HTTPError as exc:
-        raise PlatformUnreachableError(
-            f"Cannot reach {platform_url}: {exc}"
-        ) from exc
+        raise PlatformUnreachableError(f"Cannot reach {platform_url}: {exc}") from exc
 
     if resp.status_code == 401:
         raise InvalidTokenError(
-            "Operator token rejected by platform. "
-            "Generate a new one at gotomy.ai/web/"
+            "Operator token rejected by platform. Generate a new one at gotomy.ai/web/"
         )
     if resp.status_code >= 500:
-        raise PlatformUnreachableError(
-            f"Platform returned {resp.status_code} on token validation"
-        )
+        raise PlatformUnreachableError(f"Platform returned {resp.status_code} on token validation")
     if resp.status_code != 200:
-        raise InvalidTokenError(
-            f"Unexpected {resp.status_code} validating token"
-        )
+        raise InvalidTokenError(f"Unexpected {resp.status_code} validating token")
 
     data = resp.json()
     # Platform may wrap response in a data envelope; handle both shapes.
@@ -236,9 +225,7 @@ async def register_node(
                 json=body,
             )
     except httpx.HTTPError as exc:
-        raise PlatformUnreachableError(
-            f"Cannot reach {platform_url}: {exc}"
-        ) from exc
+        raise PlatformUnreachableError(f"Cannot reach {platform_url}: {exc}") from exc
 
     if resp.status_code in (200, 201):
         data = resp.json()
@@ -247,9 +234,7 @@ async def register_node(
             data = data["data"]
         node_id = data.get("id") or data.get("node_id")
         if not node_id:
-            raise RegistrationError(
-                f"Registration succeeded but no node_id returned: {data}"
-            )
+            raise RegistrationError(f"Registration succeeded but no node_id returned: {data}")
         return node_id
 
     if resp.status_code == 409:
@@ -272,12 +257,8 @@ async def register_node(
     if resp.status_code == 401:
         raise InvalidTokenError("Operator token rejected during registration")
     if resp.status_code >= 500:
-        raise PlatformUnreachableError(
-            f"Platform returned {resp.status_code} during registration"
-        )
-    raise RegistrationError(
-        f"Registration failed: HTTP {resp.status_code} — {resp.text[:200]}"
-    )
+        raise PlatformUnreachableError(f"Platform returned {resp.status_code} during registration")
+    raise RegistrationError(f"Registration failed: HTTP {resp.status_code} — {resp.text[:200]}")
 
 
 # ---------------------------------------------------------------------------
@@ -351,9 +332,7 @@ async def connect_to_platform(
     ConnectionState and writes platform.json.
     """
     if not token.startswith("herd_"):
-        raise InvalidTokenError(
-            "Operator tokens start with 'herd_'. Check what you pasted."
-        )
+        raise InvalidTokenError("Operator tokens start with 'herd_'. Check what you pasted.")
 
     # 1. Validate token
     identity = await validate_token(platform_url, token)

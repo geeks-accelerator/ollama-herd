@@ -105,6 +105,7 @@ def _estimate_tokens(text: str) -> int:
 def _total_tokens(messages: list[dict]) -> int:
     """Estimate total tokens across all messages' content."""
     import json
+
     total = 0
     for m in messages:
         c = m.get("content")
@@ -117,9 +118,7 @@ def _total_tokens(messages: list[dict]) -> int:
                 if block.get("type") == "text":
                     total += _estimate_tokens(block.get("text") or "")
                 elif block.get("type") == "tool_use":
-                    total += _estimate_tokens(
-                        json.dumps(block.get("input") or {})
-                    )
+                    total += _estimate_tokens(json.dumps(block.get("input") or {}))
                 elif block.get("type") == "tool_result":
                     inner = block.get("content")
                     if isinstance(inner, str):
@@ -142,10 +141,7 @@ def _iter_tool_result_positions(
         if not isinstance(c, list):
             continue
         for j, block in enumerate(c):
-            if (
-                isinstance(block, dict)
-                and block.get("type") == "tool_result"
-            ):
+            if isinstance(block, dict) and block.get("type") == "tool_result":
                 tuid = block.get("tool_use_id") or f"unknown-{i}-{j}"
                 out.append((i, j, tuid))
     return out
@@ -239,20 +235,14 @@ def clear_old_tool_results(
         # use a cheap approximation: if len(non-sticky) > keep_recent AND
         # tokens_before > trigger, we know layer-1 would bite anyway.
         non_sticky = [(mi, bi, tuid) for mi, bi, tuid in positions if tuid not in sticky_ids]
-        if (
-            report.tokens_before > trigger_tokens
-            and len(non_sticky) > keep_recent
-        ):
+        if report.tokens_before > trigger_tokens and len(non_sticky) > keep_recent:
             # Clear oldest non-sticky up to the keep_recent boundary
             to_advance = non_sticky[:-keep_recent] if keep_recent > 0 else non_sticky
             for mi, bi, tuid in to_advance:
                 clear_positions[(mi, bi)] = tuid
                 new_sticky_ids.append(tuid)
         # keep_ids is everything not in clear_positions
-        keep_ids = {
-            tuid for mi, bi, tuid in positions
-            if (mi, bi) not in clear_positions
-        }
+        keep_ids = {tuid for mi, bi, tuid in positions if (mi, bi) not in clear_positions}
     else:
         # Original stateless behavior (fallback for when sticky_store is None)
         if report.tokens_before <= trigger_tokens:

@@ -253,10 +253,7 @@ async def run_scheduler() -> None:
     Only runs when platform is connected.  If connection is lost mid-run,
     subsequent heartbeats fail gracefully and retry on next tick.
     """
-    logger.info(
-        f"platform heartbeat: scheduler started "
-        f"(every {_HEARTBEAT_INTERVAL_S:.0f}s)"
-    )
+    logger.info(f"platform heartbeat: scheduler started (every {_HEARTBEAT_INTERVAL_S:.0f}s)")
     last_success = time.time()
     while True:
         try:
@@ -273,6 +270,5 @@ async def run_scheduler() -> None:
             # Quietly tolerate short outages; warn louder after 10 min
             if staleness_min > 10:
                 logger.warning(
-                    f"platform heartbeat: {staleness_min:.0f} min since last "
-                    f"successful send"
+                    f"platform heartbeat: {staleness_min:.0f} min since last successful send"
                 )

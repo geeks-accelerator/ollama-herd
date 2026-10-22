@@ -202,9 +202,7 @@ async def generate_image(request: Request):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=IMAGE_TIMEOUT_S
-        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=IMAGE_TIMEOUT_S)
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
 

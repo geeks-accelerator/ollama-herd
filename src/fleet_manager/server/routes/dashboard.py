@@ -59,9 +59,9 @@ async def _get_instant_model_stats(trace_store) -> dict[str, dict]:
         result: dict[str, dict] = {}
         for row in rows:
             result[row[0]] = {
-                "total":          row[1] or 0,
-                "completed":      row[2] or 0,
-                "failed":         row[3] or 0,
+                "total": row[1] or 0,
+                "completed": row[2] or 0,
+                "failed": row[3] or 0,
                 "avg_latency_ms": round(row[4], 1) if row[4] else 0.0,
             }
         _instant_stats_cache = result
@@ -69,6 +69,7 @@ async def _get_instant_model_stats(trace_store) -> dict[str, dict]:
         return result
     except Exception:
         return _instant_stats_cache  # return stale on error rather than crash
+
 
 # ---------------------------------------------------------------------------
 # Favicon — FontAwesome horse-saddle (sharp duotone) in brand accent purple
@@ -176,7 +177,6 @@ async def dashboard_events(request: Request):
         mlx_proxy = getattr(request.app.state, "mlx_proxy", None)
 
         while not await request.is_disconnected():
-
             nodes = []
             for node in registry.get_all_nodes():
                 node_data = {
@@ -217,7 +217,8 @@ async def dashboard_events(request: Request):
                     # separately so the dashboard renders a "loaded via MLX"
                     # row instead of confusing them with on-disk Ollama models.
                     mlx_models = [
-                        m for m in node.ollama.models_available
+                        m
+                        for m in node.ollama.models_available
                         if isinstance(m, str) and m.startswith("mlx:")
                     ]
                     ollama_avail_count = len(node.ollama.models_available) - len(mlx_models)
@@ -241,19 +242,12 @@ async def dashboard_events(request: Request):
                         "requests_active": node.ollama.requests_active,
                     }
                 if node.image and node.image.models_available:
-                    node_data["image_models"] = [
-                        m.name for m in node.image.models_available
-                    ]
+                    node_data["image_models"] = [m.name for m in node.image.models_available]
                 if node.transcription and node.transcription.models_available:
-                    node_data["stt_models"] = [
-                        m.name for m in node.transcription.models_available
-                    ]
+                    node_data["stt_models"] = [m.name for m in node.transcription.models_available]
                 # Embedding models: Ollama models with "embed" in the name
                 if node.ollama:
-                    embed_models = [
-                        m for m in node.ollama.models_available
-                        if "embed" in m.lower()
-                    ]
+                    embed_models = [m for m in node.ollama.models_available if "embed" in m.lower()]
                     if embed_models:
                         node_data["embed_models"] = embed_models
                 # Vision embedding models (DINOv2, SigLIP, CLIP)
@@ -320,17 +314,17 @@ async def dashboard_events(request: Request):
                     if key in queues:
                         continue  # a real queue always wins
                     queues[key] = {
-                        "node_id":        node.node_id,
-                        "model":          lm.name,
-                        "backend":        "ollama",
-                        "request_type":   "text",
-                        "idle":           True,
-                        "pending":        0,
-                        "in_flight":      0,
-                        "concurrency":    0,
-                        "completed":      0,
-                        "failed":         0,
-                        "stats_samples":  0,
+                        "node_id": node.node_id,
+                        "model": lm.name,
+                        "backend": "ollama",
+                        "request_type": "text",
+                        "idle": True,
+                        "pending": 0,
+                        "in_flight": 0,
+                        "concurrency": 0,
+                        "completed": 0,
+                        "failed": 0,
+                        "stats_samples": 0,
                         "avg_latency_ms": 0.0,
                     }
 
@@ -347,20 +341,20 @@ async def dashboard_events(request: Request):
                                 key = f"{node.node_id}:{m.name}"
                                 st = instant_stats.get(m.name, {})
                                 queues[key] = {
-                                    "node_id":        node.node_id,
-                                    "model":          m.name,
-                                    "backend":        "native",
-                                    "request_type":   m.kind,  # "embed" | "rerank"
-                                    "instant":        True,
-                                    "pending":        0,
-                                    "in_flight":      0,
-                                    "concurrency":    0,
-                                    "completed":      st.get("completed", 0),
-                                    "failed":         st.get("failed", 0),
+                                    "node_id": node.node_id,
+                                    "model": m.name,
+                                    "backend": "native",
+                                    "request_type": m.kind,  # "embed" | "rerank"
+                                    "instant": True,
+                                    "pending": 0,
+                                    "in_flight": 0,
+                                    "concurrency": 0,
+                                    "completed": st.get("completed", 0),
+                                    "failed": st.get("failed", 0),
                                     "avg_latency_ms": st.get("avg_latency_ms", 0.0),
-                                    "stats_samples":  st.get("total", 0),
-                                    "dimensions":     m.dimensions,
-                                    "cached":         m.cached,
+                                    "stats_samples": st.get("total", 0),
+                                    "dimensions": m.dimensions,
+                                    "cached": m.cached,
                                 }
                         # Vision embedding (DINOv2, SigLIP, CLIP — port 11438)
                         if node.vision_embedding and node.vision_embedding_port > 0:
@@ -368,19 +362,19 @@ async def dashboard_events(request: Request):
                                 key = f"{node.node_id}:{m.name}"
                                 st = instant_stats.get(m.name, {})
                                 queues[key] = {
-                                    "node_id":        node.node_id,
-                                    "model":          m.name,
-                                    "backend":        "vision",
-                                    "request_type":   "embed",
-                                    "instant":        True,
-                                    "pending":        0,
-                                    "in_flight":      0,
-                                    "concurrency":    0,
-                                    "completed":      st.get("completed", 0),
-                                    "failed":         st.get("failed", 0),
+                                    "node_id": node.node_id,
+                                    "model": m.name,
+                                    "backend": "vision",
+                                    "request_type": "embed",
+                                    "instant": True,
+                                    "pending": 0,
+                                    "in_flight": 0,
+                                    "concurrency": 0,
+                                    "completed": st.get("completed", 0),
+                                    "failed": st.get("failed", 0),
                                     "avg_latency_ms": st.get("avg_latency_ms", 0.0),
-                                    "stats_samples":  st.get("total", 0),
-                                    "dimensions":     m.dimensions,
+                                    "stats_samples": st.get("total", 0),
+                                    "dimensions": m.dimensions,
                                 }
 
             data = {
@@ -434,28 +428,38 @@ async def dashboard_events(request: Request):
 
 @router.get("/dashboard/api/trends")
 async def dashboard_trends_data(
-    request: Request, hours: int = 72, start_ts: float = 0, end_ts: float = 0,
+    request: Request,
+    hours: int = 72,
+    start_ts: float = 0,
+    end_ts: float = 0,
 ):
     """Hourly aggregated request counts and latencies for the trends chart."""
     latency_store = getattr(request.app.state, "latency_store", None)
     if not latency_store:
         return {"hours": hours, "data": []}
     data = await latency_store.get_hourly_trends(
-        hours=hours, start_ts=start_ts, end_ts=end_ts,
+        hours=hours,
+        start_ts=start_ts,
+        end_ts=end_ts,
     )
     return {"hours": hours, "data": data}
 
 
 @router.get("/dashboard/api/models")
 async def dashboard_models_data(
-    request: Request, days: int = 7, start_ts: float = 0, end_ts: float = 0,
+    request: Request,
+    days: int = 7,
+    start_ts: float = 0,
+    end_ts: float = 0,
 ):
     """Per-model daily aggregated stats for the model insights page."""
     latency_store = getattr(request.app.state, "latency_store", None)
     if not latency_store:
         return {"days": days, "daily": [], "summary": []}
     daily = await latency_store.get_model_daily_stats(
-        days=days, start_ts=start_ts, end_ts=end_ts,
+        days=days,
+        start_ts=start_ts,
+        end_ts=end_ts,
     )
     summary = await latency_store.get_model_summary()
     return {"days": days, "daily": daily, "summary": summary}
@@ -509,14 +513,19 @@ async def dashboard_traces(request: Request, limit: int = 50):
 @router.get("/dashboard/api/tags")
 @router.get("/dashboard/api/apps")  # backwards compat
 async def dashboard_tags_data(
-    request: Request, days: int = 7, start_ts: float = 0, end_ts: float = 0,
+    request: Request,
+    days: int = 7,
+    start_ts: float = 0,
+    end_ts: float = 0,
 ):
     """Per-tag aggregated stats for the Apps analytics page."""
     trace_store = getattr(request.app.state, "trace_store", None)
     if not trace_store:
         return {"days": days, "data": [], "summary": []}
     data = await trace_store.get_usage_by_tag(
-        days=days, start_ts=start_ts, end_ts=end_ts,
+        days=days,
+        start_ts=start_ts,
+        end_ts=end_ts,
     )
     summary = await trace_store.get_tag_summary()
     return {"days": days, "data": data, "summary": summary}
@@ -525,14 +534,19 @@ async def dashboard_tags_data(
 @router.get("/dashboard/api/tags/daily")
 @router.get("/dashboard/api/apps/daily")  # backwards compat
 async def dashboard_tags_daily_data(
-    request: Request, days: int = 7, start_ts: float = 0, end_ts: float = 0,
+    request: Request,
+    days: int = 7,
+    start_ts: float = 0,
+    end_ts: float = 0,
 ):
     """Per-tag, per-day breakdown for the Apps analytics charts."""
     trace_store = getattr(request.app.state, "trace_store", None)
     if not trace_store:
         return {"days": days, "data": []}
     data = await trace_store.get_tag_daily_stats(
-        days=days, start_ts=start_ts, end_ts=end_ts,
+        days=days,
+        start_ts=start_ts,
+        end_ts=end_ts,
     )
     return {"days": days, "data": data}
 
@@ -590,7 +604,13 @@ async def start_benchmark(request: Request):
         streaming_proxy=request.app.state.streaming_proxy,
         scorer=request.app.state.scorer,
     )
-    return {"status": "started", "run_id": run_id, "mode": mode, "duration": duration, "model_types": model_types}
+    return {
+        "status": "started",
+        "run_id": run_id,
+        "mode": mode,
+        "duration": duration,
+        "model_types": model_types,
+    }
 
 
 @router.get("/dashboard/api/benchmarks/progress")
@@ -696,35 +716,38 @@ async def context_usage(request: Request, days: int = 7):
 
         # Recommend based on p99 of total tokens (not raw max — avoids outlier skew)
         from fleet_manager.server.context_optimizer import compute_recommended_ctx
+
         recommended = compute_recommended_ctx(total_p99, max_total_24h)
         recommended = min(recommended, alloc) if alloc > 0 else recommended
 
         util_pct = round((total_p99 / alloc) * 100, 1) if alloc > 0 else 0
         savings_pct = round(max(0, (alloc - recommended) / alloc * 100), 1) if alloc > 0 else 0
 
-        models.append({
-            "model": model,
-            "allocated_ctx": alloc,
-            "override_ctx": overrides.get(model),
-            "request_count": stats["request_count"],
-            "prompt_tokens": {
-                "avg": stats["avg_prompt"],
-                "p50": stats["prompt_p50"],
-                "p75": stats["prompt_p75"],
-                "p95": stats["prompt_p95"],
-                "p99": stats["prompt_p99"],
-                "max": stats["max_prompt"],
-            },
-            "total_tokens": {
-                "p95": stats["total_p95"],
-                "p99": total_p99,
-                "max": stats["max_total"],
-                "max_24h": max_total_24h,
-            },
-            "utilization_pct": util_pct,
-            "recommended_ctx": recommended,
-            "savings_pct": savings_pct,
-        })
+        models.append(
+            {
+                "model": model,
+                "allocated_ctx": alloc,
+                "override_ctx": overrides.get(model),
+                "request_count": stats["request_count"],
+                "prompt_tokens": {
+                    "avg": stats["avg_prompt"],
+                    "p50": stats["prompt_p50"],
+                    "p75": stats["prompt_p75"],
+                    "p95": stats["prompt_p95"],
+                    "p99": stats["prompt_p99"],
+                    "max": stats["max_prompt"],
+                },
+                "total_tokens": {
+                    "p95": stats["total_p95"],
+                    "p99": total_p99,
+                    "max": stats["max_total"],
+                    "max_24h": max_total_24h,
+                },
+                "utilization_pct": util_pct,
+                "recommended_ctx": recommended,
+                "savings_pct": savings_pct,
+            }
+        )
 
     return {"days": days, "models": models}
 
@@ -733,7 +756,10 @@ _recommendations_cache: dict = {"data": None, "generated_at": 0.0}
 
 # Fleet Intelligence briefing cache
 _briefing_cache: dict = {
-    "briefing": None, "model": None, "generated_at": 0.0, "generating": False,
+    "briefing": None,
+    "model": None,
+    "generated_at": 0.0,
+    "generating": False,
 }
 _briefing_history: list[dict] = []  # Last 10 briefings
 _BRIEFING_HISTORY_MAX = 10
@@ -766,7 +792,7 @@ def _compute_briefing_interval(registry, trace_store) -> float:
         return 7200  # 2 hours when very busy (don't steal compute)
     if total_in_flight > 0:
         return 3600  # 1 hour when active
-    return 1800      # 30 min when idle (catch silent failures fast)
+    return 1800  # 30 min when idle (catch silent failures fast)
 
 
 async def _generate_briefing(request) -> dict:
@@ -798,7 +824,11 @@ async def _generate_briefing(request) -> dict:
                 continue
             for m in node.ollama.models_loaded:
                 nm = m.name.lower()
-                if not any(p in nm for p in EMBED_SKIP) and "image" not in nm and not nm.startswith("x/"):
+                if (
+                    not any(p in nm for p in EMBED_SKIP)
+                    and "image" not in nm
+                    and not nm.startswith("x/")
+                ):
                     model = m.name
                     break
             if model:
@@ -809,12 +839,8 @@ async def _generate_briefing(request) -> dict:
     # Gather fleet data
     nodes = registry.get_online_nodes()
     nodes_online = len(nodes)
-    models_loaded = sum(
-        len(n.ollama.models_loaded) if n.ollama else 0 for n in nodes
-    )
-    total_available_gb = sum(
-        n.memory.available_gb if n.memory else 0 for n in nodes
-    )
+    models_loaded = sum(len(n.ollama.models_loaded) if n.ollama else 0 for n in nodes)
+    total_available_gb = sum(n.memory.available_gb if n.memory else 0 for n in nodes)
 
     # Health data — include ALL warnings/criticals
     health_summary = ""
@@ -840,7 +866,7 @@ async def _generate_briefing(request) -> dict:
     if trace_store:
         try:
             overall = await trace_store.get_overall_stats_24h()
-            ttft = overall['avg_ttft_ms']
+            ttft = overall["avg_ttft_ms"]
             ttft_str = f"{ttft:.0f}ms" if ttft is not None else "N/A"
             traffic_summary = (
                 f"Traffic (24h): {overall['total_requests']:,} requests, "
@@ -852,6 +878,7 @@ async def _generate_briefing(request) -> dict:
             model_usage = await trace_store.get_usage_by_node_model_day(days=1)
             if model_usage:
                 from collections import defaultdict
+
                 model_reqs: dict[str, int] = defaultdict(int)
                 for entry in model_usage:
                     model_reqs[entry["model"]] += entry["request_count"]
@@ -875,9 +902,7 @@ async def _generate_briefing(request) -> dict:
                                 alloc = max(alloc, m.context_length or 0)
                 total_p99 = s.get("total_p99", 0)
                 if alloc > 0 and total_p99 > 0 and alloc / total_p99 > 4:
-                    wasteful.append(
-                        f"{s['model']} ({(total_p99/alloc*100):.0f}% utilization)"
-                    )
+                    wasteful.append(f"{s['model']} ({(total_p99 / alloc * 100):.0f}% utilization)")
             if wasteful:
                 context_summary = f"Context waste: {', '.join(wasteful[:3])}."
         except Exception:
@@ -895,27 +920,20 @@ async def _generate_briefing(request) -> dict:
                     f"right now ({total} total). "
                 )
             elif total > 50:
-                conn_summary += (
-                    f"{node.node_id} recovered from {total} connection failures. "
-                )
+                conn_summary += f"{node.node_id} recovered from {total} connection failures. "
 
     # Silent fallback detection — requests served by wrong model
     # (VRAM fallback routed away from the requested model)
     outage_summary = ""
     if trace_store:
         try:
-            fallback_stats = await trace_store.get_silent_fallback_stats(
-                lookback_s=86400
-            )
+            fallback_stats = await trace_store.get_silent_fallback_stats(lookback_s=86400)
             if fallback_stats:
                 # Show top 3 silent fallback pairs
                 parts = []
                 total_fallbacks = sum(s["count"] for s in fallback_stats)
                 for s in fallback_stats[:3]:
-                    parts.append(
-                        f"{s['count']} reqs for {s['requested']} "
-                        f"served by {s['actual']}"
-                    )
+                    parts.append(f"{s['count']} reqs for {s['requested']} served by {s['actual']}")
                 outage_summary = (
                     f"SILENT FALLBACK in last 24h: {total_fallbacks} "
                     f"requests were served by a different model than "
@@ -966,8 +984,7 @@ async def _generate_briefing(request) -> dict:
             if priorities:
                 top3 = priorities[:3]
                 parts = [
-                    f"{p['model']}: score={p['priority_score']:.0f} "
-                    f"({p['requests_24h']} reqs/24h)"
+                    f"{p['model']}: score={p['priority_score']:.0f} ({p['requests_24h']} reqs/24h)"
                     for p in top3
                 ]
                 priority_summary = f"Model priority (by usage): {'; '.join(parts)}."
@@ -981,7 +998,9 @@ async def _generate_briefing(request) -> dict:
         try:
             history = await ts.get_briefings(limit=2)
             if history:
-                prev_briefings = "Your previous briefing(s) (for context — don't repeat, note what changed):\n"
+                prev_briefings = (
+                    "Your previous briefing(s) (for context — don't repeat, note what changed):\n"
+                )
                 for h in history:
                     ago = int((time.time() - h["generated_at"]) / 60)
                     prev_briefings += f"  [{ago}m ago]: {h['briefing'][:500]}\n"
@@ -994,9 +1013,9 @@ async def _generate_briefing(request) -> dict:
 - {health_summary}
 - {traffic_summary}
 - {context_summary}
-- {conn_summary if conn_summary else 'No connection issues.'}
-- {outage_summary if outage_summary else 'No silent fallback detected in last 24h.'}
-- {priority_summary if priority_summary else 'No model usage history yet.'}
+- {conn_summary if conn_summary else "No connection issues."}
+- {outage_summary if outage_summary else "No silent fallback detected in last 24h."}
+- {priority_summary if priority_summary else "No model usage history yet."}
 - {queue_summary}
 Nodes:
 {node_details}
@@ -1026,7 +1045,7 @@ Provide a high-level fleet summary (2-3 short bullet points). Rules:
                                 "an AI inference router. Be concise and actionable. "
                                 "Available actions operators can take: "
                                 "add a new node (run 'herd-node' on another machine), "
-                                "pull a model (curl /api/pull -d '{\"name\":\"model\"}'), "
+                                'pull a model (curl /api/pull -d \'{"name":"model"}\'), '
                                 "enable dynamic num_ctx in Settings, "
                                 "set OLLAMA_NUM_PARALLEL=2 in ~/.zshrc, "
                                 "check the Health or Recommendations dashboard pages. "
@@ -1103,20 +1122,22 @@ async def dashboard_briefing(request: Request, refresh: int = 0):
             cache["model"] = result["model"]
             cache["generated_at"] = result["generated_at"]
             # Save to in-memory history
-            _briefing_history.insert(0, {
-                "briefing": result["briefing"],
-                "model": result["model"],
-                "generated_at": result["generated_at"],
-            })
+            _briefing_history.insert(
+                0,
+                {
+                    "briefing": result["briefing"],
+                    "model": result["model"],
+                    "generated_at": result["generated_at"],
+                },
+            )
             if len(_briefing_history) > _BRIEFING_HISTORY_MAX:
                 _briefing_history.pop()
             # Persist to SQLite
             ts = getattr(request.app.state, "trace_store", None)
             if ts:
                 import asyncio
-                asyncio.create_task(
-                    ts.save_briefing(result["briefing"], result["model"])
-                )
+
+                asyncio.create_task(ts.save_briefing(result["briefing"], result["model"]))
         next_refresh = interval
         return {
             "enabled": True,
@@ -1196,7 +1217,7 @@ def _read_node_telemetry_state() -> dict:
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 if line.startswith("export "):
-                    line = line[len("export "):].lstrip()
+                    line = line[len("export ") :].lstrip()
                 key, _, value = line.partition("=")
                 key, value = key.strip(), value.strip().strip('"').strip("'")
                 if key == "FLEET_NODE_TELEMETRY":
@@ -1308,30 +1329,27 @@ async def dashboard_settings_data(request: Request):
             stt_models = [m.name for m in node.transcription.models_available]
         embed_models = []
         if node.ollama:
-            embed_models = [
-                m for m in node.ollama.models_available
-                if "embed" in m.lower()
-            ]
+            embed_models = [m for m in node.ollama.models_available if "embed" in m.lower()]
         vision_embed_models = []
         if node.vision_embedding:
-            vision_embed_models = [
-                m.name for m in node.vision_embedding.models_available
-            ]
-        nodes_data.append({
-            "node_id": node.node_id,
-            "status": node.status.value,
-            "agent_version": node.agent_version,
-            "ip": node.ollama_base_url,
-            "models_loaded_count": models_count,
-            "is_router": node.node_id == hostname,
-            "image_models": image_models,
-            "image_port": node.image_port,
-            "stt_models": stt_models,
-            "transcription_port": node.transcription_port,
-            "embed_models": embed_models,
-            "vision_embed_models": vision_embed_models,
-            "vision_embedding_port": node.vision_embedding_port,
-        })
+            vision_embed_models = [m.name for m in node.vision_embedding.models_available]
+        nodes_data.append(
+            {
+                "node_id": node.node_id,
+                "status": node.status.value,
+                "agent_version": node.agent_version,
+                "ip": node.ollama_base_url,
+                "models_loaded_count": models_count,
+                "is_router": node.node_id == hostname,
+                "image_models": image_models,
+                "image_port": node.image_port,
+                "stt_models": stt_models,
+                "transcription_port": node.transcription_port,
+                "embed_models": embed_models,
+                "vision_embed_models": vision_embed_models,
+                "vision_embedding_port": node.vision_embedding_port,
+            }
+        )
 
     return {
         "router_version": __version__,
@@ -1350,8 +1368,13 @@ async def dashboard_settings_update(request: Request):
     from fleet_manager.common.env_writer import set_env_var, unset_env_var
 
     mutable_fields = {
-        "auto_pull", "vram_fallback", "image_generation", "transcription",
-        "dynamic_num_ctx", "num_ctx_auto_calculate", "fleet_intelligence",
+        "auto_pull",
+        "vram_fallback",
+        "image_generation",
+        "transcription",
+        "dynamic_num_ctx",
+        "num_ctx_auto_calculate",
+        "fleet_intelligence",
     }
     # Node-scoped settings.  These live on NodeSettings in the *node* process,
     # so there is nothing local to mutate -- we persist them and the node picks
@@ -1413,8 +1436,7 @@ async def dashboard_settings_update(request: Request):
                         content={
                             "status": "error",
                             "message": (
-                                "Herd name may contain letters, numbers, spaces, "
-                                "- _ . only."
+                                "Herd name may contain letters, numbers, spaces, - _ . only."
                             ),
                         },
                     )
@@ -1466,9 +1488,7 @@ async def dashboard_image_stats():
         "completed": len(completed),
         "failed": len(failed),
         "avg_generation_ms": (
-            int(sum(e["generation_ms"] for e in completed) / len(completed))
-            if completed
-            else 0
+            int(sum(e["generation_ms"] for e in completed) / len(completed)) if completed else 0
         ),
         "by_node": _group_by(events, "node_id"),
         "by_model": _group_by(events, "model"),
@@ -1500,9 +1520,7 @@ async def dashboard_transcription_stats():
         "completed": len(completed),
         "failed": len(failed),
         "avg_processing_ms": (
-            int(sum(e["processing_ms"] for e in completed) / len(completed))
-            if completed
-            else 0
+            int(sum(e["processing_ms"] for e in completed) / len(completed)) if completed else 0
         ),
         "by_node": _group_by(events, "node_id"),
         "by_model": _group_by(events, "model"),
@@ -1578,36 +1596,40 @@ async def dashboard_model_management(request: Request):
             if last_used:
                 days_unused = round((now - last_used) / 86400, 1)
 
-            models.append({
-                "name": model_name,
-                "display_name": spec.display_name if spec else model_name,
-                "category": category,
-                "size_gb": detail.get("size_gb", spec.ram_gb if spec else 0),
-                "parameter_size": detail.get("parameter_size", ""),
-                "quantization": detail.get("quantization", ""),
-                "last_used": last_used,
-                "days_unused": days_unused,
-                "total_requests": usage.get("total_requests", 0),
-                "loaded_in_vram": model_name in loaded_set,
-                "unused": days_unused is None or days_unused >= 7,
-            })
+            models.append(
+                {
+                    "name": model_name,
+                    "display_name": spec.display_name if spec else model_name,
+                    "category": category,
+                    "size_gb": detail.get("size_gb", spec.ram_gb if spec else 0),
+                    "parameter_size": detail.get("parameter_size", ""),
+                    "quantization": detail.get("quantization", ""),
+                    "last_used": last_used,
+                    "days_unused": days_unused,
+                    "total_requests": usage.get("total_requests", 0),
+                    "loaded_in_vram": model_name in loaded_set,
+                    "unused": days_unused is None or days_unused >= 7,
+                }
+            )
 
         # Sort: loaded first, then by last-used desc, then alphabetical
-        models.sort(key=lambda m: (
-            not m["loaded_in_vram"],
-            -(m["last_used"] or 0),
-            m["name"],
-        ))
+        models.sort(
+            key=lambda m: (
+                not m["loaded_in_vram"],
+                -(m["last_used"] or 0),
+                m["name"],
+            )
+        )
 
-        result.append({
-            "node_id": node.node_id,
-            "models": models,
-            "total_size_gb": round(sum(m["size_gb"] for m in models), 1),
-            "disk_available_gb": (
-                round(node.disk.available_gb, 1) if node.disk else 0
-            ),
-            "disk_total_gb": round(node.disk.total_gb, 1) if node.disk else 0,
-        })
+        result.append(
+            {
+                "node_id": node.node_id,
+                "models": models,
+                "total_size_gb": round(sum(m["size_gb"] for m in models), 1),
+                "disk_available_gb": (round(node.disk.available_gb, 1) if node.disk else 0),
+                "disk_total_gb": round(node.disk.total_gb, 1) if node.disk else 0,
+            }
+        )
 
     return {"nodes": result}
 
@@ -2698,7 +2720,7 @@ function setTabAlert(on) {
   _tabAlerted = on;
   var link = document.querySelector('link[rel="icon"]');
   if (link) link.href = on ? '/favicon-alert.svg' : '/favicon.svg';
-  document.title = on ? ('\u26A0 OFFLINE \u2014 ' + _baseTitle) : _baseTitle;
+  document.title = on ? ('\u26a0 OFFLINE \u2014 ' + _baseTitle) : _baseTitle;
 }
 
 function requestNotifyPermission() {

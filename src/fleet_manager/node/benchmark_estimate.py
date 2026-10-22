@@ -26,10 +26,7 @@ def _hardware_estimate() -> float:
     numbers; real measurements will update this on next re-registration.
     """
     total_ram_gb = psutil.virtual_memory().total / (1024**3)
-    is_apple_silicon = (
-        _platform.system() == "Darwin"
-        and _platform.machine() == "arm64"
-    )
+    is_apple_silicon = _platform.system() == "Darwin" and _platform.machine() == "arm64"
 
     # Mac Studio M3 Ultra (512GB): measured ~90 tok/s on gpt-oss:120b
     # Mac Mini M4 (64GB): measured ~40 tok/s on llama3:8b
@@ -87,16 +84,11 @@ async def estimate_throughput(data_dir: str = "~/.fleet-manager") -> float:
 
         if rows:
             # tok/s per row, then average
-            rates = [
-                (r[0] / (r[1] / 1000.0))
-                for r in rows
-                if r[0] and r[1] and r[1] > 0
-            ]
+            rates = [(r[0] / (r[1] / 1000.0)) for r in rows if r[0] and r[1] and r[1] > 0]
             if rates:
                 avg = sum(rates) / len(rates)
                 logger.info(
-                    f"Throughput estimate: {avg:.1f} tok/s "
-                    f"(from {len(rates)} recent observations)"
+                    f"Throughput estimate: {avg:.1f} tok/s (from {len(rates)} recent observations)"
                 )
                 return round(avg, 1)
     except Exception as exc:
@@ -105,8 +97,7 @@ async def estimate_throughput(data_dir: str = "~/.fleet-manager") -> float:
     # Fall back to hardware estimate
     estimate = _hardware_estimate()
     logger.info(
-        f"Throughput estimate: {estimate:.1f} tok/s "
-        f"(hardware-derived; no trace history yet)"
+        f"Throughput estimate: {estimate:.1f} tok/s (hardware-derived; no trace history yet)"
     )
     return estimate
 

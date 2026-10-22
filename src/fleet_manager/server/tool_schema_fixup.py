@@ -117,9 +117,9 @@ CLAUDE_CODE_TOOL_DEFAULTS: dict[str, dict[str, Any]] = {
 # Modes the caller can request.  Keeping this as strings (not an enum) so
 # it maps cleanly to a single env var without pydantic gymnastics.
 
-MODE_OFF = "off"                  # don't touch any schema (pre-fix behavior)
-MODE_PROMOTE_EXISTING = "promote" # only promote properties that already have ``default``
-MODE_INJECT = "inject"            # use CLAUDE_CODE_TOOL_DEFAULTS + promote
+MODE_OFF = "off"  # don't touch any schema (pre-fix behavior)
+MODE_PROMOTE_EXISTING = "promote"  # only promote properties that already have ``default``
+MODE_INJECT = "inject"  # use CLAUDE_CODE_TOOL_DEFAULTS + promote
 VALID_MODES = {MODE_OFF, MODE_PROMOTE_EXISTING, MODE_INJECT}
 
 
@@ -217,8 +217,7 @@ def fixup_tool_schema(
     result["function"] = new_function
 
     logger.debug(
-        f"tool_schema_fixup: {tool_name} promoted optional params to required: "
-        f"{promoted}",
+        f"tool_schema_fixup: {tool_name} promoted optional params to required: {promoted}",
     )
     return result
 

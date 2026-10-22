@@ -131,8 +131,7 @@ class ClearingStore:
             with self._conn() as c:
                 # Only update rows that already exist — never create new ones
                 c.executemany(
-                    "UPDATE cleared_tool_uses SET last_seen = ? "
-                    "WHERE tool_use_id = ?",
+                    "UPDATE cleared_tool_uses SET last_seen = ? WHERE tool_use_id = ?",
                     [(now, tid) for tid in ids],
                 )
         except sqlite3.OperationalError as exc:

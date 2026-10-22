@@ -59,8 +59,8 @@ _PORT_FREE_TIMEOUT = 10.0
 # upstream bug (e.g. mlx-lm v0.31.3's load_default + tqdm threadpool
 # race that caused 420 crash-restarts over 2.5 hours on 2026-04-26) burns
 # CPU forever and floods the log.  See ``docs/observations.md`` 2026-04-26.
-_QUARANTINE_FAILURE_COUNT = 5    # 5 crashes within the window
-_QUARANTINE_WINDOW_S = 300.0     # = 5 minutes
+_QUARANTINE_FAILURE_COUNT = 5  # 5 crashes within the window
+_QUARANTINE_WINDOW_S = 300.0  # = 5 minutes
 _QUARANTINE_RESTART_INTERVAL = 600.0  # back off to "try once every 10 min"
 
 
@@ -73,9 +73,9 @@ class MlxServerSpec:
     ``docs/issues/multi-mlx-server-support.md``).
     """
 
-    model: str                          # HF repo id or local path
-    port: int                           # unique per-node
-    kv_bits: int = 0                    # 0 / 4 / 8
+    model: str  # HF repo id or local path
+    port: int  # unique per-node
+    kv_bits: int = 0  # 0 / 4 / 8
     # Matches mlx_lm.server's own default.  We previously set 4 with no
     # recorded reason, which silently halved how many conversations could stay
     # warm: mlx_lm.server keeps N independent prompt caches and selects among
@@ -96,8 +96,8 @@ class MlxServerSpec:
     backend: str = ""
     # comma-separated PEER IPs — ring backend (node prepends its own IP)
     hosts: str = ""
-    hostfile: str = ""                  # path to JSON hostfile — jaccl / mpi backend
-    pipeline: bool = False              # True = pipeline parallelism; False = tensor (default)
+    hostfile: str = ""  # path to JSON hostfile — jaccl / mpi backend
+    pipeline: bool = False  # True = pipeline parallelism; False = tensor (default)
 
     _VALID_BACKENDS = ("", "ring", "jaccl", "mpi")
 
@@ -116,8 +116,7 @@ class MlxServerSpec:
         port = data.get("port")
         if not isinstance(port, int) or port <= 0:
             raise ValueError(
-                f"MlxServerSpec: missing or invalid 'port' in {data!r} — "
-                f"must be a positive integer"
+                f"MlxServerSpec: missing or invalid 'port' in {data!r} — must be a positive integer"
             )
         backend = str(data.get("backend", "")).strip().lower()
         if backend not in cls._VALID_BACKENDS:
@@ -144,7 +143,7 @@ class MlxServerSpec:
             # don't block — a tiny model on a fast LAN might still be fine.
             logger.warning(
                 "MlxServerSpec(model=%r): backend 'ring' without pipeline=true — "
-                "tensor parallelism over TCP is very slow; set \"pipeline\": true "
+                'tensor parallelism over TCP is very slow; set "pipeline": true '
                 "unless you know the model is small enough to tolerate it.",
                 model,
             )
@@ -197,14 +196,15 @@ def estimate_model_size_gb(model: str) -> float:
     except OSError as exc:
         logger.debug(f"estimate_model_size_gb({model!r}) walk failed: {exc}")
         return 0.0
-    return total / (1024 ** 3)
+    return total / (1024**3)
 
 
 def available_memory_gb() -> float:
     """Return ``psutil.virtual_memory().available`` in GB, or 0.0 on failure."""
     try:
         import psutil
-        return psutil.virtual_memory().available / (1024 ** 3)
+
+        return psutil.virtual_memory().available / (1024**3)
     except Exception as exc:  # noqa: BLE001
         logger.debug(f"available_memory_gb failed: {type(exc).__name__}: {exc}")
         return 0.0
@@ -448,7 +448,10 @@ class MlxSupervisor:
         try:
             result = subprocess.run(
                 [binary, "--help"],
-                capture_output=True, text=True, timeout=10, check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
             )
         except (subprocess.TimeoutExpired, OSError):
             # If we can't even probe, let the subsequent Popen surface the
@@ -476,6 +479,7 @@ class MlxSupervisor:
         if self.hostfile:
             try:
                 import json
+
                 with open(self.hostfile) as f:
                     data = json.load(f)
                 return len(data) if isinstance(data, list) else 0
@@ -493,12 +497,18 @@ class MlxSupervisor:
         """
         cmd = [
             binary,
-            "--model", self.model,
-            "--host", self.host,
-            "--port", str(self.port),
-            "--prompt-cache-size", str(self.prompt_cache_size),
-            "--prompt-cache-bytes", str(self.prompt_cache_bytes),
-            "--log-level", "INFO",
+            "--model",
+            self.model,
+            "--host",
+            self.host,
+            "--port",
+            str(self.port),
+            "--prompt-cache-size",
+            str(self.prompt_cache_size),
+            "--prompt-cache-bytes",
+            str(self.prompt_cache_bytes),
+            "--log-level",
+            "INFO",
         ]
         if self.kv_bits in (4, 8):
             # Native in mlx-lm >= 0.32.0 (PR #1832); older versions reject it.
@@ -508,17 +518,22 @@ class MlxSupervisor:
             # OLLAMA_KV_CACHE_TYPE=q8_0.  Omitting it would silently leave every
             # sequence's first 5K tokens at full precision.
             cmd += [
-                "--kv-bits", str(self.kv_bits),
-                "--kv-group-size", "64",
-                "--quantized-kv-start", "0",
+                "--kv-bits",
+                str(self.kv_bits),
+                "--kv-group-size",
+                "64",
+                "--quantized-kv-start",
+                "0",
             ]
         # Speculative decoding — only add flags when configured.  Main +
         # draft must share the same tokenizer family or acceptance rate
         # collapses.  See docs/plans/claude-code-performance-improvements.md.
         if self.draft_model:
             cmd += [
-                "--draft-model", self.draft_model,
-                "--num-draft-tokens", str(self.num_draft_tokens),
+                "--draft-model",
+                self.draft_model,
+                "--num-draft-tokens",
+                str(self.num_draft_tokens),
             ]
         if self.is_distributed and self.pipeline:
             cmd += ["--pipeline"]
@@ -565,7 +580,8 @@ class MlxSupervisor:
         elif self.hosts:
             prefix += ["--hosts", self._resolved_hosts()]
         prefix += [
-            "--env", "MLX_METAL_FAST_SYNCH=1",
+            "--env",
+            "MLX_METAL_FAST_SYNCH=1",
             "--no-verify-script",
             "--",
         ]
@@ -599,8 +615,9 @@ class MlxSupervisor:
                 return True
             await asyncio.sleep(_PORT_FREE_POLL_INTERVAL)
         logger.warning(
-            "mlx_lm.server(port=%d) port still occupied after %.0fs wait; "
-            "spawning anyway.", self.port, timeout,
+            "mlx_lm.server(port=%d) port still occupied after %.0fs wait; spawning anyway.",
+            self.port,
+            timeout,
         )
         return False
 
@@ -677,7 +694,9 @@ class MlxSupervisor:
                 logger.warning(
                     "mlx_lm.server(port=%d, model=%r): %s. Skipping start; "
                     "supervisor will retry on the next node-level pass.",
-                    self.port, self.model, reason,
+                    self.port,
+                    self.model,
+                    reason,
                 )
                 self._status = "memory_blocked"
                 self._status_reason = reason
@@ -699,7 +718,8 @@ class MlxSupervisor:
                 "didn't tear down its MLX children.  If you intended "
                 "those to keep running, stop herd-node before "
                 "restarting them manually.",
-                self.port, orphan_pids,
+                self.port,
+                orphan_pids,
             )
             for pid in orphan_pids:
                 try:
@@ -746,7 +766,8 @@ class MlxSupervisor:
                 "mlx_lm.server(port=%d) configured for distributed backend %r "
                 "but `mlx.launch` was not found on PATH. Install/upgrade the "
                 "mlx package (`uv tool install mlx`). Skipping MLX start.",
-                self.port, self.backend,
+                self.port,
+                self.backend,
             )
             self._status = "stopped"
             self._status_reason = "mlx.launch not found (distributed backend)"
@@ -805,7 +826,8 @@ class MlxSupervisor:
         )
         # Start monitor task to restart on crash
         self._monitor_task = asyncio.create_task(
-            self._monitor(), name="mlx-supervisor-monitor",
+            self._monitor(),
+            name="mlx-supervisor-monitor",
         )
         return True
 
@@ -879,9 +901,12 @@ class MlxSupervisor:
                     "~/.fleet-manager/logs/mlx-server-%d.log for stack "
                     "traces.  Quarantine clears once a restart stays up "
                     "for the full window.",
-                    self.port, self.model,
-                    len(self._recent_crash_ts), _QUARANTINE_WINDOW_S,
-                    _QUARANTINE_RESTART_INTERVAL, self.port,
+                    self.port,
+                    self.model,
+                    len(self._recent_crash_ts),
+                    _QUARANTINE_WINDOW_S,
+                    _QUARANTINE_RESTART_INTERVAL,
+                    self.port,
                 )
             self._quarantined = True
 
@@ -905,13 +930,16 @@ class MlxSupervisor:
                 # Also opportunistically clear quarantine if we've been up
                 # for the full quarantine window without crashing.
                 backoff = _BACKOFF_INITIAL
-                if self._quarantined and self._last_ok_ts > 0 and (
-                    time.time() - self._last_ok_ts > _QUARANTINE_WINDOW_S
+                if (
+                    self._quarantined
+                    and self._last_ok_ts > 0
+                    and (time.time() - self._last_ok_ts > _QUARANTINE_WINDOW_S)
                 ):
                     logger.info(
                         "mlx_lm.server(port=%d) recovered: stayed up %.0fs "
                         "without crashing, exiting QUARANTINE.",
-                        self.port, time.time() - self._last_ok_ts,
+                        self.port,
+                        time.time() - self._last_ok_ts,
                     )
                     self._quarantined = False
                     self._recent_crash_ts.clear()
@@ -970,8 +998,7 @@ class MlxSupervisor:
                     self._last_ok_ts = time.time()
                 else:
                     logger.warning(
-                        f"mlx_lm.server(port={self.port}) restarted but "
-                        "didn't go healthy in time"
+                        f"mlx_lm.server(port={self.port}) restarted but didn't go healthy in time"
                     )
                     self._status = "unhealthy"
                     self._status_reason = "restart health check timed out"
@@ -1010,8 +1037,7 @@ class MlxSupervisor:
                     return True
         except Exception as exc:  # noqa: BLE001
             logger.debug(
-                f"mlx_lm.server(port={self.port}) poll_health: "
-                f"{type(exc).__name__}: {exc}"
+                f"mlx_lm.server(port={self.port}) poll_health: {type(exc).__name__}: {exc}"
             )
         # Non-200 / exception
         if self._proc is not None and self._proc.poll() is None:
@@ -1046,7 +1072,8 @@ class MlxSupervisor:
             pass
         try:
             await asyncio.get_running_loop().run_in_executor(
-                None, lambda: self._proc and self._proc.wait(timeout=5),
+                None,
+                lambda: self._proc and self._proc.wait(timeout=5),
             )
         except subprocess.TimeoutExpired:
             logger.warning("mlx_lm.server didn't exit in 5s; sending SIGKILL")
@@ -1088,16 +1115,16 @@ class MlxSupervisorStatus:
 
     port: int
     model: str
-    status: str                          # healthy/starting/unhealthy/memory_blocked/stopped
+    status: str  # healthy/starting/unhealthy/memory_blocked/stopped
     status_reason: str = ""
     kv_bits: int = 0
-    model_size_gb: float = 0.0           # estimated from HF cache on disk
-    last_ok_ts: float = 0.0              # epoch seconds
+    model_size_gb: float = 0.0  # estimated from HF cache on disk
+    last_ok_ts: float = 0.0  # epoch seconds
     # Distributed execution (multi-node via mlx.launch).  backend == "" ⇒
     # standalone; node_count is 1 in that case.
     distributed: bool = False
-    backend: str = ""                    # ring / jaccl / mpi (empty = standalone)
-    node_count: int = 1                  # hosts this server spans (0 = unknown)
+    backend: str = ""  # ring / jaccl / mpi (empty = standalone)
+    node_count: int = 1  # hosts this server spans (0 = unknown)
 
 
 class MlxSupervisorSet:
@@ -1167,7 +1194,8 @@ class MlxSupervisorSet:
                 logger.error(
                     "mlx supervisor set: duplicate port %d in config "
                     "(%r); skipping second entry.  Fix FLEET_NODE_MLX_SERVERS.",
-                    spec.port, spec.model,
+                    spec.port,
+                    spec.model,
                 )
                 continue
             seen_ports.add(spec.port)
@@ -1227,28 +1255,32 @@ class MlxSupervisorSet:
             child = self._children.get(spec.port)
             if child is None:
                 # Shouldn't happen after start_all, but tolerate it
-                out.append(MlxSupervisorStatus(
-                    port=spec.port,
-                    model=spec.model,
-                    status="stopped",
-                    kv_bits=spec.kv_bits,
-                    model_size_gb=estimate_model_size_gb(spec.model),
-                    distributed=bool(spec.backend),
-                    backend=spec.backend,
-                ))
+                out.append(
+                    MlxSupervisorStatus(
+                        port=spec.port,
+                        model=spec.model,
+                        status="stopped",
+                        kv_bits=spec.kv_bits,
+                        model_size_gb=estimate_model_size_gb(spec.model),
+                        distributed=bool(spec.backend),
+                        backend=spec.backend,
+                    )
+                )
                 continue
-            out.append(MlxSupervisorStatus(
-                port=child.port,
-                model=child.model,
-                status=child.status(),
-                status_reason=child.status_reason(),
-                kv_bits=child.kv_bits,
-                model_size_gb=estimate_model_size_gb(child.model),
-                last_ok_ts=child.last_ok_ts(),
-                distributed=child.is_distributed,
-                backend=child.backend,
-                node_count=child.node_count,
-            ))
+            out.append(
+                MlxSupervisorStatus(
+                    port=child.port,
+                    model=child.model,
+                    status=child.status(),
+                    status_reason=child.status_reason(),
+                    kv_bits=child.kv_bits,
+                    model_size_gb=estimate_model_size_gb(child.model),
+                    last_ok_ts=child.last_ok_ts(),
+                    distributed=child.is_distributed,
+                    backend=child.backend,
+                    node_count=child.node_count,
+                )
+            )
         return out
 
     def healthy_models(self) -> dict[str, int]:

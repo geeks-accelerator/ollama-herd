@@ -197,8 +197,10 @@ async def embed_text(request: Request):
     if model not in TEXT_EMBEDDING_MODELS:
         return JSONResponse(
             status_code=404,
-            content={"error": f"Model '{model}' not in text embedding registry. "
-                     f"Available: {sorted(TEXT_EMBEDDING_MODELS.keys())}"},
+            content={
+                "error": f"Model '{model}' not in text embedding registry. "
+                f"Available: {sorted(TEXT_EMBEDDING_MODELS.keys())}"
+            },
         )
 
     # Normalise input — Ollama accepts string or list[str] in the "input" field;
@@ -238,7 +240,8 @@ async def embed_text(request: Request):
     start_ns = time.perf_counter_ns()
     try:
         embeddings_raw = await _run_onnx(
-            backend, lambda: list(backend.embed(texts, batch_size=plan.batch_size)),
+            backend,
+            lambda: list(backend.embed(texts, batch_size=plan.batch_size)),
         )
     except Exception as exc:
         logger.error(f"Text embedding inference failed for model '{model}': {exc}")
@@ -255,13 +258,15 @@ async def embed_text(request: Request):
         f"via {model} in {elapsed_ns // 1_000_000}ms"
     )
 
-    return JSONResponse({
-        "model": model,
-        "embeddings": embeddings,
-        "total_duration": elapsed_ns,
-        "load_duration": 0,
-        "prompt_eval_count": plan.tokens,
-    })
+    return JSONResponse(
+        {
+            "model": model,
+            "embeddings": embeddings,
+            "total_duration": elapsed_ns,
+            "load_duration": 0,
+            "prompt_eval_count": plan.tokens,
+        }
+    )
 
 
 # A cross-encoder runs one forward pass per document, unlike an embedder, so an
@@ -306,19 +311,23 @@ async def rerank(request: Request):
     if not is_rerank_model(model):
         return JSONResponse(
             status_code=404,
-            content={"error": f"Model '{model}' not in rerank registry. "
-                     f"Available: {sorted(RERANK_MODELS)}"},
+            content={
+                "error": f"Model '{model}' not in rerank registry. "
+                f"Available: {sorted(RERANK_MODELS)}"
+            },
         )
 
     query = body.get("query")
     if not isinstance(query, str) or not query.strip():
         return JSONResponse(
-            status_code=400, content={"error": "'query' must be a non-empty string"},
+            status_code=400,
+            content={"error": "'query' must be a non-empty string"},
         )
     raw_docs = body.get("documents")
     if not isinstance(raw_docs, list) or not raw_docs:
         return JSONResponse(
-            status_code=400, content={"error": "'documents' must be a non-empty list"},
+            status_code=400,
+            content={"error": "'documents' must be a non-empty list"},
         )
     documents: list[str] = []
     for d in raw_docs:
@@ -326,7 +335,7 @@ async def rerank(request: Request):
         if not isinstance(text, str):
             return JSONResponse(
                 status_code=400,
-                content={"error": "each document must be a string or {\"text\": string}"},
+                content={"error": 'each document must be a string or {"text": string}'},
             )
         documents.append(text)
     if len(documents) > MAX_RERANK_DOCUMENTS:
@@ -337,13 +346,15 @@ async def rerank(request: Request):
     if any(len(t) > MAX_RERANK_DOCUMENT_CHARS for t in documents):
         return JSONResponse(
             status_code=400,
-            content={"error": f"each document must be at most "
-                     f"{MAX_RERANK_DOCUMENT_CHARS} characters"},
+            content={
+                "error": f"each document must be at most {MAX_RERANK_DOCUMENT_CHARS} characters"
+            },
         )
     top_n = body.get("top_n")
     if top_n is not None and (not isinstance(top_n, int) or top_n < 1):
         return JSONResponse(
-            status_code=400, content={"error": "'top_n' must be a positive integer"},
+            status_code=400,
+            content={"error": "'top_n' must be a positive integer"},
         )
 
     try:
@@ -351,17 +362,22 @@ async def rerank(request: Request):
     except Exception as exc:
         logger.error(f"Failed to load rerank model '{model}': {exc}")
         return JSONResponse(
-            status_code=500, content={"error": f"Failed to load model '{model}': {exc}"},
+            status_code=500,
+            content={"error": f"Failed to load model '{model}': {exc}"},
         )
 
     loop = asyncio.get_running_loop()
     plan = await loop.run_in_executor(
-        None, _plan_batches, backend, [(query, d) for d in documents],
+        None,
+        _plan_batches,
+        backend,
+        [(query, d) for d in documents],
     )
     start_ns = time.perf_counter_ns()
     try:
         logits = await _run_onnx(
-            backend, lambda: list(backend.rerank(query, documents, batch_size=plan.batch_size)),
+            backend,
+            lambda: list(backend.rerank(query, documents, batch_size=plan.batch_size)),
         )
     except Exception as exc:
         logger.error(f"Rerank inference failed for model '{model}': {exc}")
@@ -382,14 +398,14 @@ async def rerank(request: Request):
         for i, score in ranked
     ]
 
-    logger.info(
-        f"Rerank: {len(documents)} doc(s) via {model} in {elapsed_ns // 1_000_000}ms"
+    logger.info(f"Rerank: {len(documents)} doc(s) via {model} in {elapsed_ns // 1_000_000}ms")
+    return JSONResponse(
+        {
+            "model": model,
+            "results": results,
+            "usage": {"total_tokens": plan.tokens},
+        }
     )
-    return JSONResponse({
-        "model": model,
-        "results": results,
-        "usage": {"total_tokens": plan.tokens},
-    })
 
 
 @router.get("/models")
@@ -399,13 +415,15 @@ async def list_models():
     for name, spec in TEXT_EMBEDDING_MODELS.items():
         if name.endswith(":latest"):
             continue  # skip aliases
-        models.append({
-            "name": name,
-            "fastembed_name": spec["fastembed_name"],
-            "dimensions": spec["dimensions"],
-            "max_tokens": spec["max_tokens"],
-            "size_mb": spec["size_mb"],
-            "cached": is_model_cached(name),
-            "description": spec["description"],
-        })
+        models.append(
+            {
+                "name": name,
+                "fastembed_name": spec["fastembed_name"],
+                "dimensions": spec["dimensions"],
+                "max_tokens": spec["max_tokens"],
+                "size_mb": spec["size_mb"],
+                "cached": is_model_cached(name),
+                "description": spec["description"],
+            }
+        )
     return {"models": models}

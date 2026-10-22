@@ -192,6 +192,7 @@ class NodeRegistry:
                 # resolved it LAN-reachably; fall back to hardware's
                 # ollama_host.  Both were built by _build_ollama_url().
                 from urllib.parse import urlparse
+
                 parsed = urlparse(node.ollama_base_url)
                 host = parsed.hostname or "127.0.0.1"
                 return f"http://{host}:{srv.port}"
@@ -248,9 +249,7 @@ class NodeRegistry:
                             # and must keep checking every other node, so the
                             # alert must not block it or propagate failures.
                             if self.on_node_offline is not None:
-                                asyncio.create_task(
-                                    self._fire_offline_callback(node.node_id)
-                                )
+                                asyncio.create_task(self._fire_offline_callback(node.node_id))
                     elif (
                         elapsed > self._settings.heartbeat_timeout
                         and node.status != NodeStatus.DEGRADED

@@ -85,7 +85,7 @@ def load_env_file(path: str | Path | None = None) -> dict[str, str]:
             continue
         # Accept optional "export " prefix so the file is also sourceable
         if line.startswith("export "):
-            line = line[len("export "):].lstrip()
+            line = line[len("export ") :].lstrip()
         if "=" not in line:
             malformed += 1
             logger.warning(

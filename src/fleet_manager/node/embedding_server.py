@@ -129,10 +129,7 @@ async def embed_images(request: Request):
         )
     elapsed_ms = (time.time() - t0) * 1000
 
-    logger.info(
-        f"Embedded {len(pil_images)} image(s) with {resolved_model} "
-        f"in {elapsed_ms:.0f}ms"
-    )
+    logger.info(f"Embedded {len(pil_images)} image(s) with {resolved_model} in {elapsed_ms:.0f}ms")
 
     return {
         "model": resolved_model,
@@ -155,12 +152,14 @@ async def list_models():
     for name, spec in VISION_EMBEDDING_MODELS.items():
         if spec["runtime"] == "mlx" and not mlx_ok:
             continue
-        models.append({
-            "name": name,
-            "runtime": spec["runtime"],
-            "dimensions": spec["dimensions"],
-            "downloaded": is_model_downloaded(name),
-            "size_mb": spec["size_mb"],
-            "description": spec["description"],
-        })
+        models.append(
+            {
+                "name": name,
+                "runtime": spec["runtime"],
+                "dimensions": spec["dimensions"],
+                "downloaded": is_model_downloaded(name),
+                "size_mb": spec["size_mb"],
+                "description": spec["description"],
+            }
+        )
     return {"models": models}

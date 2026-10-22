@@ -168,7 +168,10 @@ class LatencyStore:
     # -- Dashboard query methods --
 
     async def get_hourly_trends(
-        self, hours: int = 72, start_ts: float = 0, end_ts: float = 0,
+        self,
+        hours: int = 72,
+        start_ts: float = 0,
+        end_ts: float = 0,
     ) -> list[dict]:
         """Aggregate request count, avg latency, and token sums per hour."""
         if not self._db:
@@ -202,7 +205,10 @@ class LatencyStore:
         ]
 
     async def get_model_daily_stats(
-        self, days: int = 7, start_ts: float = 0, end_ts: float = 0,
+        self,
+        days: int = 7,
+        start_ts: float = 0,
+        end_ts: float = 0,
     ) -> list[dict]:
         """Per-model, per-day aggregated stats."""
         if not self._db:

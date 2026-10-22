@@ -7,6 +7,7 @@ streams responses back.
 
 Enable with: `herd --cloud --token ft_xxx`
 """
+
 from fleet_manager.cloud.connector import CloudConnector
 
 __all__ = ["CloudConnector"]

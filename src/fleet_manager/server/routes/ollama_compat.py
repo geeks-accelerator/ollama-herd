@@ -131,8 +131,15 @@ async def ollama_generate(request: Request):
                     "prompt": prompt,
                 }
                 # Forward image-specific params
-                for key in ("width", "height", "steps", "guidance", "seed",
-                            "negative_prompt", "quantize"):
+                for key in (
+                    "width",
+                    "height",
+                    "steps",
+                    "guidance",
+                    "seed",
+                    "negative_prompt",
+                    "quantize",
+                ):
                     val = body.get(key)
                     if val is not None:
                         image_body[key] = val
@@ -301,32 +308,48 @@ async def ollama_tags(request: Request):
             # Ollama's /api/tags reports on-disk size; prefer it, and fall back
             # to the resident size only when no node reported the disk size.
             size = _disk_bytes(m.name) or int(m.size_gb * (1024**3))
-            _add(m.name, node.node_id, lambda m=m, size=size: _tag_entry(
-                m.name, size=size, meta=fleet_meta.get(m.name),
-                default_format="mlx" if m.name.startswith("mlx:") else "",
-                default_capabilities=_MLX_CAPABILITIES if m.name.startswith("mlx:") else None,
-            ))
+            _add(
+                m.name,
+                node.node_id,
+                lambda m=m, size=size: _tag_entry(
+                    m.name,
+                    size=size,
+                    meta=fleet_meta.get(m.name),
+                    default_format="mlx" if m.name.startswith("mlx:") else "",
+                    default_capabilities=_MLX_CAPABILITIES if m.name.startswith("mlx:") else None,
+                ),
+            )
         for name in node.ollama.models_available:
-            _add(name, node.node_id, lambda name=name: _tag_entry(
-                name, size=_disk_bytes(name), meta=fleet_meta.get(name),
-                default_format="mlx" if name.startswith("mlx:") else "",
-                default_capabilities=_MLX_CAPABILITIES if name.startswith("mlx:") else None,
-            ))
+            _add(
+                name,
+                node.node_id,
+                lambda name=name: _tag_entry(
+                    name,
+                    size=_disk_bytes(name),
+                    meta=fleet_meta.get(name),
+                    default_format="mlx" if name.startswith("mlx:") else "",
+                    default_capabilities=_MLX_CAPABILITIES if name.startswith("mlx:") else None,
+                ),
+            )
 
     # Include image models (mflux + DiffusionKit) in the unified list
     for node in nodes:
         if not node.image:
             continue
         for im in node.image.models_available:
+
             def _image_entry(im=im):
                 entry = _tag_entry(
-                    im.name, size=0, meta=None,
+                    im.name,
+                    size=0,
+                    meta=None,
                     # "mflux-generate-…" → "mflux", "diffusionkit-cli" → "diffusionkit"
                     default_format=(im.binary or "").split("-")[0],
                     default_capabilities=_IMAGE_CAPABILITIES,
                 )
                 entry["details"]["type"] = "image"
                 return entry
+
             _add(im.name, node.node_id, _image_entry)
 
     # Include vision embedding models (DINOv2, SigLIP, CLIP)
@@ -334,17 +357,24 @@ async def ollama_tags(request: Request):
         if not node.vision_embedding:
             continue
         for vm in node.vision_embedding.models_available:
+
             def _vision_entry(vm=vm):
                 entry = _tag_entry(
-                    vm.name, size=0, meta=None, default_format=vm.runtime,
+                    vm.name,
+                    size=0,
+                    meta=None,
+                    default_format=vm.runtime,
                     default_capabilities=_VISION_EMBEDDING_CAPABILITIES,
                 )
-                entry["details"].update({
-                    "type": "vision-embedding",
-                    "runtime": vm.runtime,
-                    "dimensions": vm.dimensions,
-                })
+                entry["details"].update(
+                    {
+                        "type": "vision-embedding",
+                        "runtime": vm.runtime,
+                        "dimensions": vm.dimensions,
+                    }
+                )
                 return entry
+
             _add(vm.name, node.node_id, _vision_entry)
 
     return {"models": list(seen.values())}
@@ -422,11 +452,12 @@ async def _post_with_failover(proxy, candidates, path: str, body: dict, *, timeo
             resp = await client.post(path, json=fwd, timeout=timeout)
         except Exception as e:  # noqa: BLE001 — try the next node
             logger.warning(
-                f"{path} for {resolved} failed on {node.node_id}: "
-                f"{type(e).__name__}: {e}"
+                f"{path} for {resolved} failed on {node.node_id}: {type(e).__name__}: {e}"
             )
-            last_error = (502, {"error": f"failed to reach Ollama on {node.node_id}: "
-                                         f"{type(e).__name__}: {e}"})
+            last_error = (
+                502,
+                {"error": f"failed to reach Ollama on {node.node_id}: {type(e).__name__}: {e}"},
+            )
             continue
         if resp.status_code == 200:
             return JSONResponse(content=resp.json(), headers={"X-Fleet-Node": node.node_id})
@@ -434,16 +465,18 @@ async def _post_with_failover(proxy, candidates, path: str, body: dict, *, timeo
             err_body = resp.json()
         except ValueError:
             err_body = {"error": resp.text[:500]}
-        logger.warning(
-            f"{path} for {resolved} returned HTTP {resp.status_code} on {node.node_id}"
-        )
+        logger.warning(f"{path} for {resolved} returned HTTP {resp.status_code} on {node.node_id}")
         last_error = (resp.status_code, err_body)
     status, content = last_error or (502, {"error": f"no node answered {path}"})
     return JSONResponse(status_code=status, content=content)
 
 
 def _synth_show(
-    name: str, *, fmt: str, capabilities: list[str], family: str = "",
+    name: str,
+    *,
+    fmt: str,
+    capabilities: list[str],
+    family: str = "",
 ) -> dict:
     """Minimal valid ``/api/show`` body for a model no Ollama instance serves.
 
@@ -496,9 +529,7 @@ async def ollama_show(request: Request):
 
     # MLX models live behind mlx_lm.server, which has no /api/show.
     if model.startswith("mlx:"):
-        if any(
-            n.ollama and model in n.ollama.models_available for n in nodes
-        ):
+        if any(n.ollama and model in n.ollama.models_available for n in nodes):
             return _synth_show(model, fmt="mlx", capabilities=_MLX_CAPABILITIES)
         return JSONResponse(status_code=404, content={"error": f"model '{model}' not found"})
 
@@ -509,23 +540,28 @@ async def ollama_show(request: Request):
         # "name" is the legacy request field; Ollama wants "model".
         fwd = {k: v for k, v in body.items() if k != "name"}
         return await _post_with_failover(
-            request.app.state.streaming_proxy, candidates, "/api/show", fwd,
+            request.app.state.streaming_proxy,
+            candidates,
+            "/api/show",
+            fwd,
             timeout=_SHOW_TIMEOUT,
         )
 
     # Non-Ollama backends that /api/tags also lists.
     for n in nodes:
-        if n.vision_embedding and any(
-            m.name == model for m in n.vision_embedding.models_available
-        ):
+        if n.vision_embedding and any(m.name == model for m in n.vision_embedding.models_available):
             vm = next(m for m in n.vision_embedding.models_available if m.name == model)
             return _synth_show(
-                model, fmt=vm.runtime, capabilities=_VISION_EMBEDDING_CAPABILITIES,
+                model,
+                fmt=vm.runtime,
+                capabilities=_VISION_EMBEDDING_CAPABILITIES,
             )
         if n.image and any(m.name == model for m in n.image.models_available):
             im = next(m for m in n.image.models_available if m.name == model)
             return _synth_show(
-                model, fmt=(im.binary or "").split("-")[0], capabilities=_IMAGE_CAPABILITIES,
+                model,
+                fmt=(im.binary or "").split("-")[0],
+                capabilities=_IMAGE_CAPABILITIES,
             )
 
     return JSONResponse(status_code=404, content={"error": f"model '{model}' not found"})
@@ -714,6 +750,7 @@ async def dispatch_embed(
         embed_text,
         is_text_embedding_model,
     )
+
     if is_text_embedding_model(model):
         request.state._parsed_body = body
         return await embed_text(request)
@@ -737,8 +774,12 @@ async def dispatch_embed(
     settings = request.app.state.settings
 
     results, actual_model = await score_with_fallbacks(
-        inference_req, scorer, queue_mgr, registry,
-        proxy=proxy, settings=settings,
+        inference_req,
+        scorer,
+        queue_mgr,
+        registry,
+        proxy=proxy,
+        settings=settings,
     )
 
     if not results:
@@ -758,13 +799,17 @@ async def dispatch_embed(
         if missing:
             return JSONResponse(
                 status_code=404,
-                content={"error": f"model '{model}' not found on any node. "
-                         f"Run 'ollama pull {model}' on a fleet device."},
+                content={
+                    "error": f"model '{model}' not found on any node. "
+                    f"Run 'ollama pull {model}' on a fleet device."
+                },
             )
         return JSONResponse(
             status_code=503,
-            content={"error": f"model '{model}' exists but no node can serve it "
-                     f"right now. Try again shortly."},
+            content={
+                "error": f"model '{model}' exists but no node can serve it "
+                f"right now. Try again shortly."
+            },
         )
 
     winner = results[0]
@@ -794,7 +839,9 @@ async def dispatch_embed(
         try:
             client = proxy._get_client(winner.node_id)
             resp = await client.post(
-                "/api/embed", json=embed_body, timeout=_EMBED_TIMEOUT,
+                "/api/embed",
+                json=embed_body,
+                timeout=_EMBED_TIMEOUT,
             )
             resp.raise_for_status()
             elapsed_ms = (time.time() - start) * 1000
@@ -807,23 +854,24 @@ async def dispatch_embed(
             )
 
             if trace_store:
-                asyncio.ensure_future(trace_store.record_trace(
-                    request_id=inference_req.request_id,
-                    model=actual_model,
-                    original_model=model,
-                    node_id=winner.node_id,
-                    score=winner.score,
-                    scores_breakdown=(
-                        winner.scores_breakdown
-                        if hasattr(winner, "scores_breakdown") else None
-                    ),
-                    status="completed",
-                    latency_ms=elapsed_ms,
-                    retry_count=retry_count,
-                    client_ip=client_ip,
-                    original_format=original_format.value,
-                    tags=["embed"] + (tags or []),
-                ))
+                asyncio.ensure_future(
+                    trace_store.record_trace(
+                        request_id=inference_req.request_id,
+                        model=actual_model,
+                        original_model=model,
+                        node_id=winner.node_id,
+                        score=winner.score,
+                        scores_breakdown=(
+                            winner.scores_breakdown if hasattr(winner, "scores_breakdown") else None
+                        ),
+                        status="completed",
+                        latency_ms=elapsed_ms,
+                        retry_count=retry_count,
+                        client_ip=client_ip,
+                        original_format=original_format.value,
+                        tags=["embed"] + (tags or []),
+                    )
+                )
 
             return JSONResponse(
                 content=result,
@@ -842,20 +890,22 @@ async def dispatch_embed(
             err_msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
             logger.error(f"Embed failed on {winner.node_id}: {err_msg}")
             if trace_store:
-                asyncio.ensure_future(trace_store.record_trace(
-                    request_id=inference_req.request_id,
-                    model=actual_model,
-                    original_model=model,
-                    node_id=winner.node_id,
-                    score=winner.score,
-                    status="failed",
-                    latency_ms=elapsed_ms,
-                    retry_count=retry_count,
-                    client_ip=client_ip,
-                    original_format=original_format.value,
-                    error_message=err_msg,
-                    tags=["embed"] + (tags or []),
-                ))
+                asyncio.ensure_future(
+                    trace_store.record_trace(
+                        request_id=inference_req.request_id,
+                        model=actual_model,
+                        original_model=model,
+                        node_id=winner.node_id,
+                        score=winner.score,
+                        status="failed",
+                        latency_ms=elapsed_ms,
+                        retry_count=retry_count,
+                        client_ip=client_ip,
+                        original_format=original_format.value,
+                        error_message=err_msg,
+                        tags=["embed"] + (tags or []),
+                    )
+                )
             return JSONResponse(
                 status_code=e.response.status_code,
                 content={"error": f"Ollama returned {err_msg}"},
@@ -877,24 +927,28 @@ async def dispatch_embed(
             error_detail = str(e) or repr(e)
             logger.error(f"Embed failed on {winner.node_id}: {type(e).__name__}: {error_detail}")
             if trace_store:
-                asyncio.ensure_future(trace_store.record_trace(
-                    request_id=inference_req.request_id,
-                    model=actual_model,
-                    original_model=model,
-                    node_id=winner.node_id,
-                    score=winner.score,
-                    status="failed",
-                    latency_ms=elapsed_ms,
-                    retry_count=retry_count,
-                    client_ip=client_ip,
-                    original_format=original_format.value,
-                    error_message=f"{type(e).__name__}: {error_detail}",
-                    tags=["embed"] + (tags or []),
-                ))
+                asyncio.ensure_future(
+                    trace_store.record_trace(
+                        request_id=inference_req.request_id,
+                        model=actual_model,
+                        original_model=model,
+                        node_id=winner.node_id,
+                        score=winner.score,
+                        status="failed",
+                        latency_ms=elapsed_ms,
+                        retry_count=retry_count,
+                        client_ip=client_ip,
+                        original_format=original_format.value,
+                        error_message=f"{type(e).__name__}: {error_detail}",
+                        tags=["embed"] + (tags or []),
+                    )
+                )
             return JSONResponse(
                 status_code=502,
-                content={"error": f"Failed to reach Ollama on {winner.node_id}: "
-                         f"{type(e).__name__}: {error_detail}"},
+                content={
+                    "error": f"Failed to reach Ollama on {winner.node_id}: "
+                    f"{type(e).__name__}: {error_detail}"
+                },
             )
 
     # ReadTimeout exhausted all retries
@@ -905,24 +959,28 @@ async def dispatch_embed(
         f"({elapsed_ms:.0f}ms total) — Ollama queue saturated"
     )
     if trace_store:
-        asyncio.ensure_future(trace_store.record_trace(
-            request_id=inference_req.request_id,
-            model=actual_model,
-            original_model=model,
-            node_id=winner.node_id,
-            score=winner.score,
-            status="failed",
-            latency_ms=elapsed_ms,
-            retry_count=retry_count,
-            client_ip=client_ip,
-            original_format=original_format.value,
-            error_message=f"ReadTimeout after {retry_count} attempt(s): {error_detail}",
-            tags=["embed"] + (tags or []),
-        ))
+        asyncio.ensure_future(
+            trace_store.record_trace(
+                request_id=inference_req.request_id,
+                model=actual_model,
+                original_model=model,
+                node_id=winner.node_id,
+                score=winner.score,
+                status="failed",
+                latency_ms=elapsed_ms,
+                retry_count=retry_count,
+                client_ip=client_ip,
+                original_format=original_format.value,
+                error_message=f"ReadTimeout after {retry_count} attempt(s): {error_detail}",
+                tags=["embed"] + (tags or []),
+            )
+        )
     return JSONResponse(
         status_code=504,
-        content={"error": f"Embed timed out on {winner.node_id} after {retry_count} attempt(s). "
-                 f"Ollama may be saturated with concurrent inference. Try again shortly."},
+        content={
+            "error": f"Embed timed out on {winner.node_id} after {retry_count} attempt(s). "
+            f"Ollama may be saturated with concurrent inference. Try again shortly."
+        },
     )
 
 
@@ -941,8 +999,13 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
     # Score with fallback support + auto-pull (per-request strict-mode override)
     allow_fallback = parse_allow_fallback(inference_req.raw_body, request.headers)
     results, actual_model = await score_with_fallbacks(
-        inference_req, scorer, queue_mgr, registry,
-        proxy=proxy, settings=settings, allow_fallback=allow_fallback,
+        inference_req,
+        scorer,
+        queue_mgr,
+        registry,
+        proxy=proxy,
+        settings=settings,
+        allow_fallback=allow_fallback,
     )
 
     if not results:
@@ -1002,9 +1065,7 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         response_future = await queue_mgr.enqueue(entry, process_fn)
     except ClientConcurrencyExceeded as e:
         return client_concurrency_response(e)
-    stream = await dispatched_stream(
-        request, response_future, entry, request.app.state.trace_store
-    )
+    stream = await dispatched_stream(request, response_future, entry, request.app.state.trace_store)
     if stream is None:
         return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
 

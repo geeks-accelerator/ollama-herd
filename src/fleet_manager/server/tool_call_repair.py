@@ -75,7 +75,8 @@ _SINGLE_ARG_TOOL_DEFAULTS: dict[str, str] = {
 
 
 def _structurally_valid_against_schema(
-    repaired: dict[str, Any], input_schema: dict[str, Any] | None,
+    repaired: dict[str, Any],
+    input_schema: dict[str, Any] | None,
 ) -> bool:
     """Lightweight structural check.  Not a full JSON Schema validator.
 
@@ -160,7 +161,8 @@ def _regex_recover_tool_args(
     # Pattern A — "parameter=key>value" blocks
     for m in re.finditer(
         r'["\s,]?parameter=(\w+)>\s*(.*?)(?:</parameter>|$)',
-        raw_text, re.DOTALL,
+        raw_text,
+        re.DOTALL,
     ):
         key = m.group(1)
         val = m.group(2).strip().rstrip('"}\n')
@@ -170,8 +172,9 @@ def _regex_recover_tool_args(
     # Pattern B — "<parameter_key>value" or "<parameter=key>" variants
     if not arguments:
         for m in re.finditer(
-            r'<parameter[_=](\w+)>\s*(.*?)(?:</parameter|<|$)',
-            raw_text, re.DOTALL,
+            r"<parameter[_=](\w+)>\s*(.*?)(?:</parameter|<|$)",
+            raw_text,
+            re.DOTALL,
         ):
             key = m.group(1)
             val = m.group(2).strip().strip('[]"')
@@ -181,7 +184,9 @@ def _regex_recover_tool_args(
     # Pattern C — salvage kv pairs from inside an "arguments" object
     if not arguments:
         args_match = re.search(
-            r'"arguments"\s*:\s*\{(.*)', raw_text, re.DOTALL,
+            r'"arguments"\s*:\s*\{(.*)',
+            raw_text,
+            re.DOTALL,
         )
         if args_match:
             for m in re.finditer(
@@ -195,12 +200,12 @@ def _regex_recover_tool_args(
         # Strip any noise, take what remains as the value
         val = raw_text.strip()
         # Strip leading JSON noise
-        val = re.sub(r'^[\s,":{}]+', '', val)
+        val = re.sub(r'^[\s,":{}]+', "", val)
         # Strip trailing noise
-        val = re.sub(r'[\s"}]+$', '', val)
+        val = re.sub(r'[\s"}]+$', "", val)
         # Strip XML-ish opening tags
-        val = re.sub(r'^parameter=\w+>\s*', '', val)
-        val = re.sub(r'^<parameter[_=]\w+>\s*', '', val)
+        val = re.sub(r"^parameter=\w+>\s*", "", val)
+        val = re.sub(r"^<parameter[_=]\w+>\s*", "", val)
         if val and len(val) > 2:
             arguments[_SINGLE_ARG_TOOL_DEFAULTS[tool_name]] = val
 
@@ -289,19 +294,23 @@ def repair_tool_use_input(
     if repaired_dict is None:
         regex_args = _regex_recover_tool_args(raw_input, tool_name=tool_name)
         if regex_args is not None and _structurally_valid_against_schema(
-            regex_args, input_schema,
+            regex_args,
+            input_schema,
         ):
             logger.warning(
                 "tool_call_repair: recovered tool args via regex patterns.  "
                 "tool=%r original=%r recovered=%r",
-                tool_name, raw_input[:120], str(regex_args)[:120],
+                tool_name,
+                raw_input[:120],
+                str(regex_args)[:120],
             )
             return regex_args, True
         if regex_args is not None:
             logger.debug(
                 "tool_call_repair: regex recovery produced args but failed "
                 "schema validation.  tool=%r args=%r",
-                tool_name, str(regex_args)[:120],
+                tool_name,
+                str(regex_args)[:120],
             )
 
     if repaired_dict is None:
@@ -309,8 +318,8 @@ def repair_tool_use_input(
         return raw_input, False
 
     logger.warning(
-        "tool_call_repair: repaired malformed tool-call JSON.  "
-        "original=%r repaired=%r",
-        raw_input[:120], repaired_str[:120],
+        "tool_call_repair: repaired malformed tool-call JSON.  original=%r repaired=%r",
+        raw_input[:120],
+        repaired_str[:120],
     )
     return repaired_dict, True

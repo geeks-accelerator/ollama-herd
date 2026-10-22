@@ -60,7 +60,11 @@ logger = logging.getLogger(__name__)
 # Compaction API, etc.); we want to notice when one starts appearing in
 # our traffic without spamming the log for every request that follows.
 _KNOWN_BLOCK_TYPES: set[str] = {
-    "text", "image", "tool_use", "tool_result", "thinking",
+    "text",
+    "image",
+    "tool_use",
+    "tool_result",
+    "thinking",
 }
 _LOGGED_UNKNOWN_BLOCK_TYPES: set[str] = set()
 
@@ -341,7 +345,9 @@ def _map_done_reason(done_reason: str, has_tool_calls: bool, stop_seq: str | Non
 
 
 def ollama_chunk_to_anthropic_events(
-    line: str, state: AnthropicSSEState, stop_sequences: list[str] | None = None,
+    line: str,
+    state: AnthropicSSEState,
+    stop_sequences: list[str] | None = None,
 ) -> Iterator[str]:
     """Translate one Ollama NDJSON line into zero-or-more Anthropic SSE events."""
     line = line.strip()
@@ -361,19 +367,22 @@ def ollama_chunk_to_anthropic_events(
     # Emit message_start once, on the first chunk we see
     if not state.started:
         state.started = True
-        yield _sse("message_start", {
-            "type": "message_start",
-            "message": {
-                "id": state.message_id,
-                "type": "message",
-                "role": "assistant",
-                "content": [],
-                "model": state.model,
-                "stop_reason": None,
-                "stop_sequence": None,
-                "usage": {"input_tokens": state.input_tokens or 0, "output_tokens": 0},
+        yield _sse(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": state.message_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": state.model,
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": state.input_tokens or 0, "output_tokens": 0},
+                },
             },
-        })
+        )
 
     # Stream text deltas
     if content:
@@ -381,25 +390,34 @@ def ollama_chunk_to_anthropic_events(
             state.text_block_index = state.next_block_index
             state.next_block_index += 1
             state.text_open = True
-            yield _sse("content_block_start", {
-                "type": "content_block_start",
+            yield _sse(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": state.text_block_index,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            )
+        yield _sse(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
                 "index": state.text_block_index,
-                "content_block": {"type": "text", "text": ""},
-            })
-        yield _sse("content_block_delta", {
-            "type": "content_block_delta",
-            "index": state.text_block_index,
-            "delta": {"type": "text_delta", "text": content},
-        })
+                "delta": {"type": "text_delta", "text": content},
+            },
+        )
 
     # Emit any new tool calls as content_block_start + input_json_delta + stop
     if tool_calls:
         # Close text block first if open
         if state.text_open:
-            yield _sse("content_block_stop", {
-                "type": "content_block_stop",
-                "index": state.text_block_index,
-            })
+            yield _sse(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": state.text_block_index,
+                },
+            )
             state.text_open = False
         for tc in tool_calls:
             fn = tc.get("function") or {}
@@ -424,29 +442,41 @@ def ollama_chunk_to_anthropic_events(
             idx = state.next_block_index
             state.next_block_index += 1
             state.emitted_tools.append({"id": tool_id, "name": name, "input": args})
-            yield _sse("content_block_start", {
-                "type": "content_block_start",
-                "index": idx,
-                "content_block": {"type": "tool_use", "id": tool_id, "name": name, "input": {}},
-            })
-            yield _sse("content_block_delta", {
-                "type": "content_block_delta",
-                "index": idx,
-                "delta": {"type": "input_json_delta", "partial_json": json.dumps(args)},
-            })
-            yield _sse("content_block_stop", {
-                "type": "content_block_stop",
-                "index": idx,
-            })
+            yield _sse(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": idx,
+                    "content_block": {"type": "tool_use", "id": tool_id, "name": name, "input": {}},
+                },
+            )
+            yield _sse(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": idx,
+                    "delta": {"type": "input_json_delta", "partial_json": json.dumps(args)},
+                },
+            )
+            yield _sse(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": idx,
+                },
+            )
 
     if done and not state.finished:
         state.finished = True
         # Close any open text block
         if state.text_open:
-            yield _sse("content_block_stop", {
-                "type": "content_block_stop",
-                "index": state.text_block_index,
-            })
+            yield _sse(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": state.text_block_index,
+                },
+            )
             state.text_open = False
 
         # Token counts come from the final chunk
@@ -466,16 +496,21 @@ def ollama_chunk_to_anthropic_events(
             pass
         state.stop_reason = _map_done_reason(done_reason, has_tools, matched_stop)
 
-        yield _sse("message_delta", {
-            "type": "message_delta",
-            "delta": {"stop_reason": state.stop_reason, "stop_sequence": matched_stop},
-            "usage": {"output_tokens": completion_tok},
-        })
+        yield _sse(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": state.stop_reason, "stop_sequence": matched_stop},
+                "usage": {"output_tokens": completion_tok},
+            },
+        )
         yield _sse("message_stop", {"type": "message_stop"})
 
 
 def accumulate_anthropic_response(
-    chunks: list[str], model: str, stop_sequences: list[str] | None = None,
+    chunks: list[str],
+    model: str,
+    stop_sequences: list[str] | None = None,
 ) -> dict[str, Any]:
     """Walk a finished list of Ollama NDJSON lines, return Anthropic JSON response.
 
@@ -510,12 +545,14 @@ def accumulate_anthropic_response(
                     args = json.loads(args)
                 except (json.JSONDecodeError, TypeError):
                     args = {"_raw": args}
-            tool_uses.append({
-                "type": "tool_use",
-                "id": f"toolu_{uuid.uuid4().hex[:24]}",
-                "name": fn.get("name", ""),
-                "input": args,
-            })
+            tool_uses.append(
+                {
+                    "type": "tool_use",
+                    "id": f"toolu_{uuid.uuid4().hex[:24]}",
+                    "name": fn.get("name", ""),
+                    "input": args,
+                }
+            )
         if data.get("done"):
             prompt_tok = data.get("prompt_eval_count") or prompt_tok
             completion_tok = data.get("eval_count") or completion_tok
@@ -560,6 +597,7 @@ def estimate_tokens(text: str) -> int:
         return 0
     try:
         import tiktoken  # type: ignore
+
         enc = tiktoken.get_encoding("cl100k_base")
         return len(enc.encode(text))
     except (ImportError, Exception):
@@ -567,7 +605,8 @@ def estimate_tokens(text: str) -> int:
 
 
 def flatten_text_for_count(
-    messages: list[dict[str, Any]], system: str | list[dict[str, Any]] | None = None,
+    messages: list[dict[str, Any]],
+    system: str | list[dict[str, Any]] | None = None,
 ) -> str:
     """Concatenate all text payloads from system + messages for token estimation."""
     parts: list[str] = []

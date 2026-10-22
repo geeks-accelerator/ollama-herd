@@ -115,9 +115,7 @@ class TraceStore:
         # it, a turn that ends mid-task is only diagnosable by eyeballing
         # completion_tokens — see docs/plans/codex-code-mode-escalation.md.
         try:
-            await self._db.execute(
-                "ALTER TABLE request_traces ADD COLUMN finish_reason TEXT"
-            )
+            await self._db.execute("ALTER TABLE request_traces ADD COLUMN finish_reason TEXT")
             logger.info("Added 'finish_reason' column to request_traces")
         except Exception:
             pass  # Column already exists
@@ -133,9 +131,7 @@ class TraceStore:
         # guessing that disagreement is how context_waste went wrong.
         # See docs/plans/context-window-blindness.md.
         try:
-            await self._db.execute(
-                "ALTER TABLE request_traces ADD COLUMN estimated_tokens INTEGER"
-            )
+            await self._db.execute("ALTER TABLE request_traces ADD COLUMN estimated_tokens INTEGER")
             logger.info("Added 'estimated_tokens' column to request_traces")
         except Exception:
             pass  # Column already exists
@@ -533,7 +529,10 @@ class TraceStore:
     # -- Tag analytics queries --
 
     async def get_usage_by_tag(
-        self, days: int = 7, start_ts: float = 0, end_ts: float = 0,
+        self,
+        days: int = 7,
+        start_ts: float = 0,
+        end_ts: float = 0,
     ) -> list[dict]:
         """Per-tag aggregated stats using SQLite json_each() to explode tags."""
         if not self._db:
@@ -573,7 +572,10 @@ class TraceStore:
         ]
 
     async def get_tag_daily_stats(
-        self, days: int = 7, start_ts: float = 0, end_ts: float = 0,
+        self,
+        days: int = 7,
+        start_ts: float = 0,
+        end_ts: float = 0,
     ) -> list[dict]:
         """Per-tag, per-day breakdown for charting."""
         if not self._db:
@@ -749,9 +751,7 @@ class TraceStore:
                     buckets.setdefault((node_id, model), []).append(tpot)
             for k, vals in buckets.items():
                 vals.sort()
-                entry = out.setdefault(
-                    k, {"node_id": k[0], "model": k[1]}
-                )
+                entry = out.setdefault(k, {"node_id": k[0], "model": k[1]})
                 entry[f"{key}_p99"] = vals[min(int(len(vals) * 0.99), len(vals) - 1)]
                 entry[f"{key}_median"] = vals[len(vals) // 2]
                 entry[f"{key}_n"] = len(vals)
@@ -851,7 +851,8 @@ class TraceStore:
         }
 
     async def get_request_count_by_model(
-        self, seconds: int = 120,
+        self,
+        seconds: int = 120,
     ) -> dict[str, int]:
         """Return {model_name: request_count} over the last N seconds.
 
@@ -897,9 +898,7 @@ class TraceStore:
         rows = await cursor.fetchall()
         return {row[0] for row in rows}
 
-    async def get_silent_fallback_stats(
-        self, lookback_s: int = 86400
-    ) -> list[dict]:
+    async def get_silent_fallback_stats(self, lookback_s: int = 86400) -> list[dict]:
         """Detect silent model fallback — requested X but got Y.
 
         When VRAM fallback routes a request away from the requested
@@ -1214,9 +1213,7 @@ class TraceStore:
 
     # -- Fleet briefing storage --
 
-    async def save_briefing(
-        self, briefing: str, model: str, fleet_data: str = ""
-    ) -> None:
+    async def save_briefing(self, briefing: str, model: str, fleet_data: str = "") -> None:
         """Persist a fleet intelligence briefing to SQLite."""
         if not self._db:
             return

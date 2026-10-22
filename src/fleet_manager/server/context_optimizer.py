@@ -127,8 +127,7 @@ class ContextOptimizer:
             # Skip models that already have a manual override
             if model in overrides:
                 logger.info(
-                    f"Context optimizer: keeping existing override "
-                    f"{model}={overrides[model]}"
+                    f"Context optimizer: keeping existing override {model}={overrides[model]}"
                 )
                 continue
 
@@ -168,9 +167,7 @@ class ContextOptimizer:
             if not node.ollama:
                 continue
             for m in node.ollama.models_loaded:
-                allocated_ctx[m.name] = max(
-                    allocated_ctx.get(m.name, 0), m.context_length or 0
-                )
+                allocated_ctx[m.name] = max(allocated_ctx.get(m.name, 0), m.context_length or 0)
                 model_nodes.setdefault(m.name, []).append(node.node_id)
 
         overrides = self._settings.num_ctx_overrides
@@ -243,13 +240,14 @@ class ContextOptimizer:
                         env_overrides["OLLAMA_NUM_CTX"] = str(max(current, ctx))
 
                 if env_overrides:
-                    self._pending_commands.setdefault(nid, []).append({
-                        "type": "restart_ollama",
-                        "env": env_overrides,
-                        "reason": "Context optimizer: reduced num_ctx to save memory",
-                    })
+                    self._pending_commands.setdefault(nid, []).append(
+                        {
+                            "type": "restart_ollama",
+                            "env": env_overrides,
+                            "reason": "Context optimizer: reduced num_ctx to save memory",
+                        }
+                    )
                     self._last_restart[nid] = now
                     logger.info(
-                        f"Context optimizer: queued restart for {nid} "
-                        f"with env {env_overrides}"
+                        f"Context optimizer: queued restart for {nid} with env {env_overrides}"
                     )

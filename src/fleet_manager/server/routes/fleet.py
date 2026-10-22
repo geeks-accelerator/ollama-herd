@@ -65,14 +65,16 @@ async def fleet_limits(request: Request):
     for node in registry.get_all_nodes():
         loaded = len(node.ollama.models_loaded) if node.ollama else 0
         cap = hot_model_cap_for(node)
-        node_limits.append({
-            "node_id": node.node_id,
-            "status": node.status.value,
-            # Per-node: each node reports its own OLLAMA_MAX_LOADED_MODELS.
-            "hot_model_cap": cap,
-            "models_loaded": loaded,
-            "free_slots": max(0, cap - loaded),
-        })
+        node_limits.append(
+            {
+                "node_id": node.node_id,
+                "status": node.status.value,
+                # Per-node: each node reports its own OLLAMA_MAX_LOADED_MODELS.
+                "hot_model_cap": cap,
+                "models_loaded": loaded,
+                "free_slots": max(0, cap - loaded),
+            }
+        )
 
     return {
         # Router-side retry budget (per request, across nodes).
@@ -95,6 +97,7 @@ async def fleet_limits(request: Request):
 #: load-and-swap the fleet exists to do. Leave room for the OS, MLX servers
 #: (separate processes, ~34GB on our box), and non-pinned models to cycle.
 _PIN_MEMORY_BUDGET_FRACTION = 0.8
+
 
 def _pin_would_not_fit(
     model: str, node_id: str | None, registry, store, settings=None
@@ -137,8 +140,7 @@ def _pin_would_not_fit(
     # will actually run with — not on-disk weights. The KV cache is what
     # dominates: qwen3-coder:30b is 18.6GB of weights and 122.9GB resident.
     sizes = {
-        m: estimate_resident_gb(m, node, _expected_num_ctx(m, settings))
-        for m in [*already, model]
+        m: estimate_resident_gb(m, node, _expected_num_ctx(m, settings)) for m in [*already, model]
     }
     pinned_gb = sum(sizes[m] for m in already)
     new_gb = sizes[model]
@@ -234,10 +236,7 @@ async def fleet_pin(request: Request):
         target = strip_mlx_prefix(model)
         ready_node = None
         for n in registry.get_online_nodes():
-            if any(
-                s.model == target and s.status == "healthy"
-                for s in (n.mlx_servers or [])
-            ):
+            if any(s.model == target and s.status == "healthy" for s in (n.mlx_servers or [])):
                 ready_node = n.node_id
                 break
         return {
@@ -262,7 +261,10 @@ async def fleet_pin(request: Request):
     # `force: true` overrides for operators who know what they're doing.
     if not bool(body.get("force", False)):
         refusal = _pin_would_not_fit(
-            model, node_id, registry, store,
+            model,
+            node_id,
+            registry,
+            store,
             getattr(request.app.state, "settings", None),
         )
         if refusal is not None:
@@ -289,7 +291,11 @@ async def fleet_pin(request: Request):
         )
 
     loaded = await _load_model_on_best_node(
-        model, nodes, proxy, why="fleet-pin", target_node_id=node_id,
+        model,
+        nodes,
+        proxy,
+        why="fleet-pin",
+        target_node_id=node_id,
         settings=getattr(request.app.state, "settings", None),
     )
     if not loaded:
@@ -317,7 +323,10 @@ async def fleet_pin(request: Request):
     ready_after_ms: int | None = None
     if wait:
         ready, ready_after_ms = await _wait_until_resident(
-            registry, node_id, model, timeout_s,
+            registry,
+            node_id,
+            model,
+            timeout_s,
         )
 
     # Persist the pin on whichever node now holds it (so the preloader
@@ -387,16 +396,10 @@ async def fleet_queue(request: Request):
                 latencies.append(p75)
         if latencies:
             avg_latency = sum(latencies) / len(latencies)
-            total_concurrency = sum(
-                q.get("concurrency", 1) for q in queue_info.values()
-            )
-            estimated_wait_ms = int(
-                total_pending * avg_latency / max(total_concurrency, 1)
-            )
+            total_concurrency = sum(q.get("concurrency", 1) for q in queue_info.values())
+            estimated_wait_ms = int(total_pending * avg_latency / max(total_concurrency, 1))
 
-    online_count = sum(
-        1 for n in registry.get_all_nodes() if n.status.value == "online"
-    )
+    online_count = sum(1 for n in registry.get_all_nodes() if n.status.value == "online")
 
     return {
         "queue_depth": total_pending + total_in_flight,

@@ -165,6 +165,7 @@ def find_by_request_id(data_dir: str, request_id: str) -> dict[str, Any] | None:
 def find_failures(data_dir: str, *, since: float | None = None) -> list[dict[str, Any]]:
     """Return only records that ended in failure or client disconnect."""
     return [
-        r for r in iter_records(data_dir, since=since)
+        r
+        for r in iter_records(data_dir, since=since)
         if r.get("status") not in ("completed", None) or r.get("error")
     ]

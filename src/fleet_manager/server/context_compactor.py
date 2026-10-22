@@ -107,7 +107,11 @@ class CuratorProtocol(Protocol):
     """
 
     async def summarize(
-        self, system: str, prompt: str, max_tokens: int = 512, timeout_s: float = 60.0,
+        self,
+        system: str,
+        prompt: str,
+        max_tokens: int = 512,
+        timeout_s: float = 60.0,
     ) -> str | None:
         """Return the summary text, or None on failure/timeout."""
         ...
@@ -157,16 +161,12 @@ class OllamaCurator:
             logger.warning(f"Curator {effective_model} timed out after {timeout_s}s")
             return None
         except Exception as exc:  # noqa: BLE001 — curator failure must fail-open
-            logger.warning(
-                f"Curator {effective_model} failed: {type(exc).__name__}: {exc}"
-            )
+            logger.warning(f"Curator {effective_model} failed: {type(exc).__name__}: {exc}")
             return None
         try:
             return resp["message"]["content"].strip()
         except (KeyError, AttributeError, TypeError):
-            logger.warning(
-                f"Curator {effective_model} returned unparseable response"
-            )
+            logger.warning(f"Curator {effective_model} returned unparseable response")
             return None
 
 
@@ -288,11 +288,16 @@ class CuratorSelector:
                     - recent * self.activity_penalty_per_request
                     + (self.pinned_bonus if is_pinned else 0.0)
                 )
-                candidates.append(CuratorCandidate(
-                    model=lm.name, node_id=node.node_id,
-                    params_b=params_b, is_pinned=is_pinned,
-                    recent_requests=recent, score=score,
-                ))
+                candidates.append(
+                    CuratorCandidate(
+                        model=lm.name,
+                        node_id=node.node_id,
+                        params_b=params_b,
+                        is_pinned=is_pinned,
+                        recent_requests=recent,
+                        score=score,
+                    )
+                )
 
         if candidates:
             # Pick the highest-scoring eligible candidate
@@ -442,7 +447,10 @@ class SummaryCache:
             """)
 
     def get(
-        self, content_hash: str, strategy: str, version: str = STRATEGY_VERSION,
+        self,
+        content_hash: str,
+        strategy: str,
+        version: str = STRATEGY_VERSION,
     ) -> str | None:
         with self._conn() as c:
             row = c.execute(
@@ -478,8 +486,14 @@ class SummaryCache:
                 "original_tokens, summary_tokens, curator_model, created_at, hit_count) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
                 (
-                    content_hash, strategy, version, summary,
-                    original_tokens, summary_tokens, curator_model, time.time(),
+                    content_hash,
+                    strategy,
+                    version,
+                    summary,
+                    original_tokens,
+                    summary_tokens,
+                    curator_model,
+                    time.time(),
                 ),
             )
 
@@ -577,7 +591,8 @@ class ContextCompactor:
     # ------------------------------------------------------------------
 
     async def maybe_compact(
-        self, messages: list[dict],
+        self,
+        messages: list[dict],
         *,
         force_all: bool = False,
     ) -> tuple[list[dict], CompactionReport]:
@@ -636,7 +651,9 @@ class ContextCompactor:
                 continue
             # Compactable range: look at content blocks for tool_results
             new_msg = await self._compact_message(
-                msg, tool_use_names, report,
+                msg,
+                tool_use_names,
+                report,
                 curator_model=curator_model,
                 force_all=force_all,
             )
@@ -696,19 +713,14 @@ class ContextCompactor:
                     if block.get("type") == "text":
                         total += _estimate_tokens(block.get("text") or "")
                     elif block.get("type") == "tool_use":
-                        total += _estimate_tokens(
-                            json.dumps(block.get("input") or {})
-                        )
+                        total += _estimate_tokens(json.dumps(block.get("input") or {}))
                     elif block.get("type") == "tool_result":
                         inner = block.get("content")
                         if isinstance(inner, str):
                             total += _estimate_tokens(inner)
                         elif isinstance(inner, list):
                             for sub in inner:
-                                if (
-                                    isinstance(sub, dict)
-                                    and sub.get("type") == "text"
-                                ):
+                                if isinstance(sub, dict) and sub.get("type") == "text":
                                     total += _estimate_tokens(sub.get("text") or "")
         return total
 
@@ -729,10 +741,7 @@ class ContextCompactor:
         new_blocks: list[dict] = []
         changed = False
         for block in content:
-            if (
-                not isinstance(block, dict)
-                or block.get("type") != "tool_result"
-            ):
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
                 new_blocks.append(block)
                 continue
             # Classify via the corresponding tool_use
@@ -757,7 +766,9 @@ class ContextCompactor:
                 continue
             # Compaction eligible — look up or generate summary
             summary = await self._get_or_compute_summary(
-                raw_text, strategy, curator_model=curator_model,
+                raw_text,
+                strategy,
+                curator_model=curator_model,
             )
             if summary is None:
                 # Curator failed — pass through unchanged
@@ -774,12 +785,14 @@ class ContextCompactor:
             }
             new_blocks.append(new_block)
             changed = True
-            report.compactions.append({
-                "strategy": strategy.name,
-                "tool_use_id": tool_id,
-                "tokens_before": tok_before,
-                "tokens_after": tok_after,
-            })
+            report.compactions.append(
+                {
+                    "strategy": strategy.name,
+                    "tool_use_id": tool_id,
+                    "tokens_before": tok_before,
+                    "tokens_after": tok_after,
+                }
+            )
 
         if not changed:
             return msg

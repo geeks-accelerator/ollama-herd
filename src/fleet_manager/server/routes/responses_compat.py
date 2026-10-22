@@ -111,8 +111,13 @@ async def responses(request: Request):
     # Responses route just never told it.
     has_images = input_has_images(body.get("input"))
     local_model, route_reason = resolve_model(
-        requested_model, model_map, loaded_names, ondisk_names, auto_route=auto_route,
-        has_images=has_images, capabilities=get_fleet_capabilities(registry),
+        requested_model,
+        model_map,
+        loaded_names,
+        ondisk_names,
+        auto_route=auto_route,
+        has_images=has_images,
+        capabilities=get_fleet_capabilities(registry),
     )
     if not local_model:
         return _error(
@@ -158,10 +163,12 @@ async def responses(request: Request):
         f"Responses[{rid}] request: model={requested_model} → {local_model} "
         f"stream={stream} tools={len(openai_body.get('tools') or [])}"
         + (f" custom={sorted(custom_tool_names)}" if custom_tool_names else "")
-        + (f"{[t['function']['name'] for t in openai_body['tools']]} "
-           if openai_body.get("tools") else " ")
-        + 
-        f"msgs={len(openai_body['messages'])} from={client_host or '?'}"
+        + (
+            f"{[t['function']['name'] for t in openai_body['tools']]} "
+            if openai_body.get("tools")
+            else " "
+        )
+        + f"msgs={len(openai_body['messages'])} from={client_host or '?'}"
         + (f" tags={tags}" if tags else "")
     )
 
@@ -186,7 +193,12 @@ async def responses(request: Request):
 
     allow_fallback = parse_allow_fallback(body, request.headers)
     results, actual_model = await score_with_fallbacks(
-        inference_req, scorer, queue_mgr, registry, proxy=proxy, settings=settings,
+        inference_req,
+        scorer,
+        queue_mgr,
+        registry,
+        proxy=proxy,
+        settings=settings,
         allow_fallback=allow_fallback,
     )
     if not results:
@@ -221,9 +233,7 @@ async def responses(request: Request):
         inference_req.raw_body["model"] = actual_model
 
     winner = results[0]
-    logger.info(
-        f"Responses[{rid}] routed to node={winner.node_id} score={int(winner.score)}"
-    )
+    logger.info(f"Responses[{rid}] routed to node={winner.node_id} score={int(winner.score)}")
     entry = QueueEntry(
         request=inference_req,
         assigned_node=winner.node_id,
@@ -233,9 +243,7 @@ async def responses(request: Request):
     )
     queue_key = winner.queue_key
 
-    process_fn = proxy.make_process_fn(
-        queue_key, queue_mgr, scorer=scorer, settings=settings
-    )
+    process_fn = proxy.make_process_fn(queue_key, queue_mgr, scorer=scorer, settings=settings)
     try:
         response_future = await queue_mgr.enqueue(entry, process_fn)
     except ClientConcurrencyExceeded as e:
@@ -248,22 +256,24 @@ async def responses(request: Request):
 
     _extra = check_context_overflow(winner, inference_req, registry)
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
-    headers.update(fleet_headers(
-        node_id=winner.node_id,
-        served_model=actual_model,
-        requested_model=local_model,
-        backend="mlx" if actual_model.startswith("mlx:") else "ollama",
-        score=winner.score,
-        retries=entry.retry_count,
-        affinity=affinity_from_breakdown(winner.scores_breakdown),
-        extra=_extra,
-    ))
+    headers.update(
+        fleet_headers(
+            node_id=winner.node_id,
+            served_model=actual_model,
+            requested_model=local_model,
+            backend="mlx" if actual_model.startswith("mlx:") else "ollama",
+            score=winner.score,
+            retries=entry.retry_count,
+            affinity=affinity_from_breakdown(winner.scores_breakdown),
+            extra=_extra,
+        )
+    )
 
     if stream:
+
         async def _sse_generator():
             state = ResponsesSSEState(
-                model=actual_model, custom_names=custom_tool_names,
-                known_names=known_tool_names
+                model=actual_model, custom_names=custom_tool_names, known_names=known_tool_names
             )
             try:
                 async for line in ollama_stream:
@@ -296,7 +306,8 @@ async def responses(request: Request):
                     f"elapsed_ms={(time.time() - t_start) * 1000:.0f}"
                 )
                 if looks_like_abandoned_preamble(
-                    "".join(state.text_parts), len(state.emitted_tools),
+                    "".join(state.text_parts),
+                    len(state.emitted_tools),
                     len(openai_body.get("tools") or []),
                 ):
                     # The turn succeeded by every server-side measure; it is the
@@ -309,7 +320,9 @@ async def responses(request: Request):
                     )
 
         return StreamingResponse(
-            _sse_generator(), media_type="text/event-stream", headers=headers,
+            _sse_generator(),
+            media_type="text/event-stream",
+            headers=headers,
         )
 
     # Non-streaming: collect the NDJSON lines, then build one Responses object.
@@ -331,21 +344,20 @@ async def responses(request: Request):
         proxy.pop_request_meta(inference_req.request_id)
 
     response = accumulate_responses_object(
-        chunks, model=actual_model, custom_names=custom_tool_names,
-        known_names=known_tool_names
+        chunks, model=actual_model, custom_names=custom_tool_names, known_names=known_tool_names
     )
     _text = "".join(
         c.get("text", "")
-        for o in (response.get("output") or []) if o.get("type") == "message"
+        for o in (response.get("output") or [])
+        if o.get("type") == "message"
         for c in (o.get("content") or [])
     )
     _calls = sum(
-        1 for o in (response.get("output") or [])
+        1
+        for o in (response.get("output") or [])
         if o.get("type") in ("function_call", "custom_tool_call")
     )
-    if looks_like_abandoned_preamble(
-        _text, _calls, len(openai_body.get("tools") or [])
-    ):
+    if looks_like_abandoned_preamble(_text, _calls, len(openai_body.get("tools") or [])):
         logger.warning(
             f"Responses[{rid}] ABANDONED PREAMBLE: the model announced an action "
             f"and ended the turn without calling a tool, so Codex will stop here. "

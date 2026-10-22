@@ -47,15 +47,17 @@ def _record_context_protection(
     upgrade_model: str | None = None,
 ) -> None:
     """Record a context protection event for health visibility."""
-    _context_protection_events.append({
-        "timestamp": time.time(),
-        "action": action,  # "stripped", "upgraded", "warning"
-        "model": model,
-        "node_id": node_id,
-        "client_num_ctx": client_num_ctx,
-        "loaded_ctx": loaded_ctx,
-        "upgrade_model": upgrade_model,
-    })
+    _context_protection_events.append(
+        {
+            "timestamp": time.time(),
+            "action": action,  # "stripped", "upgraded", "warning"
+            "model": model,
+            "node_id": node_id,
+            "client_num_ctx": client_num_ctx,
+            "loaded_ctx": loaded_ctx,
+            "upgrade_model": upgrade_model,
+        }
+    )
     if len(_context_protection_events) > 200:
         _context_protection_events.pop(0)
 
@@ -136,9 +138,7 @@ class StreamingProxy:
         # get_non_generatable_models().
         self._non_generatable = _non_generatable_models
 
-    def pop_token_counts(
-        self, request_id: str
-    ) -> tuple[int | None, int | None]:
+    def pop_token_counts(self, request_id: str) -> tuple[int | None, int | None]:
         """Remove and return (prompt_tokens, completion_tokens) for a request."""
         return self._request_tokens.pop(request_id, (None, None))
 
@@ -234,8 +234,7 @@ class StreamingProxy:
             error_occurred = True
             queue_manager.mark_failed(queue_key, entry)
             logger.warning(
-                f"Client disconnected for {entry.request.request_id[:8]} "
-                f"on {entry.assigned_node}"
+                f"Client disconnected for {entry.request.request_id[:8]} on {entry.assigned_node}"
             )
             self._record_trace(
                 entry,
@@ -286,7 +285,8 @@ class StreamingProxy:
                     # counts may be None for routes that don't surface them;
                     # mark_completed handles that gracefully.
                     queue_manager.mark_completed(
-                        queue_key, entry,
+                        queue_key,
+                        entry,
                         latency_ms=elapsed_ms,
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
@@ -327,15 +327,10 @@ class StreamingProxy:
                     # traces on this fleet carry NULL counts (embeddings, MLX),
                     # and treating NULL as zero would have classified every one
                     # of them.  See docs/plans/context-window-blindness.md.
-                    produced_nothing = (
-                        completion_tokens is not None and completion_tokens == 0
-                    )
+                    produced_nothing = completion_tokens is not None and completion_tokens == 0
                     if produced_nothing:
                         # Non-destructive read: _record_trace pops this below.
-                        why = (
-                            self._request_done_reason.get(entry.request.request_id)
-                            or "unknown"
-                        )
+                        why = self._request_done_reason.get(entry.request.request_id) or "unknown"
                         logger.warning(
                             f"Request {entry.request.request_id[:8]} on "
                             f"{entry.assigned_node} completed with zero generated "
@@ -552,11 +547,13 @@ class StreamingProxy:
                 # meant most disconnects left no trace and never left the queue.
                 queue_manager.mark_failed(current_queue_key, entry)
                 logger.warning(
-                    f"Client disconnected for {entry.request.request_id[:8]} "
-                    f"on {current_node}"
+                    f"Client disconnected for {entry.request.request_id[:8]} on {current_node}"
                 )
                 self._record_trace(
-                    entry, current_node, start_time, first_token_time,
+                    entry,
+                    current_node,
+                    start_time,
+                    first_token_time,
                     "client_disconnected",
                     error_message="Client disconnected before stream completed",
                     response_chunks=capture_chunks,
@@ -668,7 +665,8 @@ class StreamingProxy:
                         entry.request.request_id, (None, None)
                     )
                     queue_manager.mark_completed(
-                        current_queue_key, entry,
+                        current_queue_key,
+                        entry,
                         latency_ms=elapsed_ms,
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
@@ -690,7 +688,11 @@ class StreamingProxy:
                             name=f"latency-record-{entry.request.request_id[:8]}",
                         )
                     self._record_trace(
-                        entry, current_node, start_time, first_token_time, "completed",
+                        entry,
+                        current_node,
+                        start_time,
+                        first_token_time,
+                        "completed",
                         response_chunks=capture_chunks,
                     )
                 else:
@@ -702,7 +704,10 @@ class StreamingProxy:
                         f"{elapsed_ms / 1000:.1f}s"
                     )
                     self._record_trace(
-                        entry, current_node, start_time, first_token_time,
+                        entry,
+                        current_node,
+                        start_time,
+                        first_token_time,
                         "incomplete",
                         error_message="Stream ended without done:true from Ollama",
                         response_chunks=capture_chunks,
@@ -772,9 +777,7 @@ class StreamingProxy:
                             "done_reason": done_reason,
                             "prompt_tokens": prompt_tok,
                             "completion_tokens": completion_tok,
-                            "num_predict": ollama_body.get("options", {}).get(
-                                "num_predict"
-                            ),
+                            "num_predict": ollama_body.get("options", {}).get("num_predict"),
                         }
                 except json.JSONDecodeError:
                     logger.warning(f"Malformed JSON from Ollama on {node_id}: {line[:200]}")
@@ -848,9 +851,7 @@ class StreamingProxy:
             )
             if resp.status_code == 200:
                 logger.info(f"Pre-warmed {model} on {node_id}")
-            elif resp.status_code == 400 and "does not support generate" in (
-                resp.text or ""
-            ):
+            elif resp.status_code == 400 and "does not support generate" in (resp.text or ""):
                 # Permanent, not transient: Ollama answers
                 # {"error": "\"<model>\" does not support generate"} for an
                 # embedding model.  Record it so the preloader stops choosing it,
@@ -892,9 +893,7 @@ class StreamingProxy:
         """
         try:
             client = self._get_client(node_id)
-            async with client.stream(
-                "POST", "/api/pull", json={"name": model}
-            ) as resp:
+            async with client.stream("POST", "/api/pull", json={"name": model}) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if not line:
@@ -904,16 +903,12 @@ class StreamingProxy:
                     except json.JSONDecodeError:
                         continue
                     if data.get("error"):
-                        logger.error(
-                            f"Pull {model} on {node_id} failed: {data['error']}"
-                        )
+                        logger.error(f"Pull {model} on {node_id} failed: {data['error']}")
                         return False
                     status = data.get("status", "")
                     if "completed" in data and "total" in data and data["total"] > 0:
                         pct = int(data["completed"] / data["total"] * 100)
-                        logger.info(
-                            f"Pulling {model} on {node_id}: {status} {pct}%"
-                        )
+                        logger.info(f"Pulling {model} on {node_id}: {status} {pct}%")
                         if progress_cb:
                             progress_cb(pct, data["completed"], data["total"], status)
                     elif status == "success":
@@ -927,18 +922,14 @@ class StreamingProxy:
             logger.error(f"Pull {model} on {node_id} error: {type(e).__name__}: {e}")
             return False
 
-    async def pull_model_streaming(
-        self, node_id: str, model: str
-    ) -> AsyncIterator[bytes]:
+    async def pull_model_streaming(self, node_id: str, model: str) -> AsyncIterator[bytes]:
         """Pull a model onto a node, yielding raw NDJSON bytes for the client.
 
         Yields each line from Ollama's /api/pull response verbatim, preserving
         the exact wire format (status, digest, total, completed).
         """
         client = self._get_client(node_id)
-        async with client.stream(
-            "POST", "/api/pull", json={"name": model}
-        ) as resp:
+        async with client.stream("POST", "/api/pull", json={"name": model}) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if not line:
@@ -948,9 +939,7 @@ class StreamingProxy:
                 except json.JSONDecodeError:
                     continue
                 if data.get("error"):
-                    logger.error(
-                        f"Pull {model} on {node_id} failed: {data['error']}"
-                    )
+                    logger.error(f"Pull {model} on {node_id} failed: {data['error']}")
                 status = data.get("status", "")
                 if "completed" in data and "total" in data and data["total"] > 0:
                     pct = int(data["completed"] / data["total"] * 100)
@@ -963,21 +952,15 @@ class StreamingProxy:
         """Delete a model from a node via Ollama DELETE /api/delete."""
         try:
             client = self._get_client(node_id)
-            resp = await client.request(
-                "DELETE", "/api/delete", json={"name": model}, timeout=30.0
-            )
+            resp = await client.request("DELETE", "/api/delete", json={"name": model}, timeout=30.0)
             if resp.status_code == 200:
                 logger.info(f"Deleted {model} from {node_id}")
                 return True
             else:
-                logger.warning(
-                    f"Delete {model} on {node_id} failed: HTTP {resp.status_code}"
-                )
+                logger.warning(f"Delete {model} on {node_id} failed: HTTP {resp.status_code}")
                 return False
         except Exception as e:
-            logger.error(
-                f"Delete {model} on {node_id} error: {type(e).__name__}: {e}"
-            )
+            logger.error(f"Delete {model} on {node_id} error: {type(e).__name__}: {e}")
             return False
 
     def make_image_process_fn(self, queue_key: str, queue_manager, timeout: float = 120.0):
@@ -1016,9 +999,7 @@ class StreamingProxy:
 
         return process
 
-    async def embed_image_on_node(
-        self, node_id: str, body: dict, timeout: float = 30.0
-    ) -> dict:
+    async def embed_image_on_node(self, node_id: str, body: dict, timeout: float = 30.0) -> dict:
         """Proxy a vision embedding request to a node's embedding server.
 
         Returns the embedding result dict on success, raises on failure.
@@ -1088,16 +1069,13 @@ class StreamingProxy:
                     return status.get("result", status)
                 if status["status"] == "failed":
                     raise RuntimeError(
-                        f"Transcription job {job_id} failed: "
-                        f"{status.get('error', 'unknown')}"
+                        f"Transcription job {job_id} failed: {status.get('error', 'unknown')}"
                     )
                 await asyncio.sleep(0.5)
 
             raise TimeoutError(f"Transcription job {job_id} timed out")
 
-    def make_transcription_process_fn(
-        self, queue_key: str, queue_manager, timeout: float = 300.0
-    ):
+    def make_transcription_process_fn(self, queue_key: str, queue_manager, timeout: float = 300.0):
         """Create a process function for transcription queue entries."""
         proxy = self
 
@@ -1168,22 +1146,18 @@ class StreamingProxy:
             result = []
             for m in data.get("models", []):
                 size_bytes = m.get("size", 0)
-                result.append({
-                    "name": m.get("model", m.get("name", "")),
-                    "size_gb": round(size_bytes / (1024**3), 2),
-                    "parameter_size": m.get("details", {}).get(
-                        "parameter_size", ""
-                    ),
-                    "quantization": m.get("details", {}).get(
-                        "quantization_level", ""
-                    ),
-                    "family": m.get("details", {}).get("family", ""),
-                })
+                result.append(
+                    {
+                        "name": m.get("model", m.get("name", "")),
+                        "size_gb": round(size_bytes / (1024**3), 2),
+                        "parameter_size": m.get("details", {}).get("parameter_size", ""),
+                        "quantization": m.get("details", {}).get("quantization_level", ""),
+                        "family": m.get("details", {}).get("family", ""),
+                    }
+                )
             return result
         except Exception as e:
-            logger.warning(
-                f"Query models on {node_id} error: {type(e).__name__}: {e}"
-            )
+            logger.warning(f"Query models on {node_id} error: {type(e).__name__}: {e}")
             return []
 
     def _get_loaded_context(self, model: str, node_id: str) -> int:
@@ -1198,9 +1172,7 @@ class StreamingProxy:
 
         return resident_context_for(model, self._registry.get_node(node_id))
 
-    def _find_context_upgrade(
-        self, model: str, required_ctx: int, node_id: str
-    ) -> str | None:
+    def _find_context_upgrade(self, model: str, required_ctx: int, node_id: str) -> str | None:
         """Find a loaded model with sufficient context and more parameters.
 
         Searches the assigned node first, then all other nodes. Returns the model
@@ -1277,7 +1249,8 @@ class StreamingProxy:
             logger.debug(
                 "Dynamic num_ctx: %s already resident at its configured %d; "
                 "the pin below sends it rather than injecting it here",
-                model, override,
+                model,
+                override,
             )
             return
 
@@ -1302,13 +1275,9 @@ class StreamingProxy:
             f"to the next cold load. To apply it now: `ollama stop {model}` on "
             f"{node_id}, then send one request through the router."
         )
-        _record_context_protection(
-            "override_inert", model, node_id, override, loaded_ctx
-        )
+        _record_context_protection("override_inert", model, node_id, override, loaded_ctx)
 
-    def _pin_resident_num_ctx(
-        self, body: dict, model: str, node_id: str, reason: str
-    ) -> int:
+    def _pin_resident_num_ctx(self, body: dict, model: str, node_id: str, reason: str) -> int:
         """Send ``num_ctx`` equal to the context the model is already resident at.
 
         **An absent ``num_ctx`` is not neutral.**  Ollama fills it in from
@@ -1391,12 +1360,8 @@ class StreamingProxy:
                         if "options" not in body:
                             body["options"] = {}
                         body["options"]["num_ctx"] = override
-                        logger.info(
-                            f"Dynamic num_ctx: injected num_ctx={override} for {model}"
-                        )
-                        _record_context_protection(
-                            "dynamic_override", model, node_id, override, 0
-                        )
+                        logger.info(f"Dynamic num_ctx: injected num_ctx={override} for {model}")
+                        _record_context_protection("dynamic_override", model, node_id, override, 0)
 
         options = body.get("options")
         if not options or "num_ctx" not in options:
@@ -1635,15 +1600,16 @@ class StreamingProxy:
 
                         try:
                             resp = httpx.get(
-                                url, timeout=30, follow_redirects=True,
+                                url,
+                                timeout=30,
+                                follow_redirects=True,
                             )
                             resp.raise_for_status()
                             encoded = base64.b64encode(resp.content)
                             images.append(encoded.decode())
                         except Exception as exc:
                             logger.warning(
-                                "Failed to fetch image URL %s: %s"
-                                " — use a data: URI instead",
+                                "Failed to fetch image URL %s: %s — use a data: URI instead",
                                 url,
                                 exc,
                             )
@@ -1654,9 +1620,7 @@ class StreamingProxy:
             converted.append(new_msg)
         return converted
 
-    def _apply_thinking_overhead(
-        self, body: dict, model: str, node_id: str | None = None
-    ) -> None:
+    def _apply_thinking_overhead(self, body: dict, model: str, node_id: str | None = None) -> None:
         """Auto-inflate num_predict for thinking models.
 
         Thinking models (deepseek-r1, gpt-oss, qwq) split their token budget
@@ -1681,9 +1645,7 @@ class StreamingProxy:
         if body.get("think") is False:
             return  # client disabled thinking — the whole budget is output
         node = self._registry.get_node(node_id) if node_id else None
-        if not (
-            model_has_capability(node, model, "thinking") or is_thinking_model(model)
-        ):
+        if not (model_has_capability(node, model, "thinking") or is_thinking_model(model)):
             return
 
         options = body.get("options", {})
@@ -1732,23 +1694,27 @@ class StreamingProxy:
             args = fn.get("arguments")
             if not isinstance(args, str):
                 args = json.dumps(args if args is not None else {})
-            tool_calls.append({
-                "index": i,
-                "id": tc.get("id") or f"call_{uuid.uuid4().hex[:12]}",
-                "type": "function",
-                "function": {"name": fn.get("name", ""), "arguments": args},
-            })
+            tool_calls.append(
+                {
+                    "index": i,
+                    "id": tc.get("id") or f"call_{uuid.uuid4().hex[:12]}",
+                    "type": "function",
+                    "function": {"name": fn.get("name", ""), "arguments": args},
+                }
+            )
 
         if data.get("done", False):
             chunk = {
                 "id": chunk_id,
                 "object": "chat.completion.chunk",
                 "model": model,
-                "choices": [{
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": "tool_calls" if tool_calls else "stop",
-                }],
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "tool_calls" if tool_calls else "stop",
+                    }
+                ],
             }
         else:
             content = msg.get("content", "") or data.get("response", "")

@@ -139,9 +139,7 @@ class HealthEngine:
         # Trace-based checks (async, queries SQLite)
         if trace_store:
             recommendations.extend(await self._check_embed_error_rate(trace_store))
-            decode_stats = await trace_store.get_decode_latency_stats(
-                recent_s=self.RECENT_WINDOW_S
-            )
+            decode_stats = await trace_store.get_decode_latency_stats(recent_s=self.RECENT_WINDOW_S)
             recommendations.extend(self._check_decode_degraded(decode_stats))
             cold_loads = await trace_store.get_cold_loads_24h()
             error_rates = await trace_store.get_error_rates_24h()
@@ -149,12 +147,8 @@ class HealthEngine:
             overall_24h = await trace_store.get_overall_stats_24h()
 
             # Recent window — used to detect if issues are still active
-            recent_cold = await trace_store.get_cold_loads_24h(
-                lookback_s=self.RECENT_WINDOW_S
-            )
-            recent_errors = await trace_store.get_error_rates_24h(
-                lookback_s=self.RECENT_WINDOW_S
-            )
+            recent_cold = await trace_store.get_cold_loads_24h(lookback_s=self.RECENT_WINDOW_S)
+            recent_errors = await trace_store.get_error_rates_24h(lookback_s=self.RECENT_WINDOW_S)
 
             vitals.cold_loads_24h = cold_loads["total_count"]
             vitals.total_requests_24h = overall_24h["total_requests"]
@@ -179,41 +173,25 @@ class HealthEngine:
             )
 
             recommendations.extend(
-                self._check_model_thrashing(
-                    cold_loads["by_node"], recent_cold["by_node"], nodes
-                )
+                self._check_model_thrashing(cold_loads["by_node"], recent_cold["by_node"], nodes)
             )
             recommendations.extend(
-                self._check_model_load_timeouts(
-                    model_timeouts, recent_timeouts, nodes
-                )
+                self._check_model_load_timeouts(model_timeouts, recent_timeouts, nodes)
             )
-            recommendations.extend(
-                self._check_error_rates(error_rates, recent_errors)
-            )
+            recommendations.extend(self._check_error_rates(error_rates, recent_errors))
             recommendations.extend(self._check_retry_rates(retry_stats))
 
             # Context waste analysis
             mlx_counts = await trace_store.get_request_count_by_model(seconds=86400)
-            recommendations.extend(
-                self._check_mlx_requests_unservable(nodes, mlx_counts)
-            )
+            recommendations.extend(self._check_mlx_requests_unservable(nodes, mlx_counts))
             prompt_stats = await trace_store.get_prompt_token_stats(days=7)
-            recommendations.extend(
-                self._check_context_waste(prompt_stats, nodes)
-            )
-            recommendations.extend(
-                self._check_num_ctx_override_inert(nodes, prompt_stats)
-            )
-            recommendations.extend(
-                self._check_num_ctx_unmanaged(nodes, prompt_stats)
-            )
+            recommendations.extend(self._check_context_waste(prompt_stats, nodes))
+            recommendations.extend(self._check_num_ctx_override_inert(nodes, prompt_stats))
+            recommendations.extend(self._check_num_ctx_unmanaged(nodes, prompt_stats))
 
             # Priority model check
             priorities = await trace_store.get_model_priority_scores()
-            recommendations.extend(
-                self._check_priority_models(priorities, nodes)
-            )
+            recommendations.extend(self._check_priority_models(priorities, nodes))
 
         # Suppress misleading "underutilized memory" when there's active
         # model thrashing or timeouts on the same node — telling users to
@@ -234,14 +212,14 @@ class HealthEngine:
                 r
                 for r in recommendations
                 if not (
-                    r.check_id == "underutilized_memory"
-                    and r.node_id in nodes_with_load_issues
+                    r.check_id == "underutilized_memory" and r.node_id in nodes_with_load_issues
                 )
             ]
 
         # Populate multimodal vitals
         try:
             from fleet_manager.server.routes.image_compat import get_image_gen_events
+
             vitals.image_generations_24h = len(
                 [e for e in get_image_gen_events(24) if e["status"] == "completed"]
             )
@@ -251,6 +229,7 @@ class HealthEngine:
             from fleet_manager.server.routes.transcription_compat import (
                 get_transcription_events,
             )
+
             vitals.transcriptions_24h = len(
                 [e for e in get_transcription_events(24) if e["status"] == "completed"]
             )
@@ -681,7 +660,6 @@ class HealthEngine:
             )
         return recs
 
-
     @staticmethod
     def _weight_size_gb(loaded, disk_sizes: dict[str, float]) -> float:
         """This model's weights in GB -- reported if possible, guessed if not.
@@ -774,9 +752,7 @@ class HealthEngine:
                 ),
                 fix=(
                     "Consider loading frequently-requested models to avoid fallbacks. "
-                    + " ".join(
-                        f"ollama pull {m}" for m, _ in top_models[:3]
-                    )
+                    + " ".join(f"ollama pull {m}" for m, _ in top_models[:3])
                 ),
                 data={
                     "total_fallbacks": len(events),
@@ -887,13 +863,15 @@ class HealthEngine:
             worst = max(peak, current)
             if worst < self.PROCESS_MEMORY_WARN_GB:
                 return
-            offenders.append({
-                "process": label,
-                "node_id": node_id,
-                "footprint_gb": round(current, 2),
-                "peak_gb": round(peak, 2),
-                "retained": peak > current * 1.5 and current > 0,
-            })
+            offenders.append(
+                {
+                    "process": label,
+                    "node_id": node_id,
+                    "footprint_gb": round(current, 2),
+                    "peak_gb": round(peak, 2),
+                    "retained": peak > current * 1.5 and current > 0,
+                }
+            )
 
         for node in nodes:
             consider("herd-node", node.node_id, getattr(node, "process_memory", None))
@@ -905,9 +883,7 @@ class HealthEngine:
 
             consider("herd (router)", None, probe_process_memory())
         except Exception as exc:  # noqa: BLE001 -- never fail the health pass
-            logger.debug(
-                f"router self-memory probe failed: {type(exc).__name__}: {exc}"
-            )
+            logger.debug(f"router self-memory probe failed: {type(exc).__name__}: {exc}")
 
         if not offenders:
             return []
@@ -988,15 +964,17 @@ class HealthEngine:
             if not node.ollama:
                 continue
             for client in node.ollama.backend_clients or []:
-                offenders.append({
-                    "node_id": node.node_id,
-                    "pid": client.pid,
-                    "process": client.process,
-                    "cmdline": client.cmdline,
-                    "peer": getattr(client, "peer", ""),
-                    "connections": client.connections,
-                    "loopback": client.loopback,
-                })
+                offenders.append(
+                    {
+                        "node_id": node.node_id,
+                        "pid": client.pid,
+                        "process": client.process,
+                        "cmdline": client.cmdline,
+                        "peer": getattr(client, "peer", ""),
+                        "connections": client.connections,
+                        "loopback": client.loopback,
+                    }
+                )
         if not offenders:
             return []
 
@@ -1008,8 +986,7 @@ class HealthEngine:
             # is named by address. Printing "pid 0" would read as a bug.
             if not o["pid"]:
                 return (
-                    f"remote {o['peer'] or 'unknown'} ({o['connections']} conn) "
-                    f"on {o['node_id']}"
+                    f"remote {o['peer'] or 'unknown'} ({o['connections']} conn) on {o['node_id']}"
                 )
             return (
                 f"{o['process'] or 'pid ' + str(o['pid'])} (pid {o['pid']}, "
@@ -1023,8 +1000,7 @@ class HealthEngine:
                 check_id="backend_bypass_clients",
                 severity=Severity.WARNING,
                 title=(
-                    f"{len(offenders)} process(es) bypassing the router on "
-                    f"{len(by_node)} node(s)"
+                    f"{len(offenders)} process(es) bypassing the router on {len(by_node)} node(s)"
                 ),
                 description=(
                     f"{lines}. These hold open connections straight to Ollama, so "
@@ -1170,9 +1146,7 @@ class HealthEngine:
             #  - mlx: models, whose window is fixed at server launch and which
             #    herd cannot set per request anyway.
             and not is_text_embedding_model(st["model"])
-            and not any(
-                model_has_capability(node, st["model"], "embedding") for node in nodes
-            )
+            and not any(model_has_capability(node, st["model"], "embedding") for node in nodes)
             and not st["model"].startswith("mlx:")
         ]
         if not unmanaged:
@@ -1192,9 +1166,7 @@ class HealthEngine:
         return [
             Recommendation(
                 check_id="num_ctx_unmanaged",
-                severity=(
-                    Severity.WARNING if threatens_capacity else Severity.INFO
-                ),
+                severity=(Severity.WARNING if threatens_capacity else Severity.INFO),
                 title=f"No explicit context window on {len(unmanaged)} model(s)",
                 description=(
                     f"{lines}. These served traffic with no FLEET_NUM_CTX_OVERRIDES "
@@ -1282,13 +1254,15 @@ class HealthEngine:
                     if pair in seen_pairs:
                         continue
                     seen_pairs.add(pair)
-                    mismatched.append({
-                        "model": loaded.name,
-                        "node_id": node.node_id,
-                        "configured": want,
-                        "resident": have,
-                        "ratio": round(have / want, 1),
-                    })
+                    mismatched.append(
+                        {
+                            "model": loaded.name,
+                            "node_id": node.node_id,
+                            "configured": want,
+                            "resident": have,
+                            "ratio": round(have / want, 1),
+                        }
+                    )
         if not mismatched:
             return []
 
@@ -1332,16 +1306,13 @@ class HealthEngine:
         waste_hint = ", ".join(lower_recs)
 
         unload_cmds = "; ".join(
-            f"ollama stop {name}"
-            for name in dict.fromkeys(entry["model"] for entry in mismatched)
+            f"ollama stop {name}" for name in dict.fromkeys(entry["model"] for entry in mismatched)
         )
         return [
             Recommendation(
                 check_id="num_ctx_override_inert",
                 severity=(
-                    Severity.WARNING
-                    if (oversized and threatens_capacity)
-                    else Severity.INFO
+                    Severity.WARNING if (oversized and threatens_capacity) else Severity.INFO
                 ),
                 title=f"num_ctx override not applied on {len(mismatched)} model(s)",
                 description=(
@@ -1477,9 +1448,7 @@ class HealthEngine:
 
         return recs
 
-    def _check_context_waste(
-        self, prompt_stats: list[dict], nodes
-    ) -> list[Recommendation]:
+    def _check_context_waste(self, prompt_stats: list[dict], nodes) -> list[Recommendation]:
         """Detect models with allocated context far exceeding actual usage."""
         recs = []
         if not prompt_stats:
@@ -1491,9 +1460,7 @@ class HealthEngine:
             if not node.ollama:
                 continue
             for m in node.ollama.models_loaded:
-                allocated_ctx[m.name] = max(
-                    allocated_ctx.get(m.name, 0), m.context_length or 0
-                )
+                allocated_ctx[m.name] = max(allocated_ctx.get(m.name, 0), m.context_length or 0)
 
         wasteful = []
         total_waste_ratio = 0
@@ -1506,18 +1473,21 @@ class HealthEngine:
             ratio = alloc / total_p99
             if ratio > 4:  # Allocated > 4x actual p99 total
                 from fleet_manager.server.context_optimizer import compute_recommended_ctx
+
                 max_24h = stats.get("max_total_24h", 0)
                 recommended = compute_recommended_ctx(total_p99, max_24h)
                 savings_pct = round((alloc - recommended) / alloc * 100)
-                wasteful.append({
-                    "model": model,
-                    "allocated": alloc,
-                    "total_p99": total_p99,
-                    "ratio": round(ratio, 1),
-                    "recommended": recommended,
-                    "savings_pct": savings_pct,
-                    "requests": stats["request_count"],
-                })
+                wasteful.append(
+                    {
+                        "model": model,
+                        "allocated": alloc,
+                        "total_p99": total_p99,
+                        "ratio": round(ratio, 1),
+                        "recommended": recommended,
+                        "savings_pct": savings_pct,
+                        "requests": stats["request_count"],
+                    }
+                )
                 total_waste_ratio += ratio
 
         if not wasteful:
@@ -1564,12 +1534,8 @@ class HealthEngine:
         if any(w["ratio"] > 8 for w in actionable):
             severity = Severity.WARNING
 
-        rec_lines = ", ".join(
-            f"{w['model']}: {w['recommended']:,}" for w in actionable
-        )
-        held_lines = ", ".join(
-            f"{w['model']} (pinned at {pinned[w['model']]:,})" for w in held
-        )
+        rec_lines = ", ".join(f"{w['model']}: {w['recommended']:,}" for w in actionable)
+        held_lines = ", ".join(f"{w['model']} (pinned at {pinned[w['model']]:,})" for w in held)
 
         recs.append(
             Recommendation(
@@ -1670,11 +1636,7 @@ class HealthEngine:
         failed = [e for e in events if e["status"] == "failed"]
 
         # Summary card
-        avg_ms = (
-            sum(e["generation_ms"] for e in completed) / len(completed)
-            if completed
-            else 0
-        )
+        avg_ms = sum(e["generation_ms"] for e in completed) / len(completed) if completed else 0
         nodes_used = {e["node_id"] for e in events}
         summary = (
             f"{len(completed)} images generated"
@@ -1684,22 +1646,20 @@ class HealthEngine:
         )
 
         severity = Severity.WARNING if failed else Severity.INFO
-        recs.append(Recommendation(
-            check_id="image_generation",
-            severity=severity,
-            title="Image Generation Activity",
-            description=summary,
-            fix="Check failed generations in router logs."
-            if failed
-            else "Image generation is healthy.",
-        ))
+        recs.append(
+            Recommendation(
+                check_id="image_generation",
+                severity=severity,
+                title="Image Generation Activity",
+                description=summary,
+                fix="Check failed generations in router logs."
+                if failed
+                else "Image generation is healthy.",
+            )
+        )
 
         # Recommend mflux on nodes that don't have it
-        nodes_with_mflux = {
-            n.node_id
-            for n in nodes
-            if n.image and n.image.models_available
-        }
+        nodes_with_mflux = {n.node_id for n in nodes if n.image and n.image.models_available}
         nodes_without_mflux = [
             n
             for n in nodes
@@ -1711,24 +1671,26 @@ class HealthEngine:
 
         if nodes_without_mflux and len(completed) >= 3:
             node_names = ", ".join(n.node_id for n in nodes_without_mflux)
-            recs.append(Recommendation(
-                check_id="mflux_expansion",
-                severity=Severity.INFO,
-                title="Expand Image Generation to More Nodes",
-                description=(
-                    f"Image generation was used {len(completed)} times "
-                    f"in the last 24h but only {len(nodes_with_mflux)} "
-                    f"node(s) have mflux installed. "
-                    f"{len(nodes_without_mflux)} online node(s) with "
-                    f"sufficient memory could also serve images: "
-                    f"{node_names}."
-                ),
-                fix=(
-                    "Install mflux on additional nodes: "
-                    "`uv tool install mflux` — first image request "
-                    "will download model weights (~3GB)."
-                ),
-            ))
+            recs.append(
+                Recommendation(
+                    check_id="mflux_expansion",
+                    severity=Severity.INFO,
+                    title="Expand Image Generation to More Nodes",
+                    description=(
+                        f"Image generation was used {len(completed)} times "
+                        f"in the last 24h but only {len(nodes_with_mflux)} "
+                        f"node(s) have mflux installed. "
+                        f"{len(nodes_without_mflux)} online node(s) with "
+                        f"sufficient memory could also serve images: "
+                        f"{node_names}."
+                    ),
+                    fix=(
+                        "Install mflux on additional nodes: "
+                        "`uv tool install mflux` — first image request "
+                        "will download model weights (~3GB)."
+                    ),
+                )
+            )
 
         return recs
 
@@ -1746,11 +1708,7 @@ class HealthEngine:
         completed = [e for e in events if e["status"] == "completed"]
         failed = [e for e in events if e["status"] == "failed"]
 
-        avg_ms = (
-            sum(e["processing_ms"] for e in completed) / len(completed)
-            if completed
-            else 0
-        )
+        avg_ms = sum(e["processing_ms"] for e in completed) / len(completed) if completed else 0
         nodes_used = {e["node_id"] for e in events}
         summary = (
             f"{len(completed)} transcriptions"
@@ -1760,21 +1718,21 @@ class HealthEngine:
         )
 
         severity = Severity.WARNING if failed else Severity.INFO
-        recs.append(Recommendation(
-            check_id="transcription_activity",
-            severity=severity,
-            title="Transcription Activity",
-            description=summary,
-            fix="Check failed transcriptions in router logs."
-            if failed
-            else "Transcription is healthy.",
-        ))
+        recs.append(
+            Recommendation(
+                check_id="transcription_activity",
+                severity=severity,
+                title="Transcription Activity",
+                description=summary,
+                fix="Check failed transcriptions in router logs."
+                if failed
+                else "Transcription is healthy.",
+            )
+        )
 
         # Recommend mlx-qwen3-asr on nodes that don't have it
         nodes_with_stt = {
-            n.node_id
-            for n in nodes
-            if n.transcription and n.transcription.models_available
+            n.node_id for n in nodes if n.transcription and n.transcription.models_available
         }
         nodes_without_stt = [
             n
@@ -1787,24 +1745,26 @@ class HealthEngine:
 
         if nodes_without_stt and len(completed) >= 3:
             node_names = ", ".join(n.node_id for n in nodes_without_stt)
-            recs.append(Recommendation(
-                check_id="stt_expansion",
-                severity=Severity.INFO,
-                title="Expand Transcription to More Nodes",
-                description=(
-                    f"Transcription was used {len(completed)} times "
-                    f"in the last 24h but only {len(nodes_with_stt)} "
-                    f"node(s) have mlx-qwen3-asr installed. "
-                    f"{len(nodes_without_stt)} online node(s) with "
-                    f"sufficient memory could also serve STT: "
-                    f"{node_names}."
-                ),
-                fix=(
-                    "Install on additional nodes: "
-                    "`uv tool install 'mlx-qwen3-asr[serve]' --python 3.14` "
-                    "— first transcription downloads the model (~1.2GB)."
-                ),
-            ))
+            recs.append(
+                Recommendation(
+                    check_id="stt_expansion",
+                    severity=Severity.INFO,
+                    title="Expand Transcription to More Nodes",
+                    description=(
+                        f"Transcription was used {len(completed)} times "
+                        f"in the last 24h but only {len(nodes_with_stt)} "
+                        f"node(s) have mlx-qwen3-asr installed. "
+                        f"{len(nodes_without_stt)} online node(s) with "
+                        f"sufficient memory could also serve STT: "
+                        f"{node_names}."
+                    ),
+                    fix=(
+                        "Install on additional nodes: "
+                        "`uv tool install 'mlx-qwen3-asr[serve]' --python 3.14` "
+                        "— first transcription downloads the model (~1.2GB)."
+                    ),
+                )
+            )
 
         return recs
 
@@ -1820,53 +1780,51 @@ class HealthEngine:
             if recent > 0:
                 # Active failures — node currently having trouble
                 severity = Severity.CRITICAL if recent > 10 else Severity.WARNING
-                recs.append(Recommendation(
-                    check_id="connection_failures",
-                    severity=severity,
-                    title=(
-                        f"Node {node.node_id}: {recent} active "
-                        f"connection failures"
-                    ),
-                    description=(
-                        f"{node.node_id} failed to reach the router "
-                        f"{recent} times since its last successful heartbeat "
-                        f"({total} total since agent start). This usually "
-                        f"indicates a network issue — WiFi dropout, DHCP "
-                        f"renewal, or macOS sleep/wake."
-                    ),
-                    fix=(
-                        f"Check network connectivity on {node.node_id}. "
-                        f"The node agent will auto-reconnect when the "
-                        f"network recovers. If persistent, restart the "
-                        f"node agent with `herd-node`."
-                    ),
-                    node_id=node.node_id,
-                    data={
-                        "recent_failures": recent,
-                        "total_failures": total,
-                    },
-                ))
+                recs.append(
+                    Recommendation(
+                        check_id="connection_failures",
+                        severity=severity,
+                        title=(f"Node {node.node_id}: {recent} active connection failures"),
+                        description=(
+                            f"{node.node_id} failed to reach the router "
+                            f"{recent} times since its last successful heartbeat "
+                            f"({total} total since agent start). This usually "
+                            f"indicates a network issue — WiFi dropout, DHCP "
+                            f"renewal, or macOS sleep/wake."
+                        ),
+                        fix=(
+                            f"Check network connectivity on {node.node_id}. "
+                            f"The node agent will auto-reconnect when the "
+                            f"network recovers. If persistent, restart the "
+                            f"node agent with `herd-node`."
+                        ),
+                        node_id=node.node_id,
+                        data={
+                            "recent_failures": recent,
+                            "total_failures": total,
+                        },
+                    )
+                )
             elif total > 50:
                 # Past failures, now recovered — informational
-                recs.append(Recommendation(
-                    check_id="connection_failures",
-                    severity=Severity.INFO,
-                    title=(
-                        f"Node {node.node_id} recovered from "
-                        f"{total} connection failures"
-                    ),
-                    description=(
-                        f"{node.node_id} experienced {total} connection "
-                        f"failures since agent start but is now connected. "
-                        f"This may indicate intermittent network issues."
-                    ),
-                    fix="No action needed — node auto-reconnected.",
-                    node_id=node.node_id,
-                    data={
-                        "recent_failures": 0,
-                        "total_failures": total,
-                    },
-                ))
+                recs.append(
+                    Recommendation(
+                        check_id="connection_failures",
+                        severity=Severity.INFO,
+                        title=(f"Node {node.node_id} recovered from {total} connection failures"),
+                        description=(
+                            f"{node.node_id} experienced {total} connection "
+                            f"failures since agent start but is now connected. "
+                            f"This may indicate intermittent network issues."
+                        ),
+                        fix="No action needed — node auto-reconnected.",
+                        node_id=node.node_id,
+                        data={
+                            "recent_failures": 0,
+                            "total_failures": total,
+                        },
+                    )
+                )
         return recs
 
     # ------------------------------------------------------------------
@@ -1916,15 +1874,17 @@ class HealthEngine:
                 if len(entries) < 2 or len(digests) < 2 or "" in digests:
                     continue
                 sizes = sorted((e.size_gb for e in entries), reverse=True)
-                dupes.append({
-                    "model": name,
-                    "runners": len(entries),
-                    "digests": sorted(d[:12] for d in digests),
-                    "total_gb": round(sum(sizes), 1),
-                    # everything but the largest runner is reclaimable
-                    "reclaimable_gb": round(sum(sizes[1:]), 1),
-                    "contexts": sorted({e.context_length or 0 for e in entries}),
-                })
+                dupes.append(
+                    {
+                        "model": name,
+                        "runners": len(entries),
+                        "digests": sorted(d[:12] for d in digests),
+                        "total_gb": round(sum(sizes), 1),
+                        # everything but the largest runner is reclaimable
+                        "reclaimable_gb": round(sum(sizes[1:]), 1),
+                        "contexts": sorted({e.context_length or 0 for e in entries}),
+                    }
+                )
             if not dupes:
                 continue
 
@@ -1941,9 +1901,7 @@ class HealthEngine:
             recs.append(
                 Recommendation(
                     check_id="duplicate_runners",
-                    severity=(
-                        Severity.WARNING if reclaimable >= 32 else Severity.INFO
-                    ),
+                    severity=(Severity.WARNING if reclaimable >= 32 else Severity.INFO),
                     title=(
                         f"{len(dupes)} model(s) resident twice on {node.node_id}: "
                         f"~{reclaimable:.0f} GB stranded"
@@ -2005,12 +1963,14 @@ class HealthEngine:
             if node.status.value == "offline":
                 continue
             for srv in getattr(node, "mlx_servers", None) or []:
-                stranded.append({
-                    "node_id": node.node_id,
-                    "model": getattr(srv, "model", ""),
-                    "port": getattr(srv, "port", 0),
-                    "status": getattr(srv, "status", ""),
-                })
+                stranded.append(
+                    {
+                        "node_id": node.node_id,
+                        "model": getattr(srv, "model", ""),
+                        "port": getattr(srv, "port", 0),
+                        "status": getattr(srv, "status", ""),
+                    }
+                )
         if not stranded:
             return []
 
@@ -2120,29 +2080,32 @@ class HealthEngine:
             if ollama is None:
                 continue
             mlx_models = [
-                m for m in (ollama.models_available or [])
+                m
+                for m in (ollama.models_available or [])
                 if isinstance(m, str) and m.startswith("mlx:")
             ]
             if mlx_models:
                 # MLX active and advertising — INFO only, for dashboard display
-                recs.append(Recommendation(
-                    check_id="mlx_backend_active",
-                    severity=Severity.INFO,
-                    title="MLX backend active",
-                    description=(
-                        f"Node {node.node_id} is advertising "
-                        f"{len(mlx_models)} model(s) via the MLX backend."
-                    ),
-                    fix=(
-                        "No action needed. To add more MLX models: "
-                        "`herd mlx pull <model-id>` then restart the node."
-                    ),
-                    node_id=node.node_id,
-                    data={
-                        "mlx_models": mlx_models,
-                        "count": len(mlx_models),
-                    },
-                ))
+                recs.append(
+                    Recommendation(
+                        check_id="mlx_backend_active",
+                        severity=Severity.INFO,
+                        title="MLX backend active",
+                        description=(
+                            f"Node {node.node_id} is advertising "
+                            f"{len(mlx_models)} model(s) via the MLX backend."
+                        ),
+                        fix=(
+                            "No action needed. To add more MLX models: "
+                            "`herd mlx pull <model-id>` then restart the node."
+                        ),
+                        node_id=node.node_id,
+                        data={
+                            "mlx_models": mlx_models,
+                            "count": len(mlx_models),
+                        },
+                    )
+                )
 
             # Multi-MLX: surface non-healthy individual servers regardless of
             # whether the node has *any* healthy MLX.  Each server is a
@@ -2151,30 +2114,31 @@ class HealthEngine:
             servers = getattr(node, "mlx_servers", None) or []
             for srv in servers:
                 if srv.status == "memory_blocked":
-                    recs.append(Recommendation(
-                        check_id="mlx_memory_blocked",
-                        severity=Severity.WARNING,
-                        title=(
-                            f"MLX server {srv.model} skipped start "
-                            f"(memory gate) on {node.node_id}"
-                        ),
-                        description=(
-                            srv.status_reason
-                            or "Available RAM insufficient at start time."
-                        ),
-                        fix=(
-                            "Free RAM (stop an Ollama model or drop a "
-                            "pinned model) and restart the node, OR lower "
-                            "FLEET_NODE_MLX_MEMORY_HEADROOM_GB on this node, "
-                            "OR remove the entry from FLEET_NODE_MLX_SERVERS."
-                        ),
-                        node_id=node.node_id,
-                        data={
-                            "port": srv.port,
-                            "model": srv.model,
-                            "model_size_gb": srv.model_size_gb,
-                        },
-                    ))
+                    recs.append(
+                        Recommendation(
+                            check_id="mlx_memory_blocked",
+                            severity=Severity.WARNING,
+                            title=(
+                                f"MLX server {srv.model} skipped start "
+                                f"(memory gate) on {node.node_id}"
+                            ),
+                            description=(
+                                srv.status_reason or "Available RAM insufficient at start time."
+                            ),
+                            fix=(
+                                "Free RAM (stop an Ollama model or drop a "
+                                "pinned model) and restart the node, OR lower "
+                                "FLEET_NODE_MLX_MEMORY_HEADROOM_GB on this node, "
+                                "OR remove the entry from FLEET_NODE_MLX_SERVERS."
+                            ),
+                            node_id=node.node_id,
+                            data={
+                                "port": srv.port,
+                                "model": srv.model,
+                                "model_size_gb": srv.model_size_gb,
+                            },
+                        )
+                    )
                 elif srv.status == "quarantined":
                     # Supervisor backed off to slow restart cadence after
                     # too many crashes in a short window — a persistent
@@ -2182,72 +2146,72 @@ class HealthEngine:
                     # Distinct from mlx_server_down so operators can tell
                     # "transient failure being retried" from "supervisor
                     # gave up trying fast restarts."
-                    recs.append(Recommendation(
-                        check_id="mlx_server_quarantined",
-                        severity=Severity.CRITICAL,
-                        title=(
-                            f"MLX server {srv.model} on "
-                            f"{node.node_id}:{srv.port} is QUARANTINED"
-                        ),
-                        description=(
-                            srv.status_reason
-                            or "Supervisor saw repeated crashes in a short "
-                            "window and backed off to slow-restart cadence "
-                            "to stop burning CPU."
-                        ),
-                        fix=(
-                            f"Inspect ~/.fleet-manager/logs/mlx-server-"
-                            f"{srv.port}.log on {node.node_id} for the "
-                            "stack trace.  Common upstream causes: mlx-lm "
-                            "version regression (re-run "
-                            "`./scripts/setup-mlx.sh` to restore the pinned, "
-                            "tested version), "
-                            "model weights corrupted (delete + re-download "
-                            "the HF cache dir), or a request payload "
-                            "tickling an mlx_lm bug.  After fixing, "
-                            "restart `herd-node` to clear quarantine."
-                        ),
-                        node_id=node.node_id,
-                        data={
-                            "port": srv.port,
-                            "model": srv.model,
-                            "status": srv.status,
-                        },
-                    ))
+                    recs.append(
+                        Recommendation(
+                            check_id="mlx_server_quarantined",
+                            severity=Severity.CRITICAL,
+                            title=(
+                                f"MLX server {srv.model} on "
+                                f"{node.node_id}:{srv.port} is QUARANTINED"
+                            ),
+                            description=(
+                                srv.status_reason
+                                or "Supervisor saw repeated crashes in a short "
+                                "window and backed off to slow-restart cadence "
+                                "to stop burning CPU."
+                            ),
+                            fix=(
+                                f"Inspect ~/.fleet-manager/logs/mlx-server-"
+                                f"{srv.port}.log on {node.node_id} for the "
+                                "stack trace.  Common upstream causes: mlx-lm "
+                                "version regression (re-run "
+                                "`./scripts/setup-mlx.sh` to restore the pinned, "
+                                "tested version), "
+                                "model weights corrupted (delete + re-download "
+                                "the HF cache dir), or a request payload "
+                                "tickling an mlx_lm bug.  After fixing, "
+                                "restart `herd-node` to clear quarantine."
+                            ),
+                            node_id=node.node_id,
+                            data={
+                                "port": srv.port,
+                                "model": srv.model,
+                                "status": srv.status,
+                            },
+                        )
+                    )
                 elif srv.status in ("unhealthy", "stopped", "starting"):
                     # "starting" at heartbeat time > 30s old implies wedged —
                     # the start call would have completed or timed out.  We
                     # treat it the same as unhealthy for surfacing purposes.
-                    severity = (
-                        Severity.WARNING if srv.status == "starting"
-                        else Severity.CRITICAL
+                    severity = Severity.WARNING if srv.status == "starting" else Severity.CRITICAL
+                    recs.append(
+                        Recommendation(
+                            check_id="mlx_server_down",
+                            severity=severity,
+                            title=(
+                                f"MLX server {srv.model} on {node.node_id}:{srv.port} "
+                                f"is {srv.status}"
+                            ),
+                            description=(
+                                srv.status_reason or f"mlx_lm.server process status: {srv.status}"
+                            ),
+                            fix=(
+                                f"Check ~/.fleet-manager/logs/mlx-server-{srv.port}.log "
+                                f"on {node.node_id}.  Common causes: model weights "
+                                "missing from HF cache, mlx-lm older than 0.32.0 "
+                                "so --kv-bits is rejected (run ./scripts/setup-mlx.sh), "
+                                "or port "
+                                "collision from a leftover subprocess."
+                            ),
+                            node_id=node.node_id,
+                            data={
+                                "port": srv.port,
+                                "model": srv.model,
+                                "status": srv.status,
+                            },
+                        )
                     )
-                    recs.append(Recommendation(
-                        check_id="mlx_server_down",
-                        severity=severity,
-                        title=(
-                            f"MLX server {srv.model} on {node.node_id}:{srv.port} "
-                            f"is {srv.status}"
-                        ),
-                        description=(
-                            srv.status_reason
-                            or f"mlx_lm.server process status: {srv.status}"
-                        ),
-                        fix=(
-                            f"Check ~/.fleet-manager/logs/mlx-server-{srv.port}.log "
-                            f"on {node.node_id}.  Common causes: model weights "
-                            "missing from HF cache, mlx-lm older than 0.32.0 "
-                            "so --kv-bits is rejected (run ./scripts/setup-mlx.sh), "
-                            "or port "
-                            "collision from a leftover subprocess."
-                        ),
-                        node_id=node.node_id,
-                        data={
-                            "port": srv.port,
-                            "model": srv.model,
-                            "status": srv.status,
-                        },
-                    ))
         return recs
 
     def _check_vision_backend_missing(self, nodes) -> list[Recommendation]:
@@ -2278,32 +2242,31 @@ class HealthEngine:
                 continue  # working as intended
             if cached_count == 0:
                 continue  # operator never wanted vision embedding — don't nag
-            recs.append(Recommendation(
-                check_id="vision_backend_missing",
-                severity=Severity.WARNING,
-                title=(
-                    f"Vision embedding backend not installed on "
-                    f"{node.node_id}"
-                ),
-                description=(
-                    f"{cached_count} vision embedding model(s) are cached "
-                    "on disk (DINOv2 / SigLIP / CLIP) but onnxruntime is "
-                    "not installed in the herd-node venv, so /embed calls "
-                    "will return HTTP 500.  Dashboard chips for these "
-                    "models are hidden until the backend is installed."
-                ),
-                fix=(
-                    "Run `uv sync --extra embedding` (or `uv sync "
-                    "--all-extras`) on the node, then restart `herd-node`. "
-                    "The next heartbeat will re-advertise the cached "
-                    "models and this warning will clear."
-                ),
-                node_id=node.node_id,
-                data={
-                    "cached_model_count": cached_count,
-                    "backend_available": False,
-                },
-            ))
+            recs.append(
+                Recommendation(
+                    check_id="vision_backend_missing",
+                    severity=Severity.WARNING,
+                    title=(f"Vision embedding backend not installed on {node.node_id}"),
+                    description=(
+                        f"{cached_count} vision embedding model(s) are cached "
+                        "on disk (DINOv2 / SigLIP / CLIP) but onnxruntime is "
+                        "not installed in the herd-node venv, so /embed calls "
+                        "will return HTTP 500.  Dashboard chips for these "
+                        "models are hidden until the backend is installed."
+                    ),
+                    fix=(
+                        "Run `uv sync --extra embedding` (or `uv sync "
+                        "--all-extras`) on the node, then restart `herd-node`. "
+                        "The next heartbeat will re-advertise the cached "
+                        "models and this warning will clear."
+                    ),
+                    node_id=node.node_id,
+                    data={
+                        "cached_model_count": cached_count,
+                        "backend_available": False,
+                    },
+                )
+            )
         return recs
 
     def _check_text_embedding_backend_missing(self, nodes) -> list[Recommendation]:
@@ -2332,38 +2295,40 @@ class HealthEngine:
                 continue  # working as intended
             if cached_count == 0:
                 continue  # operator never wanted text embedding — don't nag
-            recs.append(Recommendation(
-                check_id="text_embedding_backend_missing",
-                severity=Severity.WARNING,
-                title=(
-                    f"Text embedding backend not installed on {node.node_id}"
-                ),
-                description=(
-                    f"{cached_count} text embedding model(s) are cached on disk "
-                    "(nomic-embed-text-v1.5) but fastembed is not installed in "
-                    "the herd-node venv, so the native text embedding server "
-                    "cannot start. Embed requests for nomic-embed-text will fall "
-                    "back to Ollama and may queue behind LLM inference slots."
-                ),
-                fix=(
-                    "Run `uv sync --extra embedding` (or `uv sync --all-extras`) "
-                    "on the node — fastembed is now included in the embedding extra. "
-                    "Then restart `herd-node`. The text embedding server will start "
-                    "automatically and this warning will clear."
-                ),
-                node_id=node.node_id,
-                data={
-                    "cached_model_count": cached_count,
-                    "backend_available": False,
-                },
-            ))
+            recs.append(
+                Recommendation(
+                    check_id="text_embedding_backend_missing",
+                    severity=Severity.WARNING,
+                    title=(f"Text embedding backend not installed on {node.node_id}"),
+                    description=(
+                        f"{cached_count} text embedding model(s) are cached on disk "
+                        "(nomic-embed-text-v1.5) but fastembed is not installed in "
+                        "the herd-node venv, so the native text embedding server "
+                        "cannot start. Embed requests for nomic-embed-text will fall "
+                        "back to Ollama and may queue behind LLM inference slots."
+                    ),
+                    fix=(
+                        "Run `uv sync --extra embedding` (or `uv sync --all-extras`) "
+                        "on the node — fastembed is now included in the embedding extra. "
+                        "Then restart `herd-node`. The text embedding server will start "
+                        "automatically and this warning will clear."
+                    ),
+                    node_id=node.node_id,
+                    data={
+                        "cached_model_count": cached_count,
+                        "backend_available": False,
+                    },
+                )
+            )
         return recs
 
     # Text embedding model names that have a native fastembed equivalent
-    _NATIVE_TEXT_EMBED_MODELS = frozenset({
-        "nomic-embed-text",
-        "nomic-embed-text:latest",
-    })
+    _NATIVE_TEXT_EMBED_MODELS = frozenset(
+        {
+            "nomic-embed-text",
+            "nomic-embed-text:latest",
+        }
+    )
 
     def _check_text_embedding_ollama_bypass(self, nodes) -> list[Recommendation]:
         """Warn when nomic-embed-text is in Ollama but the native server isn't running.
@@ -2404,33 +2369,35 @@ class HealthEngine:
                 else " Under concurrent LLM load, embed requests can queue and time out."
             )
 
-            recs.append(Recommendation(
-                check_id="text_embedding_ollama_bypass",
-                severity=Severity.WARNING,
-                title=(
-                    f"nomic-embed-text on {node.node_id} is routing through Ollama "
-                    f"— native backend not running"
-                ),
-                description=(
-                    f"{node.node_id} has {', '.join(sorted(matched))} available in Ollama "
-                    f"but the native fastembed text embedding server (port 11439) is not "
-                    f"running. Embed requests consume the same OLLAMA_NUM_PARALLEL slots "
-                    f"as LLM inference.{platform_note}"
-                ),
-                fix=(
-                    "Install the embedding extra to enable the native fastembed backend: "
-                    "`uv sync --extra embedding` (or `uv sync --all-extras`) on the node, "
-                    "then restart `herd-node`. nomic-embed-text requests will be routed "
-                    "to port 11439 and will never touch Ollama's inference queue again. "
-                    "The 130 MB model weights download automatically on the first request."
-                ),
-                node_id=node.node_id,
-                data={
-                    "ollama_embed_models": sorted(matched),
-                    "native_server_running": False,
-                    "arch": arch,
-                },
-            ))
+            recs.append(
+                Recommendation(
+                    check_id="text_embedding_ollama_bypass",
+                    severity=Severity.WARNING,
+                    title=(
+                        f"nomic-embed-text on {node.node_id} is routing through Ollama "
+                        f"— native backend not running"
+                    ),
+                    description=(
+                        f"{node.node_id} has {', '.join(sorted(matched))} available in Ollama "
+                        f"but the native fastembed text embedding server (port 11439) is not "
+                        f"running. Embed requests consume the same OLLAMA_NUM_PARALLEL slots "
+                        f"as LLM inference.{platform_note}"
+                    ),
+                    fix=(
+                        "Install the embedding extra to enable the native fastembed backend: "
+                        "`uv sync --extra embedding` (or `uv sync --all-extras`) on the node, "
+                        "then restart `herd-node`. nomic-embed-text requests will be routed "
+                        "to port 11439 and will never touch Ollama's inference queue again. "
+                        "The 130 MB model weights download automatically on the first request."
+                    ),
+                    node_id=node.node_id,
+                    data={
+                        "ollama_embed_models": sorted(matched),
+                        "native_server_running": False,
+                        "arch": arch,
+                    },
+                )
+            )
         return recs
 
     def _check_nomic_loaded_in_ollama(self, nodes) -> list[Recommendation]:
@@ -2455,32 +2422,34 @@ class HealthEngine:
             if not matched:
                 continue
 
-            recs.append(Recommendation(
-                check_id="nomic_loaded_in_ollama",
-                severity=Severity.INFO,
-                title=(
-                    f"nomic-embed-text is loaded in Ollama on {node.node_id} "
-                    f"but the native backend is handling all embed requests"
-                ),
-                description=(
-                    f"The native fastembed server (port {node.text_embedding_port}) is "
-                    f"running and intercepting all nomic-embed-text requests before they "
-                    f"reach Ollama. However, {', '.join(sorted(matched))} is still loaded "
-                    f"in Ollama, consuming ~275 MB of VRAM and an inference slot for no "
-                    f"benefit. It will self-evict when OLLAMA_KEEP_ALIVE expires."
-                ),
-                fix=(
-                    "To free the slot immediately: `ollama stop nomic-embed-text` on the "
-                    "node. Or set `OLLAMA_KEEP_ALIVE=5m` (instead of -1) for embed models "
-                    "so they evict after a period of disuse. No action required — it "
-                    "resolves on its own."
-                ),
-                node_id=node.node_id,
-                data={
-                    "loaded_embed_models": sorted(matched),
-                    "native_port": node.text_embedding_port,
-                },
-            ))
+            recs.append(
+                Recommendation(
+                    check_id="nomic_loaded_in_ollama",
+                    severity=Severity.INFO,
+                    title=(
+                        f"nomic-embed-text is loaded in Ollama on {node.node_id} "
+                        f"but the native backend is handling all embed requests"
+                    ),
+                    description=(
+                        f"The native fastembed server (port {node.text_embedding_port}) is "
+                        f"running and intercepting all nomic-embed-text requests before they "
+                        f"reach Ollama. However, {', '.join(sorted(matched))} is still loaded "
+                        f"in Ollama, consuming ~275 MB of VRAM and an inference slot for no "
+                        f"benefit. It will self-evict when OLLAMA_KEEP_ALIVE expires."
+                    ),
+                    fix=(
+                        "To free the slot immediately: `ollama stop nomic-embed-text` on the "
+                        "node. Or set `OLLAMA_KEEP_ALIVE=5m` (instead of -1) for embed models "
+                        "so they evict after a period of disuse. No action required — it "
+                        "resolves on its own."
+                    ),
+                    node_id=node.node_id,
+                    data={
+                        "loaded_embed_models": sorted(matched),
+                        "native_port": node.text_embedding_port,
+                    },
+                )
+            )
         return recs
 
     # A model's own p99 TPOT must exceed this multiple of its recent baseline
@@ -2624,7 +2593,8 @@ class HealthEngine:
         return recs
 
     def _check_trace_store_write_failures(
-        self, trace_store,
+        self,
+        trace_store,
     ) -> list[Recommendation]:
         """Detect ongoing SQLite write failures in the trace store.
 
@@ -2656,39 +2626,39 @@ class HealthEngine:
         if failures_5m == 0:
             return recs
         severity = Severity.CRITICAL if failures_5m >= 50 else Severity.WARNING
-        recs.append(Recommendation(
-            check_id="trace_store_write_failures",
-            severity=severity,
-            title=(
-                f"{failures_5m} trace-record failures in the last 5 minutes"
-            ),
-            description=(
-                "Background trace_record tasks are failing after the 30s "
-                "busy_timeout + 3 retries.  Requests are likely still "
-                "succeeding (trace writes are fire-and-forget) but "
-                "observability is degraded — `reqs_24h`, latency stats, "
-                "and per-model error rates on the dashboard will look "
-                "stale or zeroed until writes resume.  Common causes: a "
-                "long-running read transaction holding the WAL checkpoint "
-                "open, an out-of-disk-space condition on the data dir, or "
-                "a stale file lock from a crashed previous process."
-            ),
-            fix=(
-                "1) Check disk space on the data dir: `df -h ~/.fleet-manager`. "
-                "2) Check for a stale `latency.db-shm`/`-wal` from a crashed "
-                "process: `ls -lh ~/.fleet-manager/latency.db*`.  "
-                "3) Restart `herd` to release any held lock: "
-                "`pkill -9 -f 'bin/herd|mlx_lm.server' && uv run herd & disown`.  "
-                "4) If it recurs, file an issue with `~/.fleet-manager/logs/` "
-                "attached — there may be a slow query path that needs an "
-                "index."
-            ),
-            data={
-                "failures_5m": failures_5m,
-                "threshold_warning": 1,
-                "threshold_critical": 50,
-            },
-        ))
+        recs.append(
+            Recommendation(
+                check_id="trace_store_write_failures",
+                severity=severity,
+                title=(f"{failures_5m} trace-record failures in the last 5 minutes"),
+                description=(
+                    "Background trace_record tasks are failing after the 30s "
+                    "busy_timeout + 3 retries.  Requests are likely still "
+                    "succeeding (trace writes are fire-and-forget) but "
+                    "observability is degraded — `reqs_24h`, latency stats, "
+                    "and per-model error rates on the dashboard will look "
+                    "stale or zeroed until writes resume.  Common causes: a "
+                    "long-running read transaction holding the WAL checkpoint "
+                    "open, an out-of-disk-space condition on the data dir, or "
+                    "a stale file lock from a crashed previous process."
+                ),
+                fix=(
+                    "1) Check disk space on the data dir: `df -h ~/.fleet-manager`. "
+                    "2) Check for a stale `latency.db-shm`/`-wal` from a crashed "
+                    "process: `ls -lh ~/.fleet-manager/latency.db*`.  "
+                    "3) Restart `herd` to release any held lock: "
+                    "`pkill -9 -f 'bin/herd|mlx_lm.server' && uv run herd & disown`.  "
+                    "4) If it recurs, file an issue with `~/.fleet-manager/logs/` "
+                    "attached — there may be a slow query path that needs an "
+                    "index."
+                ),
+                data={
+                    "failures_5m": failures_5m,
+                    "threshold_warning": 1,
+                    "threshold_critical": 50,
+                },
+            )
+        )
         return recs
 
     async def _check_embed_error_rate(self, trace_store) -> list[Recommendation]:
@@ -2727,42 +2697,43 @@ class HealthEngine:
         error_pct = round((failed / total) * 100, 1) if total > 0 else 100.0
         by_model = stats.get("by_model", {})
         model_summary = ", ".join(
-            f"{m}: {v['failed']}/{v['total']} failed"
-            for m, v in by_model.items()
+            f"{m}: {v['failed']}/{v['total']} failed" for m, v in by_model.items()
         )
-        recs.append(Recommendation(
-            check_id="embed_error_rate",
-            severity=severity,
-            title=f"{failed} embed failure(s) in the last hour ({error_pct}% error rate)",
-            description=(
-                f"Embedding requests are failing with ReadTimeout or HTTP errors — "
-                f"the embed model is likely queued behind concurrent LLM inference "
-                f"inside Ollama. {model_summary}. "
-                f"Note: the machine hardware may be lightly loaded; this is "
-                f"Ollama's software concurrency limit (OLLAMA_NUM_PARALLEL), not "
-                f"CPU/RAM pressure."
-            ),
-            fix=(
-                "1) Increase OLLAMA_NUM_PARALLEL to allow embed requests to run "
-                "alongside LLM inference: set OLLAMA_NUM_PARALLEL=4 (or higher) in "
-                "~/.zshrc and run `launchctl setenv OLLAMA_NUM_PARALLEL 4`, then "
-                "restart Ollama. "
-                "2) Enable FLEET_DYNAMIC_NUM_CTX=true in ~/.fleet-manager/env to "
-                "reduce per-model KV cache footprint (counteracts the memory growth "
-                "from higher parallelism). "
-                "3) If the embed workload is large and sustained (e.g. VOD frame "
-                "processing), consider routing it to off-peak hours or a dedicated "
-                "node."
-            ),
-            data={
-                "failed_1h": failed,
-                "total_1h": total,
-                "error_pct": error_pct,
-                "by_model": by_model,
-                "threshold_warning": 5,
-                "threshold_critical": 25,
-            },
-        ))
+        recs.append(
+            Recommendation(
+                check_id="embed_error_rate",
+                severity=severity,
+                title=f"{failed} embed failure(s) in the last hour ({error_pct}% error rate)",
+                description=(
+                    f"Embedding requests are failing with ReadTimeout or HTTP errors — "
+                    f"the embed model is likely queued behind concurrent LLM inference "
+                    f"inside Ollama. {model_summary}. "
+                    f"Note: the machine hardware may be lightly loaded; this is "
+                    f"Ollama's software concurrency limit (OLLAMA_NUM_PARALLEL), not "
+                    f"CPU/RAM pressure."
+                ),
+                fix=(
+                    "1) Increase OLLAMA_NUM_PARALLEL to allow embed requests to run "
+                    "alongside LLM inference: set OLLAMA_NUM_PARALLEL=4 (or higher) in "
+                    "~/.zshrc and run `launchctl setenv OLLAMA_NUM_PARALLEL 4`, then "
+                    "restart Ollama. "
+                    "2) Enable FLEET_DYNAMIC_NUM_CTX=true in ~/.fleet-manager/env to "
+                    "reduce per-model KV cache footprint (counteracts the memory growth "
+                    "from higher parallelism). "
+                    "3) If the embed workload is large and sustained (e.g. VOD frame "
+                    "processing), consider routing it to off-peak hours or a dedicated "
+                    "node."
+                ),
+                data={
+                    "failed_1h": failed,
+                    "total_1h": total,
+                    "error_pct": error_pct,
+                    "by_model": by_model,
+                    "threshold_warning": 5,
+                    "threshold_critical": 25,
+                },
+            )
+        )
         return recs
 
     def _check_mapped_models_hot(self, nodes) -> list[Recommendation]:
@@ -2796,10 +2767,7 @@ class HealthEngine:
         if not isinstance(model_map, dict):
             return []
 
-        mapped_targets = {
-            v for v in model_map.values()
-            if isinstance(v, str) and v
-        }
+        mapped_targets = {v for v in model_map.values() if isinstance(v, str) and v}
         if not mapped_targets:
             return []
 
@@ -2835,42 +2803,46 @@ class HealthEngine:
 
         recs: list[Recommendation] = []
         if missing_entirely:
-            recs.append(Recommendation(
-                check_id="mapped_model_missing",
-                severity=Severity.CRITICAL,
-                title="Mapped model not on any node",
-                description=(
-                    f"{len(missing_entirely)} model(s) in "
-                    f"FLEET_ANTHROPIC_MODEL_MAP aren't on any fleet node: "
-                    f"{', '.join(sorted(missing_entirely))}. Claude Code "
-                    f"requests mapped to them will fail with 404."
-                ),
-                fix=(
-                    "Pull the missing models — `ollama pull <name>` for "
-                    "Ollama models, or `herd mlx pull <name>` (then start "
-                    "mlx_lm.server) for MLX models. "
-                    "If the name is wrong, fix FLEET_ANTHROPIC_MODEL_MAP."
-                ),
-                data={"missing": sorted(missing_entirely)},
-            ))
+            recs.append(
+                Recommendation(
+                    check_id="mapped_model_missing",
+                    severity=Severity.CRITICAL,
+                    title="Mapped model not on any node",
+                    description=(
+                        f"{len(missing_entirely)} model(s) in "
+                        f"FLEET_ANTHROPIC_MODEL_MAP aren't on any fleet node: "
+                        f"{', '.join(sorted(missing_entirely))}. Claude Code "
+                        f"requests mapped to them will fail with 404."
+                    ),
+                    fix=(
+                        "Pull the missing models — `ollama pull <name>` for "
+                        "Ollama models, or `herd mlx pull <name>` (then start "
+                        "mlx_lm.server) for MLX models. "
+                        "If the name is wrong, fix FLEET_ANTHROPIC_MODEL_MAP."
+                    ),
+                    data={"missing": sorted(missing_entirely)},
+                )
+            )
         if not_hot:
-            recs.append(Recommendation(
-                check_id="mapped_model_cold",
-                severity=Severity.WARNING,
-                title="Mapped model not currently hot",
-                description=(
-                    f"{len(not_hot)} mapped model(s) are available on disk "
-                    f"but not currently loaded: {', '.join(sorted(not_hot))}. "
-                    f"Next Claude Code request pays cold-load penalty (~30s) "
-                    f"and may trigger VRAM fallback."
-                ),
-                fix=(
-                    "Pre-warm with: ollama run <name> 'hi' (or a curl POST to "
-                    "/api/generate with keep_alive=-1). Or accept the "
-                    "first-request cold-load cost."
-                ),
-                data={"not_hot": sorted(not_hot)},
-            ))
+            recs.append(
+                Recommendation(
+                    check_id="mapped_model_cold",
+                    severity=Severity.WARNING,
+                    title="Mapped model not currently hot",
+                    description=(
+                        f"{len(not_hot)} mapped model(s) are available on disk "
+                        f"but not currently loaded: {', '.join(sorted(not_hot))}. "
+                        f"Next Claude Code request pays cold-load penalty (~30s) "
+                        f"and may trigger VRAM fallback."
+                    ),
+                    fix=(
+                        "Pre-warm with: ollama run <name> 'hi' (or a curl POST to "
+                        "/api/generate with keep_alive=-1). Or accept the "
+                        "first-request cold-load cost."
+                    ),
+                    data={"not_hot": sorted(not_hot)},
+                )
+            )
         return recs
 
     def _check_anthropic_no_chat_model(self, nodes) -> list[Recommendation]:
@@ -2906,9 +2878,12 @@ class HealthEngine:
                     model_map = parsed
             except (ValueError, TypeError):
                 model_map = {}
-        auto_route = os.environ.get(
-            "FLEET_ANTHROPIC_AUTO_ROUTE", "true"
-        ).strip().lower() not in ("false", "0", "no", "off")
+        auto_route = os.environ.get("FLEET_ANTHROPIC_AUTO_ROUTE", "true").strip().lower() not in (
+            "false",
+            "0",
+            "no",
+            "off",
+        )
 
         loaded: set[str] = set()
         ondisk: set[str] = set()
@@ -2927,9 +2902,7 @@ class HealthEngine:
                     if isinstance(m, str):
                         ondisk.add(m)
             for s in getattr(node, "mlx_servers", None) or []:
-                if getattr(s, "status", None) == "healthy" and getattr(
-                    s, "model", None
-                ):
+                if getattr(s, "status", None) == "healthy" and getattr(s, "model", None):
                     nm = f"mlx:{s.model}"
                     loaded.add(nm)
                     ondisk.add(nm)
@@ -2948,50 +2921,52 @@ class HealthEngine:
         # Unresolved — is it because there's no chat model, or a config gap?
         has_chat = bool(rank_candidates(ondisk, "claude-sonnet-4-5"))
         if not has_chat:
-            return [Recommendation(
-                check_id="anthropic_no_chat_model",
+            return [
+                Recommendation(
+                    check_id="anthropic_no_chat_model",
+                    severity=Severity.WARNING,
+                    title="No model available for Claude Code",
+                    description=(
+                        "No chat/coding model is loaded or on disk anywhere on the "
+                        "fleet, so Anthropic Messages (/v1/messages) requests — e.g. "
+                        "Claude Code — will 404 until one is present. Embedding-only "
+                        "models don't count. Expected on a brand-new install before "
+                        "any model is pulled."
+                    ),
+                    fix=(
+                        "Pull a coding model, e.g. `ollama pull qwen3-coder:30b`. "
+                        "With auto-routing on (default), Claude Code resolves to it "
+                        "automatically — no FLEET_ANTHROPIC_MODEL_MAP needed. If you "
+                        "don't use Claude Code, ignore this."
+                    ),
+                    data={"auto_route": auto_route, "loaded": sorted(loaded)[:10]},
+                )
+            ]
+        return [
+            Recommendation(
+                check_id="anthropic_unrouted_config",
                 severity=Severity.WARNING,
-                title="No model available for Claude Code",
+                title="Claude Code requests won't route (auto-routing off, no map)",
                 description=(
-                    "No chat/coding model is loaded or on disk anywhere on the "
-                    "fleet, so Anthropic Messages (/v1/messages) requests — e.g. "
-                    "Claude Code — will 404 until one is present. Embedding-only "
-                    "models don't count. Expected on a brand-new install before "
-                    "any model is pulled."
+                    "The fleet has chat-capable models, but FLEET_ANTHROPIC_AUTO_ROUTE "
+                    "is off and no FLEET_ANTHROPIC_MODEL_MAP entry (or 'default' key) "
+                    "covers claude-* ids — so Anthropic Messages requests will 404 "
+                    "even though a usable model is loaded."
                 ),
                 fix=(
-                    "Pull a coding model, e.g. `ollama pull qwen3-coder:30b`. "
-                    "With auto-routing on (default), Claude Code resolves to it "
-                    "automatically — no FLEET_ANTHROPIC_MODEL_MAP needed. If you "
-                    "don't use Claude Code, ignore this."
+                    "Either set FLEET_ANTHROPIC_AUTO_ROUTE=true (resolves claude-* to "
+                    "the best loaded model), or add a FLEET_ANTHROPIC_MODEL_MAP with a "
+                    "'default' key pointing at a loaded model."
                 ),
                 data={"auto_route": auto_route, "loaded": sorted(loaded)[:10]},
-            )]
-        return [Recommendation(
-            check_id="anthropic_unrouted_config",
-            severity=Severity.WARNING,
-            title="Claude Code requests won't route (auto-routing off, no map)",
-            description=(
-                "The fleet has chat-capable models, but FLEET_ANTHROPIC_AUTO_ROUTE "
-                "is off and no FLEET_ANTHROPIC_MODEL_MAP entry (or 'default' key) "
-                "covers claude-* ids — so Anthropic Messages requests will 404 "
-                "even though a usable model is loaded."
-            ),
-            fix=(
-                "Either set FLEET_ANTHROPIC_AUTO_ROUTE=true (resolves claude-* to "
-                "the best loaded model), or add a FLEET_ANTHROPIC_MODEL_MAP with a "
-                "'default' key pointing at a loaded model."
-            ),
-            data={"auto_route": auto_route, "loaded": sorted(loaded)[:10]},
-        )]
+            )
+        ]
 
     # ------------------------------------------------------------------
     # Trace-based checks
     # ------------------------------------------------------------------
 
-    def _check_model_load_timeouts(
-        self, timeouts, recent_timeouts, nodes
-    ) -> list[Recommendation]:
+    def _check_model_load_timeouts(self, timeouts, recent_timeouts, nodes) -> list[Recommendation]:
         """Detect models that repeatedly time out — and say which of two causes it is.
 
         The original cause this was written for: a model keeps getting evicted
@@ -3029,9 +3004,7 @@ class HealthEngine:
 
         # Fleet-wide context, computed once: is this plausibly eviction at all?
         free_gb = _free_memory_gb(nodes)
-        models_timing_out = sum(
-            1 for info in timeouts["by_model"].values() if info["count"] >= 3
-        )
+        models_timing_out = sum(1 for info in timeouts["by_model"].values() if info["count"] >= 3)
         ollama_wedged = models_timing_out >= 2 and free_gb >= _OVERSIZE_HEADROOM_GB
 
         # Find the worst-offending models
@@ -3068,7 +3041,7 @@ class HealthEngine:
                             (
                                 "Confirm with a direct, non-herd request: `curl -m 120 "
                                 "localhost:11434/api/generate -d "
-                                "'{\"model\":\"<model>\",\"prompt\":\"hi\"}'`. "
+                                '\'{"model":"<model>","prompt":"hi"}\'`. '
                                 "If that hangs while /api/version answers instantly, "
                                 "restart Ollama — quit the **Electron parent** "
                                 "(Ollama.app/Contents/MacOS/Ollama), not just `ollama "
@@ -3082,7 +3055,7 @@ class HealthEngine:
                             else (
                                 f"Keep {model} loaded: "
                                 f"curl http://localhost:11434/api/generate "
-                                f"-d '{{\"model\":\"{model}\",\"keep_alive\":-1}}'. "
+                                f'-d \'{{"model":"{model}","keep_alive":-1}}\'. '
                                 f"Or set OLLAMA_MAX_LOADED_MODELS=-1 to let Ollama "
                                 f"fill available memory."
                             )
@@ -3242,10 +3215,10 @@ class HealthEngine:
                         fix=(
                             f"Worth a look if it repeats, not an alarm yet. Low-traffic "
                             f"backends sit here routinely: check what the failures were "
-                            f"with `sqlite3 ~/.fleet-manager/latency.db \"SELECT model, "
+                            f'with `sqlite3 ~/.fleet-manager/latency.db "SELECT model, '
                             f"status, error_message FROM request_traces WHERE node_id="
                             f"'{entry['node_id']}' AND status!='completed' ORDER BY "
-                            f"timestamp DESC LIMIT 10\"`."
+                            f'timestamp DESC LIMIT 10"`.'
                         ),
                         node_id=entry["node_id"],
                         data={
@@ -3313,9 +3286,7 @@ class HealthEngine:
         # Same floor, same reason: this is a fleet-wide average, so a tiny
         # denominator only happens just after a restart -- which is exactly when
         # one retry would read as a 33% retry rate.
-        if retry_stats["total_requests"] < self._min_samples_for_rate(
-            self.RETRY_RATE_THRESHOLD
-        ):
+        if retry_stats["total_requests"] < self._min_samples_for_rate(self.RETRY_RATE_THRESHOLD):
             return recs
         avg_retries = retry_stats["total_retries"] / retry_stats["total_requests"]
         if avg_retries >= self.RETRY_RATE_THRESHOLD:
@@ -3342,9 +3313,7 @@ class HealthEngine:
             )
         return recs
 
-    def _check_stream_reliability(
-        self, reliability, recent_reliability
-    ) -> list[Recommendation]:
+    def _check_stream_reliability(self, reliability, recent_reliability) -> list[Recommendation]:
         """Surface client disconnects, incomplete streams, and empty generations.
 
         All three are "the HTTP exchange succeeded but the output was wrong",
@@ -3382,9 +3351,7 @@ class HealthEngine:
             recs.append(
                 Recommendation(
                     check_id="empty_generations",
-                    severity=(
-                        Severity.WARNING if recent_no_output >= 1 else Severity.INFO
-                    ),
+                    severity=(Severity.WARNING if recent_no_output >= 1 else Severity.INFO),
                     title=f"{no_output} request(s) produced no output in 24h",
                     description=(
                         f"{model_lines or 'unknown model'}. The backend returned a "
@@ -3462,8 +3429,7 @@ class HealthEngine:
                         severity=Severity.INFO,
                         title=f"Client disconnects resolved ({disconnected} in 24h, none recent)",
                         description=(
-                            f"{disconnected} client disconnects in 24h but none in the "
-                            f"last hour."
+                            f"{disconnected} client disconnects in 24h but none in the last hour."
                         ),
                         fix="No action needed. This will clear as historical data ages out.",
                         data={
@@ -3529,8 +3495,7 @@ class HealthEngine:
                         severity=Severity.INFO,
                         title=f"Incomplete streams resolved ({incomplete} in 24h, none recent)",
                         description=(
-                            f"{incomplete} incomplete streams in 24h but none in the "
-                            f"last hour."
+                            f"{incomplete} incomplete streams in 24h but none in the last hour."
                         ),
                         fix="No action needed. This will clear as historical data ages out.",
                         data={
@@ -3564,9 +3529,7 @@ class HealthEngine:
     # Priority model check
     # ------------------------------------------------------------------
 
-    def _check_priority_models(
-        self, priorities: list[dict], nodes: list
-    ) -> list[Recommendation]:
+    def _check_priority_models(self, priorities: list[dict], nodes: list) -> list[Recommendation]:
         """Warn when high-priority models are not loaded."""
         recs: list[Recommendation] = []
         if not priorities:
@@ -3604,9 +3567,7 @@ class HealthEngine:
         def _cannot_be_preloaded(model: str) -> bool:
             if model in refused:
                 return True
-            return any(
-                model_has_capability(node, model, "embedding") for node in nodes
-            )
+            return any(model_has_capability(node, model, "embedding") for node in nodes)
 
         # Check top priority models
         missing = []
@@ -3622,25 +3583,27 @@ class HealthEngine:
 
         if missing:
             names = ", ".join(f"{m} (score={s:.0f})" for m, s in missing[:3])
-            recs.append(Recommendation(
-                check_id="priority_model_not_loaded",
-                severity=Severity.WARNING,
-                title=f"Priority model(s) not loaded: {missing[0][0]}",
-                description=(
-                    f"High-usage models available on disk but not loaded: "
-                    f"{names}. These models have high request volume but are "
-                    f"not in memory, causing cold loads or VRAM fallback to "
-                    f"less capable models."
-                ),
-                fix=(
-                    "Models will be auto-loaded by the priority preloader on "
-                    "next restart. To load now, send a request for the model "
-                    "or use the dashboard."
-                ),
-                data={"missing_models": [
-                    {"model": m, "priority_score": s} for m, s in missing
-                ]},
-            ))
+            recs.append(
+                Recommendation(
+                    check_id="priority_model_not_loaded",
+                    severity=Severity.WARNING,
+                    title=f"Priority model(s) not loaded: {missing[0][0]}",
+                    description=(
+                        f"High-usage models available on disk but not loaded: "
+                        f"{names}. These models have high request volume but are "
+                        f"not in memory, causing cold loads or VRAM fallback to "
+                        f"less capable models."
+                    ),
+                    fix=(
+                        "Models will be auto-loaded by the priority preloader on "
+                        "next restart. To load now, send a request for the model "
+                        "or use the dashboard."
+                    ),
+                    data={
+                        "missing_models": [{"model": m, "priority_score": s} for m, s in missing]
+                    },
+                )
+            )
 
         return recs
 

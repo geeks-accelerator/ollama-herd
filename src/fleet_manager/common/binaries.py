@@ -30,7 +30,7 @@ def which_extended(binary: str) -> str | None:
         return found
     # Check common tool binary locations (platform-aware)
     extra_dirs = [
-        Path.home() / ".local" / "bin",           # uv tool, pipx (Unix/Linux/macOS)
+        Path.home() / ".local" / "bin",  # uv tool, pipx (Unix/Linux/macOS)
     ]
     if sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA", "")
@@ -41,8 +41,8 @@ def which_extended(binary: str) -> str | None:
             extra_dirs.append(Path(appdata) / "Python" / "Scripts")
         extra_dirs.append(Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Links")
     else:
-        extra_dirs.append(Path("/opt/homebrew/bin"))   # Homebrew (Apple Silicon)
-        extra_dirs.append(Path("/usr/local/bin"))      # Homebrew (Intel), system
+        extra_dirs.append(Path("/opt/homebrew/bin"))  # Homebrew (Apple Silicon)
+        extra_dirs.append(Path("/usr/local/bin"))  # Homebrew (Intel), system
     for d in extra_dirs:
         candidate = d / binary
         if candidate.exists() and candidate.is_file():

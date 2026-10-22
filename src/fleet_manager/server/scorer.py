@@ -19,7 +19,10 @@ WARM_WINDOW_SECONDS = 1800  # 30 minutes
 
 class ScoringEngine:
     def __init__(
-        self, settings: ServerSettings, registry: NodeRegistry, latency_store=None,
+        self,
+        settings: ServerSettings,
+        registry: NodeRegistry,
+        latency_store=None,
         sessions=None,
     ):
         self._s = settings
@@ -31,8 +34,12 @@ class ScoringEngine:
         self._sessions = sessions
 
     def score_request(
-        self, model: str, queue_depths: dict[str, int], estimated_tokens: int = 0,
-        session_key: str = "", prefix_key: str = "",
+        self,
+        model: str,
+        queue_depths: dict[str, int],
+        estimated_tokens: int = 0,
+        session_key: str = "",
+        prefix_key: str = "",
     ) -> list[RoutingResult]:
         """
         Score all candidate nodes for a model request.
@@ -426,9 +433,7 @@ class ScoringEngine:
     # sharing one popular system prompt from piling onto one node.
     PREFIX_AFFINITY_BONUS = 10.0
 
-    def _score_session_affinity(
-        self, node: NodeState, session_key: str, depth: int = 0
-    ) -> float:
+    def _score_session_affinity(self, node: NodeState, session_key: str, depth: int = 0) -> float:
         """Signal 8: keep a conversation on the node holding its warm prefix.
 
         llama.cpp skips already-processed prompt tokens, so a returning turn can
@@ -443,9 +448,7 @@ class ScoringEngine:
         """
         return self._pin_bonus(node, session_key, self.SESSION_AFFINITY_BONUS, depth)
 
-    def _score_prefix_affinity(
-        self, node: NodeState, prefix_key: str, depth: int = 0
-    ) -> float:
+    def _score_prefix_affinity(self, node: NodeState, prefix_key: str, depth: int = 0) -> float:
         """Signal 8, second tier: a new conversation whose leading system prompt
         and tools another conversation already warmed on this node.
 

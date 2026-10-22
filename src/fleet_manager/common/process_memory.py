@@ -52,9 +52,7 @@ from fleet_manager.models.node import ProcessMemory, ProcessMemoryEntry
 logger = logging.getLogger(__name__)
 
 _UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
-_FOOTPRINT_RE = re.compile(
-    r"^\s*(phys_footprint(?:_peak)?):\s*([0-9.]+)\s*([KMGT]?B)\s*$", re.M
-)
+_FOOTPRINT_RE = re.compile(r"^\s*(phys_footprint(?:_peak)?):\s*([0-9.]+)\s*([KMGT]?B)\s*$", re.M)
 
 # Processes herd spawns, mapped to a role label.  Matched against the full argv
 # because a process name alone is unreliable -- the transcription server reports
@@ -96,7 +94,10 @@ def _footprint(pid: int) -> tuple[float, float]:
     try:
         out = subprocess.run(
             ["/usr/bin/footprint", "-p", str(pid)],
-            capture_output=True, text=True, timeout=10.0, check=False,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug(f"footprint({pid}) failed: {type(exc).__name__}: {exc}")

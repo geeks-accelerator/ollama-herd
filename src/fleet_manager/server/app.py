@@ -64,6 +64,7 @@ async def lifespan(app: FastAPI):
     # still works via the ``base_url`` positional.
     mlx_proxy: MlxProxy | None = None
     if getattr(settings, "mlx_enabled", False):
+
         def _mlx_url_resolver(model_key: str) -> str | None:
             return registry.resolve_mlx_url(model_key)
 
@@ -75,10 +76,14 @@ async def lifespan(app: FastAPI):
             retry_after_seconds=getattr(settings, "mlx_retry_after_seconds", 10),
             read_timeout_s=getattr(settings, "mlx_read_timeout_s", 1800.0),
             wall_clock_timeout_s=getattr(
-                settings, "mlx_wall_clock_timeout_s", 300.0,
+                settings,
+                "mlx_wall_clock_timeout_s",
+                300.0,
             ),
             max_inflight_per_model=getattr(
-                settings, "mlx_max_inflight_per_model", 1,
+                settings,
+                "mlx_max_inflight_per_model",
+                1,
             ),
         )
         logger.info(
@@ -105,7 +110,8 @@ async def lifespan(app: FastAPI):
         # (Could extend to point at a specific node's Ollama later.)
         curator_client = OllamaClient(base_url="http://localhost:11434")
         curator = OllamaCurator(
-            curator_client, model=settings.context_compaction_model,
+            curator_client,
+            model=settings.context_compaction_model,
         )
         summary_cache = SummaryCache(
             Path(settings.data_dir).expanduser() / "context_summaries.sqlite",
@@ -122,7 +128,9 @@ async def lifespan(app: FastAPI):
                 default_model=settings.context_compaction_model,
                 idle_window_s=idle_window,
                 min_params_b=getattr(
-                    settings, "context_compaction_curator_min_params_b", 7.0,
+                    settings,
+                    "context_compaction_curator_min_params_b",
+                    7.0,
                 ),
             )
 
@@ -203,7 +211,10 @@ async def lifespan(app: FastAPI):
 
     preload_task = asyncio.create_task(
         preload_priority_models(
-            registry, trace_store, streaming_proxy, settings,
+            registry,
+            trace_store,
+            streaming_proxy,
+            settings,
             pinned_store=app.state.pinned_store,
         )
     )

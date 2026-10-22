@@ -25,9 +25,7 @@ class ClientConcurrencyExceeded(Exception):
         self.client_ip = client_ip
         self.limit = limit
         self.retry_after = retry_after
-        super().__init__(
-            f"client {client_ip or '<anon>'} exceeded max in-flight={limit}"
-        )
+        super().__init__(f"client {client_ip or '<anon>'} exceeded max in-flight={limit}")
 
 
 def get_reaper_events(hours: float = 24) -> list[dict]:
@@ -101,7 +99,8 @@ class QueueManager:
         self._registry = registry
         self._settings = settings
         self._stale_timeout = (
-            settings.stale_timeout if settings and hasattr(settings, "stale_timeout")
+            settings.stale_timeout
+            if settings and hasattr(settings, "stale_timeout")
             else _STALE_NO_PROGRESS_SECONDS
         )
         self._reaper_task: asyncio.Task | None = None
@@ -177,8 +176,7 @@ class QueueManager:
                         (rid, e)
                         for rid, e in q.in_flight.items()
                         if (e.last_progress_at or e.started_at)
-                        and (now - (e.last_progress_at or e.started_at))
-                        > self._stale_timeout
+                        and (now - (e.last_progress_at or e.started_at)) > self._stale_timeout
                     ]
                     for rid, entry in stale:
                         del q.in_flight[rid]
@@ -193,17 +191,19 @@ class QueueManager:
                         last = entry.last_progress_at or entry.started_at
                         idle = int(now - last)
                         age = int(now - entry.started_at) if entry.started_at else idle
-                        _reaper_events.append({
-                            "timestamp": now,
-                            "request_id": entry.request.request_id,
-                            "queue_key": key,
-                            "stuck_seconds": idle,
-                            # Both, because they differ and the difference is the
-                            # diagnosis: idle ~= age means it never produced
-                            # anything; idle << age means it stalled mid-stream.
-                            "age_seconds": age,
-                            "produced_output": entry.last_progress_at is not None,
-                        })
+                        _reaper_events.append(
+                            {
+                                "timestamp": now,
+                                "request_id": entry.request.request_id,
+                                "queue_key": key,
+                                "stuck_seconds": idle,
+                                # Both, because they differ and the difference is the
+                                # diagnosis: idle ~= age means it never produced
+                                # anything; idle << age means it stalled mid-stream.
+                                "age_seconds": age,
+                                "produced_output": entry.last_progress_at is not None,
+                            }
+                        )
                         if len(_reaper_events) > 100:
                             _reaper_events.pop(0)
                         logger.warning(
@@ -444,16 +444,10 @@ class QueueManager:
             try:
                 while True:
                     try:
-                        await asyncio.wait_for(
-                            released.wait(), timeout=_REAPER_INTERVAL_SECONDS
-                        )
+                        await asyncio.wait_for(released.wait(), timeout=_REAPER_INTERVAL_SECONDS)
                         break
                     except TimeoutError:
-                        last = (
-                            entry.last_progress_at
-                            or entry.started_at
-                            or time.time()
-                        )
+                        last = entry.last_progress_at or entry.started_at or time.time()
                         idle = time.time() - last
                         if idle > self._stale_timeout:
                             logger.warning(
@@ -493,11 +487,7 @@ class QueueManager:
             # Accumulate stats only when at least one value is provided,
             # otherwise the averages would drift to zero for completions
             # that never reported tokens (e.g. image generation).
-            if (
-                latency_ms is not None
-                or prompt_tokens is not None
-                or completion_tokens is not None
-            ):
+            if latency_ms is not None or prompt_tokens is not None or completion_tokens is not None:
                 q.total_latency_ms += latency_ms or 0.0
                 q.total_prompt_tokens += prompt_tokens or 0
                 q.total_completion_tokens += completion_tokens or 0

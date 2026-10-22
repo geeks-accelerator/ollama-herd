@@ -148,8 +148,7 @@ def _get_memory_pressure_darwin() -> MemoryPressure:
         raw = (result.stdout or "").strip()
         if not raw:
             logger.warning(
-                "Empty kern.memorystatus_vm_pressure_level (defaulting to NORMAL); "
-                "stderr=%s",
+                "Empty kern.memorystatus_vm_pressure_level (defaulting to NORMAL); stderr=%s",
                 (result.stderr or "").strip() or "(none)",
             )
             return MemoryPressure.NORMAL
@@ -157,15 +156,13 @@ def _get_memory_pressure_darwin() -> MemoryPressure:
         pressure = _DARWIN_PRESSURE_LEVELS.get(level)
         if pressure is None:
             logger.warning(
-                f"Unrecognised macOS memory pressure level {level} "
-                f"(defaulting to NORMAL)"
+                f"Unrecognised macOS memory pressure level {level} (defaulting to NORMAL)"
             )
             return MemoryPressure.NORMAL
         return pressure
     except Exception as e:
         logger.warning(
-            f"Could not read memory pressure (defaulting to NORMAL): "
-            f"{type(e).__name__}: {e}"
+            f"Could not read memory pressure (defaulting to NORMAL): {type(e).__name__}: {e}"
         )
         return MemoryPressure.NORMAL
 
@@ -258,10 +255,7 @@ def _get_thermal_linux() -> ThermalMetrics:
                     peak_source = f"psutil:{driver}"
     if peak_c is None:
         return ThermalMetrics(state=ThermalState.UNKNOWN)
-    state = (
-        ThermalState.WARNING if peak_c >= _LINUX_THERMAL_WARNING_C
-        else ThermalState.NOMINAL
-    )
+    state = ThermalState.WARNING if peak_c >= _LINUX_THERMAL_WARNING_C else ThermalState.NOMINAL
     return ThermalMetrics(state=state, temperature_c=round(peak_c, 1), source=peak_source)
 
 
@@ -288,10 +282,7 @@ def _get_thermal_windows() -> ThermalMetrics:
                 peak_source = f"psutil:{driver}"
     if peak_c is None:
         return ThermalMetrics(state=ThermalState.UNKNOWN)
-    state = (
-        ThermalState.WARNING if peak_c >= _LINUX_THERMAL_WARNING_C
-        else ThermalState.NOMINAL
-    )
+    state = ThermalState.WARNING if peak_c >= _LINUX_THERMAL_WARNING_C else ThermalState.NOMINAL
     return ThermalMetrics(state=state, temperature_c=round(peak_c, 1), source=peak_source)
 
 

@@ -62,8 +62,7 @@ async def post(
     state = load_state()
     if state is None:
         raise PlatformUnreachableError(
-            "Not connected to platform — no saved state. "
-            "Run connect_to_platform() first."
+            "Not connected to platform — no saved state. Run connect_to_platform() first."
         )
 
     url = f"{state.platform_url.rstrip('/')}{path}"
@@ -79,8 +78,7 @@ async def post(
         if attempt > 0:
             backoff = _BASE_BACKOFF_S * (2 ** (attempt - 1))
             logger.debug(
-                f"Retry {attempt}/{total_attempts - 1} for POST {path} "
-                f"after {backoff:.1f}s"
+                f"Retry {attempt}/{total_attempts - 1} for POST {path} after {backoff:.1f}s"
             )
             await asyncio.sleep(backoff)
 
@@ -104,8 +102,7 @@ async def post(
         if resp.status_code == 401:
             # Token revoked — no point retrying
             raise InvalidTokenError(
-                "Operator token rejected. Reconnect via dashboard or "
-                "regenerate at gotomy.ai/web/"
+                "Operator token rejected. Reconnect via dashboard or regenerate at gotomy.ai/web/"
             )
 
         if resp.status_code >= 500:
@@ -113,9 +110,7 @@ async def post(
             last_exc = PlatformUnreachableError(
                 f"Platform returned {resp.status_code}: {resp.text[:200]}"
             )
-            logger.debug(
-                f"POST {path} 5xx (attempt {attempt + 1}): {resp.status_code}"
-            )
+            logger.debug(f"POST {path} 5xx (attempt {attempt + 1}): {resp.status_code}")
             continue
 
         # 4xx other than 401/409 — client error, don't retry
@@ -126,14 +121,11 @@ async def post(
     # All retries exhausted
     if isinstance(last_exc, httpx.HTTPError):
         raise PlatformUnreachableError(
-            f"Cannot reach platform at {url} after {total_attempts} attempts: "
-            f"{last_exc}"
+            f"Cannot reach platform at {url} after {total_attempts} attempts: {last_exc}"
         ) from last_exc
     if last_exc is not None:
         raise last_exc
-    raise PlatformUnreachableError(
-        f"POST {path} failed after {total_attempts} attempts"
-    )
+    raise PlatformUnreachableError(f"POST {path} failed after {total_attempts} attempts")
 
 
 async def post_local_summary(payload: dict) -> dict[str, Any]:

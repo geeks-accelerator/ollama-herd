@@ -126,9 +126,7 @@ def _is_on_fleet(model: str, ondisk_names) -> bool:
     return model in names or normalize_model_name(model) in names
 
 
-def _candidate_score(
-    name: str, tier: str, *, want_vision: bool, capabilities=None
-) -> float | None:
+def _candidate_score(name: str, tier: str, *, want_vision: bool, capabilities=None) -> float | None:
     """Rank score for loading ``name`` to serve ``tier``; None if unusable.
 
     Higher is better.  Unusable = an embedding/image model, or (for an image
@@ -139,9 +137,9 @@ def _candidate_score(
     only ever widens detection: it catches models the heuristics miss (qwen3.8
     reports vision; no name pattern matches it) without overruling them.
     """
-    reported = (capabilities or {}).get(name) or (capabilities or {}).get(
-        normalize_model_name(name)
-    ) or ()
+    reported = (
+        (capabilities or {}).get(name) or (capabilities or {}).get(normalize_model_name(name)) or ()
+    )
     if "embedding" in reported or _is_embedding_name(name):
         return None  # embedding models can't chat, and classify as GENERAL
     if "decision" in reported:
@@ -193,9 +191,7 @@ def rank_candidates(
         if not name or name in seen:
             continue
         seen.add(name)
-        score = _candidate_score(
-            name, tier, want_vision=want_vision, capabilities=capabilities
-        )
+        score = _candidate_score(name, tier, want_vision=want_vision, capabilities=capabilities)
         if score is None:
             continue
         scored.append((score, name))

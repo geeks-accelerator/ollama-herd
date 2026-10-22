@@ -30,9 +30,9 @@ class ThermalState(StrEnum):
     when we lack a real thermal sensor.
     """
 
-    NOMINAL = "nominal"   # thermal signal available and within range
-    WARNING = "warning"   # thermal signal available and concerning
-    UNKNOWN = "unknown"   # no reliable thermal signal for this platform
+    NOMINAL = "nominal"  # thermal signal available and within range
+    WARNING = "warning"  # thermal signal available and concerning
+    UNKNOWN = "unknown"  # no reliable thermal signal for this platform
 
 
 class NodeStatus(StrEnum):
@@ -294,8 +294,8 @@ class TranscriptionMetrics(BaseModel):
 class VisionEmbeddingModel(BaseModel):
     """A vision embedding model available on a node (CLIP, DINOv2, SigLIP)."""
 
-    name: str       # e.g. "dinov2-vit-s14", "clip-vit-b32"
-    runtime: str    # "mlx" or "onnx"
+    name: str  # e.g. "dinov2-vit-s14", "clip-vit-b32"
+    runtime: str  # "mlx" or "onnx"
     dimensions: int  # 384, 768, or 512
 
 
@@ -309,9 +309,9 @@ class VisionEmbeddingMetrics(BaseModel):
 class TextEmbeddingModel(BaseModel):
     """A text embedding model available on a node via the native fastembed backend."""
 
-    name: str        # e.g. "nomic-embed-text"
+    name: str  # e.g. "nomic-embed-text"
     dimensions: int  # e.g. 768 (0 for a reranker, which emits scores, not vectors)
-    cached: bool     # model weights present on disk
+    cached: bool  # model weights present on disk
     # "embed" or "rerank".  Defaulted so heartbeats from older agents, which
     # only ever reported embedders, still validate unchanged.
     kind: str = "embed"
@@ -358,8 +358,8 @@ class MlxServerInfo(BaseModel):
     # Distributed execution (multi-node via mlx.launch).  Defaults keep the
     # model back-compatible with heartbeats from agents that predate these.
     distributed: bool = False
-    backend: str = ""                    # ring / jaccl / mpi (empty = standalone)
-    node_count: int = 1                  # hosts this server spans (0 = unknown)
+    backend: str = ""  # ring / jaccl / mpi (empty = standalone)
+    node_count: int = 1  # hosts this server spans (0 = unknown)
 
 
 class HeartbeatPayload(BaseModel):

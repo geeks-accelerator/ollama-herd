@@ -148,9 +148,7 @@ class BenchmarkRunner:
             async with httpx.AsyncClient(base_url=self._base_url) as client:
                 # Smart mode: pull recommended models first
                 if mode == "smart":
-                    await self._smart_pull(
-                        client, registry, streaming_proxy, scorer
-                    )
+                    await self._smart_pull(client, registry, streaming_proxy, scorer)
                     if self._stop_event.is_set():
                         return
 
@@ -213,15 +211,19 @@ class BenchmarkRunner:
                         if resp.status_code == 200:
                             for node in resp.json().get("nodes", []):
                                 if node.get("status") == "online":
-                                    nodes_info.append(NodeInfo(
-                                        node_id=node["node_id"],
-                                        cores=node.get("cpu", {}).get("cores_physical", 0),
-                                        memory_total_gb=node.get("memory", {}).get("total_gb", 0),
-                                        memory_used_gb=node.get("memory", {}).get("used_gb", 0),
-                                        memory_available_gb=node.get("memory", {}).get(
-                                            "available_gb", 0
-                                        ),
-                                    ))
+                                    nodes_info.append(
+                                        NodeInfo(
+                                            node_id=node["node_id"],
+                                            cores=node.get("cpu", {}).get("cores_physical", 0),
+                                            memory_total_gb=node.get("memory", {}).get(
+                                                "total_gb", 0
+                                            ),
+                                            memory_used_gb=node.get("memory", {}).get("used_gb", 0),
+                                            memory_available_gb=node.get("memory", {}).get(
+                                                "available_gb", 0
+                                            ),
+                                        )
+                                    )
                     except Exception:
                         pass
 
@@ -235,7 +237,8 @@ class BenchmarkRunner:
                 if llm_targets:
                     self._phase = "Warming up LLM models..."
                     llm_targets = await warmup(
-                        client, llm_targets,
+                        client,
+                        llm_targets,
                         log_fn=lambda msg: logger.info(f"Benchmark warmup: {msg}"),
                     )
 
@@ -264,17 +267,27 @@ class BenchmarkRunner:
                 for target in all_targets:
                     for _ in range(target.concurrency):
                         if target.model_type == "embed":
-                            tasks.append(asyncio.create_task(
-                                embed_worker(client, target.name, self._results, self._stop_event)
-                            ))
+                            tasks.append(
+                                asyncio.create_task(
+                                    embed_worker(
+                                        client, target.name, self._results, self._stop_event
+                                    )
+                                )
+                            )
                         elif target.model_type == "image":
-                            tasks.append(asyncio.create_task(
-                                image_worker(client, target.name, self._results, self._stop_event)
-                            ))
+                            tasks.append(
+                                asyncio.create_task(
+                                    image_worker(
+                                        client, target.name, self._results, self._stop_event
+                                    )
+                                )
+                            )
                         else:
-                            tasks.append(asyncio.create_task(
-                                worker(client, target.name, self._results, self._stop_event)
-                            ))
+                            tasks.append(
+                                asyncio.create_task(
+                                    worker(client, target.name, self._results, self._stop_event)
+                                )
+                            )
 
                 # Fleet status poller
                 poller_task = asyncio.create_task(
@@ -285,9 +298,7 @@ class BenchmarkRunner:
                 import contextlib
 
                 with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(
-                        self._stop_event.wait(), timeout=duration
-                    )
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=duration)
 
                 self._stop_event.set()
 
@@ -533,12 +544,12 @@ class BenchmarkRunner:
                             success = warmup_resp.status_code == 200
 
                         if success:
-                            logger.info(
-                                f"Smart benchmark: {model} loaded and pinned"
-                            )
+                            logger.info(f"Smart benchmark: {model} loaded and pinned")
                     elif streaming_proxy:
                         success = await streaming_proxy.pull_model(
-                            node_id, model, progress_cb=_on_pull_progress,
+                            node_id,
+                            model,
+                            progress_cb=_on_pull_progress,
                         )
                     else:
                         pull_resp = await client.post(

@@ -50,11 +50,13 @@ def start(
     log_level: str = typer.Option("INFO", help="Log level"),
     cloud: bool = typer.Option(False, "--cloud", help="Enable cloud tunnel to gotomy.ai"),
     cloud_token: str = typer.Option(
-        None, "--token",
+        None,
+        "--token",
         help="Fleet token from gotomy.ai (or set CLOUD_FLEET_TOKEN env var)",
     ),
     cloud_url: str = typer.Option(
-        "https://gotomy.ai", "--cloud-url",
+        "https://gotomy.ai",
+        "--cloud-url",
         help="Platform URL (default: https://gotomy.ai)",
     ),
     version: bool = typer.Option(
@@ -132,6 +134,7 @@ def start(
         # Run uvicorn + connector in the same event loop
         async def _run():
             import uvicorn as _u
+
             config = _u.Config(application, host=host, port=port, log_level=log_level.lower())
             server = _u.Server(config)
             await asyncio.gather(
@@ -213,7 +216,8 @@ def mlx_pull(
 @mlx_app.command("list")
 def mlx_list(
     url: str = typer.Option(
-        "http://localhost:11440", "--url",
+        "http://localhost:11440",
+        "--url",
         help="mlx_lm.server URL to query",
     ),
 ):
@@ -254,7 +258,8 @@ def mlx_serve(
     port: int = typer.Option(11440, "--port", help="Listen port"),
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address"),
     kv_bits: int = typer.Option(
-        0, "--kv-bits",
+        0,
+        "--kv-bits",
         help="KV cache quantization (4 or 8 — requires patched mlx_lm.server; 0 = f16 default)",
     ),
 ):
@@ -270,20 +275,25 @@ def mlx_serve(
     binary = find_mlx_lm_binary()
     if binary is None:
         typer.secho(
-            "  mlx_lm.server binary not found. Install with:\n"
-            "    uv tool install mlx-lm",
+            "  mlx_lm.server binary not found. Install with:\n    uv tool install mlx-lm",
             fg="red",
         )
         raise typer.Exit(1)
 
     cmd = [
         binary,
-        "--model", model,
-        "--host", host,
-        "--port", str(port),
-        "--prompt-cache-size", "4",
-        "--prompt-cache-bytes", str(17_179_869_184),
-        "--log-level", "INFO",
+        "--model",
+        model,
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--prompt-cache-size",
+        "4",
+        "--prompt-cache-bytes",
+        str(17_179_869_184),
+        "--log-level",
+        "INFO",
     ]
     if kv_bits in (4, 8):
         cmd += ["--kv-bits", str(kv_bits), "--kv-group-size", "64"]
@@ -295,6 +305,7 @@ def mlx_serve(
     typer.echo("")
 
     import os as _os
+
     _os.execvp(cmd[0], cmd)  # replace our process — Ctrl+C goes straight to mlx
 
 

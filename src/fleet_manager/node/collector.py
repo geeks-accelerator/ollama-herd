@@ -65,6 +65,7 @@ def _ttl_cache(ttl_seconds: float) -> Callable[[Callable[..., _T]], Callable[...
     caching: cache only what's measurably expensive AND tolerates
     staleness; never cache CPU/memory/queue depth.
     """
+
     def decorator(fn: Callable[..., _T]) -> Callable[..., _T]:
         last_value: list = [None]
         last_time: list = [0.0]
@@ -213,11 +214,13 @@ def _detect_chip() -> str:
         if system == "Darwin":
             out = subprocess.check_output(
                 ["sysctl", "-n", "machdep.cpu.brand_string"],
-                timeout=2.0, text=True,
+                timeout=2.0,
+                text=True,
             ).strip()
             return out
         if system == "Linux":
             import contextlib
+
             cpu = ""
             with contextlib.suppress(OSError), open("/proc/cpuinfo") as f:
                 for line in f:
@@ -228,15 +231,21 @@ def _detect_chip() -> str:
             nvidia_smi = shutil.which("nvidia-smi")
             if nvidia_smi:
                 with contextlib.suppress(subprocess.SubprocessError, OSError, IndexError):
-                    gpu = subprocess.check_output(
-                        [nvidia_smi, "--query-gpu=name", "--format=csv,noheader"],
-                        timeout=2.0, text=True,
-                    ).strip().splitlines()[0]
+                    gpu = (
+                        subprocess.check_output(
+                            [nvidia_smi, "--query-gpu=name", "--format=csv,noheader"],
+                            timeout=2.0,
+                            text=True,
+                        )
+                        .strip()
+                        .splitlines()[0]
+                    )
             return f"{cpu} + {gpu}".strip(" +") if cpu or gpu else ""
         if system == "Windows":
             out = subprocess.check_output(
                 ["wmic", "cpu", "get", "name"],
-                timeout=2.0, text=True,
+                timeout=2.0,
+                text=True,
             )
             lines = [line.strip() for line in out.splitlines() if line.strip()]
             # First line is the header "Name"
@@ -429,13 +438,12 @@ def _vision_backend_status() -> dict:
 
     try:
         import onnxruntime  # noqa: F401
+
         backend_available = True
     except ImportError:
         backend_available = False
 
-    cached = sum(
-        1 for name in VISION_EMBEDDING_MODELS if is_model_downloaded(name)
-    )
+    cached = sum(1 for name in VISION_EMBEDDING_MODELS if is_model_downloaded(name))
     return {
         "backend_available": backend_available,
         "cached_model_count": cached,
@@ -487,9 +495,7 @@ def _detect_text_embedding_models():
     for name in canonical_rerank_names():
         cached = is_model_cached(name)
         if cached or name == DEFAULT_RERANK_MODEL:
-            models.append(
-                TextEmbeddingModel(name=name, dimensions=0, cached=cached, kind="rerank")
-            )
+            models.append(TextEmbeddingModel(name=name, dimensions=0, cached=cached, kind="rerank"))
 
     # Return metrics even if no models are cached yet — server starts eagerly
     # when fastembed is installed so the first request triggers a lazy download.
@@ -517,6 +523,7 @@ def _text_embedding_backend_status() -> dict:
 
     try:
         import fastembed  # noqa: F401
+
         backend_available = True
     except ImportError:
         backend_available = False
@@ -524,9 +531,7 @@ def _text_embedding_backend_status() -> dict:
     # Rerank weights count too: cached weights with fastembed missing is the same
     # silently-broken state, so text_embedding_backend_missing covers both.
     cached = sum(
-        1
-        for name in canonical_model_names() + canonical_rerank_names()
-        if is_model_cached(name)
+        1 for name in canonical_model_names() + canonical_rerank_names() if is_model_cached(name)
     )
     return {
         "backend_available": backend_available,
@@ -553,7 +558,8 @@ def _meta_to_send(meta: dict | None) -> dict | None:
         return None
     fingerprint = hashlib.sha256(
         json.dumps(
-            {k: v.model_dump() for k, v in meta.items()}, sort_keys=True,
+            {k: v.model_dump() for k, v in meta.items()},
+            sort_keys=True,
         ).encode()
     ).hexdigest()
     now = time.time()
@@ -676,21 +682,21 @@ async def collect_heartbeat(
             await mlx_supervisor_set.refresh_health()
             statuses = mlx_supervisor_set.statuses()
             for st in statuses:
-                mlx_server_infos.append(MlxServerInfo(
-                    port=st.port,
-                    model=st.model,
-                    status=st.status,
-                    status_reason=st.status_reason,
-                    kv_bits=st.kv_bits,
-                    model_size_gb=st.model_size_gb,
-                    last_ok_ts=st.last_ok_ts,
-                    distributed=st.distributed,
-                    backend=st.backend,
-                    node_count=st.node_count,
-                ))
-            healthy_models = [
-                prefix_mlx(st.model) for st in statuses if st.status == "healthy"
-            ]
+                mlx_server_infos.append(
+                    MlxServerInfo(
+                        port=st.port,
+                        model=st.model,
+                        status=st.status,
+                        status_reason=st.status_reason,
+                        kv_bits=st.kv_bits,
+                        model_size_gb=st.model_size_gb,
+                        last_ok_ts=st.last_ok_ts,
+                        distributed=st.distributed,
+                        backend=st.backend,
+                        node_count=st.node_count,
+                    )
+                )
+            healthy_models = [prefix_mlx(st.model) for st in statuses if st.status == "healthy"]
             models_available = list(models_available) + healthy_models
             # The supervisor already knows each MLX model's on-disk size —
             # carry it through so mlx: models don't fall back to name-guessing
@@ -703,8 +709,7 @@ async def collect_heartbeat(
                 f"{len(statuses)} total configured"
             )
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"MLX supervisor status collection failed: "
-                         f"{type(e).__name__}: {e}")
+            logger.debug(f"MLX supervisor status collection failed: {type(e).__name__}: {e}")
 
     # Run capacity learner observation if enabled
     capacity = None

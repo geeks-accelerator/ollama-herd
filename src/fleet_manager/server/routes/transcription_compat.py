@@ -31,15 +31,17 @@ def _record_transcription(
     error: str = "",
 ) -> None:
     """Record a transcription event for health monitoring."""
-    _transcription_events.append({
-        "timestamp": time.time(),
-        "model": model,
-        "node_id": node_id,
-        "status": status,
-        "processing_ms": processing_ms,
-        "audio_duration_s": audio_duration_s,
-        "error": error,
-    })
+    _transcription_events.append(
+        {
+            "timestamp": time.time(),
+            "model": model,
+            "node_id": node_id,
+            "status": status,
+            "processing_ms": processing_ms,
+            "audio_duration_s": audio_duration_s,
+            "error": error,
+        }
+    )
     if len(_transcription_events) > _MAX_TRANSCRIPTION_EVENTS:
         del _transcription_events[: len(_transcription_events) - _MAX_TRANSCRIPTION_EVENTS]
 
@@ -87,9 +89,7 @@ async def transcribe_audio(request: Request, audio: UploadFile):
     candidates = [
         n
         for n in registry.get_online_nodes()
-        if n.transcription
-        and n.transcription_port > 0
-        and n.transcription.models_available
+        if n.transcription and n.transcription_port > 0 and n.transcription.models_available
     ]
 
     if not candidates:
@@ -152,7 +152,9 @@ async def transcribe_audio(request: Request, audio: UploadFile):
         result = json.loads(result_json)
 
         _record_transcription(
-            model, best.node_id, "completed",
+            model,
+            best.node_id,
+            "completed",
             processing_ms=elapsed_ms,
         )
 
@@ -169,8 +171,11 @@ async def transcribe_audio(request: Request, audio: UploadFile):
     except Exception as e:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         _record_transcription(
-            model, best.node_id, "failed",
-            processing_ms=elapsed_ms, error=repr(e),
+            model,
+            best.node_id,
+            "failed",
+            processing_ms=elapsed_ms,
+            error=repr(e),
         )
         logger.error(f"Transcription failed on {best.node_id}: {repr(e)}")
         return JSONResponse(

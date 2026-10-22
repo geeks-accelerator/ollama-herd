@@ -85,7 +85,10 @@ def _text_from_content(content: Any) -> str:
         if isinstance(part, str):
             out.append(part)
         elif isinstance(part, dict) and part.get("type") in (
-            "input_text", "output_text", "text", "summary_text",
+            "input_text",
+            "output_text",
+            "text",
+            "summary_text",
         ):
             out.append(str(part.get("text", "")))
     return "".join(out)
@@ -107,7 +110,9 @@ def _images_from_content(content: Any) -> list[str]:
     out: list[str] = []
     for part in content:
         if not isinstance(part, dict) or part.get("type") not in (
-            "input_image", "image", "output_image",
+            "input_image",
+            "image",
+            "output_image",
         ):
             continue
         url = part.get("image_url") or part.get("url") or ""
@@ -198,18 +203,25 @@ def _tools_to_openai(
                     f'await tools.exec_command({{cmd: "git pull"}}) — not JSON.'
                 )
             custom_names.add(name)
-            converted.append({"type": "function", "function": {
-                "name": name,
-                "description": desc,
-                "parameters": {
-                    "type": "object",
-                    "properties": {CUSTOM_TOOL_ARG: {
-                        "type": "string",
-                        "description": arg_desc,
-                    }},
-                    "required": [CUSTOM_TOOL_ARG],
-                },
-            }})
+            converted.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": desc,
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                CUSTOM_TOOL_ARG: {
+                                    "type": "string",
+                                    "description": arg_desc,
+                                }
+                            },
+                            "required": [CUSTOM_TOOL_ARG],
+                        },
+                    },
+                }
+            )
             continue
 
         if ttype == "namespace":
@@ -218,7 +230,8 @@ def _tools_to_openai(
             # not independently callable. Recording rather than warning.
             nested.extend(
                 f"{t.get('name')}.{n.get('name')}"
-                for n in (t.get("tools") or []) if isinstance(n, dict)
+                for n in (t.get("tools") or [])
+                if isinstance(n, dict)
             )
             continue
 
@@ -269,9 +282,7 @@ def _log_unknown_item_type_once(itype: str) -> None:
     )
 
 
-def responses_input_to_messages(
-    input_value: Any, instructions: str | None = None
-) -> list[dict]:
+def responses_input_to_messages(input_value: Any, instructions: str | None = None) -> list[dict]:
     """``input`` (+ ``instructions``) → OpenAI-chat ``messages``.
 
     Handles the item kinds Codex actually sends in a stateless conversation:
@@ -321,48 +332,64 @@ def responses_input_to_messages(
                         f"Responses: tool-call arguments for "
                         f"{item.get('name')!r} are not valid JSON; passing raw"
                     )
-            messages.append({
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "id": item.get("call_id") or item.get("id") or "",
-                    "type": "function",
-                    "function": {"name": item.get("name", ""), "arguments": args},
-                }],
-            })
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": item.get("call_id") or item.get("id") or "",
+                            "type": "function",
+                            "function": {"name": item.get("name", ""), "arguments": args},
+                        }
+                    ],
+                }
+            )
             continue
 
         if itype == "function_call_output":
             output = item.get("output", "")
             if not isinstance(output, str):
                 output = json.dumps(output)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": item.get("call_id") or item.get("id") or "",
-                "content": output,
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": item.get("call_id") or item.get("id") or "",
+                    "content": output,
+                }
+            )
             continue
 
         if itype == "custom_tool_call":
             # Our own prior custom call, echoed back in history.
-            messages.append({
-                "role": "assistant", "content": "",
-                "tool_calls": [{
-                    "id": item.get("call_id") or item.get("id") or "",
-                    "type": "function",
-                    "function": {"name": item.get("name", ""),
-                                 "arguments": {CUSTOM_TOOL_ARG: item.get("input", "")}},
-                }],
-            })
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": item.get("call_id") or item.get("id") or "",
+                            "type": "function",
+                            "function": {
+                                "name": item.get("name", ""),
+                                "arguments": {CUSTOM_TOOL_ARG: item.get("input", "")},
+                            },
+                        }
+                    ],
+                }
+            )
             continue
 
         if itype == "custom_tool_call_output":
-            messages.append({
-                "role": "tool",
-                "tool_call_id": item.get("call_id") or item.get("id") or "",
-                "content": item.get("output", "") if isinstance(item.get("output"), str)
-                           else json.dumps(item.get("output")),
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": item.get("call_id") or item.get("id") or "",
+                    "content": item.get("output", "")
+                    if isinstance(item.get("output"), str)
+                    else json.dumps(item.get("output")),
+                }
+            )
             continue
 
         if itype == "reasoning":
@@ -435,8 +462,17 @@ def collect_tools_from_input(input_value: Any) -> list[dict]:
 
 _PREAMBLE_TAILS = (":", "…", "...")
 _PREAMBLE_OPENERS = (
-    "let me", "let's", "lets ", "i'll", "i will", "now i", "next, i",
-    "first, ", "now let", "i'm going to", "i am going to",
+    "let me",
+    "let's",
+    "lets ",
+    "i'll",
+    "i will",
+    "now i",
+    "next, i",
+    "first, ",
+    "now let",
+    "i'm going to",
+    "i am going to",
 )
 
 
@@ -477,9 +513,7 @@ def _append_turn_completion_guidance(messages: list[dict]) -> None:
         if m.get("role") == "system":
             m["content"] = f"{m.get('content', '')}{TURN_COMPLETION_GUIDANCE}"
             return
-    messages.insert(
-        0, {"role": "system", "content": TURN_COMPLETION_GUIDANCE.strip()}
-    )
+    messages.insert(0, {"role": "system", "content": TURN_COMPLETION_GUIDANCE.strip()})
 
 
 def responses_to_openai_body(body: dict) -> dict:
@@ -489,9 +523,7 @@ def responses_to_openai_body(body: dict) -> dict:
     scorer / queue / streaming path treats it identically to a
     ``/v1/chat/completions`` call.
     """
-    messages = responses_input_to_messages(
-        body.get("input"), body.get("instructions")
-    )
+    messages = responses_input_to_messages(body.get("input"), body.get("instructions"))
     out: dict[str, Any] = {
         "model": body.get("model", ""),
         "messages": messages,
@@ -499,9 +531,7 @@ def responses_to_openai_body(body: dict) -> dict:
     }
     # Tools may arrive top-level (per the docs) or inside an `additional_tools`
     # input item (what Codex actually does). Take both.
-    raw_tools = list(body.get("tools") or []) + collect_tools_from_input(
-        body.get("input")
-    )
+    raw_tools = list(body.get("tools") or []) + collect_tools_from_input(body.get("input"))
     # `custom_names` records which tools arrived as Responses `custom` tools so
     # the response side can emit `custom_tool_call` for them instead of
     # `function_call` — Codex rejects the wrong item type.
@@ -794,13 +824,15 @@ def build_responses_object(
     """
     output: list[dict] = []
     if text:
-        output.append({
-            "type": "message",
-            "id": _new_id("msg"),
-            "role": "assistant",
-            "status": "completed",
-            "content": [{"type": "output_text", "text": text, "annotations": []}],
-        })
+        output.append(
+            {
+                "type": "message",
+                "id": _new_id("msg"),
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            }
+        )
     custom_names = custom_names or set()
     known_names = known_names or set()
     for tc in tool_calls:
@@ -810,45 +842,53 @@ def build_responses_object(
         patch_call = redirect_apply_patch_call(name, args, known_names)
         if patch_call:
             name, args = patch_call
-            output.append({
+            output.append(
+                {
+                    "type": "function_call",
+                    "id": _new_id("fc"),
+                    "call_id": tc.get("id") or _new_id("call"),
+                    "name": name,
+                    "arguments": args,
+                    "status": "completed",
+                }
+            )
+            continue
+        redirect = redirect_nested_tool_call(name, args, custom_names, known_names)
+        if redirect:
+            host, js = redirect
+            output.append(
+                {
+                    "type": "custom_tool_call",
+                    "id": _new_id("ctc"),
+                    "call_id": tc.get("id") or _new_id("call"),
+                    "name": host,
+                    "input": js,
+                    "status": "completed",
+                }
+            )
+            continue
+        if name in custom_names:
+            output.append(
+                {
+                    "type": "custom_tool_call",
+                    "id": _new_id("ctc"),
+                    "call_id": tc.get("id") or _new_id("call"),
+                    "name": name,
+                    "input": _unwrap_custom_input(args, name),
+                    "status": "completed",
+                }
+            )
+            continue
+        output.append(
+            {
                 "type": "function_call",
                 "id": _new_id("fc"),
                 "call_id": tc.get("id") or _new_id("call"),
                 "name": name,
                 "arguments": args,
                 "status": "completed",
-            })
-            continue
-        redirect = redirect_nested_tool_call(name, args, custom_names, known_names)
-        if redirect:
-            host, js = redirect
-            output.append({
-                "type": "custom_tool_call",
-                "id": _new_id("ctc"),
-                "call_id": tc.get("id") or _new_id("call"),
-                "name": host,
-                "input": js,
-                "status": "completed",
-            })
-            continue
-        if name in custom_names:
-            output.append({
-                "type": "custom_tool_call",
-                "id": _new_id("ctc"),
-                "call_id": tc.get("id") or _new_id("call"),
-                "name": name,
-                "input": _unwrap_custom_input(args, name),
-                "status": "completed",
-            })
-            continue
-        output.append({
-            "type": "function_call",
-            "id": _new_id("fc"),
-            "call_id": tc.get("id") or _new_id("call"),
-            "name": name,
-            "arguments": args,
-            "status": "completed",
-        })
+            }
+        )
     return {
         "id": response_id or _new_id("resp"),
         "object": "response",
@@ -866,7 +906,9 @@ def build_responses_object(
 
 
 def accumulate_responses_object(
-    chunks: list[str], model: str, custom_names: set[str] | None = None,
+    chunks: list[str],
+    model: str,
+    custom_names: set[str] | None = None,
     known_names: set[str] | None = None,
 ) -> dict:
     """Collapse a full Ollama NDJSON stream into one Responses object."""
@@ -960,29 +1002,35 @@ def _close_message_item(state: ResponsesSSEState) -> Iterator[str]:
     if state.msg_id is None:
         return
     text = "".join(state.text_parts)
-    yield _ev(state, "response.output_text.done", {
-        "item_id": state.msg_id,
-        "output_index": state.msg_index,
-        "content_index": 0,
-        "text": text,
-    })
-    yield _ev(state, "response.output_item.done", {
-        "output_index": state.msg_index,
-        "item": {
-            "type": "message",
-            "id": state.msg_id,
-            "role": "assistant",
-            "status": "completed",
-            "content": [{"type": "output_text", "text": text, "annotations": []}],
+    yield _ev(
+        state,
+        "response.output_text.done",
+        {
+            "item_id": state.msg_id,
+            "output_index": state.msg_index,
+            "content_index": 0,
+            "text": text,
         },
-    })
+    )
+    yield _ev(
+        state,
+        "response.output_item.done",
+        {
+            "output_index": state.msg_index,
+            "item": {
+                "type": "message",
+                "id": state.msg_id,
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            },
+        },
+    )
     state.msg_id = None
     state.msg_index = None
 
 
-def ollama_chunk_to_responses_events(
-    line: str, state: ResponsesSSEState
-) -> Iterator[str]:
+def ollama_chunk_to_responses_events(line: str, state: ResponsesSSEState) -> Iterator[str]:
     """Translate one Ollama NDJSON line into zero-or-more Responses SSE events."""
     chunk = _parse_ollama_chunk(line)
     if chunk is None:
@@ -992,10 +1040,14 @@ def ollama_chunk_to_responses_events(
     # response.created + response.in_progress, once
     if not state.started:
         state.started = True
-        yield _ev(state, "response.created",
-                  {"response": _response_envelope(state, "in_progress", [])})
-        yield _ev(state, "response.in_progress",
-                  {"response": _response_envelope(state, "in_progress", [])})
+        yield _ev(
+            state, "response.created", {"response": _response_envelope(state, "in_progress", [])}
+        )
+        yield _ev(
+            state,
+            "response.in_progress",
+            {"response": _response_envelope(state, "in_progress", [])},
+        )
 
     # Text → open a message item (once), then stream deltas
     if text:
@@ -1003,29 +1055,41 @@ def ollama_chunk_to_responses_events(
             state.msg_id = _new_id("msg")
             state.msg_index = state.next_output_index
             state.next_output_index += 1
-            yield _ev(state, "response.output_item.added", {
-                "output_index": state.msg_index,
-                "item": {
-                    "type": "message",
-                    "id": state.msg_id,
-                    "role": "assistant",
-                    "status": "in_progress",
-                    "content": [],
+            yield _ev(
+                state,
+                "response.output_item.added",
+                {
+                    "output_index": state.msg_index,
+                    "item": {
+                        "type": "message",
+                        "id": state.msg_id,
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": [],
+                    },
                 },
-            })
-            yield _ev(state, "response.content_part.added", {
+            )
+            yield _ev(
+                state,
+                "response.content_part.added",
+                {
+                    "item_id": state.msg_id,
+                    "output_index": state.msg_index,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": "", "annotations": []},
+                },
+            )
+        state.text_parts.append(text)
+        yield _ev(
+            state,
+            "response.output_text.delta",
+            {
                 "item_id": state.msg_id,
                 "output_index": state.msg_index,
                 "content_index": 0,
-                "part": {"type": "output_text", "text": "", "annotations": []},
-            })
-        state.text_parts.append(text)
-        yield _ev(state, "response.output_text.delta", {
-            "item_id": state.msg_id,
-            "output_index": state.msg_index,
-            "content_index": 0,
-            "delta": text,
-        })
+                "delta": text,
+            },
+        )
 
     # Tool calls → close the message item first, then one function_call item each.
     # Ollama hands us complete arguments (it doesn't stream them), so we emit a
@@ -1044,9 +1108,7 @@ def ollama_chunk_to_responses_events(
             patch_call = redirect_apply_patch_call(name, args, state.known_names)
             if patch_call:
                 name, args = patch_call
-            redirect = redirect_nested_tool_call(
-                name, args, state.custom_names, state.known_names
-            )
+            redirect = redirect_nested_tool_call(name, args, state.custom_names, state.known_names)
             if redirect or name in state.custom_names:
                 # This began life as a Responses `custom` tool (or is a nested
                 # tool of one that the model called directly). Codex expects a
@@ -1066,19 +1128,40 @@ def ollama_chunk_to_responses_events(
                     "status": "completed",
                 }
                 state.emitted_tools.append(item)
-                yield _ev(state, "response.output_item.added", {
-                    "output_index": idx,
-                    "item": {**item, "input": "", "status": "in_progress"},
-                })
-                yield _ev(state, "response.custom_tool_call_input.delta", {
-                    "item_id": item["id"], "output_index": idx, "delta": text,
-                })
-                yield _ev(state, "response.custom_tool_call_input.done", {
-                    "item_id": item["id"], "output_index": idx, "input": text,
-                })
-                yield _ev(state, "response.output_item.done", {
-                    "output_index": idx, "item": item,
-                })
+                yield _ev(
+                    state,
+                    "response.output_item.added",
+                    {
+                        "output_index": idx,
+                        "item": {**item, "input": "", "status": "in_progress"},
+                    },
+                )
+                yield _ev(
+                    state,
+                    "response.custom_tool_call_input.delta",
+                    {
+                        "item_id": item["id"],
+                        "output_index": idx,
+                        "delta": text,
+                    },
+                )
+                yield _ev(
+                    state,
+                    "response.custom_tool_call_input.done",
+                    {
+                        "item_id": item["id"],
+                        "output_index": idx,
+                        "input": text,
+                    },
+                )
+                yield _ev(
+                    state,
+                    "response.output_item.done",
+                    {
+                        "output_index": idx,
+                        "item": item,
+                    },
+                )
                 continue
             item = {
                 "type": "function_call",
@@ -1089,25 +1172,41 @@ def ollama_chunk_to_responses_events(
                 "status": "completed",
             }
             state.emitted_tools.append(item)
-            yield _ev(state, "response.output_item.added", {
-                "output_index": idx,
-                "item": {**item, "arguments": "", "status": "in_progress"},
-            })
-            yield _ev(state, "response.function_call_arguments.delta", {
-                "item_id": item_id,
-                "output_index": idx,
-                "delta": args,
-            })
-            yield _ev(state, "response.function_call_arguments.done", {
-                "item_id": item_id,
-                "output_index": idx,
-                "name": name,
-                "arguments": args,
-            })
-            yield _ev(state, "response.output_item.done", {
-                "output_index": idx,
-                "item": item,
-            })
+            yield _ev(
+                state,
+                "response.output_item.added",
+                {
+                    "output_index": idx,
+                    "item": {**item, "arguments": "", "status": "in_progress"},
+                },
+            )
+            yield _ev(
+                state,
+                "response.function_call_arguments.delta",
+                {
+                    "item_id": item_id,
+                    "output_index": idx,
+                    "delta": args,
+                },
+            )
+            yield _ev(
+                state,
+                "response.function_call_arguments.done",
+                {
+                    "item_id": item_id,
+                    "output_index": idx,
+                    "name": name,
+                    "arguments": args,
+                },
+            )
+            yield _ev(
+                state,
+                "response.output_item.done",
+                {
+                    "output_index": idx,
+                    "item": item,
+                },
+            )
 
     if done and not state.finished:
         state.finished = True
@@ -1122,30 +1221,32 @@ def ollama_chunk_to_responses_events(
         if state.msg_id is not None:
             msg_id, msg_index = state.msg_id, state.msg_index
             yield from _close_message_item(state)
-            final_output.append({
-                "type": "message",
-                "id": msg_id,
-                "role": "assistant",
-                "status": "completed",
-                "content": [
-                    {"type": "output_text", "text": msg_text, "annotations": []}
-                ],
-            })
+            final_output.append(
+                {
+                    "type": "message",
+                    "id": msg_id,
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": msg_text, "annotations": []}],
+                }
+            )
             _ = msg_index
         elif msg_text:
-            final_output.append({
-                "type": "message",
-                "id": _new_id("msg"),
-                "role": "assistant",
-                "status": "completed",
-                "content": [
-                    {"type": "output_text", "text": msg_text, "annotations": []}
-                ],
-            })
+            final_output.append(
+                {
+                    "type": "message",
+                    "id": _new_id("msg"),
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": msg_text, "annotations": []}],
+                }
+            )
         final_output.extend(state.emitted_tools)
 
-        yield _ev(state, "response.completed", {
-            "response": _response_envelope(
-                state, _map_status(done_reason), final_output
-            ),
-        })
+        yield _ev(
+            state,
+            "response.completed",
+            {
+                "response": _response_envelope(state, _map_status(done_reason), final_output),
+            },
+        )

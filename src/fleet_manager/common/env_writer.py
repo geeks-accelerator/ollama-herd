@@ -94,9 +94,7 @@ def unset_env_var(key: str, path: Path | None = None) -> bool:
     try:
         pattern = re.compile(rf"^\s*(?:export\s+)?{re.escape(key)}\s*=")
         lines = target.read_text(encoding="utf-8").splitlines()
-        kept = [
-            ln for ln in lines if ln.lstrip().startswith("#") or not pattern.match(ln)
-        ]
+        kept = [ln for ln in lines if ln.lstrip().startswith("#") or not pattern.match(ln)]
         tmp = target.with_suffix(".tmp")
         tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
         tmp.replace(target)

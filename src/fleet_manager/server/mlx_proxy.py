@@ -89,8 +89,7 @@ def no_mlx_server_reason(registry, model: str) -> tuple[str, bool]:
 
     def _hosts(node) -> bool:
         return any(
-            getattr(s, "model", None) == bare
-            for s in (getattr(node, "mlx_servers", None) or [])
+            getattr(s, "model", None) == bare for s in (getattr(node, "mlx_servers", None) or [])
         )
 
     nodes = list(registry.get_all_nodes())
@@ -143,13 +142,15 @@ def _served_models(registry) -> str:
     """
     from fleet_manager.models.node import NodeStatus
 
-    names = sorted({
-        getattr(srv, "model", "")
-        for n in registry.get_all_nodes()
-        if n.status != NodeStatus.OFFLINE
-        for srv in (getattr(n, "mlx_servers", None) or [])
-        if getattr(srv, "status", "") == "healthy" and getattr(srv, "model", "")
-    })
+    names = sorted(
+        {
+            getattr(srv, "model", "")
+            for n in registry.get_all_nodes()
+            if n.status != NodeStatus.OFFLINE
+            for srv in (getattr(n, "mlx_servers", None) or [])
+            if getattr(srv, "status", "") == "healthy" and getattr(srv, "model", "")
+        }
+    )
     return ", ".join(f"mlx:{n}" for n in names)
 
 
@@ -171,6 +172,7 @@ def _ollama_messages_to_openai(messages: list[dict]) -> list[dict]:
     Pure passthrough for the common case (string content, no tool_calls).
     """
     import uuid
+
     out: list[dict] = []
     for m in messages:
         new_m = dict(m)  # shallow copy — we'll only rewrite specific fields
@@ -192,14 +194,16 @@ def _ollama_messages_to_openai(messages: list[dict]) -> list[dict]:
                     args_str = args
                 else:
                     args_str = "{}"
-                new_tcs.append({
-                    "id": tc.get("id") or f"call_{uuid.uuid4().hex[:24]}",
-                    "type": tc.get("type", "function"),
-                    "function": {
-                        "name": fn.get("name", ""),
-                        "arguments": args_str,
-                    },
-                })
+                new_tcs.append(
+                    {
+                        "id": tc.get("id") or f"call_{uuid.uuid4().hex[:24]}",
+                        "type": tc.get("type", "function"),
+                        "function": {
+                            "name": fn.get("name", ""),
+                            "arguments": args_str,
+                        },
+                    }
+                )
             new_m["tool_calls"] = new_tcs
             # OpenAI: assistant messages with tool_calls may have null content
             if new_m.get("content") is None:
@@ -371,9 +375,7 @@ async def _collect_openai_stream(lines: AsyncIterator[str]) -> dict:
             if isinstance(content_piece, str) and content_piece:
                 contents.setdefault(idx, []).append(content_piece)
             # Reasoning delta (see accumulator note above)
-            reasoning_piece = delta.get("reasoning") or delta.get(
-                "reasoning_content"
-            )
+            reasoning_piece = delta.get("reasoning") or delta.get("reasoning_content")
             if isinstance(reasoning_piece, str) and reasoning_piece:
                 reasonings.setdefault(idx, []).append(reasoning_piece)
             # Role usually comes on the first delta of a choice
@@ -386,7 +388,8 @@ async def _collect_openai_stream(lines: AsyncIterator[str]) -> dict:
                     continue
                 t_idx = tc.get("index", 0)
                 per_tool = tool_calls.setdefault(idx, {}).setdefault(
-                    t_idx, {"id": "", "name": "", "args": []},
+                    t_idx,
+                    {"id": "", "name": "", "args": []},
                 )
                 if tc.get("id"):
                     per_tool["id"] = tc["id"]
@@ -406,11 +409,7 @@ async def _collect_openai_stream(lines: AsyncIterator[str]) -> dict:
 
     # Build non-stream choices
     all_indices = sorted(
-        set(contents)
-        | set(reasonings)
-        | set(roles)
-        | set(finish_reasons)
-        | set(tool_calls),
+        set(contents) | set(reasonings) | set(roles) | set(finish_reasons) | set(tool_calls),
     )
     out_choices: list[dict] = []
     for idx in all_indices:
@@ -424,21 +423,25 @@ async def _collect_openai_stream(lines: AsyncIterator[str]) -> dict:
             tools_list: list[dict] = []
             for t_idx in sorted(tool_calls[idx]):
                 entry = tool_calls[idx][t_idx]
-                tools_list.append({
-                    "id": entry["id"],
-                    "type": "function",
-                    "function": {
-                        "name": entry["name"],
-                        "arguments": "".join(entry["args"]),
-                    },
-                })
+                tools_list.append(
+                    {
+                        "id": entry["id"],
+                        "type": "function",
+                        "function": {
+                            "name": entry["name"],
+                            "arguments": "".join(entry["args"]),
+                        },
+                    }
+                )
             if tools_list:
                 message["tool_calls"] = tools_list
-        out_choices.append({
-            "index": idx,
-            "message": message,
-            "finish_reason": finish_reasons.get(idx),
-        })
+        out_choices.append(
+            {
+                "index": idx,
+                "message": message,
+                "finish_reason": finish_reasons.get(idx),
+            }
+        )
 
     result: dict = {
         "id": top_id,
@@ -538,14 +541,12 @@ class MlxProxy:
     ) -> None:
         """Accumulate per-model stats for dashboard averages.  Safe to call
         with None tokens — stored as 0 for that sample."""
-        self._sum_latency_ms[model_key] = (
-            self._sum_latency_ms.get(model_key, 0.0) + latency_ms
+        self._sum_latency_ms[model_key] = self._sum_latency_ms.get(model_key, 0.0) + latency_ms
+        self._sum_prompt_tokens[model_key] = self._sum_prompt_tokens.get(model_key, 0) + (
+            prompt_tokens or 0
         )
-        self._sum_prompt_tokens[model_key] = (
-            self._sum_prompt_tokens.get(model_key, 0) + (prompt_tokens or 0)
-        )
-        self._sum_completion_tokens[model_key] = (
-            self._sum_completion_tokens.get(model_key, 0) + (completion_tokens or 0)
+        self._sum_completion_tokens[model_key] = self._sum_completion_tokens.get(model_key, 0) + (
+            completion_tokens or 0
         )
         self._stats_samples[model_key] = self._stats_samples.get(model_key, 0) + 1
 
@@ -559,7 +560,9 @@ class MlxProxy:
         """
         if model_key not in self._repair_stats:
             self._repair_stats[model_key] = {
-                "attempts": 0, "successes": 0, "failures": 0,
+                "attempts": 0,
+                "successes": 0,
+                "failures": 0,
             }
         return self._repair_stats[model_key]
 
@@ -641,6 +644,7 @@ class MlxProxy:
 
     async def close(self) -> None:
         import contextlib as _ctxlib
+
         for client in self._clients.values():
             with _ctxlib.suppress(Exception):
                 await client.aclose()
@@ -700,7 +704,9 @@ class MlxProxy:
                 # claim, and it is worthless if nobody can find it later.
                 logger.info(
                     "affinity=%s cached_tokens=%d prompt_tokens=%d reuse=%.1f%%",
-                    affinity, cached, prompt,
+                    affinity,
+                    cached,
+                    prompt,
                     (100.0 * cached / prompt) if prompt else 0.0,
                 )
         return result
@@ -856,7 +862,10 @@ class MlxProxy:
             sem.release()
 
     async def stream_openai(
-        self, request: InferenceRequest, *, already_admitted: bool = False,
+        self,
+        request: InferenceRequest,
+        *,
+        already_admitted: bool = False,
     ) -> AsyncIterator[bytes]:
         """Forward request to mlx_lm.server's /v1/chat/completions, streaming.
 
@@ -890,9 +899,7 @@ class MlxProxy:
         prompt_tokens: int | None = None
         completion_tokens: int | None = None
         try:
-            async with client.stream(
-                "POST", "/v1/chat/completions", json=mlx_body
-            ) as response:
+            async with client.stream("POST", "/v1/chat/completions", json=mlx_body) as response:
                 if response.status_code >= 400:
                     body = await response.aread()
                     logger.error(
@@ -908,7 +915,9 @@ class MlxProxy:
                     elapsed = time.time() - start_time
                     if elapsed > self.wall_clock_timeout_s:
                         raise MlxWallClockTimeoutError(
-                            model_key, elapsed, self.wall_clock_timeout_s,
+                            model_key,
+                            elapsed,
+                            self.wall_clock_timeout_s,
                         )
                     if not line:
                         continue
@@ -939,9 +948,7 @@ class MlxProxy:
             if not already_admitted:
                 self._release_slot(model_key)
 
-    async def completions_non_streaming(
-        self, request: InferenceRequest
-    ) -> dict:
+    async def completions_non_streaming(self, request: InferenceRequest) -> dict:
         """Non-streaming call — forwards stream=True internally and accumulates.
 
         Why forward stream=True even though the client asked for non-stream:
@@ -968,7 +975,9 @@ class MlxProxy:
         start_time = time.time()
         try:
             async with client.stream(
-                "POST", "/v1/chat/completions", json=mlx_body,
+                "POST",
+                "/v1/chat/completions",
+                json=mlx_body,
             ) as response:
                 if response.status_code >= 400:
                     body = await response.aread()
@@ -1011,7 +1020,10 @@ class MlxProxy:
                 )
             else:
                 self._record_stats(
-                    model_key, (time.time() - start_time) * 1000, None, None,
+                    model_key,
+                    (time.time() - start_time) * 1000,
+                    None,
+                    None,
                 )
             return data
         except Exception:
@@ -1043,9 +1055,7 @@ class MlxProxy:
         cache_stats = self.get_cache_stats()
         for model_key in all_models:
             samples = self._stats_samples.get(model_key, 0)
-            avg_latency_ms = (
-                self._sum_latency_ms.get(model_key, 0.0) / samples if samples else 0.0
-            )
+            avg_latency_ms = self._sum_latency_ms.get(model_key, 0.0) / samples if samples else 0.0
             avg_prompt_tokens = (
                 self._sum_prompt_tokens.get(model_key, 0) / samples if samples else 0.0
             )
@@ -1089,9 +1099,14 @@ class MlxProxy:
                 # model produces malformed JSON we have to patch.  Elevated
                 # rates (>1% of completed requests) suggest the model is
                 # unreliable enough to reconsider.
-                "tool_repair": self._repair_stats.get(model_key, {
-                    "attempts": 0, "successes": 0, "failures": 0,
-                }),
+                "tool_repair": self._repair_stats.get(
+                    model_key,
+                    {
+                        "attempts": 0,
+                        "successes": 0,
+                        "failures": 0,
+                    },
+                ),
             }
         return out
 
@@ -1215,7 +1230,8 @@ class MlxProxy:
                                 "name": t.get("name"),
                                 "description": t.get("description", ""),
                                 "parameters": t.get(
-                                    "parameters", t.get("input_schema", {}),
+                                    "parameters",
+                                    t.get("input_schema", {}),
                                 ),
                             },
                         }
@@ -1520,11 +1536,7 @@ def openai_sse_to_anthropic_events(
             )
             + "\n\n"
         )
-        events.append(
-            "event: message_stop\ndata: "
-            + json.dumps({"type": "message_stop"})
-            + "\n\n"
-        )
+        events.append("event: message_stop\ndata: " + json.dumps({"type": "message_stop"}) + "\n\n")
 
     return events
 
@@ -1583,7 +1595,9 @@ def build_anthropic_non_streaming_response(
         # resort: keep original raw string in a ``_raw`` key so the
         # client can at least see something went wrong.
         repaired, was_repaired = repair_tool_use_input(
-            raw_args, schema, tool_name=tool_name,
+            raw_args,
+            schema,
+            tool_name=tool_name,
         )
         if repair_stats is not None:
             if was_repaired:

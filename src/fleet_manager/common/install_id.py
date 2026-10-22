@@ -51,9 +51,7 @@ def _read(path: Path) -> str | None:
         # cannot inject arbitrary text into a telemetry payload.
         return str(uuid.UUID(raw))
     except ValueError:
-        logger.warning(
-            "install_id file %s is not a valid UUID; generating a new one", path
-        )
+        logger.warning("install_id file %s is not a valid UUID; generating a new one", path)
         return None
 
 
