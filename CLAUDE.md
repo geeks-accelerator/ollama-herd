@@ -402,7 +402,7 @@ Silent failures are dishonest. Fail fast, fail loud.
 
 ## Current State (as of 2026-10-22)
 
-- **Unreleased on `main` (2026-10-22), to ship as `0.11.3`:** a security dependency pass (`docs/plans/security-dependency-upgrades-2026-10.md`) — vision server decodes only JPEG/PNG/WebP, Pillow 13 locally via override, floors raised for `zeroconf`/`python-multipart`/`starlette` (+`fastapi>=0.133.0`), Chart.js pinned with SRI, a CVE gate in `health.sh`, and vision embedding requests are now traced. Plus, found while verifying that merge, **the suite no longer reads the operator's `FLEET_*` environment** — three tests failed here and passed in CI because `~/.zshrc` exports `FLEET_ANTHROPIC_MODEL_MAP`, and the three modules that had already hit this each cleared only the variables their own author remembered. And **`herd-node` could not start on Windows, on any version** — the drain handlers called POSIX-only `add_signal_handler` before the heartbeat loop, so the node never registered ([#8](https://github.com/geeks-accelerator/ollama-herd/issues/8), found by running the overdue day-after check). **1953 tests.**
+- **Version: `0.11.3` — published** to PyPI + GitHub + Homebrew on 2026-10-22. A security dependency pass (`docs/plans/security-dependency-upgrades-2026-10.md`) — vision server decodes only JPEG/PNG/WebP, Pillow 13 locally via override, floors raised for `zeroconf`/`python-multipart`/`starlette` (+`fastapi>=0.133.0`), Chart.js pinned with SRI, a CVE gate in `health.sh`, and vision embedding requests are now traced. Plus, found while verifying that merge, **the suite no longer reads the operator's `FLEET_*` environment** — three tests failed here and passed in CI because `~/.zshrc` exports `FLEET_ANTHROPIC_MODEL_MAP`, and the three modules that had already hit this each cleared only the variables their own author remembered. And **`herd-node` could not start on Windows, on any version** — the drain handlers called POSIX-only `add_signal_handler` before the heartbeat loop, so the node never registered ([#8](https://github.com/geeks-accelerator/ollama-herd/issues/8), found by running the overdue day-after check). **1953 tests.**
 
   **Soak started 2026-10-22 09:23:58 on the shipping dependency set, and that
   qualifier is the point.** The 24 h of clean data before it (7,953 requests, zero
@@ -450,9 +450,66 @@ Silent failures are dishonest. Fail fast, fail loud.
   blocks and two placeholders for the published sdist is ready; only the main
   `url`/`sha256` wait on step 11.
 
-  **Still outstanding**, and the regenerated Homebrew formula (45 resources, 0 known vulnerabilities, install-tested) is **not yet pushed** to the tap — push it after the soak; it changes what every brew user installs. **`health.sh` cannot go fully green until 66 pre-existing unformatted files are formatted**, and the release checklist now runs it.
+  **Soaked 3.2 h on the shipping dependency set before publishing, and the
+  qualifier is the point.** The 24 h of clean data that preceded it ran on
+  **Starlette 0.x** — 1.9 only reached this venv at 08:32 that morning, because
+  `uv.lock` is gitignored so another machine's `uv lock --upgrade` never crosses.
+  A soak predating the dependency change measures the old configuration, and
+  nothing in the process would have caught it: the fleet looked perfect either
+  way. **Check the installed version of whatever a release changes before
+  believing its soak** — "the fleet has been clean for a day" and "the change has
+  been running for a day" are different claims, and only the second is evidence.
 
-- **Version: `0.11.2` — published** to PyPI + GitHub + Homebrew on 2026-10-14. Patch over `0.11.1`, three items all about making an existing signal tell the truth rather than adding behaviour. **`model_load_timeout` now says which of its two causes it is** — it was written for eviction and asserted that cause unconditionally, while Ollama can answer `/api/version` in under a millisecond and still be unable to start any runner; the discriminator is that **two or more distinct models timing out with ample memory cannot be eviction**, and it needed no new data. Detection only, and a test asserts the check never shells out, because the watchdog that killed stuck runners was removed 2026-04-23 after its escalation wiped every pinned model. **Importing either CLI no longer injects the operator's env file** (28 `FLEET_*` variables → 0; the call moved into each CLI's existing Typer callback, before `server_cli`'s subcommand early-return since `herd mlx pull` reads settings too). And the **last two untested modules are covered** — `discovery` (9 tests) and `rebalancer` (15) — closing that item entirely. **1921 tests, 49 checks.** No dependency changes.
+  Result: **0 ERROR and 0 WARNING across 20,654 log lines** in both processes,
+  **1,109 traces at 100.00% completion**, no restarts (router uptime matched the
+  soak exactly), residents stable with no duplicate runners and launch args
+  unchanged, and `process_memory` **flat at 1.10 GB with peak 1.11 GB** — against
+  a 3.68–3.80 GB historical baseline, with peak 0.01 GB above current meaning no
+  excursion ever happened. Throughput **52.0% fast-mode share**, inside the
+  43–70% band; the one hour that read 21.5% was my own 30-concurrent load test,
+  demonstrated by fast share tracking offered load monotonically (overlap
+  4.04 → 2.78 → 2.58 → 1.70 as share went 21.5 → 51.7 → 63.2 → 95.7%). gemma3's
+  10.6 tok/s median was the same burst: 20 of its 23 requests landed in one
+  13-second window, and the three outside it ran at 30–31 tok/s, *above* the
+  22.5 single-stream baseline.
+
+  **The Homebrew formula was REGENERATED for this release, not version-bumped, and
+  that was not optional.** The tap sat at 0.11.2 with 38 resource blocks against a
+  true core closure of **45**, and three of its pins *violated* the floors this
+  release raises: `python-multipart 0.0.24` against `>=0.0.31`, `zeroconf 0.148.0`
+  against `>=0.149.16`, `starlette 1.0.0` against `>=1.3.1`. Eight packages were
+  missing outright (`requests`, `pydantic_core`, `urllib3`, `charset-normalizer`,
+  `httptools`, `uvloop`, `watchfiles`, `opentelemetry-api`), and brew runs pip with
+  `--no-binary :all:`, which does not transparently fetch a missing resource. **A
+  url+sha256 bump — the shape of every tap bump since 0.10.2 — would have given
+  brew users a failed build or the exact versions this release exists to raise**,
+  while the changelog said otherwise. Closure computed on **Python 3.12**, which is
+  what the formula pins, not the 3.14 this repo develops against.
+
+  **`health.sh` now reports 6/6.** The 66 pre-existing unformatted files were
+  formatted in their own commit (verified AST-identical across all 66 — compare
+  ASTs, not tokens: `ruff format` joins implicitly-concatenated string literals,
+  which changes the token count while the parser folds them anyway). Two
+  follow-ons that pass is worth knowing about: `ruff format` and `ruff check`
+  disagreed on one line, format joining an f-string to 102 columns that check then
+  rejected as E501 and re-split was undone by the next format run; and the
+  README check had never verified anything, greping for `run all N tests` against
+  a README that said `run all tests (~5s)`.
+
+  **Step 15's trust gate fired, for the second release running.** `brew untrust
+  --tap geeks-accelerator/ollama-herd` emptied `~/.homebrew/trust.json` — which
+  `brew untap` had left intact moments earlier in the same sequence, which is the
+  whole reason this step reads the way it does — and the install was then refused
+  with *"Refusing to load formula … from untrusted tap"* before `brew trust` let
+  it through. Two releases is not yet a habit; keep the `untrust` line in step 15
+  or it silently stops testing anything again.
+
+  **Post-publish checks due: day-after 2026-10-23, week-after 2026-10-29.** The
+  0.11.2 pair ran a week late, and `gh issue list` — the cheapest line in it and
+  the only one that looks outside this machine — is what surfaced the Windows
+  outage after it had sat for six days.
+
+- **Prior release (`0.11.2`, 2026-10-14):** published to PyPI + GitHub + Homebrew. Patch over `0.11.1`, three items all about making an existing signal tell the truth rather than adding behaviour. **`model_load_timeout` now says which of its two causes it is** — it was written for eviction and asserted that cause unconditionally, while Ollama can answer `/api/version` in under a millisecond and still be unable to start any runner; the discriminator is that **two or more distinct models timing out with ample memory cannot be eviction**, and it needed no new data. Detection only, and a test asserts the check never shells out, because the watchdog that killed stuck runners was removed 2026-04-23 after its escalation wiped every pinned model. **Importing either CLI no longer injects the operator's env file** (28 `FLEET_*` variables → 0; the call moved into each CLI's existing Typer callback, before `server_cli`'s subcommand early-return since `herd mlx pull` reads settings too). And the **last two untested modules are covered** — `discovery` (9 tests) and `rebalancer` (15) — closing that item entirely. **1921 tests, 49 checks.** No dependency changes.
 
   **Soaked 22 h on HEAD:** 7,295 requests, 100% completed, **zero warnings and zero errors across 145,247 log lines**, no restarts, health 91→94. **Worth stating what that does and does not prove:** only four source files changed and three have no normal-traffic surface — the CLI move is startup-only (proven at restart on both processes), and the timeout discrimination only fires during an Ollama wedge, which has not recurred. The SSE state hoist is the one path the soak genuinely exercised. This release's evidence is absence of harm, not presence of function.
 

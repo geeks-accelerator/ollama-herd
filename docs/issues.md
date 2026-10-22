@@ -36,7 +36,7 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
-### `herd-node` could not start on Windows, on any version `FIXED` (2026-10-22)
+### `herd-node` could not start on Windows, on any version `FIXED` (2026-10-22, shipped in `0.11.3`)
 
 **Severity:** critical on Windows, none elsewhere. The node agent never started, so
 the platform we advertise as supported had no working node.

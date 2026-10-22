@@ -418,6 +418,78 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+## 2026-10-22: A clean 24-hour soak that proved nothing, and a publish gate that finally held
+
+**Context.** Shipping `0.11.3`, whose headline risk is not any code change but a
+dependency pass that moves **Starlette 0.x → 1.9** under FastAPI, plus 56 other
+packages. The fleet had 24 hours of flawless data: 7,953 requests, zero errors,
+zero warnings. The question asked was whether that was enough to publish.
+
+**Evidence.** It was not, and the reason took one command to find:
+
+```
+$ ls -ld .venv/lib/python3.14/site-packages/starlette-*.dist-info
+  ... 2026-10-22 08:32 ...     # Starlette 1.9 landed this morning
+$ ps -p <router> -o lstart=
+  Thu Oct 22 08:48:55 2026     # restarted after that
+```
+
+The 24 clean hours ran on **Starlette 0.x**. The configuration about to ship had
+roughly five minutes behind it. Nothing in the fleet's own telemetry could have
+revealed this — health was 91, errors 0.0%, every chart green — because the fleet
+was perfectly healthy *running the old dependency set*.
+
+The cause is structural: **`uv.lock` is gitignored**, so when another machine ran
+`uv lock --upgrade` and committed the result, the resolution did not cross. Each
+machine resolves its own, and a `git pull` of a dependency change leaves the
+puller's installed versions untouched until something re-syncs.
+
+**Insight.** *"The fleet has been clean for a day" and "the change has been
+running for a day" are different claims, and only the second one is evidence.* A
+soak measures whatever is installed, which is not necessarily what the diff says.
+Before trusting a soak that spans a dependency bump, check the installed version
+of the thing that changed. The fix here was to re-resolve, restart, and start the
+clock again — 3.2 hours, 0 errors, 0 warnings, 1,109 traces at 100%, and memory
+flat at 1.10 GB against a 3.68 GB baseline.
+
+**A corollary about what a soak cannot reach.** The node sets
+`FLEET_NODE_ROUTER_URL`, so it never performs mDNS discovery — meaning no amount
+of soaking exercises zeroconf, one of the three packages whose floor this release
+raised *for security*. That had to be tested deliberately, by browsing
+`_fleet-manager._tcp.local.` against the live router and calling
+`FleetServiceDiscoverer.discover()`, which returned a real address on 0.151.5.
+Same for the multipart parser (`/api/transcribe`) and the Pillow format gate.
+**Ask which of a release's changes production traffic actually touches; soak the
+rest on purpose or admit they are untested.**
+
+**And the publish gate held, which is the first time.** `0.11.2` recorded a
+process failure: the artifact check asserted on a string split across two
+f-string literals, failed spuriously, and because it shared a script with
+`uv publish`, the publish ran anyway. The structural fix written down then was
+*"put the publish behind the verification's exit status, or verify in a step that
+cannot be followed by a publish in the same invocation."*
+
+Followed here, it immediately paid: the verification **failed**, with five checks
+red. Two were worth the exercise on their own:
+
+| failing check | why it failed |
+|---|---|
+| four dependency floors "got None" | the parser split on whitespace between name and specifier; `Requires-Dist` has none (`zeroconf>=0.149.16`) |
+| win32 guard precedes the call | compared string offsets in `ast.unparse` output, where the **docstring** mentions `add_signal_handler` at position 119 |
+
+Both were the checks being wrong, not the artifact — the same shape as the
+`0.11.2` failure. **The difference is that nothing was published while it was
+being worked out**, because there was no publish in that invocation to run. The
+checks were rewritten semantically (parse the requirement name with a regex,
+compare *statement* order in the function body), re-run alone, and passed; only
+then did `uv publish` run in its own call. Afterwards the published sdist's
+sha256 matched the locally verified one exactly, closing the loop.
+
+*A verification that shares a script with the action it guards is not a gate, it
+is a comment.*
+
+---
+
 ## 2026-10-22: The day-after check was a week late, and it was the thing that found the Windows outage
 
 **Context.** `0.11.2` published 2026-10-14. The checklist's day-after check was
