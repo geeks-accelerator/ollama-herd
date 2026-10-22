@@ -16,9 +16,7 @@ The public API surface is:
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,7 +30,7 @@ from fastapi.responses import JSONResponse
 from fleet_manager.models.node import NodeStatus
 from fleet_manager.node.text_embedding_models import get_model_spec, is_text_embedding_model
 from fleet_manager.server.fleet_headers import fleet_headers
-from fleet_manager.server.routes.routing import record_routing_rejection
+from fleet_manager.server.routes.routing import direct_proxy_tracer, record_routing_rejection
 
 logger = logging.getLogger(__name__)
 
@@ -206,21 +204,11 @@ async def proxy_to_native_text_server(
 
     logger.info(f"{kind.label.capitalize()}: model={model} → {best.node_id} ({te_url})")
 
-    request_id = str(uuid.uuid4())
-    start_ms = time.time() * 1000
-
-    def trace(status: str, *, error: str | None = None, prompt_tokens=None) -> None:
-        if trace_store:
-            asyncio.ensure_future(trace_store.record_trace(
-                request_id=request_id,
-                model=model, original_model=model,
-                node_id=best.node_id, score=None,
-                status=status, latency_ms=time.time() * 1000 - start_ms,
-                prompt_tokens=prompt_tokens,
-                client_ip=client_ip, original_format=kind.original_format,
-                error_message=error,
-                tags=list(kind.tags),
-            ))
+    trace = direct_proxy_tracer(
+        trace_store,
+        model=model, node_id=best.node_id, client_ip=client_ip,
+        original_format=kind.original_format, tags=list(kind.tags),
+    )
 
     size = _size_mb(model)
     # Forward the request body as-is to the node's native server

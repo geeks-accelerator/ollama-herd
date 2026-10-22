@@ -8,16 +8,25 @@ embedding model name (e.g., "dinov2-vit-s14").
 from __future__ import annotations
 
 import logging
+import uuid
+from types import SimpleNamespace
 
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from fleet_manager.common.errors import describe_exception
 from fleet_manager.server.fleet_headers import fleet_headers
+from fleet_manager.server.routes.routing import direct_proxy_tracer, record_routing_rejection
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["vision-embedding"])
+
+# Trace fields.  `original_format` matches native text embedding, so both kinds
+# of /api/embed request read alike; the tag is what tells them apart.
+_ORIGINAL_FORMAT = "embed"
+_TAGS = ("embed", "vision-embed")
 
 # Model names that are vision embedding models (not Ollama text embeddings)
 VISION_EMBEDDING_MODEL_NAMES = {
@@ -83,21 +92,43 @@ async def embed_image(request: Request):
         }
     """
     settings = request.app.state.settings
-
-    if not settings.vision_embedding:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error": "Vision embedding is disabled. "
-                "Enable via FLEET_VISION_EMBEDDING=true or the settings API."
-            },
-        )
+    trace_store = request.app.state.trace_store
+    client_ip = request.client.host if request.client else ""
 
     # Use cached body from /api/embed redirect, or parse fresh
     body = getattr(request.state, "_parsed_body", None)
     if body is None:
         body = await request.json()
     model = body.get("model", "")
+
+    # Resolve model alias
+    if model:
+        model = _resolve_model_name(model)
+
+    async def reject(status_code: int, reason: str) -> JSONResponse:
+        """Answer before any node is chosen, leaving a ``rejected`` trace.
+
+        No node is attached, so these stay out of per-node error rates: a
+        disabled feature or a missing model is not a node fault.
+        """
+        logger.warning(f"Vision embedding for '{model}' rejected ({status_code}): {reason}")
+        await record_routing_rejection(
+            trace_store,
+            SimpleNamespace(model=model, request_id=str(uuid.uuid4())),
+            reason=reason,
+            original_format=_ORIGINAL_FORMAT,
+            client_ip=client_ip,
+            tags=list(_TAGS),
+        )
+        return JSONResponse(status_code=status_code, content={"error": reason})
+
+    if not settings.vision_embedding:
+        return await reject(
+            503,
+            "Vision embedding is disabled. "
+            "Enable via FLEET_VISION_EMBEDDING=true or the settings API.",
+        )
+
     images = body.get("images", [])
 
     # Also accept "input" field (Ollama embed compat)
@@ -107,14 +138,7 @@ async def embed_image(request: Request):
             images = [images]
 
     if not images:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Request must include 'images' as a list of base64 strings"},
-        )
-
-    # Resolve model alias
-    if model:
-        model = _resolve_model_name(model)
+        return await reject(400, "Request must include 'images' as a list of base64 strings")
 
     registry = request.app.state.registry
 
@@ -137,12 +161,10 @@ async def embed_image(request: Request):
             candidates = model_candidates
 
     if not candidates:
-        return JSONResponse(
-            status_code=404,
-            content={
-                "error": "No vision embedding models available on any node. "
-                "Download a model first: POST /api/pull {\"model\": \"dinov2-vit-s14\"}"
-            },
+        return await reject(
+            404,
+            "No vision embedding models available on any node. "
+            "Download a model first: POST /api/pull {\"model\": \"dinov2-vit-s14\"}",
         )
 
     best = _score_embedding_candidates(candidates)
@@ -155,6 +177,11 @@ async def embed_image(request: Request):
 
     # Direct proxy to the node's embedding server (fast, non-streaming)
     proxy = request.app.state.streaming_proxy
+    trace = direct_proxy_tracer(
+        trace_store,
+        model=model, node_id=best.node_id, client_ip=client_ip,
+        original_format=_ORIGINAL_FORMAT, tags=list(_TAGS),
+    )
     try:
         result = await proxy.embed_image_on_node(
             best.node_id,
@@ -181,19 +208,29 @@ async def embed_image(request: Request):
         # Preserve node attribution so clients know where it failed
         if isinstance(downstream_body, dict):
             downstream_body.setdefault("node", best.node_id)
+        # Same recording as native text embedding: the node answered with an
+        # error, so it is a failed request on that node, 4xx included.
+        trace("failed", error=f"HTTP {downstream_status}: {exc.response.text[:200]}")
         return JSONResponse(status_code=downstream_status, content=downstream_body)
     except Exception as exc:
         # Transport error (timeout, connection refused, etc) — genuinely a
-        # bad-gateway condition, keep the 502.
-        logger.error(f"Vision embedding transport error on {best.node_id}: {exc}")
+        # bad-gateway condition, keep the 502.  httpx timeouts stringify to "",
+        # so describe them rather than record a failure with no cause.
+        detail = describe_exception(exc)
+        logger.error(f"Vision embedding transport error on {best.node_id}: {detail}")
+        trace("failed", error=detail)
         return JSONResponse(
             status_code=502,
             content={
-                "error": f"Embedding failed: {exc}",
+                "error": f"Embedding failed: {detail}",
                 "node": best.node_id,
             },
         )
 
+    # No prompt_tokens: images have none, and recording a count here would put
+    # vision models in front of the num_ctx checks, which read prompt_tokens > 0
+    # and have no context window to manage for them.
+    trace("completed")
     result["node"] = best.node_id
     return JSONResponse(
         content=result,

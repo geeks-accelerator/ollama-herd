@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 
 import httpx
 from fastapi.responses import JSONResponse
@@ -418,6 +419,43 @@ async def record_routing_rejection(
             type(exc).__name__,
             exc or "(no detail)",
         )
+
+
+def direct_proxy_tracer(
+    trace_store,
+    *,
+    model: str,
+    node_id: str,
+    client_ip: str,
+    original_format: str,
+    tags: list[str],
+):
+    """Return ``trace(status, *, error=None, prompt_tokens=None)`` for one request.
+
+    For routes that pick a node and POST to a sidecar server directly, bypassing
+    the queue and ``StreamingProxy`` (native text embedding, rerank, vision
+    embedding).  Those never reach ``StreamingProxy``'s trace recording, so each
+    one recorded nothing until it carried its own copy of this closure — and the
+    vision path never got one, leaving its traffic, latency and failures out of
+    every dashboard and health check.  Latency is measured from this call.
+    """
+    request_id = str(uuid.uuid4())
+    start_ms = time.time() * 1000
+
+    def trace(status: str, *, error: str | None = None, prompt_tokens=None) -> None:
+        if trace_store:
+            asyncio.ensure_future(trace_store.record_trace(
+                request_id=request_id,
+                model=model, original_model=model,
+                node_id=node_id, score=None,
+                status=status, latency_ms=time.time() * 1000 - start_ms,
+                prompt_tokens=prompt_tokens,
+                client_ip=client_ip, original_format=original_format,
+                error_message=error,
+                tags=tags,
+            ))
+
+    return trace
 
 
 def _try_vram_fallback(
