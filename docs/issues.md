@@ -2540,6 +2540,31 @@ The dashboard is a large amount of inline HTML/CSS/JS in Python strings across 5
 
 ## Test Coverage Gaps
 
+### `/api/embed-text` is an endpoint that cannot be reached `OPEN` (2026-10-22)
+
+**Severity:** low. Dead code, not a malfunction — but it is an endpoint, so it reads
+as API surface.
+
+`routes/text_embedding_compat.py` creates `router = APIRouter(...)` and decorates
+`embed_text` with `@router.post("/api/embed-text")`, and **`app.py` never includes
+that router.** The module is imported for its helpers — `proxy_to_native_text_server`,
+`_no_native_server`, `EMBED` — which is how native text embedding actually works, via
+`/api/embed` and `/v1/embeddings`. Confirmed against the live router: `/openapi.json`
+lists 72 paths and `/api/embed-text` is not among them; a POST returns `404`.
+
+Already known: `tests/test_server/test_native_text_proxy.py` says so in its module
+docstring ("its own `/api/embed-text` decorator sits on a router that is never
+mounted"), which is why the tests drive `/api/embed` instead. So this is documented
+dead code rather than a discovery — the point of the entry is that documenting it in
+a test docstring did not get it removed.
+
+**Fix:** delete the `router`, the decorator and the now-unused `APIRouter` import, or
+mount it if the endpoint is wanted. The same pass that found this release's other
+dead path (`StreamingProxy.make_embedding_process_fn`, removed) missed this one.
+Deliberately **not** done during the 0.11.3 soak: touching `src/` restarts the clock,
+and a cosmetic removal is not worth re-soaking a release that carries a major
+framework bump.
+
 ### Every test runs on one OS, and a whole-platform outage reached a user `OPEN` (2026-10-22)
 
 **Severity:** medium. It is the gap that let [#8](https://github.com/geeks-accelerator/ollama-herd/issues/8)

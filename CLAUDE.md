@@ -402,7 +402,37 @@ Silent failures are dishonest. Fail fast, fail loud.
 
 ## Current State (as of 2026-10-22)
 
-- **Unreleased on `main` (2026-10-22), to ship as `0.11.3`:** a security dependency pass (`docs/plans/security-dependency-upgrades-2026-10.md`) — vision server decodes only JPEG/PNG/WebP, Pillow 13 locally via override, floors raised for `zeroconf`/`python-multipart`/`starlette` (+`fastapi>=0.133.0`), Chart.js pinned with SRI, a CVE gate in `health.sh`, and vision embedding requests are now traced. Plus, found while verifying that merge, **the suite no longer reads the operator's `FLEET_*` environment** — three tests failed here and passed in CI because `~/.zshrc` exports `FLEET_ANTHROPIC_MODEL_MAP`, and the three modules that had already hit this each cleared only the variables their own author remembered. And **`herd-node` could not start on Windows, on any version** — the drain handlers called POSIX-only `add_signal_handler` before the heartbeat loop, so the node never registered ([#8](https://github.com/geeks-accelerator/ollama-herd/issues/8), found by running the overdue day-after check). **1953 tests.** **Not yet soaked on the live fleet**, and the regenerated Homebrew formula (45 resources, 0 known vulnerabilities, install-tested) is **not yet pushed** to the tap — push it after the soak; it changes what every brew user installs. **`health.sh` cannot go fully green until 66 pre-existing unformatted files are formatted**, and the release checklist now runs it.
+- **Unreleased on `main` (2026-10-22), to ship as `0.11.3`:** a security dependency pass (`docs/plans/security-dependency-upgrades-2026-10.md`) — vision server decodes only JPEG/PNG/WebP, Pillow 13 locally via override, floors raised for `zeroconf`/`python-multipart`/`starlette` (+`fastapi>=0.133.0`), Chart.js pinned with SRI, a CVE gate in `health.sh`, and vision embedding requests are now traced. Plus, found while verifying that merge, **the suite no longer reads the operator's `FLEET_*` environment** — three tests failed here and passed in CI because `~/.zshrc` exports `FLEET_ANTHROPIC_MODEL_MAP`, and the three modules that had already hit this each cleared only the variables their own author remembered. And **`herd-node` could not start on Windows, on any version** — the drain handlers called POSIX-only `add_signal_handler` before the heartbeat loop, so the node never registered ([#8](https://github.com/geeks-accelerator/ollama-herd/issues/8), found by running the overdue day-after check). **1953 tests.**
+
+  **Soak started 2026-10-22 09:23:58 on the shipping dependency set, and that
+  qualifier is the point.** The 24 h of clean data before it (7,953 requests, zero
+  errors) ran on **Starlette 0.x** — 1.9 only reached this venv at 08:32, because
+  `uv.lock` is gitignored so another machine's `uv lock --upgrade` never crosses.
+  A soak that predates the dependency change measures the old configuration.
+  **Check `uv run python -c "import starlette; print(starlette.__version__)"`
+  against the claim before trusting any soak that spans a dependency bump.**
+
+  **Verified before the soak, on the set a real `pip install` resolves** (built the
+  wheel, installed it into a clean 3.14 venv with plain pip so `[tool.uv]`
+  overrides do not apply): fastapi 0.159.1, pydantic 2.14.1, starlette 1.9.0,
+  onnxruntime 1.31.0, fastembed 0.9.0, cryptography 50.0.2, **pillow 12.3.0** —
+  confirming fastembed 0.9's `<13` cap, so the three critical Pillow advisories
+  stay open for PyPI users and the format gate is their mitigation, not a fix.
+  **1953 tests pass there**, independent of this repo's lockfile.
+
+  Then on the live fleet: all five request surfaces non-streaming *and* streaming
+  (`/api/chat`, `/api/generate`, `/v1/chat/completions`, `/v1/messages`,
+  `/v1/responses`), 30 concurrent mixed requests with zero failures, the format
+  gate with real weights (PNG/JPEG/WebP → 200 at 384 dims, GIF/TIFF → 400),
+  text embeddings at 768 dims, a multipart upload through `/api/transcribe` → 200
+  (the path `python-multipart`'s floor was raised for), **mDNS resolved by zeroconf
+  0.151.5** including `FleetServiceDiscoverer.discover()` returning a real address
+  (the node sets `FLEET_NODE_ROUTER_URL`, so the soak alone never exercises
+  discovery), the Chart.js **SRI hash recomputed from the CDN file and matched**
+  with all four chart pages rendering in a real browser at zero console errors, and
+  `pip-audit` clean across all extras. `scripts/health.sh` now reports **6/6**.
+
+  **Still outstanding**, and the regenerated Homebrew formula (45 resources, 0 known vulnerabilities, install-tested) is **not yet pushed** to the tap — push it after the soak; it changes what every brew user installs. **`health.sh` cannot go fully green until 66 pre-existing unformatted files are formatted**, and the release checklist now runs it.
 
 - **Version: `0.11.2` — published** to PyPI + GitHub + Homebrew on 2026-10-14. Patch over `0.11.1`, three items all about making an existing signal tell the truth rather than adding behaviour. **`model_load_timeout` now says which of its two causes it is** — it was written for eviction and asserted that cause unconditionally, while Ollama can answer `/api/version` in under a millisecond and still be unable to start any runner; the discriminator is that **two or more distinct models timing out with ample memory cannot be eviction**, and it needed no new data. Detection only, and a test asserts the check never shells out, because the watchdog that killed stuck runners was removed 2026-04-23 after its escalation wiped every pinned model. **Importing either CLI no longer injects the operator's env file** (28 `FLEET_*` variables → 0; the call moved into each CLI's existing Typer callback, before `server_cli`'s subcommand early-return since `herd mlx pull` reads settings too). And the **last two untested modules are covered** — `discovery` (9 tests) and `rebalancer` (15) — closing that item entirely. **1921 tests, 49 checks.** No dependency changes.
 
