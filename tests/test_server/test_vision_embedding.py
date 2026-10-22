@@ -370,6 +370,83 @@ class TestEmbeddingServer:
         assert "/models" in paths
 
 
+def _image_b64(fmt: str) -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), color=(0, 128, 255)).save(buf, format=fmt)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+@pytest.fixture
+def embed_server(monkeypatch):
+    """The node's /embed route over HTTP, with a backend that decodes but runs no model."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from fleet_manager.node import embedding_server
+
+    class _DecodingBackend:
+        dimensions = 3
+
+        def embed(self, images):
+            for im in images:
+                im.load()  # force the real decode the format gate admitted
+            return np.zeros((len(images), self.dimensions))
+
+    monkeypatch.setattr(
+        embedding_server, "_get_backend", lambda name="": (_DecodingBackend(), "stub")
+    )
+    app = FastAPI()
+    app.include_router(embedding_server.router)
+    with TestClient(app) as c:
+        yield c
+
+
+class TestEmbedImageFormats:
+    """Only JPEG, PNG and WebP reach a Pillow decoder; everything else is a 400.
+
+    Pillow 12.3 carries 28 advisories, most of them in decoders this server
+    never needed (EPS/Ghostscript, TIFF, GIF, ...), and fastembed's pillow<13
+    cap keeps PyPI users on it.  See docs/plans/security-dependency-upgrades-2026-10.md.
+    """
+
+    @pytest.mark.parametrize("fmt", ["JPEG", "PNG", "WEBP"])
+    def test_accepted_formats_embed(self, embed_server, fmt):
+        resp = embed_server.post("/embed", json={"images": [_image_b64(fmt)]})
+        assert resp.status_code == 200
+        assert resp.json()["dimensions"] == 3
+
+    @pytest.mark.parametrize("fmt", ["TIFF", "GIF", "BMP"])
+    def test_other_formats_are_a_400_naming_the_accepted_ones(self, embed_server, fmt):
+        resp = embed_server.post("/embed", json={"images": [_image_b64("PNG"), _image_b64(fmt)]})
+        assert resp.status_code == 400
+        assert resp.json() == {"error": "Image 1 is not one of: JPEG, PNG, WEBP"}
+
+    def test_eps_never_reaches_ghostscript(self, embed_server, monkeypatch):
+        """The critical advisory: EPS load shells out to Ghostscript."""
+        import base64
+
+        from PIL import EpsImagePlugin
+
+        called = []
+        monkeypatch.setattr(
+            EpsImagePlugin, "Ghostscript", lambda *a, **k: called.append(1)
+        )
+        eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 8 8\nshowpage\n"
+        resp = embed_server.post("/embed", json={"images": [base64.b64encode(eps).decode()]})
+        assert resp.status_code == 400
+        assert called == []
+
+    def test_undecodable_base64_keeps_its_own_400(self, embed_server):
+        resp = embed_server.post("/embed", json={"images": ["not base64!!"]})
+        assert resp.status_code == 400
+        assert resp.json()["error"].startswith("Failed to decode image 0")
+
+
 # ---------------------------------------------------------------------------
 # Streaming proxy
 # ---------------------------------------------------------------------------
@@ -377,11 +454,16 @@ class TestEmbeddingServer:
 
 class TestEmbeddingProxy:
     def test_streaming_proxy_has_embedding_methods(self):
-        """StreamingProxy should have embedding process fn and on-node method."""
+        """StreamingProxy forwards vision embeds straight to the node.
+
+        There is deliberately no queued process fn: the queued path was never
+        called, and it would have counted a client's bad image as a node
+        failure (mark_failed + ERROR log).
+        """
         from fleet_manager.server.streaming import StreamingProxy
 
-        assert hasattr(StreamingProxy, "make_embedding_process_fn")
         assert hasattr(StreamingProxy, "embed_image_on_node")
+        assert not hasattr(StreamingProxy, "make_embedding_process_fn")
 
 
 # ---------------------------------------------------------------------------

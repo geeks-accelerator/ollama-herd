@@ -1016,38 +1016,6 @@ class StreamingProxy:
 
         return process
 
-    def make_embedding_process_fn(
-        self, queue_key: str, queue_manager, timeout: float = 30.0
-    ):
-        """Create a process function for vision embedding queue entries."""
-        proxy = self
-
-        async def _embed_and_yield(entry: QueueEntry):
-            start_time = time.time()
-            try:
-                result = await proxy.embed_image_on_node(
-                    entry.assigned_node, entry.request.raw_body, timeout
-                )
-                elapsed_ms = (time.time() - start_time) * 1000
-                logger.info(
-                    f"Embedding {entry.request.request_id[:8]} completed "
-                    f"on {entry.assigned_node} in {elapsed_ms:.0f}ms"
-                )
-                queue_manager.mark_completed(queue_key, entry, latency_ms=elapsed_ms)
-                yield json.dumps(result)
-            except Exception as e:
-                queue_manager.mark_failed(queue_key, entry)
-                logger.error(
-                    f"Embedding {entry.request.request_id[:8]} failed "
-                    f"on {entry.assigned_node}: {repr(e)}"
-                )
-                raise
-
-        def process(entry: QueueEntry):
-            return _embed_and_yield(entry)
-
-        return process
-
     async def embed_image_on_node(
         self, node_id: str, body: dict, timeout: float = 30.0
     ) -> dict:

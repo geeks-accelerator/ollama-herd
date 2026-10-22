@@ -13,11 +13,19 @@ import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# The only decoders exposed to network input.  This server takes client bytes
+# on 0.0.0.0 with no auth, and the rest of what Pillow parses (EPS through
+# Ghostscript, TIFF, GIF/APNG, MSP, MIC, XBM, ...) is where most of its
+# advisories live — 28 against 12.3.0, see
+# docs/plans/security-dependency-upgrades-2026-10.md.  A tuple because Pillow
+# tries these in order.
+ALLOWED_IMAGE_FORMATS = ("JPEG", "PNG", "WEBP")
 
 # Loaded backend — initialized on first request or at server start
 _backend = None
@@ -95,7 +103,14 @@ async def embed_images(request: Request):
     for i, b64 in enumerate(images_b64):
         try:
             raw = base64.b64decode(b64)
-            pil_images.append(Image.open(io.BytesIO(raw)))
+            pil_images.append(Image.open(io.BytesIO(raw), formats=ALLOWED_IMAGE_FORMATS))
+        except UnidentifiedImageError:
+            # Pillow's own message names a BytesIO object, which tells the
+            # client nothing about what to send instead.
+            return JSONResponse(
+                {"error": f"Image {i} is not one of: {', '.join(ALLOWED_IMAGE_FORMATS)}"},
+                status_code=400,
+            )
         except Exception as exc:
             return JSONResponse(
                 {"error": f"Failed to decode image {i}: {exc}"},

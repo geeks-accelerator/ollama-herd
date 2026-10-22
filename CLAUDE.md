@@ -18,7 +18,7 @@ The `--extra embedding` now also installs `fastembed` for the **native text embe
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 1937 tests (~25s)
+uv run pytest                    # run all 1945 tests (~25s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -35,7 +35,7 @@ uv run ruff format src/          # format
 1. Bump version in `pyproject.toml`
 2. Update `CHANGELOG.md` (Keep a Changelog format) — rename `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, leave a fresh empty `[Unreleased]` stub above it
 3. `uv run pytest` — 0 failures
-4. `uv run ruff check src/` — clean
+4. `uv run ruff check src/` — clean, then `./scripts/health.sh` — its dependency CVE audit (pip-audit over the locked set, all extras) must pass
 5. Commit + push the version bump
 6. Deploy locally — restart `herd` + `herd-node`, verify: `/fleet/status`, `/api/embed`, `/dashboard/api/health`, `/fleet/queue`
 7. Soak several hours on the local fleet — `grep '"level": "ERROR"' ~/.fleet-manager/logs/herd.jsonl` should stay clean (**note the space after the colon** — the no-space form matches zero lines and fakes a clean fleet; see the JSONL-scanning gotcha)
@@ -66,8 +66,17 @@ EOF
 
 12. Edit `geeks-accelerator/homebrew-ollama-herd/Formula/ollama-herd.rb`:
     - Update main `url` + `sha256` (use the values from step 9, plus the new sdist URL from `https://pypi.org/pypi/ollama-herd/X.Y.Z/json`)
-    - For each new dep added in this release: add a `resource "<name>" do ... end` block (alphabetically). Get URL/sha from `https://pypi.org/pypi/<dep>/json`
-    - For any dep that bumped in this release: update its existing resource block
+    - Regenerate **every** `resource` block with Homebrew's own resolver — never by hand, and every release, not only when our deps change. Hand-curation is how the 0.11.2 formula shipped 25 known vulnerabilities in transitive pins nobody touched, and missed `requests` (which tiktoken needs) entirely:
+      ```bash
+      HOMEBREW_NO_AUTO_UPDATE=1 brew update-python-resources geeks-accelerator/ollama-herd/ollama-herd
+      ```
+      It applies a release cooldown, so a days-old fix can be skipped — hence the audit:
+    - Audit the result; it must report **no known vulnerabilities** (bump any block the cooldown held back by hand):
+      ```bash
+      grep -oE 'packages/[^"]+\.tar\.gz' Formula/ollama-herd.rb | sed -E 's#.*/##; s#\.tar\.gz##' \
+        | grep -v '^ollama_herd-' | sed -E 's/-([0-9][^-]*)$/==\1/' > /tmp/brew-reqs.txt
+      uvx pip-audit -r /tmp/brew-reqs.txt --no-deps --disable-pip
+      ```
     - **If the new release adds a Rust-extension dep** (cryptography, pydantic-core, tiktoken, etc.): ensure `depends_on "rust" => :build` is present
 13. **End-to-end install test (this step is non-negotiable — see "Brew tap testing" gotcha below):**
     ```bash

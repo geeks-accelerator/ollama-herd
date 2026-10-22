@@ -132,6 +132,17 @@ async def favicon_ico():
 # granted or was denied, which is the common case.
 _FAVICON_SVG_ALERT = _FAVICON_SVG.replace("#6c63ff", "#ef4444")
 
+# The dashboard's only third-party script.  Pinned to an exact file with a
+# Subresource Integrity hash, so a compromised or mistaken npm publish cannot
+# run in the dashboard's origin: the browser refuses any byte that differs.
+# To upgrade, change the version and regenerate the hash from the exact URL:
+#   curl -s <url> | openssl dgst -sha384 -binary | openssl base64 -A
+_CHART_JS_HEAD = (
+    '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" '
+    'integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" '
+    'crossorigin="anonymous"></script>'
+)
+
 
 @router.get("/favicon-alert.svg")
 async def favicon_alert_svg():
@@ -1678,7 +1689,7 @@ async def dashboard_trends_page():
         "Trends",
         "trends",
         _TRENDS_BODY,
-        extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>',
+        extra_head=_CHART_JS_HEAD,
     )
 
 
@@ -1689,7 +1700,7 @@ async def dashboard_models_page():
         "Model Insights",
         "models",
         _MODELS_BODY,
-        extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>',
+        extra_head=_CHART_JS_HEAD,
     )
 
 
@@ -1701,7 +1712,7 @@ async def dashboard_tags_page():
         "Tags",
         "tags",
         _TAGS_BODY,
-        extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>',
+        extra_head=_CHART_JS_HEAD,
     )
 
 
@@ -1712,7 +1723,7 @@ async def dashboard_benchmarks_page():
         "Benchmarks",
         "benchmarks",
         _BENCHMARKS_BODY,
-        extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>',
+        extra_head=_CHART_JS_HEAD,
     )
 
 

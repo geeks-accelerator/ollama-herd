@@ -603,6 +603,8 @@ Ollama-compatible embeddings endpoint. The router dispatches to the right backen
 | `nomic-embed-text`, `nomic-embed-text:latest` | **Native text embedding (fastembed)** | :11439 |
 | All other models | Ollama on the selected node | :11434 |
 
+**Vision embedding input** is base64 image bytes in `images` (or `input`), and must be **JPEG, PNG or WebP**. Any other format, including GIF, TIFF, BMP and EPS, gets `400 {"error": "Image N is not one of: JPEG, PNG, WEBP", "node": "<node>"}` before any decoder runs: those decoders carry most of Pillow's security advisories, and the server takes unauthenticated bytes from the LAN.
+
 The native text embedding backend (fastembed / ONNX Runtime) runs entirely outside Ollama's inference queue — `nomic-embed-text` requests never consume `OLLAMA_NUM_PARALLEL` slots and can never be stalled by concurrent LLM inference.
 
 **Request body:**

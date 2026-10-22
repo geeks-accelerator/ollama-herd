@@ -1,6 +1,11 @@
 # Security dependency audit and upgrade plan — 2026-10-22
 
-**Status:** PLANNED. Nothing below has been changed yet.
+**Status:** IMPLEMENTED 2026-10-22, except two things: shipping (`0.11.3`, not published) and pushing the tap commit. Where the result differs from the plan below:
+
+- **Phase 2:** upstream was already tracking it, so nothing needed filing: [qdrant/fastembed#829](https://github.com/qdrant/fastembed/issues/829) with open [PR #830](https://github.com/qdrant/fastembed/pull/830). The gate passed with real weights: DINOv2 and CLIP on JPEG/PNG/WebP, and fastembed `nomic-embed-text`, all on Pillow 13.
+- **Phase 3:** `brew update-python-resources` produced 45 resources with **0 known vulnerabilities** (from 25). Its cooldown held FastAPI at 0.157.0 against 0.159.1; that's acceptable, since 0.157 has no advisory. It's applied in the local tap checkout and tested with a real `brew install`, but not pushed.
+- **Phase 4:** after the reachability review, **three floors, not four.** `json-repair` was dropped: its one advisory is in `SchemaRepairer.resolve_schema`, and `tool_call_repair` calls `repair_json` without `schema=`. `fastapi>=0.133.0` was added, because it's the first release that accepts Starlette 1.x. The suite passes with all four packages pinned at the new minimums. (A full `--resolution lowest-direct` run can't install at all: `pyyaml>=6.0.0` resolves to 6.0.0, which can't build on Python 3.12. That's an old floor, unrelated to this work.)
+- **Phase 6:** `health.sh`'s format check has failed for some time, because 66 files were unformatted before this work. Its "0 file(s)" message was also a parsing bug, now fixed. The files themselves were left alone, to keep a repo-wide reformat out of a security change. **Until they're formatted, `health.sh` can't be fully green, and the release checklist now runs it.**
 **Trigger:** PHP and Node.js published security releases on 2026-10-21, and we wanted to know our exposure.
 **Revised 2026-10-22** after a codebase audit (§ "Codebase audit"). The audit swapped two pieces of planned new tooling for things that already exist, cut Phase 1 to a single call site, and turned up one piece of dead code to delete.
 

@@ -2126,6 +2126,35 @@ The watchdog detects stuck `/api/chat` and kills `ollama runner` processes via `
 
 ## External Dependencies
 
+### fastembed's `pillow<13` cap keeps PyPI users on a Pillow with 28 advisories `OPEN` (2026-10-22)
+
+**Problem:** Pillow 12.3.0 carries 28 advisories (3 critical: a heap overflow in
+`ImagingJpegDecode`, Ghostscript argument injection via EPS, a TIFF write overflow), all
+fixed in 13.0.0. `fastembed 0.9.0` declares `pillow<13.0`, so anyone installing
+`ollama-herd[embedding]` from PyPI resolves 12.3. Pillow decodes client bytes on the
+vision embedding server (`0.0.0.0:11438`, no auth).
+
+**What is in place:**
+- `[tool.uv] override-dependencies = ["pillow>=13.0.0"]` in `pyproject.toml`. This
+  covers the local fleet and the test suite only; a library cannot override a
+  dependency's cap for its users.
+- For everyone: the vision server accepts only JPEG, PNG and WebP
+  (`embedding_server.ALLOWED_IMAGE_FORMATS`), which keeps the EPS/Ghostscript and TIFF
+  decoders, and most of the advisories, unreachable. The JPEG decoder overflow remains
+  reachable until Pillow 13.
+- Verified on Pillow 13 with real weights: DINOv2 and CLIP vision embeddings and the
+  fastembed `nomic-embed-text` path all work; the full suite passes.
+
+**Upstream:** [qdrant/fastembed#829](https://github.com/qdrant/fastembed/issues/829)
+(open), with [PR #830](https://github.com/qdrant/fastembed/pull/830) "allow pillow 13".
+
+**Remove when** a fastembed release drops the cap: delete the `[tool.uv]` override,
+raise the `Pillow` floor to `>=13` in both the `embedding` and `dev` extras, and run
+`./scripts/health.sh` (its dependency audit must stay clean without the override). The
+same release will likely lift `huggingface-hub<2.0`; check that separately, since it is
+a major bump and `embedding_models.py` uses it for downloads. See
+[`plans/security-dependency-upgrades-2026-10.md`](plans/security-dependency-upgrades-2026-10.md).
+
 ### Ollama ships a native MLX runner — our MLX subsystem's premise is stale `RESOLVED — HOLD` (2026-10-11)
 
 > **Decided: hold.** Keep `mlx_lm.server`, stop extending it, do not measure Ollama-MLX

@@ -2,11 +2,12 @@
 # Project health check — one command to know if everything is good.
 # Usage: ./scripts/health.sh
 #
-# Checks: tests pass, lint clean, format clean, test count hasn't dropped.
+# Checks: tests pass, lint clean, format clean, test count hasn't dropped,
+# no known vulnerabilities in the locked dependency set.
 
 set -euo pipefail
 
-EXPECTED_MIN_TESTS=212
+EXPECTED_MIN_TESTS=1945
 PASS=0
 FAIL=0
 RESULTS=()
@@ -64,7 +65,7 @@ FORMAT_OUTPUT=$(uv run ruff format --check src/ 2>&1) && FORMAT_EXIT=0 || FORMAT
 if [ "$FORMAT_EXIT" -eq 0 ]; then
     record_pass "Format clean (ruff format)"
 else
-    FORMAT_COUNT=$(echo "$FORMAT_OUTPUT" | grep -c "Would reformat" || true)
+    FORMAT_COUNT=$(echo "$FORMAT_OUTPUT" | grep -oE "[0-9]+ files? would be reformatted" | grep -oE "^[0-9]+" || true)
     record_fail "Format issues ($FORMAT_COUNT file(s) — run: uv run ruff format src/)"
 fi
 
@@ -92,6 +93,21 @@ if [ -n "$README_COUNT" ] && [ -n "$TEST_COUNT" ]; then
     fi
 else
     yellow "Could not verify README.md test count"
+fi
+
+# 6. No known vulnerabilities in the locked dependency set (all extras,
+#    since the node's embedding servers parse network input too)
+echo "Auditing dependencies..."
+AUDIT_REQS=$(mktemp)
+uv export --all-extras --no-hashes --format requirements-txt -q > "$AUDIT_REQS"
+AUDIT_OUTPUT=$(uvx pip-audit -r "$AUDIT_REQS" --no-deps --disable-pip 2>&1) && AUDIT_EXIT=0 || AUDIT_EXIT=$?
+rm -f "$AUDIT_REQS"
+if [ "$AUDIT_EXIT" -eq 0 ]; then
+    record_pass "No known vulnerabilities (pip-audit)"
+else
+    AUDIT_SUMMARY=$(echo "$AUDIT_OUTPUT" | grep -oE 'Found [0-9]+ known vulnerabilit[a-z]+ in [0-9]+ packages?' || true)
+    record_fail "${AUDIT_SUMMARY:-pip-audit failed} — run: uvx pip-audit -r <(uv export --all-extras --no-hashes --format requirements-txt)"
+    echo "$AUDIT_OUTPUT" | grep -vE '^WARNING' | tail -20
 fi
 
 # Summary

@@ -25,19 +25,28 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
 ]
 dependencies = [
-    "fastapi>=0.115.0",
+    # 0.133 is the first FastAPI that accepts Starlette 1.x, which the floor
+    # below requires.
+    "fastapi>=0.133.0",
+    # Imported directly (server/cors.py), and every request runs through it.
+    # 1.3.1 fixes request.url host/path injection and request.form() limits
+    # being ignored for urlencoded bodies (reachable via transcription uploads).
+    "starlette>=1.3.1",
     "uvicorn[standard]>=0.32.0",
     "httpx>=0.27.0",
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
     "psutil>=6.0.0",
-    "zeroconf>=0.136.0",
+    # Parses mDNS packets from anyone on the LAN; 0.149.16 closes five
+    # unbounded-recursion/allocation and out-of-bounds-read advisories there.
+    "zeroconf>=0.149.16",
     "sse-starlette>=2.1.0",
     "pyyaml>=6.0.0",
     "rich>=13.0.0",
     "typer>=0.12.0",
     "aiosqlite>=0.20.0",
-    "python-multipart>=0.0.9",
+    # Parses transcription uploads; 0.0.31 closes five parser DoS advisories.
+    "python-multipart>=0.0.31",
     "cryptography>=42.0.0",
     "websockets>=13.0",
     "tiktoken>=0.7.0",
@@ -102,3 +111,10 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = []
+
+[tool.uv]
+# fastembed 0.9 caps pillow<13, which keeps 28 advisories (3 critical) that
+# Pillow 13.0.0 fixes.  Applies only to resolution inside this repo -- the
+# local fleet and the test suite -- never to the published wheel's metadata.
+# Remove when fastembed lifts the cap: tracked in docs/issues.md.
+override-dependencies = ["pillow>=13.0.0"]
