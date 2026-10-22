@@ -36,6 +36,52 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### `herd-node` could not start on Windows, on any version `FIXED` (2026-10-22)
+
+**Severity:** critical on Windows, none elsewhere. The node agent never started, so
+the platform we advertise as supported had no working node.
+
+`NodeAgent.start()` installed the graceful-drain handlers unguarded:
+
+```python
+loop = asyncio.get_running_loop()
+for sig in (signal.SIGTERM, signal.SIGINT):
+    loop.add_signal_handler(sig, lambda: asyncio.create_task(self._drain()))
+```
+
+`add_signal_handler` is POSIX-only — Windows runs a `ProactorEventLoop`, which raises
+`NotImplementedError`. The call sits *before* the heartbeat loop, so the exception
+escaped `start()`, no heartbeat was ever sent, and the router showed an empty fleet.
+Reported as [#8](https://github.com/geeks-accelerator/ollama-herd/issues/8) on 0.11.2
+with Python 3.15 / Windows 11, including the diagnosis and the fix.
+
+**Fixed** by `NodeAgent._install_drain_handlers`, which returns early on `win32` and
+**logs what was lost** rather than degrading silently: without the handlers a stopped
+Windows node does not deregister, so the router carries it as online until the
+heartbeat goes stale. The log message deliberately names no alternative command,
+because there is none — `_drain` is node-initiated and nothing lets the router ask a
+node to drain. Four tests pin it, three of which fail with the guard removed; one
+reproduces the `NotImplementedError` itself rather than merely noticing a missing
+branch.
+
+**Three things worth keeping from this one.**
+
+1. **The claim was in `CLAUDE.md` and had never been exercised.** "Single Python
+   package, cross-platform (macOS, Linux, Windows)" has been there throughout, and
+   `herd-node` has never once started on Windows. The same family as the Homebrew
+   trust gate, which step 15 claimed to test for four releases and did not: *a
+   documented capability nobody runs is a claim, not a feature.*
+2. **It was the only unguarded one, which is why it lasted.** `_ensure_ollama` and
+   the transcription spawn both branch on `win32` for their Popen flags, so the file
+   *looks* Windows-aware. Audited the rest while here: `mlx_supervisor`'s `os.killpg`
+   / `SIGKILL` / `start_new_session` are POSIX-only too, but sit behind
+   `mlx_enabled`, default `False`, on an Apple-Silicon-only path — not reachable at
+   Windows startup. Nothing else fatal remains.
+3. **An outside reporter found a whole-platform outage that 1,949 tests did not.**
+   The suite is strong on logic and silent on platform: every test runs on one OS.
+   Logged as a coverage gap below rather than fixed here, because a real answer is
+   CI on three platforms, not a mock.
+
 ### A native embed or rerank with no node to serve it returned a silent 503 that blamed the wrong thing `FIXED` (2026-10-04)
 
 **Severity:** medium. It drove a client off herd entirely.
@@ -2493,6 +2539,30 @@ The dashboard is a large amount of inline HTML/CSS/JS in Python strings across 5
 ---
 
 ## Test Coverage Gaps
+
+### Every test runs on one OS, and a whole-platform outage reached a user `OPEN` (2026-10-22)
+
+**Severity:** medium. It is the gap that let [#8](https://github.com/geeks-accelerator/ollama-herd/issues/8)
+ship — `herd-node` could not start on Windows, on any version, past a suite of
+1,949 tests.
+
+The suite is strong on logic and silent on platform. It runs on whatever machine
+invokes it — macOS here — so a POSIX-only API on the startup path is simply never
+exercised anywhere else. The Windows fix added four tests that patch
+`sys.platform`, and they are worth having, but they prove the *guard* exists, not
+that the agent starts on Windows. A mock cannot: the bug was a real event loop
+raising `NotImplementedError`, and no amount of patching a string reproduces a
+`ProactorEventLoop`.
+
+**The real fix is CI on three platforms** — a GitHub Actions matrix (macOS, Ubuntu,
+Windows) running `uv run pytest`, which is cheap and would have caught this at
+import-plus-start. Deliberately not done in the same pass as the fix, because adding
+CI is its own change with its own review, and pretending four `sys.platform` patches
+closed the gap is how the gap got here.
+
+**Smoke test worth more than the unit tests:** start `herd` and `herd-node` on each
+platform and assert one heartbeat registers. That single assertion is what the whole
+of #8 violated.
 
 ### 10. Untested Modules `FIXED` (2026-10-13 — all four covered)
 

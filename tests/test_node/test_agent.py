@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import signal
 import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -181,3 +184,74 @@ async def test_ensure_embedding_server_survives_port_conflict():
         assert agent._embedding_server_task is None
     finally:
         holder.close()
+
+
+# --- Windows: herd-node could not start at all (issue #8) ---
+# loop.add_signal_handler is POSIX-only; Windows' ProactorEventLoop raises
+# NotImplementedError.  Unguarded, it escaped start() before the heartbeat
+# loop, so a Windows node never registered and the router showed an empty
+# fleet.  Reported against 0.11.2 on Python 3.15 / Windows 11.
+
+
+@pytest.mark.asyncio
+async def test_drain_handlers_skipped_on_windows(agent):
+    """The guard is what makes `herd-node` start on Windows at all.
+
+    Asserting "does not raise" would pass against a loop that happens to
+    support the call, so this also proves the call was never attempted.
+    """
+    loop = asyncio.get_running_loop()
+
+    with patch("fleet_manager.node.agent.sys.platform", "win32"), \
+         patch.object(loop, "add_signal_handler") as add_handler:
+        agent._install_drain_handlers()
+
+    add_handler.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drain_handlers_installed_on_posix(agent):
+    """The guard must not cost POSIX its graceful drain — the whole reason
+    the handlers exist.  Both signals, or Ctrl+C stops deregistering."""
+    loop = asyncio.get_running_loop()
+
+    with patch("fleet_manager.node.agent.sys.platform", "linux"), \
+         patch.object(loop, "add_signal_handler") as add_handler:
+        agent._install_drain_handlers()
+
+    assert {c.args[0] for c in add_handler.call_args_list} == {
+        signal.SIGTERM,
+        signal.SIGINT,
+    }
+
+
+@pytest.mark.asyncio
+async def test_windows_node_is_told_it_will_not_deregister(agent, caplog):
+    """Silent degradation is the dishonest option: without the handlers a
+    stopped Windows node lingers as online until its heartbeat goes stale,
+    and an operator who is not told reads that as a bug."""
+    with caplog.at_level(logging.INFO, logger="fleet_manager.node.agent"), \
+         patch("fleet_manager.node.agent.sys.platform", "win32"):
+        agent._install_drain_handlers()
+
+    assert "Windows" in caplog.text
+    assert "deregister" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unguarded_add_signal_handler_would_have_broken_start(agent):
+    """Pins the failure mode itself, not just the guard.
+
+    A loop that raises NotImplementedError (what Windows does) must still let
+    _install_drain_handlers return on win32.  If someone removes the platform
+    check, this is the test that reproduces issue #8 rather than merely
+    noticing a missing branch.
+    """
+    loop = asyncio.get_running_loop()
+
+    def unsupported(*_args, **_kwargs):
+        raise NotImplementedError
+
+    with patch("fleet_manager.node.agent.sys.platform", "win32"), \
+         patch.object(loop, "add_signal_handler", side_effect=unsupported):
+        agent._install_drain_handlers()  # must not raise

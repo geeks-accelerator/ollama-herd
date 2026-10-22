@@ -133,6 +133,43 @@ class NodeAgent:
         )
         return False
 
+    def _install_drain_handlers(self) -> None:
+        """Drain on SIGTERM/SIGINT where the event loop supports it.
+
+        ``add_signal_handler`` is a POSIX-only API: Windows runs a
+        ``ProactorEventLoop``, which raises ``NotImplementedError``.  Calling it
+        unguarded here meant ``herd-node`` could not start on Windows *at all* —
+        the exception escaped ``start()`` before the heartbeat loop, so a node
+        never registered and the router showed an empty fleet.  Reported as
+        issue #8 against 0.11.2 on Python 3.15 / Windows 11, with the diagnosis
+        and this guard; the reporter also noted this was the one unguarded call,
+        while ``_ensure_ollama`` already branched on ``win32`` for its Popen
+        flags.
+
+        The consequence is logged rather than swallowed: without these handlers
+        Ctrl+C kills the process instead of running ``_drain()``, so the node
+        does not deregister and the router carries it as online until the
+        heartbeat goes stale.  That is a real difference in behaviour on a
+        platform we claim to support, and an operator who is not told will read
+        the stale node as a bug.  The message deliberately offers no
+        alternative command, because there is none: ``_drain`` is node-
+        initiated (it POSTs ``draining`` to the router's heartbeat route) and
+        nothing lets the router ask a node to drain.
+        """
+        if sys.platform == "win32":
+            logger.info(
+                "Windows: no SIGTERM/SIGINT drain handlers (the event loop "
+                "does not support them). Stopping this node will not "
+                "deregister it — the router keeps it until the heartbeat "
+                "goes stale, then marks it offline. There is no remote drain "
+                "command; drain is node-initiated."
+            )
+            return
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(self._drain()))
+
     async def start(self):
         """Main entry point. Discovers router, registers, starts polling."""
         self._running = True
@@ -204,9 +241,7 @@ class NodeAgent:
         self._platform_heartbeat_task = await self._ensure_platform_heartbeat()
 
         # Install signal handlers for graceful drain
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, lambda: asyncio.create_task(self._drain()))
+        self._install_drain_handlers()
 
         # Prime psutil cpu_percent (first call always returns 0.0)
         psutil.cpu_percent(interval=None)
