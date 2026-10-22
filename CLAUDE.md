@@ -432,6 +432,24 @@ Silent failures are dishonest. Fail fast, fail loud.
   with all four chart pages rendering in a real browser at zero console errors, and
   `pip-audit` clean across all extras. `scripts/health.sh` now reports **6/6**.
 
+  **The Homebrew formula must be REGENERATED this release, not version-bumped —
+  a url+sha256 bump would ship brew users the vulnerable versions.** The tap sits
+  at 0.11.2 with 38 resource blocks against a true core closure of **45**, and
+  three of its pins now *violate* the minimums this release raises:
+  `python-multipart 0.0.24` against `>=0.0.31` (five parser DoS advisories),
+  `zeroconf 0.148.0` against `>=0.149.16` (five LAN DNS-parsing advisories), and
+  `starlette 1.0.0` against `>=1.3.1`. Eight packages are missing outright —
+  `requests`, `pydantic_core`, `urllib3`, `charset-normalizer`, `httptools`,
+  `uvloop`, `watchfiles`, `opentelemetry-api` — and Homebrew runs pip with
+  `--no-binary :all:`, which does not transparently fetch a missing resource, so
+  the install fails rather than silently resolving. **The security content of this
+  release is entirely absent for brew users unless step 12 regenerates.**
+  Closure verified on **Python 3.12**, the version the formula pins, not just on
+  the 3.14 this repo develops against — identical package set, and 0.11.3 imports,
+  builds its app and reports `--version` on 3.12. A prepared formula with all 45
+  blocks and two placeholders for the published sdist is ready; only the main
+  `url`/`sha256` wait on step 11.
+
   **Still outstanding**, and the regenerated Homebrew formula (45 resources, 0 known vulnerabilities, install-tested) is **not yet pushed** to the tap — push it after the soak; it changes what every brew user installs. **`health.sh` cannot go fully green until 66 pre-existing unformatted files are formatted**, and the release checklist now runs it.
 
 - **Version: `0.11.2` — published** to PyPI + GitHub + Homebrew on 2026-10-14. Patch over `0.11.1`, three items all about making an existing signal tell the truth rather than adding behaviour. **`model_load_timeout` now says which of its two causes it is** — it was written for eviction and asserted that cause unconditionally, while Ollama can answer `/api/version` in under a millisecond and still be unable to start any runner; the discriminator is that **two or more distinct models timing out with ample memory cannot be eviction**, and it needed no new data. Detection only, and a test asserts the check never shells out, because the watchdog that killed stuck runners was removed 2026-04-23 after its escalation wiped every pinned model. **Importing either CLI no longer injects the operator's env file** (28 `FLEET_*` variables → 0; the call moved into each CLI's existing Typer callback, before `server_cli`'s subcommand early-return since `herd mlx pull` reads settings too). And the **last two untested modules are covered** — `discovery` (9 tests) and `rebalancer` (15) — closing that item entirely. **1921 tests, 49 checks.** No dependency changes.
