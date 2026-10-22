@@ -70,6 +70,9 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24.0",
     "pytest-httpx>=0.34.0",
+    # Starlette 1.x's TestClient wants httpx2 and deprecates running on httpx.
+    # Test-only: the router's own proxying stays on httpx.
+    "httpx2>=2.16.0",
     "ruff>=0.8.0",
     "numpy>=1.24",
     "Pillow>=10.0",

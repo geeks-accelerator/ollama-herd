@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`herd --version` and `herd-node --version`** (also `-V`) print `ollama-herd X.Y.Z` and exit. Until now the only ways to check an install were `pip show ollama-herd` or opening the dashboard. The option is eager, so it runs before the env file loads or anything binds a port, which makes it safe as the post-install check on [ollamaherd.com/download](https://ollamaherd.com/download).
 
+### Changed
+
+- **Verified against the latest release of every dependency** (2026-10-22). This repo commits no lock file (`uv.lock` is gitignored), so a `pip install` already resolves the newest versions the minimums allow; what changed is that the code is now tested on them. `uv lock --upgrade` moved 57 packages, among them Starlette 0.52 → 1.9 (under FastAPI 0.135 → 0.159), cryptography 46 → 50, rich 14 → 15, websockets 16 → 17, filelock 3 → 4, uvicorn 0.41 → 0.54, pydantic 2.12 → 2.14, onnxruntime 1.24 → 1.31, fastembed 0.8 → 0.9, tiktoken 0.12 → 0.14, typer 0.24 → 0.27 and zeroconf 0.148 → 0.151. huggingface-hub (1.33) and Pillow (12.3) stay below their new majors because fastembed 0.9 caps them (`<2.0`, `<13.0`). The minimums in `pyproject.toml` are unchanged: nothing in the code needs the newer releases. FastAPI 0.159 adds `opentelemetry-api`, which is only the interface: with no SDK installed it is a no-op and sends nothing. 1927 tests pass with `DeprecationWarning` as an error, and an isolated router boot (scratch data dir, telemetry off, private mDNS type) serves `/fleet/status`, `/dashboard`, `/dashboard/api/health`, `/api/tags`, `/v1/models` and `/fleet/queue`. The Homebrew formula pins exact versions in its `resource` blocks, which move with the next release.
+- **Tests run Starlette's TestClient on `httpx2`** (new dev dependency). Starlette 1.x deprecates running it on httpx. The router's own proxying stays on httpx.
+
 ## [0.11.2] - 2026-10-14
 
 ### Fixed
