@@ -3535,15 +3535,20 @@ class HealthEngine:
         if not priorities:
             return recs
 
-        # Collect all loaded models across nodes
-        loaded: set[str] = set()
+        # Residency comes from the shared definition, not a local set of
+        # Ollama's models_loaded: an `mlx:` model is resident when its
+        # mlx_lm.server is healthy, and is never in models_loaded.  A local set
+        # reported both serving MLX models as "not loaded" once their traffic
+        # made them priority models.
+        from fleet_manager.server.serializers import model_resident_on_node
+
         available: set[str] = set()
         for node in nodes:
             if node.ollama:
-                for m in node.ollama.models_loaded:
-                    loaded.add(m.name)
-                for m in node.ollama.models_available:
-                    available.add(m)
+                available.update(node.ollama.models_available)
+
+        def _resident(model: str) -> bool:
+            return any(model_resident_on_node(model, node) for node in nodes)
 
         # Models that cannot be preloaded at all.  Preloading warms a model by
         # posting to /api/generate, which Ollama refuses outright for an
@@ -3576,7 +3581,7 @@ class HealthEngine:
             score = entry["priority_score"]
             if score < 10:
                 break  # Only warn for meaningfully used models
-            if model not in loaded and model in available:
+            if model in available and not _resident(model):
                 if _cannot_be_preloaded(model):
                     continue
                 missing.append((model, score))
