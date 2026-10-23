@@ -1,242 +1,282 @@
 # Upstream changes, October 2026: what herd should do about them
 
-**Status**: 📋 **PROPOSED (2026-10-22).** Nothing implemented yet. Phase 1 is a
-confirmed bug; the rest are ordered by evidence, not by how interesting they are.
+**Status**: 📋 **PROPOSED — audited against the codebase 2026-10-22.** Nothing
+implemented yet. Phase 1 is a confirmed bug; the rest are ordered by evidence.
+
+**Constraints this plan is held to** (CLAUDE.md § Design Principles): greenfield,
+so **no `FLEET_*` on/off flags and no second code path** — the corrected behaviour
+*is* the behaviour; **reuse before build** — find the existing helper or pattern
+first, and extract a shared one rather than copy an inline block.
 
 **Source.** A research pass (another session) read the release notes for everything
 herd depends on — Ollama `0.40.4`–`0.40.9`, mlx-lm `0.32.0`–`0.32.2`, mlx `0.32.4`,
-mflux `0.21`–`0.23`, fastembed — and checked each against how herd's released code
-calls it. This plan verified that research against the repo and the live trace
-store on 2026-10-22 before writing anything down. Two of its findings changed on
-contact, recorded at the end.
-
-> **The headline is not an upstream change at all.** The research flagged that
-> Ollama `0.40.9` fixed *"streams ending silently after partial output instead of
-> reporting the failure,"* and noted herd hadn't been checked for it. Checking
-> found herd does something worse than silence: on every translated surface, it
-> **tells the client a truncated response finished normally.**
+mflux `0.21`–`0.23`, fastembed — and checked each against how herd calls it. The
+first draft of this plan verified that research against the repo; the **audit**
+then read the code each phase would touch, looking for what already exists. It
+changed most phases — see § *What the audit changed* at the end.
 
 ---
 
-## Phase 1 — Stop reporting a truncated stream as a successful one
+## Phase 1 — Stop reporting a truncated response as a successful one
 
-**Confirmed. Do this first.** It is the one item here that is a bug in herd today,
-and it lands on the two surfaces herd is marketed for: Claude Code and Codex.
+**Confirmed bug, and broader than first drafted. Do this first.** It lands on the
+surfaces herd is marketed for — Claude Code and Codex — and on non-streaming
+clients too.
 
 ### What happens now
 
-When Ollama's NDJSON stream ends without a `done:true` line, herd's proxy detects
-it correctly — the trace is recorded `incomplete` with a WARNING
-(`streaming.py:351`). That detection is not the problem. **What the client is sent
-next is:**
+When Ollama's stream ends without a `done:true` line, the proxy notices
+(`streaming.py`, both `_stream_with_tracking` and `_stream_with_retry`) and records
+the trace `incomplete`. **Then the client is told the response succeeded:**
 
-| surface | what herd emits after an upstream drop | where |
-|---|---|---|
-| OpenAI `/v1/chat/completions` | `data: [DONE]` — **unconditionally**, after the line loop, with no `finish_reason` chunk before it | `streaming.py:790` |
-| Responses `/v1/responses` | a synthesized `response.completed` with `done_reason: "stop"` | `routes/responses_compat.py:284` |
-| Anthropic `/v1/messages` (Ollama path) | a synthesized `message_delta` with `stop_reason: "end_turn"`, then `message_stop` | `routes/anthropic_compat.py:~1150` |
-| Anthropic `/v1/messages` (MLX path) | the same `end_turn` + `message_stop` | `routes/anthropic_compat.py:595` |
-| Ollama-native `/api/chat` | raw NDJSON passthrough; the stream simply ends without `done:true` | — |
+| surface | mode | what the client gets after an upstream drop | where |
+|---|---|---|---|
+| OpenAI | stream | `data: [DONE]`, **unconditionally**, no `finish_reason` chunk | `streaming.py:790` |
+| OpenAI | non-stream | **HTTP 200** with `finish_reason` hard-coded to `"stop"` | `routes/openai_compat.py` (~:542) |
+| Responses | stream | a synthesized `response.completed` | `routes/responses_compat.py:284` |
+| Responses | both | `_map_status("")` → `"completed"` | `responses_translator.py:690` |
+| Anthropic | stream, Ollama path | hand-built `end_turn` + `message_stop` | `routes/anthropic_compat.py` (~:1150) |
+| Anthropic | stream, MLX path | the same hand-built block, a second copy | `routes/anthropic_compat.py:595` |
+| Anthropic | non-stream | accumulator starts at `done_reason = ""` → `_map_done_reason` → `"end_turn"` | `anthropic_translator.py` (~:525) |
+| Ollama-native | stream | the stream simply ends without `done` | — **correct** |
 
-The Ollama-native surface is **correct**: that is Ollama's own protocol, and a
-native client is expected to check for `done`. Every *translated* surface converts
-a failure into a success. An agentic client — Claude Code, Codex — then acts on a
-half-written answer, a truncated file, or a tool call cut off mid-argument as if it
-were complete, and has no signal to retry.
+Ollama-native is correct: that is Ollama's own protocol, and a native client checks
+`done` itself. Everything translated turns a failure into a success, and an agent
+then acts on a half-written answer or a tool call cut off mid-argument.
 
-### Why it was built this way, and why the intent was right
+**And on the Anthropic MLX path even the trace lies.** It records
+`status = "failed" if error else "completed"` (`anthropic_compat.py:~637`), and the
+synthesized stop sets no error — so an MLX drop is traced **`completed`**, not
+`incomplete`. The first draft of this plan said "the trace correctly says
+`incomplete`"; on that path it doesn't.
 
-The Responses synthesis carries its reason in a comment: *"so Codex doesn't hang
-waiting for `response.completed`."* That was a real failure (2026-07-18), and the
-requirement it encodes is correct — **every stream must end with a terminal event.**
-The mistake is the choice of terminal event, not the decision to send one. The fix
-keeps the guarantee and changes what it says.
+**Mid-stream exceptions have the adjacent problem.** Both Anthropic generators
+`raise` after logging; once SSE headers are sent, that tears the connection
+without an error event. Phase 1 should fix both failure modes through one path,
+or it fixes half of "how a stream fails" and leaves the two inconsistent.
 
-### How often it happens
+### The root cause is one missing value, not eight bad sites
 
-| | count | latest |
-|---|---|---|
-| `incomplete` traces, all time | **60** | 2026-10-11 |
-| … on `ollama` format (correct behaviour) | 54 | 2026-10-11 |
-| … on `responses` | 5 | 2026-07-18 |
-| … on `anthropic` | 1 | 2026-04-22 |
-| … on any translated surface, last 60 days | **0** | — |
+Every surface already funnels through a **per-surface `done_reason` mapper** —
+`_map_status` (Responses), `_map_done_reason` (Anthropic), and the OpenAI
+`finish_reason` expression. "No `done` line ever arrived" reaches each of them as
+`""`, which each reads as an ordinary stop. So the fix is to make *upstream ended
+without `done`* a **first-class value** and teach the existing mappers one case
+each, instead of patching eight call sites.
 
-So it is **rare on this fleet**, and the translated-surface cases predate several
-reliability fixes. Severity is set by the consequence, not the rate: when it does
-happen, a coding agent is silently handed truncated work. Medium severity, low
-frequency — worth fixing properly, not urgently.
+### The fix, by reuse
 
-### A gap the measurement exposed
+1. **One definition of the condition.** A single module-level constant in
+   `streaming.py` (e.g. `UPSTREAM_INCOMPLETE`) for the reason, and one message
+   string. Today the message `"Stream ended without done:true from Ollama"` is
+   already duplicated across `_stream_with_tracking` and `_stream_with_retry`, each
+   with its own copy of the warn-and-trace block — **extract that block into one
+   `_record_incomplete(...)` helper** both call.
+2. **Extend the existing mappers, don't add new ones.** `_map_status` gains
+   `UPSTREAM_INCOMPLETE → "failed"`; `_map_done_reason` and the OpenAI expression
+   gain the same case. The Responses synthesis already routes through
+   `ollama_chunk_to_responses_events` with an injected `done_reason: "stop"` —
+   **change that one argument** to the sentinel and let the mapper do the rest.
+   Keep the existing `length → "incomplete"` mapping; that is a real model stop.
+3. **One error envelope per surface, beside the one that already exists.**
+   `routes/routing.py::client_error_passthrough` already builds both the Anthropic
+   (`{"type":"error","error":{…}}`) and OpenAI (`{"error":{…}}`) envelopes for 4xx.
+   Add its streaming sibling there — one function returning the terminal event for
+   a surface — so the three translated surfaces cannot drift. Anthropic gets
+   `event: error`; Responses gets `response.failed`; OpenAI gets an in-stream
+   `{"error": …}` and **no `[DONE]`** (`[DONE]` only after a real `finish_reason`).
+   **Non-streaming** surfaces have sent nothing yet, so they return an honest
+   **502** through the same envelope instead of a 200 with partial content.
+4. **Collapse the two hand-built Anthropic synthesis blocks** (Ollama and MLX
+   paths) into a call to that helper. Route the mid-stream-exception path through
+   it too, instead of re-raising into a torn connection.
+5. **Fix the MLX trace status** to `incomplete` when `not state.finished` — an
+   **existing** status value; no new status, no schema change. `record_trace_mlx`
+   already takes `status` and `error_message`, and `describe_exception` is already
+   imported there for the exception path.
 
-`completion_tokens` is **NULL on every one of the 60** incomplete traces, because
-token counts come from the `done` line that never arrived. So the trace store
-cannot say whether the client received partial output before the drop — which is
-the exact question that decides how bad a given incident was. herd already counts
-streamed output per chunk (`output_token_count` in `streaming.py`); recording that
-on the `incomplete` path closes it. Same family as the 2026-10-09 lesson: a layer
-that could be told something it isn't recording.
+What is preserved: the requirement behind the synthesis — *every stream ends with
+a terminal event*, added 2026-07-18 because Codex hung without one. Only which
+event it is changes.
 
-### The fix
+### Recording how much the client got — without polluting a measured column
 
-One terminal event per surface, each a real error rather than a success:
+`completion_tokens` is NULL on all 60 historical `incomplete` traces, because real
+counts arrive on the `done` line that never came. The first draft proposed
+recording herd's streamed count instead. **The audit says don't:** that count is
+`output_token_count += max(1, len(text) // 4)` (`streaming.py:755`) — an
+*estimate*. Writing it into `completion_tokens` would mix estimated and measured
+values in one column, which is exactly what `0.11.0` added a separate
+`estimated_tokens` column to avoid. Instead, put it in the **existing
+`error_message`** — `"…ended without done:true after N content chunks (~M tokens
+estimated)"` — human-readable, greppable, no schema change, and honest about being
+an estimate.
 
-| surface | emit instead | client effect |
-|---|---|---|
-| Anthropic | `event: error` with `{"type":"error","error":{"type":"api_error","message":…}}` | Claude Code treats it as a failed request and can retry |
-| Responses | `response.failed` with an `error` object | Codex ends the turn as failed rather than hanging *or* trusting it |
-| OpenAI | an in-stream `data: {"error": {…}}` and **no** `[DONE]` | `[DONE]` is only sent after a real `finish_reason` |
+### Verification
 
-Keep `responses_translator`'s existing `length → "incomplete"` mapping; that path
-is a real model stop and is already right.
+1. **Reuse the drop-simulation helpers that exist.** `tests/test_server/test_streaming_failures.py`
+   has `_make_fake_stream(proxy, chunks)` and `_content_chunk(...)`, already used by
+   `TestIncompleteStream` to feed a stream with no `done` line. Drive each surface's
+   route through them: the result must be the error terminal (stream) or a 502
+   (non-stream), never a success. One parametrized test over surfaces and modes —
+   the same shape as `test_context_protection_every_format.py`, which exists because
+   per-surface fixes kept missing a surface.
+2. **Read existing tests before flipping any.** `test_mlx_proxy.py:286`, `:383` and
+   the `[DONE]` fixtures around `:960`–`:1074` assert `end_turn` / `[DONE]`. Most are
+   **normal completions that must keep passing**; only drop cases should change.
+3. **Against the real clients, not just mocks.** Reproduce a drop deterministically
+   (kill the runner mid-stream) and confirm **Claude Code** and **Codex** end the turn
+   as a failure — not hang, not continue on truncated output. This is the step that
+   guards against reintroducing the 2026-07-18 Codex hang.
+4. Confirm an induced drop on the MLX path is now traced `incomplete`.
 
-**Reuse before build.** The error text should come from one place — the
-`describe_exception` pattern in `common/errors.py` exists precisely so a failure
-becomes one categorizable message — and the three surfaces should share a single
-"upstream ended without `done`" definition rather than three inline strings.
+Client-visible behaviour changes, so it is a `Changed` CHANGELOG entry.
 
-### Verification — this is the part that can't be skipped
+### Frequency, for proportion
 
-1. **Unit tests per surface**: a mocked upstream that yields content chunks then
-   ends with no `done` line must produce the error terminal, never a success one.
-   Some existing tests assert `end_turn` / `[DONE]` (`test_mlx_proxy.py:286`,
-   `:383`, and the `[DONE]` fixtures around `:960`–`:1074`). **Read each before
-   changing it**: most are *normal* completions that must keep passing; only the
-   ones exercising a drop should flip.
-2. **Against the real clients, not just mocks.** The Responses synthesis exists
-   because Codex hung; the new terminal must be proven not to reintroduce that.
-   Reproduce a drop deterministically (kill the runner mid-stream, or a fault
-   proxy in front of `:11434`) and observe **Claude Code** and **Codex** end the
-   turn as a failure — not hang, not continue on truncated output.
-3. **Record partial tokens**, then confirm an induced drop leaves a trace with
-   `status=incomplete` and a non-null `completion_tokens`.
-
-It changes client-visible behaviour, so it is a `Changed` entry in the CHANGELOG,
-not only `Fixed`.
+60 `incomplete` traces all time — 54 on the correct `ollama` surface, 5 on
+`responses` (latest 2026-07-18), 1 on `anthropic` — and **none on a translated
+surface in the last 60 days**. Note that MLX-path drops would not appear in that
+count at all, because they were traced `completed`; the true number is unknown,
+which is itself an argument for step 5. Medium severity, low observed frequency.
 
 ---
 
 ## Phase 2 — Audit herd's translators for the bugs Ollama found in its own
 
-**Unverified. Each item is a hypothesis until a failing test exists.**
+**Narrowed by the audit: two of four are already handled by design and tested.**
 
 herd translates Responses and Anthropic into `/api/chat` itself, so Ollama's fixes
-to *its* compatibility layers do not reach herd. But these bugs were found by
-real Codex and Claude Code traffic against a translation layer much like herd's,
-which makes them good candidates:
+to its own compatibility layers don't reach herd. Each candidate, against the code:
 
-| Ollama release | bug | herd's equivalent to test |
-|---|---|---|
-| `0.40.5` | continuing a Responses conversation that contains custom tool calls | `responses_translator` input conversion, custom tools |
-| `0.40.7` | switching between thinking and non-thinking models mid-conversation | thinking blocks in history sent to a non-thinking model, and back |
-| `0.40.7` | history containing another provider's compaction items | unknown item types in Responses `input` |
-| `0.40.7` | streamed tool-call events arriving before open reasoning items — misordered or duplicate tool calls with Codex web search | `ResponsesSSEState` event ordering |
+| Ollama | bug | herd today | action |
+|---|---|---|---|
+| `0.40.7` | switching thinking ↔ non-thinking models mid-conversation | prior-turn `reasoning` items are **dropped** (`responses_translator.py:395`), Anthropic thinking blocks too — tested by `test_reasoning_items_are_dropped` and `test_thinking_blocks_dropped` | **none** — the bug class can't occur when history carries no reasoning |
+| `0.40.5` | continuing a Responses conversation with custom tool calls | explicit `custom_tool_call` / `custom_tool_call_output` handling (`:363`–`:394`), tested in `test_responses_translator.py` | add **one multi-turn round-trip test** if none exists; fix only if it fails |
+| `0.40.7` | another provider's compaction items in history | unknown item types are **dropped with a once-per-type warning** (`_log_unknown_item_type_once`, `:274`) — but **no test pins it** | add a test pinning drop-and-warn. Then decide deliberately whether *dropping* compacted context is acceptable, since it silently loses the summary — that is a semantic question, not a crash |
+| `0.40.7` | streamed tool-call events before open reasoning items (Codex web search) | `ResponsesSSEState` ordering; `sequence_number` tests exist | **the one real investigation**: read Ollama's diff, reproduce against herd's state machine |
 
-**Method, per item:** read Ollama's actual diff to learn the failure's shape, write
-a test that reproduces it against herd's translator, and fix only if it fails.
-Expect some not to apply — herd's translator is not Ollama's — and record the ones
-that don't, so nobody re-asks. A test that passes on first write is still worth
-keeping: it pins behaviour Ollama found worth fixing.
+Method for the remaining items is unchanged: read Ollama's actual diff for the
+failure's shape, write a failing test, fix only if it fails, and record the ones
+that don't apply so nobody re-asks.
 
 ---
 
 ## Phase 3 — Upgrade this box's Ollama, deliberately, as an experiment
 
-**This box is on `0.40.2`.** Every fix in the research — the stream reporting,
-the Responses fixes, the manifest change — landed in `0.40.4`–`0.40.9`, so none
-of them are here.
+**This box is on `0.40.2`.** Every fix in the research landed in `0.40.4`–`0.40.9`.
 
-**Timing: after the `0.11.3` day-after check (2026-10-23).** An Ollama change on
-the day the release is being judged would confound the read; the check needs a
-stable baseline.
+**Timing: after the `0.11.3` day-after check (2026-10-23)**, so an Ollama change
+doesn't confound the release's read.
 
-**The upgrade is also the test of a hypothesis.** `0.40.2` is the upgrade that
-rewrote both resident models' manifest digests and doubled them (114 GB, then
-156 GB) — the incident `duplicate_runners` exists for. `0.40.4`'s notes mention
-*"reusing verified manifests and already loaded models."* That may fix it. The only
-way to know is to watch the next upgrade.
+**It is also the test of a hypothesis.** `0.40.2` is the upgrade that rewrote both
+residents' digests and doubled them (114 GB, then 156 GB). `0.40.4`'s notes mention
+*"reusing verified manifests and already loaded models."* The next upgrade is the
+only way to know whether that fixed it.
 
-**Before:** record `/api/ps` names + digests + `context_length`, the launch args
-(`ps -Ao args | grep llama-server | grep -oE '\-c [0-9]+ \-np [0-9]+'`), and the
-version.
+**No new tooling — herd already reports the snapshot.** `/fleet/status` carries the
+Ollama version and, per resident, `context_length`, `runner` and `digest` (verified
+2026-10-22: `0.40.2`; gpt-oss 131072 / gemma3 32768 / glm 32768, all `llamacpp`).
+And the `duplicate_runners` check *is* the after-test.
 
-**Do:** the manual Mac-app swap from CLAUDE.md (`brew upgrade ollama` does nothing),
-watching the launch race for `:11434`.
+- **Before:** `curl -s localhost:11435/fleet/status > before.json`, plus the one
+  thing herd doesn't report — the launch args
+  (`ps -Ao args | grep llama-server | grep -oE '\-c [0-9]+ \-np [0-9]+'`).
+- **Do:** the manual Mac-app swap from CLAUDE.md (`brew upgrade ollama` does nothing),
+  watching the `:11434` launch race.
+- **After:** the same two captures, diffed; `duplicate_runners` on
+  `/dashboard/api/health` (**the hypothesis**); launch args and the `num_ctx` pin
+  intact; `OLLAMA_SERIAL_FAMILIES` (`server/serializers.py`) re-checked against
+  `sched.go`, as CLAUDE.md requires every upgrade. Soak; record the result in
+  `docs/observations.md` either way.
 
-**After:**
-
-- `/api/ps` for duplicate names — **the result that answers the hypothesis**
-- launch args unchanged, and the `num_ctx` pin holding both models at their
-  configured per-slot contexts
-- `OLLAMA_SERIAL_FAMILIES` re-checked against `sched.go`, as CLAUDE.md requires on
-  every upgrade
-- the `RUNNER` column still `llamacpp` for both GGUF residents
-- soak, and write the result to `docs/observations.md` either way
-
-**Keep `duplicate_runners` regardless of the outcome.** Other operators upgrade
-from older versions on their own schedule, and a check that costs nothing when
-silent is worth more than the code it would remove.
+**Keep `duplicate_runners` regardless of outcome** — other operators upgrade from
+older versions on their own schedule.
 
 ---
 
 ## Phase 4 — Bump the mlx-lm pin `0.32.0` → `0.32.2`
 
-**The research missed that herd pins mlx-lm exactly** —
-`scripts/setup-mlx.sh: PINNED_VERSION="0.32.0"`. So herd is already on 0.32; what is
-new is `0.32.1` and `0.32.2`, and **herd users get neither until the pin moves.**
+herd pins mlx-lm exactly, so users get `0.32.1`/`0.32.2`'s fixes — `max_tokens: 0`
+handling, and the `tool_calls` arguments parsing fix (`mlx-lm#1904`, the same
+string-vs-object class herd fixed on the Ollama side in `0.11.0`,
+[#5](https://github.com/geeks-accelerator/ollama-herd/pull/5)) — only when the pin moves.
 
-**What it brings:** correct handling of `max_tokens: 0`, and a fix to parsing
-`tool_calls` arguments (`mlx-lm#1904`) — the same string-versus-object problem herd
-fixed on the Ollama side in `0.11.0` ([#5](https://github.com/geeks-accelerator/ollama-herd/pull/5)).
+**The audit found a trap: "0.32.0" means two different things in the code.**
 
-**Soak it; CLAUDE.md is explicit that this subsystem has broken on mlx-lm upgrades
-before.** Verify on both MLX servers:
+| meaning | where | on the bump |
+|---|---|---|
+| **the pin** — what's installed and tested | `scripts/setup-mlx.sh: PINNED_VERSION`, `docs/guides/mlx-setup.md:22` | **change** |
+| **the capability floor** — first release with native `--kv-bits` | `mlx_supervisor.py:443`, `:514`, `:747`–`:759`; `health_engine.py:2202`; `mlx-setup.md:32`, `:171` | **leave** |
 
-- `--kv-bits` and `--quantized-kv-start 0` still accepted
-- the compactor's `--draft-model` speculative decoding still starts and holds ~94 tok/s
-- GLM-4.7-Flash's `reasoning` field still surfaces, not dropped
-- an MLX tool-calling round trip through `/v1/messages`
+A find-and-replace would wrongly raise the floor and tell users on `0.32.0` that
+their working install is too old. Change the two pin sites only. Worth noting the
+supervisor detects the floor by **probing** for `--kv-bits`, not by comparing
+version strings — keep that; it is why the floor survives a pin bump untouched.
 
-**And measure mlx `0.32.4`'s claimed attention-memory reduction on pre-M5 chips**
-(this box is an M3 Ultra) with `process_memory`'s children footprint before and
-after — not RSS. A measured number is worth recording whichever way it goes.
+**Soak it** — this subsystem has broken on mlx-lm upgrades before. On both servers:
+`--kv-bits` / `--quantized-kv-start 0` accepted; the compactor's `--draft-model` still
+starts and holds ~94 tok/s; GLM's `reasoning` field still surfaces; one MLX
+tool-calling round trip through `/v1/messages`.
+
+**Measure mlx `0.32.4`'s claimed attention-memory reduction** (M3 Ultra is pre-M5)
+with the **existing** `process_memory` children footprint, before and after — the
+heartbeat already labels the two `mlx` children. Not RSS.
+
+**Run in a different window from Phase 3**, so a regression can be attributed.
 
 ---
 
 ## Phase 5 — Windows: tell operators which Ollama they need
 
-Ollama `0.40.6` fixed runners being orphaned on Windows. That arrived exactly as
-`herd-node` became able to start on Windows at all (`0.11.3`, [#8](https://github.com/geeks-accelerator/ollama-herd/issues/8)).
+Ollama `0.40.6` fixed runners orphaned on Windows, arriving just as `herd-node`
+became able to start there (`0.11.3`, [#8](https://github.com/geeks-accelerator/ollama-herd/issues/8)).
 
-**Do: document it.** A Windows section in `docs/troubleshooting.md` and the README's
-install notes: Ollama `>= 0.40.6` on Windows nodes, with the reason.
+**Docs only.** `docs/troubleshooting.md` has no Windows section — only a PowerShell
+`netstat` line under "Connection refused." Add a short **Windows** section there
+(Ollama `>= 0.40.6`, the drain-on-stop behaviour from `_install_drain_handlers`, and
+that the platform is not CI-tested), and a matching line in the README's install
+notes.
 
-**Don't build a check yet.** The heartbeat already carries Ollama's version
-(`OllamaMetrics.version`), but not the node's OS — `device_info` computes `os` only
-for platform registration. A check would mean putting OS on the heartbeat for one
-platform floor that one known user is affected by. Revisit if a Windows user
-reports orphaned runners, or if OS reaches the heartbeat for another reason.
+**No health check.** The heartbeat already carries Ollama's version
+(`OllamaMetrics.version`) but not the node's OS — `device_info` computes `os` only
+for platform registration. A check would put OS on the heartbeat for one platform
+floor affecting one known user. Revisit only if OS reaches the heartbeat for
+another reason.
 
 ---
 
 ## Phase 6 — Text-to-speech routing (scope only; it gets its own plan)
 
-Ollama `0.40.9` ships TTS: an OpenAI-compatible `/v1/audio/speech`, a `phonon`
-model with one voice, streamed `wav`/`pcm` at 24 kHz mono, up to 4,096 characters,
-`400` on unsupported options, and a **`speech` capability** reported by `/api/show`.
+Ollama `0.40.9`: OpenAI-compatible `/v1/audio/speech`, a `phonon` model with one
+voice, streamed `wav`/`pcm` at 24 kHz mono, up to 4,096 characters, `400` on
+unsupported options, and a **`speech` capability** in `/api/show`.
 
-That last detail is what makes it cheap for herd: capability detection already
-works this way (`model_has_capability`, `get_fleet_capabilities` — the node's Ollama
-reports capabilities and the router reads them). TTS routing is therefore mostly
-*routing*, not a backend: send `/v1/audio/speech` to a node whose Ollama reports
-`speech`, with the same scoring and tracing as every other surface.
+**What already exists to build it from:**
 
-**Open question before committing:** the release notes say "on Apple Silicon," the
-docs list Linux and Windows playback tools. Measure on our own nodes rather than
-resolving it from text.
+- **Candidate selection:** `serializers.model_has_capability(node, model, "speech")`
+  and `routes/routing.py::get_fleet_capabilities(registry)` — capability is reported
+  by each node's Ollama and the router reads it. (`model_has_capability` is
+  presence-only; that is fine here because `phonon` is in Ollama's own metadata —
+  the gotcha it carries is for native-server models, which are absent from it.)
+- **Tracing:** `routes/routing.py::direct_proxy_tracer` — the shared closure for
+  routes that pick a node and POST directly instead of going through
+  `StreamingProxy`. It was extracted in `0.11.3` precisely because each direct-proxy
+  route had been carrying its own copy, and the vision path never got one.
+- **Error envelope:** the Phase 1 helper, so TTS failures match every other surface.
 
-**Stays off ollamaherd.com until herd actually routes it and it has been
-verified.** Write a dedicated plan when this is picked up.
+**The trap: do not copy `transcription_compat.py`'s opening guard.** It begins
+`if not settings.transcription: return 503`, and `ServerSettings` carries three such
+per-surface switches — `image_generation`, `transcription`, `vision_embedding`.
+TTS must not add a fourth. A node that reports `speech` gets TTS traffic; one that
+doesn't, doesn't. Capability *is* the switch.
+
+**Open before committing:** the notes say "on Apple Silicon," the docs list Linux and
+Windows playback tools — measure on our nodes. And whether a speech request
+occupies an Ollama scheduler slot, which decides if it needs the queue
+(`QueueManager`) or can be direct-proxied like embeddings.
+
+**Stays off ollamaherd.com until herd routes it and it has been verified.**
 
 ---
 
@@ -244,38 +284,60 @@ verified.** Write a dedicated plan when this is picked up.
 
 | item | finding |
 |---|---|
-| **Ollama native multimodal embeddings** (`0.40.4`) | herd intercepts an embedding request only when the model name exactly matches one of its own vision models, so Ollama's native multimodal models pass straight through — herd does not shadow the feature. **Strategically it matters more than it looks:** if Ollama serves image embeddings natively, the case for herd's own vision server weakens, and that server is where the Pillow advisories live. **But not now** — vision-embedding tracing, new in `0.11.3`, shows **329 real requests in 6 hours** on `dinov2-vit-s14`, a workload that was invisible until this release. Retiring the server would need Ollama to serve those models, measured. |
-| **fastembed #829** (the `pillow<13` cap) | Still open, no maintainer response, `main` still pins it. PyPI `[embedding]` installs keep resolving Pillow 12.3; the JPEG/PNG/WebP format gate remains the user-side mitigation. Re-check at each release. |
-| **mflux `0.21`–`0.23`** | Both commands herd shells out to — `mflux-generate`, `mflux-generate-z-image-turbo` — still exist. One behaviour change worth a line in the image-generation guide: Z-Image now runs in bfloat16, ~30% faster on M5, but **the same seed produces slightly different images**; `--float32` restores the old output. Matters only to anyone relying on seed reproducibility. |
-| **mlx `0.32.4`** | Adds Python 3.15 support. Not relevant to the #8 reporter, who is on Windows, where MLX does not run. |
+| **Ollama native multimodal embeddings** (`0.40.4`) | herd intercepts an embedding request only on an exact name match with its own vision models, so Ollama's native ones pass through. Strategically, Ollama serving image embeddings natively weakens the case for herd's vision server — where the Pillow advisories live. **Not now:** that server carries **329 real requests in 6 h** (`dinov2-vit-s14`, visible only since `0.11.3`'s tracing). Retiring it needs Ollama to serve those models, measured. |
+| **fastembed #829** (`pillow<13`) | Still open, no maintainer response. The JPEG/PNG/WebP format gate remains the user-side mitigation. Re-check each release. |
+| **mflux `0.21`–`0.23`** | `mflux-generate` and `mflux-generate-z-image-turbo` still exist. Z-Image now runs bfloat16: ~30% faster on M5, but the same seed gives slightly different images (`--float32` restores them). One line in the image-generation guide. |
+| **mlx `0.32.4`** | Adds Python 3.15 support. Not relevant to #8's reporter — Windows, where MLX doesn't run. |
 
 ---
 
-## Where the research changed on contact
+## Adjacent debt found by the audit — not in this plan's scope
 
-Recorded so the next research pass knows which kinds of claims need a repo check:
+Recorded so it isn't rediscovered, and so this plan doesn't add to it:
 
-- **"herd hasn't been checked for silent stream endings"** → checked: herd *detects*
-  them server-side, but reports them to the client as **success** on every translated
-  surface. Worse than silence, and now Phase 1.
-- **"mlx-lm jumped to 0.32 after six months on 0.31"** → true upstream, but herd
-  already pins `0.32.0` exactly, so the real question is a pin bump to `0.32.2`,
-  which needs a soak (Phase 4).
+- **Three per-surface on/off flags** — `image_generation`, `transcription`,
+  `vision_embedding` in `ServerSettings`. They predate the greenfield principle,
+  which says "no `FLEET_*` on/off flags." Worth a separate decision on whether each
+  is an operator-consent opt-in (the only allowed kind) or removable. Phase 6 must
+  not add a fourth.
+- **~16 inline copies of the Anthropic error envelope** in
+  `routes/anthropic_compat.py`. Phase 1's new terminal events go through one helper;
+  migrating the existing literals onto it is a mechanical follow-up commit, kept
+  separate so Phase 1's diff stays about behaviour.
 
-Both were reasonable readings of release notes. Neither survived a `grep` of the
-code that actually calls the dependency — which is the method the research itself
-used, applied one level deeper.
+---
+
+## What the audit changed
+
+| phase | first draft said | the code says |
+|---|---|---|
+| 1 | four streaming sites send a false success | **eight** sites: non-streaming OpenAI, Anthropic and Responses do it too, as HTTP 200 |
+| 1 | the trace correctly says `incomplete` | not on the Anthropic MLX path — it is traced **`completed`** |
+| 1 | fix four terminal events | the root cause is one missing value (`""` read as "stop"); extend the **existing** per-surface mappers and the **existing** envelope builder |
+| 1 | record streamed tokens on `incomplete` | that count is a `len // 4` **estimate**; it belongs in `error_message`, not the measured `completion_tokens` |
+| 1 | — | the "no done" warn-and-trace block is already **duplicated**; extract it |
+| 1 | — | mid-stream exceptions **re-raise into a torn stream**; fix through the same path |
+| 2 | four hypotheses | two already handled by design and tested; one handled but **untested**; one real investigation |
+| 3 | record `/api/ps` and launch args by hand | `/fleet/status` already carries version, context, runner and digest; `duplicate_runners` is the after-test |
+| 4 | bump the pin | "0.32.0" is **both** the pin and a capability floor; change only the pin's two sites |
+| 5 | add a Windows section | `troubleshooting.md` has none to extend — one is needed |
+| 6 | route by `speech` capability | **don't copy `transcription_compat`'s flag**; reuse `model_has_capability`, `get_fleet_capabilities`, `direct_proxy_tracer` |
+
+The research findings that changed on first contact, before the audit:
+
+- **"herd hasn't been checked for silent stream endings"** → herd *detects* them,
+  then reports them to the client as success. Became Phase 1.
+- **"mlx-lm jumped to 0.32 after six months on 0.31"** → herd already pins `0.32.0`;
+  the real question is a pin bump. Became Phase 4.
 
 ---
 
 ## Order and rationale
 
-1. **Phase 1** — a confirmed correctness bug on the Claude Code and Codex surfaces.
-2. **Phase 3** — gated on 2026-10-23; cheap, and it tests a real hypothesis.
-3. **Phase 2** — test-first audit; each item may evaporate.
-4. **Phase 4** — needs its own soak window; don't overlap it with Phase 3's.
-5. **Phase 5** — a documentation change, any time.
+1. **Phase 1** — a confirmed correctness bug on the Claude Code and Codex surfaces,
+   now known to cover non-streaming clients and to mis-trace MLX drops.
+2. **Phase 3** — gated on 2026-10-23; no new code, and it tests a real hypothesis.
+3. **Phase 2** — two test additions and one investigation.
+4. **Phase 4** — its own soak window, separate from Phase 3's.
+5. **Phase 5** — documentation, any time.
 6. **Phase 6** — separate plan, separate decision.
-
-Phases 3 and 4 both change a runtime under the fleet. **Run them in separate
-windows** so a regression can be attributed to one of them.

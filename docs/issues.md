@@ -50,6 +50,8 @@ synthesized `response.completed` with `done_reason: "stop"`
 (`routes/anthropic_compat.py`). The Ollama-native surface is correct, since a
 native client checks `done` itself.
 
+**Broader than first filed (audit, same day):** the **non-streaming** OpenAI, Anthropic and Responses paths return HTTP 200 with the partial content and a normal stop reason, and on the **Anthropic MLX path the trace itself is recorded `completed`**, so those drops are missing from the `incomplete` counts below. Root cause is one value: "no `done` line arrived" reaches every per-surface mapper (`_map_status`, `_map_done_reason`, OpenAI's `finish_reason`) as `""`, which each reads as a normal stop.
+
 The synthesis was added so Codex would not hang waiting for a terminal event
 (2026-07-18) — a real requirement, kept by the fix. The error is the *choice* of
 terminal event: it should be `event: error`, `response.failed`, or an in-stream
