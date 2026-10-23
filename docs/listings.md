@@ -53,6 +53,60 @@ in a ban*. A resubmission has to be written and filed by a person, and the
 attestation is theirs to make. Their data repo takes one YAML file per project
 under `software/`; the closed PR has the one we used.
 
+## Candidates — not yet submitted
+
+Researched 2026-10-23. Found mostly by searching GitHub for READMEs that already
+list comparable projects (LiteLLM, GPUStack, exo, llama-swap, claude-code-router,
+Ollama proxies) — a list that takes those has a section herd belongs in. Herd is
+absent from every list below as of that date. Stars and activity are as of the same
+day; re-check rules before submitting, because they change (see awesome-selfhosted).
+
+**Human-submission only.** These forbid agent- or LLM-made submissions, so a person
+writes and files them:
+
+| List | Stars | Section | How to submit |
+|------|------:|---------|---------------|
+| [awesome-claude-code](https://github.com/hesreallyhim/awesome-claude-code) | 56k | Providers, Runtime & Integration Infrastructure | Web-UI issue form only, never a PR; "resource recommendations must be created by human beings", and misuse risks a temporary restriction. Fits because Claude Code runs against herd via `ANTHROPIC_BASE_URL` — see [`guides/claude-code-integration.md`](guides/claude-code-integration.md) |
+| [awesome-selfhosted](https://github.com/awesome-selfhosted/awesome-selfhosted) | — | — | Resubmission; see above |
+
+**Open to PRs, strong fit:**
+
+| List | Stars | Section | Notes |
+|------|------:|---------|-------|
+| [ollama/ollama](https://github.com/ollama/ollama) README, Community Integrations | 184k | Infrastructure & Deployment | The README invites PRs, but the backlog is large: 15+ integration PRs opened in the week to 2026-10-23, and the last one merged was 2026-10-07. High value, low odds; a one-line entry costs little |
+| [awesome-local-llm](https://github.com/rafska/awesome-local-llm) | 3.0k | Inference engines | Already lists exo, GPUStack, llama-swap, LocalAI. Plain PR, no special rules |
+| [Awesome-LLMOps (tensorchord)](https://github.com/tensorchord/Awesome-LLMOps) | 6.0k | Frameworks/Servers for Serving | Lists GPUStack and vLLM. A different list from the InftyAI one herd is already on |
+| [awesome-opensource-ai](https://github.com/alvinreal/awesome-opensource-ai) | 4.9k | High-performance Serving & API Servers | No star minimum. Format: one factual sentence plus a stars badge |
+| [awesome-codex-cli](https://github.com/RoggeOhta/awesome-codex-cli) | 555 | Model Providers & Proxies | Fits because Codex runs against herd's `/v1/responses` — see [`guides/codex-integration.md`](guides/codex-integration.md). Requires a stars badge in their format |
+| [awesome-cli-coding-agents](https://github.com/bradAGI/awesome-cli-coding-agents) | 1.4k | Agent infrastructure | Lists claude-code-router |
+
+**Possible, weaker fit or extra bar:**
+
+| List | Stars | Why weaker |
+|------|------:|------------|
+| [awesome-ai-tokenomics](https://github.com/QuesmaOrg/awesome-ai-tokenomics) | 206 | Has "Gateways and Proxies" and "Routing Model Selection", but requires verifiable cost/performance evidence and adoption beyond the author's own use. The measurements in `observations.md` may qualify |
+| [Awesome-Ollama](https://github.com/EndoTheDev/Awesome-Ollama) | 492 | No infrastructure or routing section; would need "Libraries" or a new one |
+| [Awesome-AITools](https://github.com/ikaijua/Awesome-AITools) | 6.2k | Mostly end-user apps; every entry needs both English and Chinese READMEs |
+| [awesome-local-llms](https://github.com/vince-lam/awesome-local-llms) | 811 | Not hand-curated: generated daily from [llmrepos.com](https://llmrepos.com), which tracks 11k repos by star growth. Getting into that index is the path, not a PR |
+
+**Not eligible yet:**
+
+- **[awesome-production-machine-learning](https://github.com/EthicalML/awesome-production-machine-learning)** (21k) — requires 500 GitHub stars. Herd has 27.
+- **homebrew/core** — the [acceptance policy](https://docs.brew.sh/Package-Acceptance-Policy) asks a self-submitted project for 225 stars, 90 forks or 90 watchers. The tap stays the install path.
+
+**Outside GitHub:**
+
+- **Hacker News (Show HN)** — never posted; a search of HN finds no story about herd.
+  Show HN wants something people can try, and `pip install ollama-herd` qualifies.
+  Post as a person, and be there to answer comments.
+- **Reddit** — r/LocalLLaMA, r/ollama, r/selfhosted and r/MacStudio are where the
+  users are. Each has self-promotion rules; read them first, and post as a person.
+- **Directories** — [OpenAlternative](https://openalternative.co/submit) and
+  [selfhostyourself.com](https://selfhostyourself.com) both have submit forms and
+  list self-hosted AI tools. Their criteria aren't public before you submit.
+  AlternativeTo lists gateways under LiteLLM's alternatives, so herd could appear
+  there too.
+
 ## Package registries and other channels
 
 | Channel | Where |
@@ -60,7 +114,8 @@ under `software/`; the closed PR has the one we used.
 | PyPI | [ollama-herd](https://pypi.org/project/ollama-herd/) — `pip install ollama-herd`; download history in [`pypi-download-stats.md`](pypi-download-stats.md) |
 | Homebrew | [geeks-accelerator/homebrew-ollama-herd](https://github.com/geeks-accelerator/homebrew-ollama-herd) — `brew tap`, `brew trust`, `brew install ollama-herd` |
 | Website | [ollamaherd.com](https://ollamaherd.com) |
-| ClawHub | 37 agent skills published from [`skills/`](../skills/) — strategy in [`skill-publishing-strategy.md`](skill-publishing-strategy.md) |
+| ClawHub | 37 agent skills published from [`skills/`](../skills/), e.g. [ollama-ollama-herd](https://clawhub.ai/twinsgeeks/ollama-ollama-herd) — strategy in [`skill-publishing-strategy.md`](skill-publishing-strategy.md) |
+| Skywork SkillHub | A third-party mirror of the ClawHub skills, e.g. [ollama-ollama-herd](https://skywork.ai/skillhub/ollama-ollama-herd/) |
 
 ## Submitting to a new list
 
