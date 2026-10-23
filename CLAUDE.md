@@ -404,14 +404,6 @@ Silent failures are dishonest. Fail fast, fail loud.
 
 - **Version: `0.11.3` — published** to PyPI + GitHub + Homebrew on 2026-10-22. A security dependency pass (`docs/plans/security-dependency-upgrades-2026-10.md`) — vision server decodes only JPEG/PNG/WebP, Pillow 13 locally via override, floors raised for `zeroconf`/`python-multipart`/`starlette` (+`fastapi>=0.133.0`), Chart.js pinned with SRI, a CVE gate in `health.sh`, and vision embedding requests are now traced. Plus, found while verifying that merge, **the suite no longer reads the operator's `FLEET_*` environment** — three tests failed here and passed in CI because `~/.zshrc` exports `FLEET_ANTHROPIC_MODEL_MAP`, and the three modules that had already hit this each cleared only the variables their own author remembered. And **`herd-node` could not start on Windows, on any version** — the drain handlers called POSIX-only `add_signal_handler` before the heartbeat loop, so the node never registered ([#8](https://github.com/geeks-accelerator/ollama-herd/issues/8), found by running the overdue day-after check). **1953 tests.**
 
-  **Soak started 2026-10-22 09:23:58 on the shipping dependency set, and that
-  qualifier is the point.** The 24 h of clean data before it (7,953 requests, zero
-  errors) ran on **Starlette 0.x** — 1.9 only reached this venv at 08:32, because
-  `uv.lock` is gitignored so another machine's `uv lock --upgrade` never crosses.
-  A soak that predates the dependency change measures the old configuration.
-  **Check `uv run python -c "import starlette; print(starlette.__version__)"`
-  against the claim before trusting any soak that spans a dependency bump.**
-
   **Verified before the soak, on the set a real `pip install` resolves** (built the
   wheel, installed it into a clean 3.14 venv with plain pip so `[tool.uv]`
   overrides do not apply): fastapi 0.159.1, pydantic 2.14.1, starlette 1.9.0,
@@ -431,24 +423,6 @@ Silent failures are dishonest. Fail fast, fail loud.
   discovery), the Chart.js **SRI hash recomputed from the CDN file and matched**
   with all four chart pages rendering in a real browser at zero console errors, and
   `pip-audit` clean across all extras. `scripts/health.sh` now reports **6/6**.
-
-  **The Homebrew formula must be REGENERATED this release, not version-bumped —
-  a url+sha256 bump would ship brew users the vulnerable versions.** The tap sits
-  at 0.11.2 with 38 resource blocks against a true core closure of **45**, and
-  three of its pins now *violate* the minimums this release raises:
-  `python-multipart 0.0.24` against `>=0.0.31` (five parser DoS advisories),
-  `zeroconf 0.148.0` against `>=0.149.16` (five LAN DNS-parsing advisories), and
-  `starlette 1.0.0` against `>=1.3.1`. Eight packages are missing outright —
-  `requests`, `pydantic_core`, `urllib3`, `charset-normalizer`, `httptools`,
-  `uvloop`, `watchfiles`, `opentelemetry-api` — and Homebrew runs pip with
-  `--no-binary :all:`, which does not transparently fetch a missing resource, so
-  the install fails rather than silently resolving. **The security content of this
-  release is entirely absent for brew users unless step 12 regenerates.**
-  Closure verified on **Python 3.12**, the version the formula pins, not just on
-  the 3.14 this repo develops against — identical package set, and 0.11.3 imports,
-  builds its app and reports `--version` on 3.12. A prepared formula with all 45
-  blocks and two placeholders for the published sdist is ready; only the main
-  `url`/`sha256` wait on step 11.
 
   **Soaked 3.2 h on the shipping dependency set before publishing, and the
   qualifier is the point.** The 24 h of clean data that preceded it ran on
@@ -529,14 +503,23 @@ Silent failures are dishonest. Fail fast, fail loud.
 
 - **Release-process correction from this run:** step 15's untap does **not** test the Homebrew trust gate — the record is in `~/.homebrew/trust.json` and survives `brew untap`, so the 0.11.0 step-15 run installed with no gate at all. `brew untrust --tap …` is the missing step, verified to produce the refusal and then the success. See the Homebrew-trust gotcha. Install was 2m54s with a warm build cache, not the ~25 min the docs assumed.
 
-- **Open, in the order worth taking them:**
-  1. **Duplicate runners** (`docs/issues.md`, 2026-10-10) — an Ollama upgrade rewrote both resident models' manifest digests, so each doubled on its next request (156 GB for two logical models) and `KEEP_ALIVE=-1` meant neither cleared. `LoadedModel` carries no digest, so herd cannot tell two runners apart, and ~15 call sites that resolve a name against `models_loaded` split three ways — including the `num_ctx` pin, which takes the *first* match. Both live duplicates agreed on context, so the pin was right by luck. Step 1 of the fix (carry the digest) unblocks the rest.
-  2. **Test pollution** — `_context_protection_events` leaks across test modules; three `test_health_engine` tests fail when `test_streaming` runs first. A `conftest.py` autouse fixture.
-  3. **Phase 1 step 3** of `docs/plans/context-window-blindness.md` — the truncation threshold, deliberately unbuilt. Calibration now argues for a size-banded rule, not one ratio: 176 `estimated_tokens`/`prompt_tokens` pairs give a 0.94 median above 100 estimated tokens and ~8x below it, where the chat template dominates.
-  4. **The `/api/ps` total-vs-per-slot contradiction**, still OPEN — and 0.40's new `RUNNER` column may have changed what it reports.
-  5. **`0.11.0` day-after check** due 2026-10-12, week-after 2026-10-18.
+- **Open, in the order worth taking them.** Two entries were removed on
+  2026-10-22 after checking rather than trusting them, which is the third time a
+  triage pass has found this file describing work that had already shipped:
+  **duplicate runners** (`LoadedModel.digest`, `resident_context_for`,
+  `distinct_resident_models` and the `duplicate_runners` check are all in the
+  tree) and **test pollution** (the autouse fixture is in `tests/conftest.py`,
+  and `pytest tests/test_server/test_streaming.py tests/test_server/test_health_engine.py`
+  — the order that used to fail three tests — passes 67/67). **Verify before
+  acting on anything below.**
 
-  Two of these have plans: **[`docs/plans/ollama-mlx-runner-subsystem-decision.md`](docs/plans/ollama-mlx-runner-subsystem-decision.md)** and **[`docs/plans/duplicate-runner-ambiguity.md`](docs/plans/duplicate-runner-ambiguity.md)**. **Their shared first step shipped 2026-10-11:** `LoadedModel` now carries `runner` and `digest` from `/api/ps`, and the node card's existing backend label names the runner when it is not `llamacpp`. Both residents verified at `runner=llamacpp`, matching `format=gguf` — so `ModelTagMeta.format` (which `decode_parallelism_for` already uses, and which *is* Ollama's `IsMLX()`) predicts the choice, while `runner` reports what was done. A divergence between them means our model of Ollama's selection is wrong.
+  1. **Phase 1 step 3** of `docs/plans/context-window-blindness.md` — the truncation threshold, deliberately unbuilt. Calibration argues for a size-banded rule, not one ratio: 176 `estimated_tokens`/`prompt_tokens` pairs give a 0.94 median above 100 estimated tokens and ~8x below it, where the chat template dominates.
+  2. **The `/api/ps` total-vs-per-slot contradiction**, still OPEN — and 0.40's `RUNNER` column may have changed what it reports.
+  3. **No CI, and every test runs on one OS** (`docs/issues.md`, 2026-10-22) — the gap that let `herd-node` ship unable to start on Windows past 1,949 tests. The real fix is a GitHub Actions matrix (macOS, Ubuntu, Windows) asserting one heartbeat registers; four `sys.platform` mocks prove a guard exists, not that the agent starts.
+  4. **`/api/embed-text` is unreachable** (`docs/issues.md`, 2026-10-22) — decorated on a router `app.py` never includes, so it 404s and is absent from all 72 paths in `/openapi.json`. Documented in a test docstring for months, which is the point: a docstring did not get it removed.
+  5. **`0.11.3` post-publish checks** — day-after **2026-10-23**, week-after **2026-10-29**.
+
+  **Two plans cover work that is now done, kept for their reasoning rather than their task lists:** **[`docs/plans/ollama-mlx-runner-subsystem-decision.md`](docs/plans/ollama-mlx-runner-subsystem-decision.md)** and **[`docs/plans/duplicate-runner-ambiguity.md`](docs/plans/duplicate-runner-ambiguity.md)**. **Their shared first step shipped 2026-10-11:** `LoadedModel` now carries `runner` and `digest` from `/api/ps`, and the node card's existing backend label names the runner when it is not `llamacpp`. Both residents verified at `runner=llamacpp`, matching `format=gguf` — so `ModelTagMeta.format` (which `decode_parallelism_for` already uses, and which *is* Ollama's `IsMLX()`) predicts the choice, while `runner` reports what was done. A divergence between them means our model of Ollama's selection is wrong.
 
   **One caution on reading the MLX usage numbers:** low traffic to the MLX servers measures *our* cost, never the project's — this is open source, the subsystem is opt-in (`mlx_enabled` defaults False) and published in 9 of 37 skills, so removal is an announced deprecation, never a percentage call. And the 33 GB those two idle servers hold is **not** a fleet-wide tax: it is the price of warm readiness, this box has 334 GB free with zero swap and `underutilized_memory` advising *more* models, and `FLEET_NODE_MLX_SERVERS` is per-node, so a small machine simply runs none.
 
