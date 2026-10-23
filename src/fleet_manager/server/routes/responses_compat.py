@@ -51,7 +51,7 @@ from fleet_manager.server.routes.routing import (
     parse_allow_fallback,
     record_routing_rejection,
     score_with_fallbacks,
-    upstream_incomplete_response,
+    upstream_failure_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -344,7 +344,10 @@ async def responses(request: Request):
         client_err = client_error_passthrough(exc, model=requested_model)
         if client_err is not None:
             return client_err
-        raise
+        # Retries are spent by now (the proxy retries before the first
+        # chunk); a re-raise only produced an opaque 500 and a closed
+        # connection.  Report the backend failure as one.
+        return upstream_failure_response(describe_exception(exc))
     finally:
         proxy.pop_token_counts(inference_req.request_id)
         proxy.pop_request_meta(inference_req.request_id)
@@ -358,7 +361,7 @@ async def responses(request: Request):
             f"Responses[{rid}] non-streaming: backend ended before done:true on "
             f"node={winner.node_id} — answering 502, not a truncated 200"
         )
-        return upstream_incomplete_response()
+        return upstream_failure_response()
     _text = "".join(
         c.get("text", "")
         for o in (response.get("output") or [])

@@ -78,9 +78,9 @@ def client_error_passthrough(exc, *, model: str = "", anthropic: bool = False):
     the caller is told the herd broke when in fact *their request* was invalid,
     and the real reason is buried in our logs (observed 2026-07-17).
 
-    Only 4xx passes through — a 5xx really is a backend failure and keeps its
-    existing retry/500 handling. Returns ``None`` when *exc* isn't a client
-    error, so callers can ``raise`` exactly as before.
+    Only 4xx passes through. Returns ``None`` otherwise, and the caller
+    answers with ``upstream_failure_response`` -- a backend failure, reported
+    as one, rather than an opaque 500.
     """
     if not isinstance(exc, httpx.HTTPStatusError):
         return None
@@ -108,20 +108,29 @@ def client_error_passthrough(exc, *, model: str = "", anthropic: bool = False):
     )
 
 
-def upstream_incomplete_response(*, anthropic: bool = False) -> JSONResponse:
-    """The **502** for a non-streaming request whose backend stream never completed.
+def upstream_failure_response(
+    message: str = UPSTREAM_INCOMPLETE_MESSAGE, *, anthropic: bool = False
+) -> JSONResponse:
+    """The **502** for a non-streaming request whose backend failed it.
 
-    The streaming paths end with an in-stream error event instead; this is the
-    non-streaming half.  Nothing has been sent to the client yet, so the honest
-    answer is an HTTP error -- before 2026-10-22 these returned **200** with the
-    partial text and a normal stop reason, indistinguishable from a real answer.
-    502 because herd is a gateway and the upstream failed it.  Envelope types
+    Two ways that happens, one answer: the backend stream ended without
+    completing (the default message), or it raised mid-stream (the route passes
+    ``describe_exception(exc)``).  The streaming paths end with an in-stream
+    error event instead; this is the non-streaming half.
+
+    Before 2026-10-22 the first case returned **200** with the partial text and
+    a normal stop reason, indistinguishable from a real answer, and the second
+    re-raised into an opaque ``Internal Server Error`` -- and because the
+    exception left the app, uvicorn closed the connection, so the client's
+    *next* request on it failed too.  By the time a route sees either, the
+    proxy's pre-first-chunk retries are spent, so answering here loses none.
+    502 because herd is a gateway and its upstream failed.  Envelope types
     follow each surface: Anthropic's ``api_error``, OpenAI's ``server_error``.
     """
     return JSONResponse(
         status_code=502,
         content=error_body(
-            UPSTREAM_INCOMPLETE_MESSAGE,
+            message,
             "api_error" if anthropic else "server_error",
             anthropic=anthropic,
         ),

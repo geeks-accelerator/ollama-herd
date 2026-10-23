@@ -534,3 +534,53 @@ class TestOpenAIDeliversToolCallsFromTheDoneLine:
         choice = _post(fleet, "openai", stream=False).json()["choices"][0]
         assert [c["function"]["name"] for c in choice["message"]["tool_calls"]] == ["get_weather"]
         assert choice["finish_reason"] == "tool_calls"
+
+
+# ---------------------------------------------------------------------------
+# The backend raises mid-stream (a connection reset), on every surface
+# ---------------------------------------------------------------------------
+
+
+class _ResetAfterOneLine(httpx.AsyncByteStream):
+    """One NDJSON line, then the connection resets -- what a killed runner does."""
+
+    async def __aiter__(self):
+        yield (json.dumps(_line("Partial")) + "\n").encode()
+        raise httpx.ReadError("connection reset by peer")
+
+
+def _backend_resets(client: TestClient) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path in ("/api/chat", "/api/generate"):
+            return httpx.Response(200, stream=_ResetAfterOneLine())
+        return httpx.Response(200, json={})
+
+    _install_mock_ollama(client, "studio", handler)
+
+
+class TestBackendExceptionIsReportedInProtocol:
+    """Streaming: re-raising once SSE headers were sent only tore the connection.
+    Non-streaming: re-raising produced an opaque 500 *and* closed the connection,
+    so a client's next request on it failed too (seen live with the OpenAI SDK)."""
+
+    @pytest.mark.parametrize("surface", SURFACES)
+    def test_streaming_ends_with_an_error_terminal_naming_the_cause(self, fleet, surface):
+        _backend_resets(fleet)
+        text = _post(fleet, surface, stream=True).text
+        assert "connection reset by peer" in text
+        if surface == "openai":
+            assert "[DONE]" not in text
+        elif surface == "anthropic":
+            assert "event: error" in text and "message_stop" not in text
+        else:
+            assert "event: response.failed" in text
+
+    @pytest.mark.parametrize("surface", SURFACES)
+    def test_non_streaming_is_a_502_naming_the_cause(self, fleet, surface):
+        _backend_resets(fleet)
+        resp = _post(fleet, surface, stream=False)
+        assert resp.status_code == 502
+        body = resp.json()
+        err = body["error"]
+        assert err["message"] == "connection reset by peer"
+        assert err["type"] == ("api_error" if surface == "anthropic" else "server_error")

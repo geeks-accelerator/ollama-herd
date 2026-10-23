@@ -52,7 +52,7 @@ from fleet_manager.server.routes.routing import (
     parse_allow_fallback,
     record_routing_rejection,
     score_with_fallbacks,
-    upstream_incomplete_response,
+    upstream_failure_response,
 )
 from fleet_manager.server.routes.text_embedding_compat import (
     RERANK,
@@ -556,7 +556,10 @@ async def chat_completions(request: Request):
                     f"passing through {client_err.status_code}"
                 )
                 return client_err
-            raise
+            # Retries are spent by now (the proxy retries before the first
+            # chunk); a re-raise only produced an opaque 500 and a closed
+            # connection.  Report the backend failure as one.
+            return upstream_failure_response(describe_exception(exc))
 
         if upstream_failed or finish_reason is None:
             proxy.pop_token_counts(inference_req.request_id)
@@ -564,7 +567,7 @@ async def chat_completions(request: Request):
                 f"OpenAI non-streaming {inference_req.request_id[:8]}: backend ended "
                 f"before done:true — answering 502, not a truncated 200"
             )
-            return upstream_incomplete_response()
+            return upstream_failure_response()
 
         # Retrieve real token counts extracted from Ollama response
         tokens = proxy.pop_token_counts(inference_req.request_id)
