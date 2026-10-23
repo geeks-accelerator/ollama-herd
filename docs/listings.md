@@ -51,7 +51,11 @@ formalized two rules: the submitter must attest that *the submission was done by
 human, not a machine/LLM*, and machine- or LLM-generated contributions *will result
 in a ban*. A resubmission has to be written and filed by a person, and the
 attestation is theirs to make. Their data repo takes one YAML file per project
-under `software/`; the closed PR has the one we used.
+under `software/`. **Write it fresh — don't reuse the one in the closed PR:** that
+file was agent-written, and their `CONTRIBUTING.md` forbids an agent writing the
+entry text "that a person will then submit as their own" or the PR description. An
+agent may explain the rules, check the objective requirements, and review an entry
+you wrote, without rewriting it.
 
 ## Submitted — awaiting review
 
