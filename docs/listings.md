@@ -53,6 +53,25 @@ in a ban*. A resubmission has to be written and filed by a person, and the
 attestation is theirs to make. Their data repo takes one YAML file per project
 under `software/`; the closed PR has the one we used.
 
+## Submitted — awaiting review
+
+Opened 2026-10-23. Each is one commit adding one line on a branch cut from that
+day's upstream default branch, checked with the compare API before opening.
+
+| List | Section | Pull request |
+|------|---------|--------------|
+| [ollama/ollama](https://github.com/ollama/ollama) README | Community Integrations › Libraries & SDKs (beside LiteLLM and Portkey) | [ollama/ollama#19246](https://github.com/ollama/ollama/pull/19246) |
+| [awesome-local-llm](https://github.com/rafska/awesome-local-llm) | Tools › Models (beside llama-swap) | [rafska/awesome-local-llm#320](https://github.com/rafska/awesome-local-llm/pull/320) |
+| [Awesome-LLMOps (tensorchord)](https://github.com/tensorchord/Awesome-LLMOps) | Serving › Frameworks/Servers for Serving | [tensorchord/Awesome-LLMOps#1032](https://github.com/tensorchord/Awesome-LLMOps/pull/1032) — the repo enforces DCO, so the commit carries `Signed-off-by` (`git commit -s`) |
+| [awesome-opensource-ai](https://github.com/alvinreal/awesome-opensource-ai) | High-performance Serving & API Servers | [alvinreal/awesome-opensource-ai#878](https://github.com/alvinreal/awesome-opensource-ai/pull/878) — their validator passed |
+| [awesome-codex-cli](https://github.com/RoggeOhta/awesome-codex-cli) | Model Providers & Proxies | [RoggeOhta/awesome-codex-cli#474](https://github.com/RoggeOhta/awesome-codex-cli/pull/474) |
+| [awesome-cli-coding-agents](https://github.com/bradAGI/awesome-cli-coding-agents) | Agent infrastructure (sorted by stars) | [bradAGI/awesome-cli-coding-agents#536](https://github.com/bradAGI/awesome-cli-coding-agents/pull/536) |
+
+The forks live under `twinsgeeks` (the tensorchord one is
+`tensorchord-Awesome-LLMOps`, because `Awesome-LLMOps` is already the InftyAI fork).
+When a PR merges, move its row to *Curated lists* above, after checking the entry on
+the list's default branch.
+
 ## Candidates — not yet submitted
 
 Researched 2026-10-23. Found mostly by searching GitHub for READMEs that already
@@ -66,19 +85,8 @@ writes and files them:
 
 | List | Stars | Section | How to submit |
 |------|------:|---------|---------------|
-| [awesome-claude-code](https://github.com/hesreallyhim/awesome-claude-code) | 56k | Providers, Runtime & Integration Infrastructure | Web-UI issue form only, never a PR; "resource recommendations must be created by human beings", and misuse risks a temporary restriction. Fits because Claude Code runs against herd via `ANTHROPIC_BASE_URL` — see [`guides/claude-code-integration.md`](guides/claude-code-integration.md) |
+| [awesome-claude-code](https://github.com/hesreallyhim/awesome-claude-code) | 56k | Providers, Runtime & Integration Infrastructure | Web-UI issue form only, never a PR; "resource recommendations must be created by human beings", and misuse risks a temporary restriction. One recommendation at a time; eligible (needs 14+ days of active development, or 100 stars). Fits because Claude Code runs against herd via `ANTHROPIC_BASE_URL` — see [`guides/claude-code-integration.md`](guides/claude-code-integration.md) |
 | [awesome-selfhosted](https://github.com/awesome-selfhosted/awesome-selfhosted) | — | — | Resubmission; see above |
-
-**Open to PRs, strong fit:**
-
-| List | Stars | Section | Notes |
-|------|------:|---------|-------|
-| [ollama/ollama](https://github.com/ollama/ollama) README, Community Integrations | 184k | Infrastructure & Deployment | The README invites PRs, but the backlog is large: 15+ integration PRs opened in the week to 2026-10-23, and the last one merged was 2026-10-07. High value, low odds; a one-line entry costs little |
-| [awesome-local-llm](https://github.com/rafska/awesome-local-llm) | 3.0k | Inference engines | Already lists exo, GPUStack, llama-swap, LocalAI. Plain PR, no special rules |
-| [Awesome-LLMOps (tensorchord)](https://github.com/tensorchord/Awesome-LLMOps) | 6.0k | Frameworks/Servers for Serving | Lists GPUStack and vLLM. A different list from the InftyAI one herd is already on |
-| [awesome-opensource-ai](https://github.com/alvinreal/awesome-opensource-ai) | 4.9k | High-performance Serving & API Servers | No star minimum. Format: one factual sentence plus a stars badge |
-| [awesome-codex-cli](https://github.com/RoggeOhta/awesome-codex-cli) | 555 | Model Providers & Proxies | Fits because Codex runs against herd's `/v1/responses` — see [`guides/codex-integration.md`](guides/codex-integration.md). Requires a stars badge in their format |
-| [awesome-cli-coding-agents](https://github.com/bradAGI/awesome-cli-coding-agents) | 1.4k | Agent infrastructure | Lists claude-code-router |
 
 **Possible, weaker fit or extra bar:**
 
@@ -134,6 +142,8 @@ What the four submissions above taught us:
   this kind of tool already is.
 - **Describe, don't sell.** Every merged entry states mechanisms — mDNS discovery,
   the scoring signals, the API surfaces — rather than adjectives.
+- **Look for a DCO check.** Some lists (tensorchord/Awesome-LLMOps) fail any commit
+  without a `Signed-off-by` line; `git commit -s` before pushing saves a force-push.
 - **Verify after merge, on the default branch.** Merged is not the same as present:
   lists get reorganized and entries pruned (awesome-selfhosted removes projects with
   no activity for 6–12 months).
