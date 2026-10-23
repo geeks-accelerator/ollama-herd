@@ -36,6 +36,35 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### A truncated stream is reported to the client as a successful one `OPEN` (2026-10-22)
+
+**Severity:** medium, low frequency. When it happens, a coding agent is handed
+truncated work labelled complete and has no signal to retry.
+
+When Ollama's stream ends without `done:true`, herd records the trace `incomplete`
+correctly — and then every *translated* surface sends the client a success:
+OpenAI gets an unconditional `data: [DONE]` (`streaming.py:790`), Responses gets a
+synthesized `response.completed` with `done_reason: "stop"`
+(`routes/responses_compat.py:284`), and Anthropic gets a synthesized
+`stop_reason: "end_turn"` + `message_stop` on both its Ollama and MLX paths
+(`routes/anthropic_compat.py`). The Ollama-native surface is correct, since a
+native client checks `done` itself.
+
+The synthesis was added so Codex would not hang waiting for a terminal event
+(2026-07-18) — a real requirement, kept by the fix. The error is the *choice* of
+terminal event: it should be `event: error`, `response.failed`, or an in-stream
+`{"error": …}` with no `[DONE]`.
+
+Found by checking whether herd shared a bug Ollama fixed in `0.40.9` ("streams
+ending silently after partial output"). Measured: 60 `incomplete` traces all time,
+54 on the correct `ollama` surface, 6 on translated ones, **0 in the last 60
+days**. Also: `completion_tokens` is NULL on all 60, so the trace store cannot say
+whether the client saw partial output — herd counts streamed tokens per chunk and
+should record them on this path.
+
+**Plan:** `docs/plans/upstream-changes-2026-10.md`, Phase 1 — including verifying
+the new terminal against real Claude Code and Codex, not only mocks.
+
 ### `herd-node` could not start on Windows, on any version `FIXED` (2026-10-22, shipped in `0.11.3`)
 
 **Severity:** critical on Windows, none elsewhere. The node agent never started, so
