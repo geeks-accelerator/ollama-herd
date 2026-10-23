@@ -418,6 +418,27 @@ Research revealed the mechanism: Ollama's scheduler calls `needsReload()` when `
 
 ---
 
+## 2026-10-22: A benchmark that only measures speed will approve a setting that breaks the answer
+
+**Evidence.** The MLX coder was launched with `--quantized-kv-start 0` on the
+strength of the April KV-quantization benchmark, which recorded TTFT, decode and
+memory. It never checked an answer. Six months later a tool-calling probe asked
+for Paris weather and got calls for four other cities. Bisection on isolated
+servers put it on one flag: 8-bit KV from token 0 scored 0/5 (1/5 with the
+production draft model), full precision 5/5, and 8-bit from token 5000 — mlx-lm's
+own default — 8/8. The same session found this box running a patched mlx-lm 0.31.3
+three weeks after the pin moved to 0.32.0: the pin is a line in a script, and a
+`git pull` runs no scripts. Upgrading to 0.32.2 moved the coder from 65 to 124
+tok/s.
+
+**Insight.** A performance experiment that adopts a setting must carry one
+correctness assertion, because every quality failure looks like a speed win to a
+benchmark that cannot read: quantizing the prompt makes prefill faster *and* the
+model wrong. And the default a library ships is evidence — upstream chose 5000 for
+a reason the April run never asked about. The second lesson is the pin's: an
+installed tool version is state on a machine, not a fact in the repo, so check
+`uv tool list` before attributing anything to the version the script names.
+
 ## 2026-10-22: A clean 24-hour soak that proved nothing, and a publish gate that finally held
 
 **Context.** Shipping `0.11.3`, whose headline risk is not any code change but a

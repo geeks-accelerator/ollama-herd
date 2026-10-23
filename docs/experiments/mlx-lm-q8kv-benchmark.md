@@ -6,6 +6,16 @@
 
 **Upstream status**: Two open PRs already implement this exact patch — [ml-explore/mlx-lm#934](https://github.com/ml-explore/mlx-lm/pull/934) (lichengzhe, approved by contributor, not merged) and [ml-explore/mlx-lm#1073](https://github.com/ml-explore/mlx-lm/pull/1073) (deceptech-packet-ninja, more complete — handles `BatchQuantizedKVCache` edge case, closes [#1043](https://github.com/ml-explore/mlx-lm/issues/1043)). We opted not to submit a duplicate PR and instead [commented on #1073 with this benchmark data](https://github.com/ml-explore/mlx-lm/pull/1073#issuecomment-4299866597) to push the merge. Once either PR lands upstream, our local patch (`mlx-lm-server-kv-bits.patch`) becomes unnecessary — just upgrade `mlx_lm` to the release that includes it.
 
+> **Update 2026-10-22 — the `--quantized-kv-start 0` this experiment chose broke
+> output correctness, which it never measured.** This benchmark measured TTFT
+> only, and its own future-work list asked for tool-calling workloads. Measured
+> since, on Qwen3-Coder-30B-A3B with an identical tool-call prompt against an
+> isolated server: 8-bit KV from token 0 gave **0/5** correct (the model
+> answered a question about Paris by inventing a task about four other cities),
+> against **8/8** at mlx-lm's default of 5000. The supervisor now passes 5000.
+> The speed findings below stand; the quality question they left open is
+> answered. See `docs/observations.md` (2026-10-22).
+
 ## Motivation
 
 Earlier testing showed Ollama (llama.cpp engine with `OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0`) was faster than raw `mlx_lm.server` on `qwen3-coder:30b`:

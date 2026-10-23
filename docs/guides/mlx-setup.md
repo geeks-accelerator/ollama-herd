@@ -19,15 +19,26 @@ routing still works against Ollama.
 
 This:
 
-1. Installs `mlx-lm==0.32.0` via `uv tool`. That's the version herd is tested against,
-   and the first with native KV-cache quantization (`--kv-bits`,
-   `--kv-group-size`, `--quantized-kv-start`, mlx-lm PR #1832). The node's
-   `mlx_supervisor` passes those flags to match Ollama's
-   `OLLAMA_KV_CACHE_TYPE=q8_0` tuning.
+1. Installs `mlx-lm==0.32.2` via `uv tool`. That's the version herd is tested against
+   (soaked on the reference fleet 2026-10-22). KV-cache quantization
+   (`--kv-bits`, `--kv-group-size`, `--quantized-kv-start`) has been native
+   since 0.32.0 (mlx-lm PR #1832). The node's `mlx_supervisor` passes
+   `--kv-bits` and `--kv-group-size 64` for servers configured with `kv_bits`,
+   and **`--quantized-kv-start 5000`** — mlx-lm's own default, so the prompt
+   itself stays at full precision and only long contexts are quantized.
+   It used to pass `0`, quantizing from the first token; that broke tool
+   calling on Qwen3-Coder (0/5 correct, against 8/8 at 5000). See
+   `docs/observations.md` (2026-10-22).
 2. Verifies all three flags are live on `mlx_lm.server --help`.
 
 **The script is idempotent.** It's safe to re-run, and does nothing if the
 pinned version is already installed.
+
+**Re-run it after pulling a pin change.** The script is the only thing that
+moves the installed version, so a `git pull` that bumps the pin changes
+nothing on its own. This fleet ran a patched 0.31.3 for three weeks after the
+pin moved to 0.32.0, while these docs said otherwise. Check what is actually
+installed with `uv tool list | grep mlx-lm`.
 
 Before mlx-lm 0.32.0, herd patched these flags in, and every
 `uv tool upgrade mlx-lm` wiped the patch. That is no longer the case. The pin

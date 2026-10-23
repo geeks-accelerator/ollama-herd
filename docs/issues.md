@@ -36,7 +36,7 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
-### A truncated stream is reported to the client as a successful one `OPEN` (2026-10-22)
+### A truncated stream is reported to the client as a successful one `FIXED` (2026-10-22, unreleased)
 
 **Severity:** medium, low frequency. When it happens, a coding agent is handed
 truncated work labelled complete and has no signal to retry.
@@ -66,6 +66,55 @@ should record them on this path.
 
 **Plan:** `docs/plans/upstream-changes-2026-10.md`, Phase 1 — including verifying
 the new terminal against real Claude Code and Codex, not only mocks.
+
+**Fix (2026-10-22):** each surface now sends its protocol's real failure — OpenAI an
+in-stream `{"error": …}` with no `[DONE]`, Responses `response.failed` with a
+populated `error`, Anthropic `event: error`, and non-streaming requests a **502**
+via `routing.upstream_failure_response`. The single cause is named once
+(`common/errors.UPSTREAM_INCOMPLETE`) instead of arriving at three mappers as `""`.
+MLX drops are traced `incomplete`. Verified with the real OpenAI and Anthropic SDKs
+(Python and TypeScript, 40 cells, each mode and surface) against a fake backend
+that drops mid-stream; all surface the failure, and the SDKs retry the 502 by
+default. **Not verified against Claude Code or Codex themselves** — the nested
+Claude Code refused to launch inside this session, and the SDKs are what both CLIs
+are built on. **`completion_tokens` is still NULL on these traces, deliberately:**
+herd's partial count is a `len // 4` estimate, and putting an estimate in a
+measured column is worse than an empty one, so it goes to the warning log line.
+
+### `--quantized-kv-start 0` broke tool calling on the MLX coder `FIXED` (2026-10-22, unreleased)
+
+**Severity:** high on the MLX path, invisible everywhere else. The supervisor passed
+`--quantized-kv-start 0`, so the KV cache was 8-bit from the first prompt token.
+Qwen3-Coder could then not read its own prompt reliably: asked for Paris weather
+with a `get_weather` tool, it answered with calls for four other cities or none.
+Bisected on isolated servers (same weights, same flags otherwise):
+
+| KV | draft model | correct |
+|----|-------------|---------|
+| 8-bit from token 0 | no | 0/5 |
+| 8-bit from token 0 | yes (production) | 1/5 |
+| full precision | yes | 5/5 |
+| 8-bit from token 5000 | yes | 8/8 |
+
+The `0` came from the April KV benchmark, which measured TTFT and memory and never
+checked an answer. Fixed by passing `5000`, mlx-lm's own default — the prompt keeps
+full precision and only long generations quantize. Also pinned mlx-lm **0.32.2**
+(this box had been running a patched 0.31.3, three weeks behind the pin, because
+`setup-mlx.sh` was never re-run): +90% coder decode, +44% GLM.
+
+### One MLX coder instance answered wrongly from its first request, at the fixed setting `OPEN` (2026-10-22)
+
+**Severity:** low frequency, high impact when hit — a wrong tool call, not an error.
+After the fix above, **1 of 5** `--quantized-kv-start 5000` instances, including the
+first live one, scored like the broken setting from its first request, while a
+fresh instance with identical flags on the same weights scored 9/9. The current
+live instance (started 22:13) scored 5/5 on the Paris probe at 22:4x the same day.
+Nothing in the bad instance's log distinguished it.
+Candidates, none tested: draft-model state at startup, a Metal/ MLX kernel cache
+shared between processes, or a prompt-cache entry surviving from before the
+restart. **Next step if it recurs:** keep the bad instance running and diff its
+responses to a fixed prompt against a fresh one before restarting anything —
+restarting is what destroyed the evidence this time.
 
 ### `herd-node` could not start on Windows, on any version `FIXED` (2026-10-22, shipped in `0.11.3`)
 
