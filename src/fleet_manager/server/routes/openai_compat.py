@@ -13,7 +13,11 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from fleet_manager.common.errors import describe_exception
+from fleet_manager.common.errors import (
+    UPSTREAM_INCOMPLETE_MESSAGE,
+    describe_exception,
+    describe_upstream_incomplete,
+)
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.node.text_embedding_models import DEFAULT_RERANK_MODEL
 from fleet_manager.server.fleet_headers import (
@@ -48,12 +52,14 @@ from fleet_manager.server.routes.routing import (
     parse_allow_fallback,
     record_routing_rejection,
     score_with_fallbacks,
+    upstream_incomplete_response,
 )
 from fleet_manager.server.routes.text_embedding_compat import (
     RERANK,
     proxy_to_native_text_server,
 )
 from fleet_manager.server.serializers import model_has_capability
+from fleet_manager.server.streaming import openai_stream_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["openai"])
@@ -253,6 +259,10 @@ async def _serve_openai_via_mlx(
     async def _passthrough():
         first_token_time: float | None = None
         error: Exception | None = None
+        # mlx_lm.server ends a finished stream with `data: [DONE]`.  Without it
+        # the answer is truncated -- previously traced "completed" and simply cut
+        # off for the client.  See UPSTREAM_INCOMPLETE.
+        saw_done = False
         try:
             # already_admitted=True — slot acquired above, we own the release.
             # stream_openai yields bare SSE lines (aiter_lines strips the "\n\n"
@@ -261,21 +271,34 @@ async def _serve_openai_via_mlx(
             async for raw in mlx_proxy.stream_openai(inference_req, already_admitted=True):
                 if first_token_time is None:
                     first_token_time = time.time()
+                if raw.strip() == b"data: [DONE]":
+                    saw_done = True
                 yield raw + b"\n\n"
-        except Exception as exc:  # noqa: BLE001
+            if not saw_done:
+                yield openai_stream_error(UPSTREAM_INCOMPLETE_MESSAGE).encode()
+        except Exception as exc:  # noqa: BLE001 — reported in-stream, not re-raised
             error = exc
             logger.exception(f"OpenAI MLX stream aborted: {type(exc).__name__}: {exc}")
-            raise
+            yield openai_stream_error(describe_exception(exc)).encode()
         finally:
             mlx_proxy._release_slot(model_key)
             mlx_proxy.pop_token_counts(inference_req.request_id)
+            if error is not None:
+                status, err_msg = "failed", describe_exception(error)
+            elif not saw_done:
+                status = "incomplete"
+                err_msg = describe_upstream_incomplete(
+                    "mlx_lm.server", produced_output=first_token_time is not None
+                )
+            else:
+                status, err_msg = "completed", None
             record_trace_mlx(
                 trace_store,
                 inference_req,
                 t_start,
                 first_token_time,
-                "failed" if error else "completed",
-                error_message=describe_exception(error),
+                status,
+                error_message=err_msg,
             )
 
     return StreamingResponse(
@@ -466,8 +489,17 @@ async def chat_completions(request: Request):
 
         async def _stream_and_cleanup():
             """Yield all chunks, then clean up token tracking."""
-            async for chunk in stream:
-                yield chunk
+            try:
+                async for chunk in stream:
+                    yield chunk
+            except Exception as exc:  # noqa: BLE001 — reported in-stream, not re-raised
+                # The proxy already traced it "failed".  Headers are sent, so
+                # re-raising only tears the connection; say it in the protocol.
+                logger.exception(
+                    f"OpenAI stream aborted for {inference_req.request_id[:8]}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                yield openai_stream_error(describe_exception(exc))
             # Streaming callers don't use token counts in the response,
             # so clean up the side-channel dict here.
             proxy.pop_token_counts(inference_req.request_id)
@@ -484,11 +516,23 @@ async def chat_completions(request: Request):
         # text — previously only `content` was collected, so a non-streaming
         # function-calling client got the prose and lost the call entirely.
         collected_tool_calls: list[dict] = []
+        # The stream says how it ended: a finish_reason on its last chunk, or an
+        # in-stream error when the backend stopped before done:true.  Read both
+        # from it rather than re-deriving them -- this response used to hard-code
+        # "stop", so a truncated answer came back as a successful 200.
+        finish_reason: str | None = None
+        upstream_failed = False
         try:
             async for chunk in stream:
                 if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
                     try:
                         data = json.loads(chunk[6:])
+                        if data.get("error"):
+                            upstream_failed = True
+                            continue
+                        finish_reason = (
+                            data.get("choices", [{}])[0].get("finish_reason") or finish_reason
+                        )
                         delta = data.get("choices", [{}])[0].get("delta", {})
                         full_content += delta.get("content", "") or ""
                         for tc in delta.get("tool_calls") or []:
@@ -507,6 +551,14 @@ async def chat_completions(request: Request):
                 )
                 return client_err
             raise
+
+        if upstream_failed or finish_reason is None:
+            proxy.pop_token_counts(inference_req.request_id)
+            logger.warning(
+                f"OpenAI non-streaming {inference_req.request_id[:8]}: backend ended "
+                f"before done:true — answering 502, not a truncated 200"
+            )
+            return upstream_incomplete_response()
 
         # Retrieve real token counts extracted from Ollama response
         tokens = proxy.pop_token_counts(inference_req.request_id)
@@ -539,7 +591,7 @@ async def chat_completions(request: Request):
                             if collected_tool_calls
                             else {"role": "assistant", "content": full_content}
                         ),
-                        "finish_reason": ("tool_calls" if collected_tool_calls else "stop"),
+                        "finish_reason": finish_reason,
                     }
                 ],
                 # cached_tokens is present only when the backend actually

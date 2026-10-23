@@ -24,7 +24,11 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
-from fleet_manager.common.errors import describe_exception
+from fleet_manager.common.errors import (
+    UpstreamIncomplete,
+    describe_exception,
+    describe_upstream_incomplete,
+)
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server import debug_log
 from fleet_manager.server.anthropic_autoroute import resolve_model
@@ -32,6 +36,7 @@ from fleet_manager.server.anthropic_models import AnthropicMessagesRequest
 from fleet_manager.server.anthropic_translator import (
     AnthropicSSEState,
     accumulate_anthropic_response,
+    anthropic_stream_error,
     anthropic_system_to_text,
     anthropic_to_ollama_messages,
     anthropic_tools_to_ollama,
@@ -66,6 +71,7 @@ from fleet_manager.server.routes.routing import (
     parse_allow_fallback,
     record_routing_rejection,
     score_with_fallbacks,
+    upstream_incomplete_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -590,40 +596,19 @@ async def _serve_via_mlx(
                     if first_token_time is None and "content_block_delta" in event:
                         first_token_time = time.time()
                     yield event
-            # Synthesize stop if mlx dropped without finish_reason
             if not state.finished:
-                if state.text_open:
-                    yield (
-                        "event: content_block_stop\ndata: "
-                        + json.dumps(
-                            {
-                                "type": "content_block_stop",
-                                "index": state.text_block_index,
-                            }
-                        )
-                        + "\n\n"
-                    )
-                yield (
-                    "event: message_delta\ndata: "
-                    + json.dumps(
-                        {
-                            "type": "message_delta",
-                            "delta": {
-                                "stop_reason": "end_turn",
-                                "stop_sequence": None,
-                            },
-                            "usage": {"output_tokens": state.output_tokens},
-                        }
-                    )
-                    + "\n\n"
-                )
-                yield (
-                    "event: message_stop\ndata: " + json.dumps({"type": "message_stop"}) + "\n\n"
-                )
-        except Exception as exc:
+                # mlx_lm.server ended the stream without a finish_reason: the
+                # answer is truncated.  End it as a failure, never end_turn --
+                # see UPSTREAM_INCOMPLETE.
+                state.failed = True
+                yield anthropic_stream_error()
+        except Exception as exc:  # noqa: BLE001 — reported in-stream, not re-raised
             error = exc
+            state.failed = True
             logger.exception(f"Anthropic[{rid}] MLX stream aborted: {type(exc).__name__}: {exc}")
-            raise
+            # Headers are already sent, so re-raising only tears the connection
+            # with no explanation.  Tell the client in its own protocol instead.
+            yield anthropic_stream_error(describe_exception(exc))
         finally:
             # Release the admission slot we acquired before entering the
             # StreamingResponse — guaranteed to fire whether iteration
@@ -634,8 +619,17 @@ async def _serve_via_mlx(
             prompt_tok, _completion_tok, cached_tok = mlx_proxy.pop_token_counts(
                 inference_req.request_id
             )
-            status = "failed" if error else "completed"
-            err_msg = describe_exception(error)
+            # Before 2026-10-22 an MLX drop was traced "completed": the synthesized
+            # end_turn set no error, so these never reached the incomplete counts.
+            if error is not None:
+                status, err_msg = "failed", describe_exception(error)
+            elif state.failed:
+                status = "incomplete"
+                err_msg = describe_upstream_incomplete(
+                    "mlx_lm.server", produced_output=first_token_time is not None
+                )
+            else:
+                status, err_msg = "completed", None
             record_trace_mlx(
                 trace_store,
                 inference_req,
@@ -645,7 +639,13 @@ async def _serve_via_mlx(
                 error_message=err_msg,
             )
             elapsed_ms = (time.time() - t_start) * 1000
-            if error is None:
+            if state.failed and error is None:
+                logger.warning(
+                    f"Anthropic[{rid}] MLX stream ended without finish_reason — sent "
+                    f"an error event: output_tok≈{state.output_tokens} "
+                    f"elapsed_ms={elapsed_ms:.0f}"
+                )
+            elif error is None:
                 # Include cache hit rate when available — instantly visible
                 # in the live router log when watching real Claude Code load.
                 cache_pct = (
@@ -1139,7 +1139,6 @@ async def messages(
 
         async def _sse_generator():
             state = AnthropicSSEState(model=body.model)
-            synthesized = False
             error: Exception | None = None
             try:
                 async for line in stream:
@@ -1149,53 +1148,35 @@ async def messages(
                         stop_sequences=body.stop_sequences,
                     ):
                         yield event
-                # If Ollama dropped without done, synthesize a stop so the client doesn't hang
+                # The backend ended without done:true, so the answer is
+                # truncated.  This used to synthesize end_turn + message_stop,
+                # which Claude Code trusted.  Anthropic's protocol has no
+                # stop_reason for a failure; the honest terminal is an error.
                 if not state.finished:
-                    synthesized = True
-                    if state.text_open:
-                        yield (
-                            "event: content_block_stop\ndata: "
-                            + json.dumps(
-                                {
-                                    "type": "content_block_stop",
-                                    "index": state.text_block_index,
-                                }
-                            )
-                            + "\n\n"
-                        )
-                    yield (
-                        "event: message_delta\ndata: "
-                        + json.dumps(
-                            {
-                                "type": "message_delta",
-                                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                                "usage": {"output_tokens": state.output_tokens},
-                            }
-                        )
-                        + "\n\n"
-                    )
-                    stop_data = json.dumps({"type": "message_stop"})
-                    yield f"event: message_stop\ndata: {stop_data}\n\n"
-            except Exception as exc:  # noqa: BLE001 — log and re-raise for FastAPI
+                    state.failed = True
+                    yield anthropic_stream_error()
+            except Exception as exc:  # noqa: BLE001 — reported in-stream, not re-raised
                 error = exc
+                state.failed = True
                 logger.exception(
                     f"Anthropic[{rid}] stream aborted on node={winner.node_id}: "
                     f"{type(exc).__name__}: {exc}"
                 )
-                raise
+                # Headers are already sent: re-raising only tears the connection
+                # with no explanation.  Tell the client in its own protocol.
+                yield anthropic_stream_error(describe_exception(exc))
             finally:
                 proxy.pop_token_counts(inference_req.request_id)
                 proxy.pop_request_meta(inference_req.request_id)
                 elapsed_ms = (time.time() - t_start) * 1000
-                if synthesized:
+                if state.failed:
                     logger.warning(
-                        f"Anthropic[{rid}] stream done (SYNTHESIZED stop — Ollama "
-                        f"dropped before done:true): node={winner.node_id} "
-                        f"tools={len(state.emitted_tools)} "
-                        f"output_tok≈{state.output_tokens} "
-                        f"elapsed_ms={elapsed_ms:.0f}"
+                        f"Anthropic[{rid}] stream FAILED — sent an error event"
+                        + ("" if error else " (backend ended before done:true)")
+                        + f": node={winner.node_id} tools={len(state.emitted_tools)} "
+                        f"output_tok≈{state.output_tokens} elapsed_ms={elapsed_ms:.0f}"
                     )
-                elif error is None:
+                else:
                     logger.info(
                         f"Anthropic[{rid}] stream done: node={winner.node_id} "
                         f"stop={state.stop_reason} tools={len(state.emitted_tools)} "
@@ -1232,11 +1213,18 @@ async def messages(
         proxy.pop_token_counts(inference_req.request_id)
         proxy.pop_request_meta(inference_req.request_id)
 
-    response = accumulate_anthropic_response(
-        chunks,
-        model=body.model,
-        stop_sequences=body.stop_sequences,
-    )
+    try:
+        response = accumulate_anthropic_response(
+            chunks,
+            model=body.model,
+            stop_sequences=body.stop_sequences,
+        )
+    except UpstreamIncomplete:
+        logger.warning(
+            f"Anthropic[{rid}] non-streaming: backend ended before done:true on "
+            f"node={winner.node_id} — answering 502, not a truncated 200"
+        )
+        return upstream_incomplete_response(anthropic=True)
     elapsed_ms = (time.time() - t_start) * 1000
     blocks = response.get("content") or []
     block_types = [b.get("type") for b in blocks]

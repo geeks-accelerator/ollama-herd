@@ -35,6 +35,12 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from fleet_manager.common.errors import (
+    UPSTREAM_INCOMPLETE,
+    UPSTREAM_INCOMPLETE_MESSAGE,
+    UpstreamIncomplete,
+)
+
 logger = logging.getLogger(__name__)
 
 # Parameter name used when bridging a Responses `custom` tool (freeform text
@@ -688,7 +694,14 @@ def _new_id(prefix: str) -> str:
 
 
 def _map_status(done_reason: str) -> str:
-    """Ollama ``done_reason`` → Responses ``status``."""
+    """Ollama ``done_reason`` → Responses ``status``.
+
+    ``UPSTREAM_INCOMPLETE`` -- the backend stream ended before completing -- is
+    ``failed``.  Before 2026-10-22 it reached here as ``""`` and mapped to
+    ``completed``, so Codex was told a truncated turn had finished normally.
+    """
+    if done_reason == UPSTREAM_INCOMPLETE:
+        return "failed"
     return "incomplete" if done_reason == "length" else "completed"
 
 
@@ -905,6 +918,23 @@ def build_responses_object(
     }
 
 
+def responses_failure_events(state: ResponsesSSEState, message: str = "") -> Iterator[str]:
+    """End a streamed turn as ``response.failed``, through the normal terminal path.
+
+    For the two ways a stream fails without a backend terminal: a mid-stream
+    exception, and a stream that ended without ``done:true``.  It feeds
+    ``UPSTREAM_INCOMPLETE`` through
+    ``ollama_chunk_to_responses_events`` rather than building events here, so a
+    failed turn closes its open message item and carries its usage exactly as a
+    completed one does.  A no-op once the turn has finished.
+    """
+    if message:
+        state.error_message = message
+    yield from ollama_chunk_to_responses_events(
+        json.dumps({"done": True, "done_reason": UPSTREAM_INCOMPLETE}), state
+    )
+
+
 def accumulate_responses_object(
     chunks: list[str],
     model: str,
@@ -916,6 +946,7 @@ def accumulate_responses_object(
     tool_calls: list[dict] = []
     input_tokens = output_tokens = 0
     done_reason = ""
+    saw_done = False
     for line in chunks:
         chunk = _parse_ollama_chunk(line)
         if chunk is None:
@@ -929,6 +960,11 @@ def accumulate_responses_object(
             input_tokens = chunk.get("prompt_eval_count") or input_tokens or 0
             output_tokens = chunk.get("eval_count") or output_tokens or 0
             done_reason = chunk.get("done_reason", "") or ""
+            saw_done = True
+    # No done line: the backend ended before completing.  There is no honest
+    # response to build from partial content -- the route answers 502.
+    if not saw_done:
+        raise UpstreamIncomplete(UPSTREAM_INCOMPLETE_MESSAGE)
     return build_responses_object(
         model=model,
         text="".join(text_parts),
@@ -968,6 +1004,9 @@ class ResponsesSSEState:
     input_tokens: int = 0
     output_tokens: int = 0
     finished: bool = False
+    # Why the turn failed, when it did.  Empty means the generic upstream-
+    # incomplete message; set by responses_failure_events for an exception.
+    error_message: str = ""
 
     def _next_seq(self) -> int:
         self.seq += 1
@@ -993,7 +1032,11 @@ def _response_envelope(state: ResponsesSSEState, status: str, output: list[dict]
             "output_tokens": state.output_tokens,
             "total_tokens": state.input_tokens + state.output_tokens,
         },
-        "error": None,
+        "error": (
+            {"code": "server_error", "message": state.error_message or UPSTREAM_INCOMPLETE_MESSAGE}
+            if status == "failed"
+            else None
+        ),
     }
 
 
@@ -1243,10 +1286,13 @@ def ollama_chunk_to_responses_events(line: str, state: ResponsesSSEState) -> Ite
             )
         final_output.extend(state.emitted_tools)
 
+        # A failed turn ends with ``response.failed``, never a ``completed``
+        # event carrying status=failed -- Codex reads the event type.
+        status = _map_status(done_reason)
         yield _ev(
             state,
-            "response.completed",
+            "response.failed" if status == "failed" else "response.completed",
             {
-                "response": _response_envelope(state, _map_status(done_reason), final_output),
+                "response": _response_envelope(state, status, final_output),
             },
         )

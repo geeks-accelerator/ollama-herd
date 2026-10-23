@@ -23,6 +23,7 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from fleet_manager.common.errors import UpstreamIncomplete, describe_exception
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.anthropic_autoroute import resolve_model
 from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
@@ -34,6 +35,7 @@ from fleet_manager.server.responses_translator import (
     input_has_images,
     looks_like_abandoned_preamble,
     ollama_chunk_to_responses_events,
+    responses_failure_events,
     responses_to_openai_body,
 )
 from fleet_manager.server.routes.routing import (
@@ -49,6 +51,7 @@ from fleet_manager.server.routes.routing import (
     parse_allow_fallback,
     record_routing_rejection,
     score_with_fallbacks,
+    upstream_incomplete_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -280,22 +283,25 @@ async def responses(request: Request):
                     for event in ollama_chunk_to_responses_events(line, state):
                         yield event
                 if not state.finished:
-                    # Ollama dropped before done:true — synthesize a terminal
-                    # event so Codex doesn't hang waiting for response.completed.
+                    # Every stream must end with a terminal event or Codex hangs
+                    # waiting for one (2026-07-18) -- but it must be the TRUE one.
+                    # This used to synthesize response.completed, telling Codex a
+                    # truncated turn had finished.  It now gets response.failed.
                     logger.warning(
-                        f"Responses[{rid}] stream ended without done:true on "
-                        f"node={winner.node_id} — synthesizing response.completed"
+                        f"Responses[{rid}] stream ended without a terminal on "
+                        f"node={winner.node_id} — sending response.failed"
                     )
-                    for event in ollama_chunk_to_responses_events(
-                        '{"done":true,"done_reason":"stop"}', state
-                    ):
+                    for event in responses_failure_events(state):
                         yield event
-            except Exception as exc:  # noqa: BLE001 — log and re-raise for FastAPI
+            except Exception as exc:  # noqa: BLE001 — reported in-stream, not re-raised
                 logger.exception(
                     f"Responses[{rid}] stream aborted on node={winner.node_id}: "
                     f"{type(exc).__name__}: {exc}"
                 )
-                raise
+                # Headers are already sent: re-raising only tears the connection,
+                # which Codex reads as a network error with no explanation.
+                for event in responses_failure_events(state, describe_exception(exc)):
+                    yield event
             finally:
                 proxy.pop_token_counts(inference_req.request_id)
                 proxy.pop_request_meta(inference_req.request_id)
@@ -343,9 +349,16 @@ async def responses(request: Request):
         proxy.pop_token_counts(inference_req.request_id)
         proxy.pop_request_meta(inference_req.request_id)
 
-    response = accumulate_responses_object(
-        chunks, model=actual_model, custom_names=custom_tool_names, known_names=known_tool_names
-    )
+    try:
+        response = accumulate_responses_object(
+            chunks, model=actual_model, custom_names=custom_tool_names, known_names=known_tool_names
+        )
+    except UpstreamIncomplete:
+        logger.warning(
+            f"Responses[{rid}] non-streaming: backend ended before done:true on "
+            f"node={winner.node_id} — answering 502, not a truncated 200"
+        )
+        return upstream_incomplete_response()
     _text = "".join(
         c.get("text", "")
         for o in (response.get("output") or [])

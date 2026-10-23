@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A truncated response now reaches the client as a failure, on every surface.** When the backend's stream ended without its terminal line (Ollama's `done:true`, mlx_lm.server's `finish_reason`), herd recorded the trace `incomplete` and then told the client the answer had **finished normally**: OpenAI got an unconditional `data: [DONE]`, Responses a synthesized `response.completed`, Anthropic a synthesized `end_turn` + `message_stop`, and the non-streaming paths an HTTP 200 with the partial text and a normal stop reason. Claude Code and Codex then acted on truncated work with no signal to retry. Each surface now sends its protocol's real failure: OpenAI an in-stream `{"error": …}` with **no** `[DONE]`, Responses `response.failed` with a populated `error`, Anthropic its `event: error`, and non-streaming requests a **502** (nothing has been sent yet, so an honest HTTP error). Every stream still ends with a terminal event — the requirement the old synthesis existed for, since Codex hangs without one — it is now the true one. The partial output still reaches the client before the error. Found by checking whether herd shared a bug Ollama fixed in 0.40.9; herd's version was worse than silence. Root cause was one value: a missing `done` line reached every surface's `done_reason` mapper as `""`, read as a normal stop. Rare on this fleet (6 lifetime cases on translated surfaces, none in 60 days), but the MLX paths were invisible to that count — see below. `docs/plans/upstream-changes-2026-10.md`, Phase 1.
+- **Mid-stream exceptions on the OpenAI, Anthropic and Responses streaming routes are now reported in-stream** instead of re-raised. Once SSE headers are sent, re-raising only tore the connection with no explanation, which clients read as a network fault. The same error terminal as above carries the exception's description.
+
+### Fixed
+
+- **OpenAI clients can now see `finish_reason: "length"`.** The OpenAI surface had no `done_reason` mapper at all — both the streaming done-chunk and the non-streaming response hard-coded `"stop"`, so a client that hit `max_tokens` was told the model chose to stop. `openai_finish_reason` is the missing third mapper beside Anthropic's `_map_done_reason` and Responses' `_map_status`. A tool call on any line of the stream now makes the done-chunk say `tool_calls`; on Ollama 0.40.2 gpt-oss already puts its calls on the done line, but the non-streaming path now reads its `finish_reason` from the stream and always counted calls across every chunk.
+- **MLX stream drops are traced `incomplete`, not `completed`.** On both the Anthropic and OpenAI MLX paths a stream that ended without `finish_reason` / `[DONE]` set no error, so it was recorded as a success — which also means those drops never appeared in the `incomplete` counts.
+- **`no_output` is recorded in production.** 0.11.0's zero-token detection lived only in `_stream_with_tracking`, while every request with `max_retries > 0` — the default is 2 — takes `_stream_with_retry`, which had its own copy of the completion block without it. The two copies are now one `_finish_stream`, so they cannot drift again.
+
 ## [0.11.3] - 2026-10-22
 
 ### Security

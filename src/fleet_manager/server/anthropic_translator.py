@@ -51,6 +51,12 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from fleet_manager.common.errors import (
+    UPSTREAM_INCOMPLETE_MESSAGE,
+    UpstreamIncomplete,
+    error_body,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -326,11 +332,20 @@ class AnthropicSSEState:
     stop_reason: str | None = None
     stop_sequence: str | None = None
     finished: bool = False
+    # The turn ended as a failure (an error event was sent), not a stop.
+    failed: bool = False
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
     """Format one SSE event with `event:` and `data:` lines."""
     return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+
+def anthropic_stream_error(message: str = UPSTREAM_INCOMPLETE_MESSAGE) -> str:
+    """Anthropic's in-stream ``error`` event -- what the real API sends when a
+    stream fails part-way.  The SDK raises on it, so Claude Code sees a failed
+    request it can retry instead of a short ``end_turn`` it would trust."""
+    return _sse("error", error_body(message, "api_error", anthropic=True))
 
 
 def _map_done_reason(done_reason: str, has_tool_calls: bool, stop_seq: str | None) -> str:
@@ -523,6 +538,7 @@ def accumulate_anthropic_response(
     prompt_tok = 0
     completion_tok = 0
     done_reason = ""
+    saw_done = False
 
     for line in chunks:
         line = line.strip()
@@ -557,6 +573,12 @@ def accumulate_anthropic_response(
             prompt_tok = data.get("prompt_eval_count") or prompt_tok
             completion_tok = data.get("eval_count") or completion_tok
             done_reason = data.get("done_reason", "") or done_reason
+            saw_done = True
+
+    # No done line: the backend ended before completing.  There is no honest
+    # response to build from partial content -- the route answers 502.
+    if not saw_done:
+        raise UpstreamIncomplete(UPSTREAM_INCOMPLETE_MESSAGE)
 
     content_blocks: list[dict[str, Any]] = []
     full_text = "".join(text_parts)

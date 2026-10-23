@@ -122,16 +122,24 @@ def create_test_app(tmp_path=None) -> FastAPI:
     app = FastAPI(lifespan=lifespan)
 
     from fleet_manager.server.routes import (
+        anthropic_compat,
         dashboard,
         fleet,
         heartbeat,
         ollama_compat,
         openai_compat,
+        responses_compat,
     )
 
+    # All four inference surfaces, as app.py mounts them.  This helper used to
+    # mount only OpenAI and Ollama, so a behaviour that has to hold on *every*
+    # surface (a truncated stream reaching the client as a failure, 2026-10-22)
+    # could not be tested end to end on Anthropic or Responses through it.
     app.include_router(heartbeat.router)
     app.include_router(openai_compat.router)
     app.include_router(ollama_compat.router)
+    app.include_router(anthropic_compat.router)
+    app.include_router(responses_compat.router)
     app.include_router(fleet.router)
     app.include_router(dashboard.router)
 

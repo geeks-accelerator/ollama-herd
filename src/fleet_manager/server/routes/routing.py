@@ -10,6 +10,7 @@ import uuid
 import httpx
 from fastapi.responses import JSONResponse
 
+from fleet_manager.common.errors import UPSTREAM_INCOMPLETE_MESSAGE, error_body
 from fleet_manager.models.node import MemoryPressure, NodeStatus
 from fleet_manager.models.request import InferenceRequest, RoutingResult
 from fleet_manager.server.model_knowledge import classify_model
@@ -101,12 +102,30 @@ def client_error_passthrough(exc, *, model: str = "", anthropic: bool = False):
     if model and model not in msg:
         msg = f"{msg} (model: {model})"
 
-    content = (
-        {"type": "error", "error": {"type": "invalid_request_error", "message": msg}}
-        if anthropic
-        else {"error": {"message": msg, "type": "invalid_request_error"}}
+    return JSONResponse(
+        status_code=status,
+        content=error_body(msg, "invalid_request_error", anthropic=anthropic),
     )
-    return JSONResponse(status_code=status, content=content)
+
+
+def upstream_incomplete_response(*, anthropic: bool = False) -> JSONResponse:
+    """The **502** for a non-streaming request whose backend stream never completed.
+
+    The streaming paths end with an in-stream error event instead; this is the
+    non-streaming half.  Nothing has been sent to the client yet, so the honest
+    answer is an HTTP error -- before 2026-10-22 these returned **200** with the
+    partial text and a normal stop reason, indistinguishable from a real answer.
+    502 because herd is a gateway and the upstream failed it.  Envelope types
+    follow each surface: Anthropic's ``api_error``, OpenAI's ``server_error``.
+    """
+    return JSONResponse(
+        status_code=502,
+        content=error_body(
+            UPSTREAM_INCOMPLETE_MESSAGE,
+            "api_error" if anthropic else "server_error",
+            anthropic=anthropic,
+        ),
+    )
 
 
 def client_concurrency_response(e: ClientConcurrencyExceeded) -> JSONResponse:

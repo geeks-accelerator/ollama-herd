@@ -11,7 +11,12 @@ from collections.abc import AsyncIterator, Callable
 
 import httpx
 
-from fleet_manager.common.errors import describe_exception
+from fleet_manager.common.errors import (
+    UPSTREAM_INCOMPLETE_MESSAGE,
+    describe_exception,
+    describe_upstream_incomplete,
+    error_body,
+)
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server import debug_log
 from fleet_manager.server.registry import NodeRegistry
@@ -26,6 +31,32 @@ _context_protection_events: list[dict] = []
 # ``_context_protection_events``, because the health engine is stateless and
 # consumes cross-module state through exactly this pattern.
 _non_generatable_models: set[str] = set()
+
+
+def openai_finish_reason(done_reason: str, has_tool_calls: bool) -> str:
+    """Ollama ``done_reason`` -> OpenAI ``finish_reason``.
+
+    The OpenAI surface had no mapper at all: both the streaming done-chunk and
+    the non-streaming response hard-coded ``"stop"``, so a client that hit
+    ``max_tokens`` was told the model chose to stop and could not tell its
+    answer was cut off.  Anthropic (``_map_done_reason``) and Responses
+    (``_map_status``) each already had one; this is the missing third.
+    """
+    if has_tool_calls:
+        return "tool_calls"
+    if done_reason == "length":
+        return "length"
+    return "stop"
+
+
+def openai_stream_error(message: str) -> str:
+    """An in-stream OpenAI error event, sent *instead of* ``[DONE]``.
+
+    The OpenAI SDKs raise on a ``data:`` payload carrying ``error``, so the
+    client sees a failed request rather than a short successful one.
+    ``[DONE]`` is reserved for streams that really finished.
+    """
+    return f"data: {json.dumps(error_body(message, 'server_error'))}\n\n"
 
 
 def get_non_generatable_models() -> frozenset[str]:
@@ -126,6 +157,12 @@ class StreamingProxy:
         # where the route consumes everything at once. This dict is owned by the
         # trace path alone, mirroring _request_tokens.
         self._request_done_reason: dict[str, str] = {}
+        # (output chunks, estimated tokens) the client received from a stream
+        # that ended without done:true.  Written by stream_from_node at the
+        # drop, popped by _record_incomplete -- owned by the trace path, like
+        # _request_done_reason.  Estimates, so they reach the log, never a
+        # measured trace column.
+        self._request_partial: dict[str, tuple[int, int]] = {}
         # Models we've already warned about an inert num_ctx override for.
         self._inert_override_logged: set[tuple[str, int]] = set()
         # Models the backend has told us cannot serve /api/generate at all —
@@ -269,102 +306,15 @@ class StreamingProxy:
             raise
         finally:
             if not error_occurred:
-                # Check if Ollama sent the final done:true chunk.
-                # _request_tokens is only populated when done:true is parsed in stream_from_node.
-                # If missing, the stream ended without completing (Ollama dropped connection).
-                got_done = entry.request.request_id in self._request_tokens
-
-                if got_done:
-                    elapsed_ms = (time.time() - start_time) * 1000
-                    # Read (don't pop) token counts — the route handler may still
-                    # need them for the OpenAI-compat usage response.
-                    prompt_tokens, completion_tokens = self._request_tokens.get(
-                        entry.request.request_id, (None, None)
-                    )
-                    # Feed running averages on the queue (dashboard).  Token
-                    # counts may be None for routes that don't surface them;
-                    # mark_completed handles that gracefully.
-                    queue_manager.mark_completed(
-                        queue_key,
-                        entry,
-                        latency_ms=elapsed_ms,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                    )
-                    logger.info(
-                        f"Request {entry.request.request_id[:8]} completed on "
-                        f"{entry.assigned_node} in {elapsed_ms / 1000:.1f}s "
-                        f"(prompt={prompt_tokens}, completion={completion_tokens})"
-                    )
-                    # Record latency + tokens for dashboard and Signal 4
-                    if self._latency_store:
-                        _create_logged_task(
-                            self._latency_store.record(
-                                entry.assigned_node,
-                                entry.request.model,
-                                elapsed_ms,
-                                prompt_tokens=prompt_tokens,
-                                completion_tokens=completion_tokens,
-                            ),
-                            name=f"latency-record-{entry.request.request_id[:8]}",
-                        )
-                    # A clean done:true with zero generated tokens is not a
-                    # completion -- the backend answered and the model produced
-                    # nothing, which is what a failed load looks like from the
-                    # client side.  Recorded distinctly so it stops being
-                    # counted as a normal response and stops reading as a model
-                    # refusal (the mistake an external project reported: a
-                    # failed load "pointed in the wrong direction").
-                    #
-                    # `completion_tokens` is Ollama's eval_count, which INCLUDES
-                    # reasoning tokens -- verified live: a thinking model given
-                    # num_predict=24 returned eval_count=24 with zero content
-                    # and 41 chars of thinking.  So this cannot misfire on a
-                    # thinking model that spent its budget reasoning, which it
-                    # would if it read content length instead.
-                    #
-                    # `is not None` matters more than the zero: 48,449 completed
-                    # traces on this fleet carry NULL counts (embeddings, MLX),
-                    # and treating NULL as zero would have classified every one
-                    # of them.  See docs/plans/context-window-blindness.md.
-                    produced_nothing = completion_tokens is not None and completion_tokens == 0
-                    if produced_nothing:
-                        # Non-destructive read: _record_trace pops this below.
-                        why = self._request_done_reason.get(entry.request.request_id) or "unknown"
-                        logger.warning(
-                            f"Request {entry.request.request_id[:8]} on "
-                            f"{entry.assigned_node} completed with zero generated "
-                            f"tokens (model={entry.request.model}, "
-                            f"done_reason={why}) — the backend answered but the "
-                            f"model produced nothing; check that node's "
-                            f"llama-server log for a load failure"
-                        )
-                    self._record_trace(
-                        entry,
-                        entry.assigned_node,
-                        start_time,
-                        first_token_time,
-                        "no_output" if produced_nothing else "completed",
-                        response_chunks=capture_chunks,
-                    )
-                else:
-                    # Stream ended without done:true — Ollama dropped the connection
-                    queue_manager.mark_failed(queue_key, entry)
-                    elapsed_ms = (time.time() - start_time) * 1000
-                    logger.warning(
-                        f"Incomplete stream for {entry.request.request_id[:8]} on "
-                        f"{entry.assigned_node} — no done:true received after "
-                        f"{elapsed_ms / 1000:.1f}s"
-                    )
-                    self._record_trace(
-                        entry,
-                        entry.assigned_node,
-                        start_time,
-                        first_token_time,
-                        "incomplete",
-                        error_message="Stream ended without done:true from Ollama",
-                        response_chunks=capture_chunks,
-                    )
+                self._finish_stream(
+                    entry,
+                    entry.assigned_node,
+                    queue_key,
+                    queue_manager,
+                    start_time,
+                    first_token_time,
+                    capture_chunks,
+                )
             else:
                 # Clean up token tracking on error
                 self._request_tokens.pop(entry.request.request_id, None)
@@ -656,63 +606,161 @@ class StreamingProxy:
                 )
                 continue
             else:
-                # Stream ended — check if Ollama sent the final done:true chunk
-                got_done = entry.request.request_id in self._request_tokens
-                elapsed_ms = (time.time() - start_time) * 1000
-
-                if got_done:
-                    prompt_tokens, completion_tokens = self._request_tokens.get(
-                        entry.request.request_id, (None, None)
-                    )
-                    queue_manager.mark_completed(
-                        current_queue_key,
-                        entry,
-                        latency_ms=elapsed_ms,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                    )
-                    logger.info(
-                        f"Request {entry.request.request_id[:8]} completed on {current_node} "
-                        f"in {elapsed_ms / 1000:.1f}s "
-                        f"(prompt={prompt_tokens}, completion={completion_tokens})"
-                    )
-                    if self._latency_store:
-                        _create_logged_task(
-                            self._latency_store.record(
-                                current_node,
-                                entry.request.model,
-                                elapsed_ms,
-                                prompt_tokens=prompt_tokens,
-                                completion_tokens=completion_tokens,
-                            ),
-                            name=f"latency-record-{entry.request.request_id[:8]}",
-                        )
-                    self._record_trace(
-                        entry,
-                        current_node,
-                        start_time,
-                        first_token_time,
-                        "completed",
-                        response_chunks=capture_chunks,
-                    )
-                else:
-                    # Stream ended without done:true — Ollama dropped the connection
-                    queue_manager.mark_failed(current_queue_key, entry)
-                    logger.warning(
-                        f"Incomplete stream for {entry.request.request_id[:8]} on "
-                        f"{current_node} — no done:true received after "
-                        f"{elapsed_ms / 1000:.1f}s"
-                    )
-                    self._record_trace(
-                        entry,
-                        current_node,
-                        start_time,
-                        first_token_time,
-                        "incomplete",
-                        error_message="Stream ended without done:true from Ollama",
-                        response_chunks=capture_chunks,
-                    )
+                self._finish_stream(
+                    entry,
+                    current_node,
+                    current_queue_key,
+                    queue_manager,
+                    start_time,
+                    first_token_time,
+                    capture_chunks,
+                )
                 return
+
+    def _finish_stream(
+        self,
+        entry: QueueEntry,
+        node_id: str,
+        queue_key: str,
+        queue_manager,
+        start_time: float,
+        first_token_time: float | None,
+        capture_chunks: list[str],
+    ) -> None:
+        """Record the outcome of a stream that ended without raising.
+
+        **One definition for both dispatch paths.**  This block used to exist
+        twice -- in ``_stream_with_tracking`` and ``_stream_with_retry`` -- and
+        the copies drifted: 0.11.0 added ``no_output`` detection to the
+        tracking path only, while production always takes the retry path
+        (``max_retries`` defaults to 2), so a zero-token completion could
+        never be recorded as ``no_output`` there.  Found 2026-10-22 while
+        extracting the incomplete branch for the same reason.
+
+        Done-ness is read from ``_request_tokens``, which ``stream_from_node``
+        populates only when it parses Ollama's ``done:true`` line.
+        """
+        request_id = entry.request.request_id
+        if request_id not in self._request_tokens:
+            self._record_incomplete(
+                entry,
+                node_id,
+                queue_key,
+                queue_manager,
+                start_time,
+                first_token_time,
+                capture_chunks,
+            )
+            return
+
+        elapsed_ms = (time.time() - start_time) * 1000
+        # Read (don't pop) token counts — the route handler may still
+        # need them for the OpenAI-compat usage response.
+        prompt_tokens, completion_tokens = self._request_tokens.get(request_id, (None, None))
+        # Feed running averages on the queue (dashboard).  Token
+        # counts may be None for routes that don't surface them;
+        # mark_completed handles that gracefully.
+        queue_manager.mark_completed(
+            queue_key,
+            entry,
+            latency_ms=elapsed_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+        logger.info(
+            f"Request {request_id[:8]} completed on {node_id} in "
+            f"{elapsed_ms / 1000:.1f}s "
+            f"(prompt={prompt_tokens}, completion={completion_tokens})"
+        )
+        # Record latency + tokens for dashboard and Signal 4
+        if self._latency_store:
+            _create_logged_task(
+                self._latency_store.record(
+                    node_id,
+                    entry.request.model,
+                    elapsed_ms,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                ),
+                name=f"latency-record-{request_id[:8]}",
+            )
+        # A clean done:true with zero generated tokens is not a
+        # completion -- the backend answered and the model produced
+        # nothing, which is what a failed load looks like from the
+        # client side.  Recorded distinctly so it stops being
+        # counted as a normal response and stops reading as a model
+        # refusal (the mistake an external project reported: a
+        # failed load "pointed in the wrong direction").
+        #
+        # `completion_tokens` is Ollama's eval_count, which INCLUDES
+        # reasoning tokens -- verified live: a thinking model given
+        # num_predict=24 returned eval_count=24 with zero content
+        # and 41 chars of thinking.  So this cannot misfire on a
+        # thinking model that spent its budget reasoning, which it
+        # would if it read content length instead.
+        #
+        # `is not None` matters more than the zero: 48,449 completed
+        # traces on this fleet carry NULL counts (embeddings, MLX),
+        # and treating NULL as zero would have classified every one
+        # of them.  See docs/plans/context-window-blindness.md.
+        produced_nothing = completion_tokens is not None and completion_tokens == 0
+        if produced_nothing:
+            # Non-destructive read: _record_trace pops this below.
+            why = self._request_done_reason.get(request_id) or "unknown"
+            logger.warning(
+                f"Request {request_id[:8]} on {node_id} completed with zero "
+                f"generated tokens (model={entry.request.model}, "
+                f"done_reason={why}) — the backend answered but the "
+                f"model produced nothing; check that node's "
+                f"llama-server log for a load failure"
+            )
+        self._record_trace(
+            entry,
+            node_id,
+            start_time,
+            first_token_time,
+            "no_output" if produced_nothing else "completed",
+            response_chunks=capture_chunks,
+        )
+
+    def _record_incomplete(
+        self,
+        entry: QueueEntry,
+        node_id: str,
+        queue_key: str,
+        queue_manager,
+        start_time: float,
+        first_token_time: float | None,
+        capture_chunks: list[str],
+    ) -> None:
+        """The backend stream ended without ``done:true``: fail it honestly.
+
+        ``stream_from_node`` has already ended the client's stream with an
+        error terminal (see ``UPSTREAM_INCOMPLETE``); this records the same
+        outcome on the herd side.  The partial-output counts it left in
+        ``_request_partial`` go to the **log line**, not the trace: they are
+        estimates (``len // 4``) and must not be mixed into the measured
+        ``completion_tokens`` column, and digits in ``error_message`` would be
+        mis-filed by ``_categorize_error`` (see ``describe_upstream_incomplete``).
+        """
+        request_id = entry.request.request_id
+        chunks, est_tokens = self._request_partial.pop(request_id, (0, 0))
+        queue_manager.mark_failed(queue_key, entry)
+        elapsed_ms = (time.time() - start_time) * 1000
+        logger.warning(
+            f"Incomplete stream for {request_id[:8]} on {node_id} — no done:true "
+            f"after {elapsed_ms / 1000:.1f}s; client received {chunks} output "
+            f"chunk(s) (~{est_tokens} tokens, estimated) and was sent an error terminal"
+        )
+        self._record_trace(
+            entry,
+            node_id,
+            start_time,
+            first_token_time,
+            "incomplete",
+            error_message=describe_upstream_incomplete("Ollama", produced_output=chunks > 0),
+            response_chunks=capture_chunks,
+        )
 
     async def stream_from_node(self, node_id: str, request: InferenceRequest) -> AsyncIterator[str]:
         """Stream response from a node's Ollama, converting format if needed."""
@@ -727,6 +775,12 @@ class StreamingProxy:
         # Track thinking vs output tokens for thinking-model awareness
         thinking_token_count = 0
         output_token_count = 0
+        # Lines that carried something to the client before any done:true, and
+        # whether done:true arrived.  Together they tell a truncated stream from
+        # a finished one -- see UPSTREAM_INCOMPLETE.
+        output_chunks = 0
+        saw_done = False
+        saw_tool_calls = False
 
         async with client.stream("POST", endpoint, json=ollama_body) as response:
             if response.status_code >= 400:
@@ -746,8 +800,14 @@ class StreamingProxy:
                     # Ollama sends thinking content in message.thinking and
                     # regular content in message.content.
                     msg = parsed.get("message", {})
+                    if msg.get("tool_calls"):
+                        saw_tool_calls = True
                     thinking_text = msg.get("thinking", "")
                     content_text = msg.get("content", "") or parsed.get("response", "")
+                    if not parsed.get("done", False) and (
+                        content_text or thinking_text or msg.get("tool_calls")
+                    ):
+                        output_chunks += 1
                     if thinking_text:
                         # Rough token estimate: ~4 chars per token
                         thinking_token_count += max(1, len(thinking_text) // 4)
@@ -765,6 +825,7 @@ class StreamingProxy:
                         prompt_tok = parsed.get("prompt_eval_count")
                         completion_tok = parsed.get("eval_count")
                         done_reason = parsed.get("done_reason", "")
+                        saw_done = True
                         self._request_tokens[request.request_id] = (
                             prompt_tok,
                             completion_tok,
@@ -783,12 +844,25 @@ class StreamingProxy:
                     logger.warning(f"Malformed JSON from Ollama on {node_id}: {line[:200]}")
                 # Yield in the appropriate format
                 if request.original_format == RequestFormat.OPENAI:
-                    yield self._ollama_to_openai_sse(line, request.model)
+                    yield self._ollama_to_openai_sse(
+                        line, request.model, prior_tool_calls=saw_tool_calls
+                    )
                 else:
                     yield line + "\n"
 
+        if not saw_done:
+            # The backend ended the stream without its terminal line.  Leave the
+            # partial-output counts for _record_incomplete's log line.  OpenAI is
+            # the one surface translated *here*, so its error terminal is sent
+            # here; Anthropic and Responses translate in their routes, which see
+            # their translator unfinished and send theirs.  Ollama-native gets
+            # nothing extra: a native client checks `done` itself, so the bare
+            # end of stream is already the honest signal.
+            self._request_partial[request.request_id] = (output_chunks, output_token_count)
         if request.original_format == RequestFormat.OPENAI:
-            yield "data: [DONE]\n\n"
+            yield (
+                "data: [DONE]\n\n" if saw_done else openai_stream_error(UPSTREAM_INCOMPLETE_MESSAGE)
+            )
 
     def _resolved_num_ctx(self, model: str) -> int | None:
         """The num_ctx this model should load with, or None if unconfigured.
@@ -1672,8 +1746,18 @@ class StreamingProxy:
                 f"for {model} (×{overhead}, min={min_predict})"
             )
 
-    def _ollama_to_openai_sse(self, ollama_json_line: str, model: str) -> str:
-        """Convert a single Ollama NDJSON line to OpenAI SSE format."""
+    def _ollama_to_openai_sse(
+        self, ollama_json_line: str, model: str, prior_tool_calls: bool = False
+    ) -> str:
+        """Convert a single Ollama NDJSON line to OpenAI SSE format.
+
+        ``prior_tool_calls``: whether an earlier line of this stream carried tool
+        calls.  The done line's ``finish_reason`` must say ``tool_calls`` even when
+        the calls arrived before it -- gpt-oss on Ollama 0.40.2 puts them on the
+        done line itself, but nothing guarantees that for every model, and the
+        non-streaming path (which reads ``finish_reason`` from this stream) has
+        always counted calls across all chunks.
+        """
         try:
             data = json.loads(ollama_json_line)
         except json.JSONDecodeError:
@@ -1712,7 +1796,9 @@ class StreamingProxy:
                     {
                         "index": 0,
                         "delta": {},
-                        "finish_reason": "tool_calls" if tool_calls else "stop",
+                        "finish_reason": openai_finish_reason(
+                            data.get("done_reason", "") or "", bool(tool_calls) or prior_tool_calls
+                        ),
                     }
                 ],
             }
