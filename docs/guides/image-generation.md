@@ -162,6 +162,8 @@ curl -o image.png http://localhost:11435/api/generate-image \
 | `seed` | (random) | Entropy seed for reproducible generation |
 | `quantize` | `8` | Quantization level (3, 4, 5, 6, or 8 bit) |
 
+**Seeds are reproducible only within one mflux version.** mflux `0.21`+ runs Z-Image in bfloat16 (about 30% faster on M5), so a seed recorded on an earlier mflux gives a slightly different image. herd passes `seed` through unchanged and has no float32 option; to reproduce an old image exactly, run `mflux-generate-z-image-turbo --float32` directly.
+
 ### Example: Python integration
 
 ```python

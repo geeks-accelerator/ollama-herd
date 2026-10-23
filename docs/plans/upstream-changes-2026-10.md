@@ -1,7 +1,20 @@
 # Upstream changes, October 2026: what herd should do about them
 
-**Status**: 📋 **PROPOSED — audited against the codebase 2026-10-22.** Nothing
-implemented yet. Phase 1 is a confirmed bug; the rest are ordered by evidence.
+**Status**: 🔨 **Phases 1, 2, 4, 5 DONE (2026-10-22, unreleased); 3 gated; 6 scope only.**
+
+| Phase | Outcome |
+|-------|---------|
+| 1 — truncated response reported as success | **Done, and broader than planned.** Non-streaming paths too (now 502), mid-stream exceptions now end in-protocol instead of tearing the connection, and two bugs found while live-testing: gpt-oss's OpenAI tool calls were dropped (they ride the `done` line), and OpenAI clients could never see `finish_reason: "length"`. Verified with the real OpenAI and Anthropic SDKs, Python and TypeScript; **not** with Claude Code or Codex themselves (a nested Claude Code refuses to launch inside a session, and was not bypassed). |
+| 2 — Ollama's four Responses-layer bugs | **No fixes needed.** Each either cannot occur in herd's translator or is already handled; three tests pin that. |
+| 3 — upgrade this box's Ollama | **Not done, deliberately.** Waits for the `0.11.3` day-after check (2026-10-23) so a fleet change cannot confound it, and needs the operator's go-ahead for the app download. |
+| 4 — mlx-lm `0.32.2` | **Done, and it found a correctness bug.** Coder 65 → 124 tok/s, GLM 45 → 64. `--quantized-kv-start 0` broke tool calling (0/5 vs 8/8 at `5000`); now `5000`. This box had been on a patched `0.31.3`. One start-`5000` instance answered wrongly from birth — OPEN in `docs/issues.md`. |
+| 5 — Windows docs | **Done.** `docs/troubleshooting.md` § *Running a node on Windows*, README platform note. |
+| 6 — text-to-speech | Scope only, as planned. |
+| Watch list | mflux bf16 seed note added to `docs/guides/image-generation.md`. |
+
+Unplanned, found on the way: `FLEET_MDNS_SERVICE_TYPE` was inert (fixed), and an
+over-long service type crashed behind a misleading "stale service" message (fails
+fast now).
 
 **Constraints this plan is held to** (CLAUDE.md § Design Principles): greenfield,
 so **no `FLEET_*` on/off flags and no second code path** — the corrected behaviour

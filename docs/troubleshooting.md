@@ -937,6 +937,34 @@ If kills persist, the next layer of defense was previously the Ollama watchdog's
 
 ---
 
+## Running a node on Windows
+
+**Use Ollama `0.40.6` or later.** Earlier Windows builds could leave model runners
+orphaned after Ollama stopped, still holding GPU memory and the port; `0.40.6` fixed
+it upstream. Check with `curl http://localhost:11434/api/version` (or
+`Invoke-RestMethod http://localhost:11434/api/version` in PowerShell). herd reports
+the version in the heartbeat but does not check this floor.
+
+**Before `0.11.3`, `herd-node` could not start on Windows at all** — it registered
+signal handlers the Windows event loop does not support and died before its first
+heartbeat, so the router showed an empty fleet
+([#8](https://github.com/geeks-accelerator/ollama-herd/issues/8)). Upgrade with
+`pip install -U ollama-herd`.
+
+**Stopping a Windows node does not deregister it.** On macOS and Linux, SIGTERM or
+Ctrl-C makes the node tell the router it is draining. Windows has no equivalent
+handler, so the router keeps routing to it until its heartbeat goes stale, then marks
+it offline. A request sent to it in that window fails to connect and is retried
+on another node by the proxy's node-failure retry, which runs before any output is
+sent; a fleet with no other node for that model has nothing to retry onto. The
+startup log says so (`Windows: no SIGTERM/SIGINT drain handlers ...`). There is no
+remote drain command.
+
+**Windows is not CI-tested.** The test suite runs on macOS; the Windows startup path
+is covered by tests that mock the platform, which prove the guard exists, not that
+the agent starts. Reports from real Windows nodes are what found #8 — please file
+one if something misbehaves.
+
 ## Debug Checklist
 
 ## Requests hang with 0 bytes returned when using `num_ctx`

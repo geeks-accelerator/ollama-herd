@@ -221,6 +221,8 @@ Ollama Herd runs on **macOS, Linux, and Windows** — anywhere Ollama runs.
 
 Core routing works identically on all platforms. macOS-only features degrade gracefully.
 
+**Windows nodes:** use `ollama-herd` `0.11.3`+ (earlier versions could not start `herd-node` on Windows) and Ollama `0.40.6`+. Windows is not CI-tested — see [troubleshooting](docs/troubleshooting.md#running-a-node-on-windows).
+
 ## Architecture
 
 ```
