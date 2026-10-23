@@ -476,16 +476,40 @@ def test_ollama_tool_call_becomes_openai_streaming_delta():
     assert tc["id"] and tc["type"] == "function"
 
 
-def test_openai_done_chunk_reports_tool_calls_finish_reason():
+def test_openai_done_line_tool_calls_are_delivered_then_finished():
+    """gpt-oss on Ollama 0.40.2 puts its tool call ON the done line.
+
+    This test used to assert only the finish_reason for that exact input -- and
+    the converter emitted ``delta: {}``, so the call itself was dropped and every
+    OpenAI-format client saw ``finish_reason: tool_calls`` with no call to run.
+    The 2026-07-18 tests covered a call on a *non*-done line, the one shape that
+    worked.  Assert delivery, not just the label.
+    """
     import json as _json
 
     proxy = _make_proxy_with_loaded_model()
     line = _json.dumps({"done": True, "message": {"tool_calls": [
-        {"function": {"name": "bash", "arguments": {}}}]}})
-    chunk = _json.loads(
-        proxy._ollama_to_openai_sse(line, "m").removeprefix("data: ").strip()
+        {"function": {"name": "bash", "arguments": {"cmd": "ls"}}}]}})
+    out = proxy._ollama_to_openai_sse(line, "m")
+    events = [_json.loads(e.removeprefix("data: ")) for e in out.split("\n\n") if e]
+    assert len(events) == 2, "the calls, then the finish"
+    first, last = events[0]["choices"][0], events[1]["choices"][0]
+    assert first["delta"]["tool_calls"][0]["function"]["name"] == "bash"
+    assert first["delta"]["tool_calls"][0]["function"]["arguments"] == '{"cmd": "ls"}'
+    assert first["finish_reason"] is None
+    assert last == {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
+
+
+def test_openai_bare_done_line_is_one_finish_event():
+    """No calls, no content on the done line: exactly one event, as before."""
+    import json as _json
+
+    proxy = _make_proxy_with_loaded_model()
+    out = proxy._ollama_to_openai_sse(
+        _json.dumps({"done": True, "done_reason": "stop", "message": {"content": ""}}), "m"
     )
-    assert chunk["choices"][0]["finish_reason"] == "tool_calls"
+    assert out.count("data: ") == 1
+    assert _json.loads(out.removeprefix("data: "))["choices"][0]["finish_reason"] == "stop"
 
 
 def test_plain_text_streaming_is_unchanged():

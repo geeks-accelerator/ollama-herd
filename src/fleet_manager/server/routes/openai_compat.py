@@ -524,9 +524,15 @@ async def chat_completions(request: Request):
         upstream_failed = False
         try:
             async for chunk in stream:
-                if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
+                # One yielded string can hold several SSE events -- the done line
+                # becomes a delta event plus a finish event when it carries
+                # tool calls -- so parse events, not strings.
+                for event in chunk.split("\n\n"):
+                    event = event.strip()
+                    if not event.startswith("data: ") or event == "data: [DONE]":
+                        continue
                     try:
-                        data = json.loads(chunk[6:])
+                        data = json.loads(event[6:])
                         if data.get("error"):
                             upstream_failed = True
                             continue

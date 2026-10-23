@@ -1787,38 +1787,40 @@ class StreamingProxy:
                 }
             )
 
-        if data.get("done", False):
-            chunk = {
-                "id": chunk_id,
-                "object": "chat.completion.chunk",
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": openai_finish_reason(
-                            data.get("done_reason", "") or "", bool(tool_calls) or prior_tool_calls
-                        ),
-                    }
-                ],
-            }
-        else:
-            content = msg.get("content", "") or data.get("response", "")
-            delta: dict = {}
-            if content:
-                delta["content"] = content
-            if tool_calls:
-                delta["tool_calls"] = tool_calls
-            if not delta:
-                delta["content"] = ""
-            chunk = {
-                "id": chunk_id,
-                "object": "chat.completion.chunk",
-                "model": model,
-                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
-            }
+        content = msg.get("content", "") or data.get("response", "")
+        done = data.get("done", False)
 
-        return f"data: {json.dumps(chunk)}\n\n"
+        def _chunk(delta: dict, finish_reason: str | None) -> str:
+            body = {
+                "id": chunk_id,
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+            }
+            return f"data: {json.dumps(body)}\n\n"
+
+        delta: dict = {}
+        if content:
+            delta["content"] = content
+        if tool_calls:
+            delta["tool_calls"] = tool_calls
+        if not done:
+            return _chunk(delta or {"content": ""}, None)
+
+        # The done line can carry the turn's tool calls itself -- gpt-oss on
+        # Ollama 0.40.2 always does.  This branch used to emit only the finish
+        # chunk with an empty delta, so every OpenAI-format client was told
+        # finish_reason "tool_calls" and never received a call: function
+        # calling through /v1/chat/completions silently did nothing (found
+        # 2026-10-22; Anthropic and Responses process the done line's calls and
+        # were unaffected).  Send what the line carries first, then the finish.
+        finish = _chunk(
+            {},
+            openai_finish_reason(
+                data.get("done_reason", "") or "", bool(tool_calls) or prior_tool_calls
+            ),
+        )
+        return (_chunk(delta, None) + finish) if delta else finish
 
     async def close(self):
         for client in self._clients.values():

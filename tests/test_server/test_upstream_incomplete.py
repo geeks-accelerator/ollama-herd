@@ -496,3 +496,41 @@ class TestMlxStreams:
         text = _mlx_post(mlx_fleet, surface, MLX_COMPLETE).text
         assert "event: error" not in text and '"error"' not in text
         assert mlx_fleet.traces[-1] == ("completed", None)
+
+
+class TestOpenAIDeliversToolCallsFromTheDoneLine:
+    """Route level, both modes: the call gpt-oss puts on its done line must reach
+    the client.  Found while testing this module's fix live -- the earlier
+    behaviour was finish_reason "tool_calls" with no call delivered."""
+
+    DONE_WITH_CALL = [
+        _line("", thinking="planning"),
+        {
+            "model": MODEL,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+                ],
+            },
+            "done": True,
+            "done_reason": "stop",
+            "prompt_eval_count": 5,
+            "eval_count": 9,
+        },
+    ]
+
+    def test_streaming(self, fleet):
+        _backend(fleet, self.DONE_WITH_CALL)
+        payloads = _sse_payloads(_post(fleet, "openai", stream=True).text)
+        calls = [tc for p in payloads for tc in (p["choices"][0]["delta"].get("tool_calls") or [])]
+        assert [c["function"]["name"] for c in calls] == ["get_weather"]
+        assert json.loads(calls[0]["function"]["arguments"]) == {"city": "Paris"}
+        assert payloads[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+    def test_non_streaming(self, fleet):
+        _backend(fleet, self.DONE_WITH_CALL)
+        choice = _post(fleet, "openai", stream=False).json()["choices"][0]
+        assert [c["function"]["name"] for c in choice["message"]["tool_calls"]] == ["get_weather"]
+        assert choice["finish_reason"] == "tool_calls"
