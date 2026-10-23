@@ -6,7 +6,7 @@ import asyncio
 import logging
 import socket
 
-from zeroconf import ServiceStateChange
+from zeroconf import BadTypeInNameException, NamePartTooLongException, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
 from fleet_manager.common.system_metrics import get_local_ip
@@ -14,28 +14,51 @@ from fleet_manager.common.system_metrics import get_local_ip
 logger = logging.getLogger(__name__)
 
 SERVICE_TYPE = "_fleet-manager._tcp.local."
+"""The default service type.  ``FLEET_MDNS_SERVICE_TYPE`` (router) and
+``FLEET_NODE_MDNS_SERVICE_TYPE`` (node) override it -- e.g. to run two herds on
+one LAN without their nodes crossing over.  Both settings were documented and
+read into settings, but until 2026-10-22 neither was passed here, so every herd
+advertised and browsed this constant regardless.  Found when an isolated test
+router on the same machine advertised itself beside the live one."""
 
 
 class FleetServiceAdvertiser:
     """Registers the router as an mDNS service so nodes can discover it."""
 
-    def __init__(self, port: int, service_name: str = "Fleet Manager Router"):
+    def __init__(
+        self,
+        port: int,
+        service_name: str = "Fleet Manager Router",
+        service_type: str = SERVICE_TYPE,
+    ):
         self._port = port
         self._service_name = service_name
+        self._service_type = service_type
         self._azc: AsyncZeroconf | None = None
 
     async def start(self):
         ip = get_local_ip()
         self._azc = AsyncZeroconf()
         info = AsyncServiceInfo(
-            SERVICE_TYPE,
-            f"{self._service_name}.{SERVICE_TYPE}",
+            self._service_type,
+            f"{self._service_name}.{self._service_type}",
             addresses=[socket.inet_aton(ip)],
             port=self._port,
             properties={b"version": b"0.1.0"},
         )
         try:
             await self._azc.async_register_service(info)
+        except (BadTypeInNameException, NamePartTooLongException) as e:
+            # A configuration error, not a stale registration: no retry can fix
+            # it.  The blanket handler below used to catch this too, log "stale
+            # service found, re-registering", fail again, and crash -- sending
+            # the operator after a stale registration that did not exist.
+            await self._azc.async_close()
+            raise ValueError(
+                f"FLEET_MDNS_SERVICE_TYPE {self._service_type!r} is not a valid mDNS "
+                f"service type: {e}. Service names are limited to 15 bytes "
+                f"(RFC 6763), e.g. '_herd-staging._tcp.local.'."
+            ) from e
         except Exception:
             # Stale mDNS registration from a previous crash — close and re-create
             logger.warning("mDNS: stale service found, re-registering")
@@ -53,7 +76,8 @@ class FleetServiceAdvertiser:
 class FleetServiceDiscoverer:
     """Browses for the router's mDNS service. Used by node agents."""
 
-    def __init__(self):
+    def __init__(self, service_type: str = SERVICE_TYPE):
+        self._service_type = service_type
         self._azc: AsyncZeroconf | None = None
         self._browser: AsyncServiceBrowser | None = None
 
@@ -75,7 +99,7 @@ class FleetServiceDiscoverer:
 
         self._azc = AsyncZeroconf()
         self._browser = AsyncServiceBrowser(
-            self._azc.zeroconf, SERVICE_TYPE, handlers=[on_state_change]
+            self._azc.zeroconf, self._service_type, handlers=[on_state_change]
         )
 
         try:

@@ -197,7 +197,9 @@ async def lifespan(app: FastAPI):
     app.state.context_optimizer = context_optimizer
 
     # Start mDNS advertisement
-    advertiser = FleetServiceAdvertiser(settings.port, settings.mdns_service_name)
+    advertiser = FleetServiceAdvertiser(
+        settings.port, settings.mdns_service_name, settings.mdns_service_type
+    )
     await advertiser.start()
 
     # Start background tasks

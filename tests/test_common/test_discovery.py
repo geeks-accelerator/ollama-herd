@@ -95,13 +95,11 @@ class TestAdvertiser:
 
         assert len(azc) == 2, "the failed AsyncZeroconf must be replaced, not reused"
         azc[0].async_close.assert_awaited_once()  # the stale one is closed
-        assert azc[1].async_register_service.await_args.kwargs == {
-            "allow_name_change": True
-        }
+        assert azc[1].async_register_service.await_args.kwargs == {"allow_name_change": True}
 
     async def test_stop_closes_and_is_safe_before_start(self, azc):
         a = FleetServiceAdvertiser(port=11435)
-        await a.stop()          # never started -- must not raise
+        await a.stop()  # never started -- must not raise
         await a.start()
         await a.stop()
         azc[0].async_close.assert_awaited_once()
@@ -126,9 +124,11 @@ class TestAdvertiser:
 class TestDiscoverer:
     async def test_timeout_names_the_manual_escape_hatch(self, azc, monkeypatch):
         """A bare TimeoutError leaves an operator with nothing to do."""
-        monkeypatch.setattr(discovery, "AsyncServiceBrowser", lambda *a, **k: MagicMock(
-            async_cancel=AsyncMock(return_value=None)
-        ))
+        monkeypatch.setattr(
+            discovery,
+            "AsyncServiceBrowser",
+            lambda *a, **k: MagicMock(async_cancel=AsyncMock(return_value=None)),
+        )
         d = FleetServiceDiscoverer()
         with pytest.raises(TimeoutError) as e:
             await d.discover(timeout=0.01)
@@ -172,10 +172,12 @@ class TestDiscoverer:
         monkeypatch.setattr(d, "_resolve_service", _resolve)
 
         task = asyncio.create_task(d.discover(timeout=3.0))
-        await asyncio.sleep(0)                       # let discover() build the browser
+        await asyncio.sleep(0)  # let discover() build the browser
         assert "handler" in captured, "discover() must register a state-change handler"
         captured["handler"](
-            MagicMock(), SERVICE_TYPE, f"Herd.{SERVICE_TYPE}",
+            MagicMock(),
+            SERVICE_TYPE,
+            f"Herd.{SERVICE_TYPE}",
             discovery.ServiceStateChange.Added,
         )
         assert await task == ("10.0.0.9", 11435)
@@ -192,15 +194,14 @@ class TestDiscoverer:
         called = []
         d = FleetServiceDiscoverer()
         monkeypatch.setattr(
-            d, "_resolve_service",
+            d,
+            "_resolve_service",
             lambda *a, **k: _note(called),
         )
 
         task = asyncio.create_task(d.discover(timeout=0.2))
         await asyncio.sleep(0)
-        captured["handler"](
-            MagicMock(), SERVICE_TYPE, "x", discovery.ServiceStateChange.Removed
-        )
+        captured["handler"](MagicMock(), SERVICE_TYPE, "x", discovery.ServiceStateChange.Removed)
         with pytest.raises(TimeoutError):
             await task
         assert not called, "a Removed event must not trigger resolution"
@@ -214,9 +215,10 @@ class TestResolveService:
 
         info = MagicMock()
         info.async_request = AsyncMock(return_value=None)
-        info.addresses = []                      # resolution produced nothing
+        info.addresses = []  # resolution produced nothing
         info.port = 11435
         import fleet_manager.common.discovery as mod
+
         orig = mod.AsyncServiceInfo
         mod.AsyncServiceInfo = lambda *a, **k: info
         try:
@@ -230,3 +232,71 @@ class TestResolveService:
             assert result == {"ip": "10.0.0.9", "port": 11435}
         finally:
             mod.AsyncServiceInfo = orig
+
+
+class TestServiceTypeIsConfigurable:
+    """``FLEET_MDNS_SERVICE_TYPE`` / ``FLEET_NODE_MDNS_SERVICE_TYPE`` are documented
+    and were read into settings, but never reached zeroconf -- every herd used the
+    constant.  Found 2026-10-22 when an isolated test router advertised itself
+    beside the live one under the live type.  Two herds on one LAN could not be
+    kept apart, which is the whole reason the setting exists."""
+
+    CUSTOM = "_herd-staging._tcp.local."
+
+    async def test_advertiser_uses_the_configured_type(self, monkeypatch, azc):
+        captured = {}
+
+        def _info(stype, name, **kw):
+            captured["type"], captured["name"] = stype, name
+            return MagicMock()
+
+        monkeypatch.setattr(discovery, "AsyncServiceInfo", _info)
+        await FleetServiceAdvertiser(port=1, service_name="Herd", service_type=self.CUSTOM).start()
+        assert captured["type"] == self.CUSTOM
+        assert captured["name"] == f"Herd.{self.CUSTOM}"
+
+    async def test_discoverer_browses_the_configured_type(self, azc, monkeypatch):
+        seen = {}
+
+        def _browser(zc, stype, handlers):
+            seen["type"] = stype
+            return MagicMock(async_cancel=AsyncMock(return_value=None))
+
+        monkeypatch.setattr(discovery, "AsyncServiceBrowser", _browser)
+        with pytest.raises(TimeoutError):
+            await FleetServiceDiscoverer(self.CUSTOM).discover(timeout=0.01)
+        assert seen["type"] == self.CUSTOM
+
+    def test_both_entry_points_pass_the_setting_through(self):
+        """The wiring is exactly what was missing, so pin it at the call sites."""
+        import inspect
+
+        from fleet_manager.node import agent
+        from fleet_manager.server import app
+
+        assert "settings.mdns_service_type" in inspect.getsource(app)
+        assert "FleetServiceDiscoverer(self.settings.mdns_service_type)" in inspect.getsource(agent)
+
+    async def test_an_invalid_type_fails_fast_and_names_the_setting(self, azc, monkeypatch):
+        """Configurable now, so a bad value is reachable.  It is a config error:
+        no retry, no "stale service" warning, and a message naming the setting.
+        Found when a 16-byte test type crashed the router behind exactly that
+        misleading warning."""
+        from zeroconf import BadTypeInNameException
+
+        def _factory(*a, **k):
+            m = MagicMock()
+            m.async_register_service = AsyncMock(
+                side_effect=BadTypeInNameException("Service name (x) must be <= 15 bytes")
+            )
+            m.async_close = AsyncMock(return_value=None)
+            azc.append(m)
+            return m
+
+        monkeypatch.setattr(discovery, "AsyncZeroconf", _factory)
+        with pytest.raises(ValueError, match="FLEET_MDNS_SERVICE_TYPE"):
+            await FleetServiceAdvertiser(
+                port=1, service_type="_herd-e2e-scratch._tcp.local."
+            ).start()
+        assert len(azc) == 1, "a config error must not be retried"
+        azc[0].async_close.assert_awaited_once()

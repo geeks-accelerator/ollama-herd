@@ -199,7 +199,7 @@ class NodeAgent:
         # Discover router if not configured
         if not self.router_url:
             logger.info("Discovering Fleet Manager router via mDNS...")
-            discoverer = FleetServiceDiscoverer()
+            discoverer = FleetServiceDiscoverer(self.settings.mdns_service_type)
             ip, port = await discoverer.discover()
             self.router_url = f"http://{ip}:{port}"
             logger.info(f"Found router at {self.router_url}")
