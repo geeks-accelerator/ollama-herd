@@ -354,6 +354,7 @@ Key docs (Claude reads on demand — NOT loaded every turn):
 - `docs/guides/` — image gen, thinking models, request tagging, agent setup, optimizing CLAUDE.md
 - `docs/research/` — local fleet economics, mflux architecture
 - `skills/` — 37 ClawHub skills. Strategy: `docs/skill-publishing-strategy.md`
+- `docs/listings.md` — curated lists that include herd (awesome-mlx, Awesome-LLMOps, awesome-ai-gateway), what each entry says, and submission rules learned. **awesome-selfhosted bans LLM-generated submissions** — a resubmission must be filed by a human
 
 ## Collaboration Standards (Fail-Fast on Truth)
 
