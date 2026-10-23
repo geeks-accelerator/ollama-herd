@@ -758,3 +758,85 @@ def test_abandoned_preamble_detection():
         "Fixed apply_discount to compute price * (1 - pct/100). Both tests pass "
         "now, and I added a guard for an empty sequence while I was there.", 0, 12)
     assert not looks_like_abandoned_preamble("", 0, 12)
+
+
+# ---------------------------------------------------------------------------
+# Bugs Ollama found in its own Responses translation (0.40.5, 0.40.7).
+# herd translates Responses itself, so Ollama's fixes never reach it; these are
+# written in the shape of each failure.  Audit: docs/plans/upstream-changes-2026-10.md,
+# Phase 2.  Each one passed on first write -- kept because it pins behaviour
+# Ollama found worth fixing, so a refactor here cannot quietly reintroduce it.
+# ---------------------------------------------------------------------------
+
+
+def test_continuing_a_conversation_that_contains_custom_tool_calls():
+    """Ollama 0.40.5: the *continuation* broke, not the first round trip.  A full
+    history -- call, output, the model's reply, the user's next turn -- must come
+    out as one well-ordered conversation with the call id threaded through."""
+    msgs = responses_input_to_messages([
+        {"role": "user", "content": "run it"},
+        {"type": "custom_tool_call", "call_id": "c1", "name": "exec", "input": "ls"},
+        {"type": "custom_tool_call_output", "call_id": "c1", "output": "a.txt"},
+        {"type": "message", "role": "assistant",
+         "content": [{"type": "output_text", "text": "Found a.txt"}]},
+        {"role": "user", "content": "now read it"},
+    ])
+    assert [m["role"] for m in msgs] == ["user", "assistant", "tool", "assistant", "user"]
+    call = msgs[1]["tool_calls"][0]
+    assert call["function"]["name"] == "exec"
+    assert msgs[2]["tool_call_id"] == "c1"
+    assert msgs[3]["content"] == "Found a.txt"
+    assert msgs[4]["content"] == "now read it"
+
+
+def test_another_providers_compaction_item_is_dropped_loudly_and_once(caplog, monkeypatch):
+    """Ollama 0.40.7: history carrying another provider's compaction items.
+
+    Dropping is correct, not a gap: a compaction item carries
+    ``encrypted_content`` that only the provider that made it can read, so no
+    local model can use it.  What matters is that the rest of the conversation
+    survives, and that the drop is audible without flooding the log.
+    """
+    import logging
+
+    from fleet_manager.server import responses_translator
+
+    monkeypatch.setattr(responses_translator, "_LOGGED_UNKNOWN_ITEM_TYPES", set())
+    history = [
+        {"type": "compaction", "id": "cmp_1", "encrypted_content": "gAAAAB-opaque"},
+        {"role": "user", "content": "continue"},
+    ]
+    with caplog.at_level(logging.WARNING):
+        first = responses_input_to_messages(history)
+        responses_input_to_messages(history)
+    assert first == [{"role": "user", "content": "continue"}]
+    warnings = [r for r in caplog.records if "compaction" in r.getMessage()]
+    assert len(warnings) == 1, "audible, but once per type"
+
+
+def test_thinking_interleaved_with_a_tool_call_keeps_the_item_order():
+    """Ollama 0.40.7: tool-call events arriving before an open *reasoning* item
+    closed produced misordered or duplicated calls (Codex web search).
+
+    herd cannot hit that exact bug -- it never emits reasoning items; Ollama's
+    ``thinking`` does not reach the Responses output at all -- so this pins the
+    invariant it does have, in the same shape: thinking interleaved around the
+    call, and still one message item closed before one function_call opens.
+    """
+    evts = _events([
+        _ollama(message={"thinking": "plan step 1"}),
+        _ollama(message={"content": "Let me look."}),
+        _ollama(message={"thinking": "call the tool"}),
+        _ollama(message={"tool_calls": [{"function": {"name": "bash", "arguments": {"cmd": "ls"}}}]}),
+        _ollama(done=True, done_reason="stop"),
+    ])
+    added = [e["item"]["type"] for e in evts if e["type"] == "response.output_item.added"]
+    assert "reasoning" not in added
+    assert added.count("function_call") == 1, "no duplicate call"
+    t = _types(evts)
+    msg_done = next(i for i, e in enumerate(evts)
+                    if e["type"] == "response.output_item.done" and e["item"]["type"] == "message")
+    call_added = next(i for i, e in enumerate(evts)
+                      if e["type"] == "response.output_item.added" and e["item"]["type"] == "function_call")
+    assert msg_done < call_added
+    assert t[-1] == "response.completed"

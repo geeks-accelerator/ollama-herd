@@ -18,7 +18,7 @@ The `--extra embedding` now also installs `fastembed` for the **native text embe
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 2011 tests (~25s)
+uv run pytest                    # run all 2014 tests (~25s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -402,7 +402,7 @@ Silent failures are dishonest. Fail fast, fail loud.
 
 ## Current State (as of 2026-10-22)
 
-- **Version: `0.11.3` — published** to PyPI + GitHub + Homebrew on 2026-10-22. A security dependency pass (`docs/plans/security-dependency-upgrades-2026-10.md`) — vision server decodes only JPEG/PNG/WebP, Pillow 13 locally via override, floors raised for `zeroconf`/`python-multipart`/`starlette` (+`fastapi>=0.133.0`), Chart.js pinned with SRI, a CVE gate in `health.sh`, and vision embedding requests are now traced. Plus, found while verifying that merge, **the suite no longer reads the operator's `FLEET_*` environment** — three tests failed here and passed in CI because `~/.zshrc` exports `FLEET_ANTHROPIC_MODEL_MAP`, and the three modules that had already hit this each cleared only the variables their own author remembered. And **`herd-node` could not start on Windows, on any version** — the drain handlers called POSIX-only `add_signal_handler` before the heartbeat loop, so the node never registered ([#8](https://github.com/geeks-accelerator/ollama-herd/issues/8), found by running the overdue day-after check). **2011 tests.**
+- **Version: `0.11.3` — published** to PyPI + GitHub + Homebrew on 2026-10-22. A security dependency pass (`docs/plans/security-dependency-upgrades-2026-10.md`) — vision server decodes only JPEG/PNG/WebP, Pillow 13 locally via override, floors raised for `zeroconf`/`python-multipart`/`starlette` (+`fastapi>=0.133.0`), Chart.js pinned with SRI, a CVE gate in `health.sh`, and vision embedding requests are now traced. Plus, found while verifying that merge, **the suite no longer reads the operator's `FLEET_*` environment** — three tests failed here and passed in CI because `~/.zshrc` exports `FLEET_ANTHROPIC_MODEL_MAP`, and the three modules that had already hit this each cleared only the variables their own author remembered. And **`herd-node` could not start on Windows, on any version** — the drain handlers called POSIX-only `add_signal_handler` before the heartbeat loop, so the node never registered ([#8](https://github.com/geeks-accelerator/ollama-herd/issues/8), found by running the overdue day-after check). **2014 tests.**
 
   **Verified before the soak, on the set a real `pip install` resolves** (built the
   wheel, installed it into a clean 3.14 venv with plain pip so `[tool.uv]`
@@ -410,7 +410,7 @@ Silent failures are dishonest. Fail fast, fail loud.
   onnxruntime 1.31.0, fastembed 0.9.0, cryptography 50.0.2, **pillow 12.3.0** —
   confirming fastembed 0.9's `<13` cap, so the three critical Pillow advisories
   stay open for PyPI users and the format gate is their mitigation, not a fix.
-  **2011 tests pass there**, independent of this repo's lockfile.
+  **2014 tests pass there**, independent of this repo's lockfile.
 
   Then on the live fleet: all five request surfaces non-streaming *and* streaming
   (`/api/chat`, `/api/generate`, `/v1/chat/completions`, `/v1/messages`,
