@@ -511,10 +511,15 @@ def test_probe_fails_open_when_it_cannot_run(exc):
         assert MlxSupervisor._binary_supports_kv_bits("mlx_lm.server")
 
 
-def test_build_cmd_quantizes_kv_from_the_first_token():
-    """Upstream mlx-lm defaults --quantized-kv-start to 5000; herd's retired patch
-    defaulted it to 0.  Passing 0 explicitly keeps that behavior — otherwise every
-    sequence's first 5K tokens would silently stay at full precision."""
+def test_build_cmd_keeps_the_prompt_itself_at_full_precision():
+    """--quantized-kv-start must not be 0.
+
+    It was 0 -- "quantize from the first token", chosen on a TTFT-only benchmark
+    -- and that quantized the system prompt, tools and question themselves.
+    Measured 2026-10-22 on Qwen3-Coder-30B-A3B with an identical tool-call
+    prompt: 0/5 correct at start 0, 8/8 at mlx-lm's default of 5000.  The model
+    answered a question about Paris by inventing one about four other cities.
+    Passed explicitly so a change to mlx-lm's default cannot move it."""
     cmd = MlxSupervisor(model="m", kv_bits=8)._build_cmd("mlx_lm.server")
     i = cmd.index("--quantized-kv-start")
-    assert cmd[i + 1] == "0"
+    assert cmd[i + 1] == "5000"

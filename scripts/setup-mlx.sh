@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-PINNED_VERSION="0.32.0"  # first release with native --kv-bits (PR #1832)
+PINNED_VERSION="0.32.2"  # native --kv-bits since 0.32.0 (PR #1832); see header for why exact
 
 if [[ "$(uname -s)" != "Darwin" ]] || [[ "$(uname -m)" != "arm64" ]]; then
     echo "ERROR: mlx-lm requires macOS on Apple Silicon (arm64)."

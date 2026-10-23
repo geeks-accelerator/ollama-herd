@@ -17,6 +17,7 @@ from fleet_manager.common.errors import (
     UPSTREAM_INCOMPLETE_MESSAGE,
     describe_exception,
     describe_upstream_incomplete,
+    error_body,
 )
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.node.text_embedding_models import DEFAULT_RERANK_MODEL
@@ -203,8 +204,7 @@ async def _serve_openai_via_mlx(
                 content={"error": {"message": str(exc), "type": "model_overloaded"}},
             )
         except (MlxModelMissingError, Exception) as exc:  # noqa: BLE001
-            status = 500 if isinstance(exc, MlxModelMissingError) else 502
-            logger.error(f"OpenAI MLX error ({status}): {type(exc).__name__}: {exc}")
+            logger.error(f"OpenAI MLX error: {type(exc).__name__}: {exc}")
             record_trace_mlx(
                 trace_store,
                 inference_req,
@@ -213,10 +213,21 @@ async def _serve_openai_via_mlx(
                 "failed",
                 error_message=describe_exception(exc),
             )
-            return JSONResponse(
-                status_code=status,
-                content={"error": {"message": str(exc), "type": "api_error"}},
-            )
+            if isinstance(exc, MlxModelMissingError):
+                # herd's own misconfiguration, not the backend's -- a 500.
+                return JSONResponse(
+                    status_code=500,
+                    content=error_body(str(exc), "api_error"),
+                )
+            # A backend 4xx is the caller's error: pass it through as that 4xx
+            # with the backend's own message (read from its body, so no internal
+            # URL).  It used to be a 502 carrying str(exc), which for an httpx
+            # status error names the mlx_lm.server URL -- seen live when mlx-lm
+            # 0.32.2 correctly rejected max_tokens: 0 with a 400.  A 5xx stays a
+            # 502 described by describe_exception, unchanged.
+            return client_error_passthrough(
+                exc, model=inference_req.model
+            ) or upstream_failure_response(describe_exception(exc))
         # pop_token_counts folds cached_tokens into rolling stats as a side effect.
         mlx_proxy.pop_token_counts(inference_req.request_id)
         record_trace_mlx(trace_store, inference_req, t_start, t_start, "completed")

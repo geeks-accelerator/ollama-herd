@@ -429,16 +429,14 @@ async def _serve_via_mlx(
                     "failed",
                     error_message=describe_exception(exc),
                 )
-                return JSONResponse(
-                    status_code=502,
-                    content={
-                        "type": "error",
-                        "error": {
-                            "type": "api_error",
-                            "message": f"MLX backend error: {exc}",
-                        },
-                    },
-                )
+                # A backend 4xx is the caller's error: pass it through as that
+                # 4xx with the backend's own message (read from its body, so no
+                # internal URL).  It used to be a 502 carrying str(exc), which
+                # for an httpx status error names the mlx_lm.server URL.  A 5xx
+                # stays a 502 described by describe_exception, unchanged.
+                return client_error_passthrough(
+                    exc, model=body.model, anthropic=True
+                ) or upstream_failure_response(describe_exception(exc), anthropic=True)
             record_trace_mlx(
                 trace_store,
                 inference_req,

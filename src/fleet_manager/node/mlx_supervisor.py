@@ -512,18 +512,33 @@ class MlxSupervisor:
         ]
         if self.kv_bits in (4, 8):
             # Native in mlx-lm >= 0.32.0 (PR #1832); older versions reject it.
-            # --quantized-kv-start 0 is explicit on purpose: upstream defaults it
-            # to 5000 (quantize only after 5,000 tokens), while the patch herd
-            # used to carry quantized from the first token, like
-            # OLLAMA_KV_CACHE_TYPE=q8_0.  Omitting it would silently leave every
-            # sequence's first 5K tokens at full precision.
+            #
+            # --quantized-kv-start 5000 -- mlx-lm's own default -- passed
+            # explicitly so a future change to that default cannot move it.
+            # This was 0 ("quantize from the first token, like
+            # OLLAMA_KV_CACHE_TYPE=q8_0"), chosen on a TTFT-only benchmark that
+            # never checked output (docs/experiments/mlx-lm-q8kv-benchmark.md
+            # listed tool-calling as future work).  Measured 2026-10-22 on
+            # Qwen3-Coder-30B-A3B, identical tool-call prompt, isolated server:
+            #
+            #   8-bit KV from token 0, no draft      0/5 correct
+            #   8-bit KV from token 0 + draft        1/5  (production config)
+            #   draft only, f16 KV                   5/5
+            #   8-bit KV from token 5000 + draft     8/8
+            #
+            # Quantizing the system prompt, tools and question themselves left
+            # the model unable to read them -- it answered "What's the weather
+            # in Paris?" by inventing a task about four Chinese cities.  Same on
+            # mlx-lm 0.31.3 (herd's old patch) and 0.32.2.  Keeping the first
+            # 5,000 tokens at full precision costs ~0.25 GB per sequence here;
+            # the long contexts the quantization exists for are still quantized.
             cmd += [
                 "--kv-bits",
                 str(self.kv_bits),
                 "--kv-group-size",
                 "64",
                 "--quantized-kv-start",
-                "0",
+                "5000",
             ]
         # Speculative decoding — only add flags when configured.  Main +
         # draft must share the same tokenizer family or acceptance rate

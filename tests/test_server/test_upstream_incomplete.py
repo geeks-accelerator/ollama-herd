@@ -442,6 +442,12 @@ class _FakeMlxProxy:
         for line in self._lines:
             yield line
 
+    def get_repair_stats(self, _model):
+        return {}
+
+    async def completions_non_streaming(self, _req):
+        raise self.raise_on_complete
+
 
 @pytest.fixture
 def mlx_fleet(fleet, monkeypatch):
@@ -584,3 +590,54 @@ class TestBackendExceptionIsReportedInProtocol:
         err = body["error"]
         assert err["message"] == "connection reset by peer"
         assert err["type"] == ("api_error" if surface == "anthropic" else "server_error")
+
+
+def _mlx_status_error(status: int, body: dict) -> httpx.HTTPStatusError:
+    """What mlx_lm.server's client raises -- its str() names the internal URL."""
+    req = httpx.Request("POST", "http://localhost:11441/v1/chat/completions")
+    return httpx.HTTPStatusError(
+        f"Client error '{status}' for url '{req.url}'",
+        request=req,
+        response=httpx.Response(status, json=body, request=req),
+    )
+
+
+class TestMlxNonStreamingErrors:
+    """mlx-lm 0.32.2 rejects max_tokens: 0 with 400 {"error": "max_tokens must be
+    at least 1"} -- its body, captured live.  herd answered that with a 502
+    whose message was str(exc): the wrong status, naming the internal URL."""
+
+    @pytest.mark.parametrize("surface", ["openai", "anthropic"])
+    def test_a_backend_400_passes_through_as_a_400(self, mlx_fleet, surface):
+        proxy = _FakeMlxProxy([])
+        proxy.raise_on_complete = _mlx_status_error(400, {"error": "max_tokens must be at least 1"})
+        mlx_fleet.app.state.mlx_proxy = proxy
+        if surface == "openai":
+            resp = mlx_fleet.post(
+                "/v1/chat/completions",
+                json={"model": MLX_MODEL, "messages": MESSAGES, "max_tokens": 0},
+            )
+        else:
+            resp = mlx_fleet.post(
+                "/v1/messages", json={"model": "claude-test", "max_tokens": 1, "messages": MESSAGES}
+            )
+        assert resp.status_code == 400
+        assert "max_tokens must be at least 1" in resp.text
+        assert "localhost:11441" not in resp.text
+
+    @pytest.mark.parametrize("surface", ["openai", "anthropic"])
+    def test_a_backend_failure_is_still_a_502(self, mlx_fleet, surface):
+        proxy = _FakeMlxProxy([])
+        proxy.raise_on_complete = httpx.ReadError("connection reset")
+        mlx_fleet.app.state.mlx_proxy = proxy
+        if surface == "openai":
+            resp = mlx_fleet.post(
+                "/v1/chat/completions", json={"model": MLX_MODEL, "messages": MESSAGES}
+            )
+        else:
+            resp = mlx_fleet.post(
+                "/v1/messages",
+                json={"model": "claude-test", "max_tokens": 64, "messages": MESSAGES},
+            )
+        assert resp.status_code == 502
+        assert "connection reset" in resp.text
