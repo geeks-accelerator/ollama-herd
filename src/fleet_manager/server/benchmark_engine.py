@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from fleet_manager.common.stats import percentile
+
 logger = logging.getLogger(__name__)
 
 # KV cache estimate per concurrent request (same as queue manager)
@@ -494,18 +496,6 @@ async def warmup(
             passed.append(t)
 
     return passed
-
-
-def percentile(values: list[float], p: float) -> float:
-    if not values:
-        return 0.0
-    sorted_v = sorted(values)
-    k = (len(sorted_v) - 1) * (p / 100.0)
-    f = int(k)
-    c = f + 1
-    if c >= len(sorted_v):
-        return sorted_v[f]
-    return sorted_v[f] + (k - f) * (sorted_v[c] - sorted_v[f])
 
 
 async def poll_fleet_status(

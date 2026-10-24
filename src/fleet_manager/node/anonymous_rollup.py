@@ -28,11 +28,8 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from fleet_manager.node.daily_rollup import (
-    _categorize_error,
-    _percentile,
-    _yesterday_utc_bounds,
-)
+from fleet_manager.common.errors import categorize_error
+from fleet_manager.common.stats import percentile
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +97,8 @@ async def build_anonymous_rollup(
     install_id: str,
     agent_version: str,
     data_dir: str = "~/.fleet-manager",
-    day: str | None = None,
+    *,
+    day: str,
     nickname: str = "",
 ) -> dict:
     """Build one day's anonymous rollup.  Returns a dict ready to POST.
@@ -112,12 +110,10 @@ async def build_anonymous_rollup(
     from fleet_manager.server.latency_store import LatencyStore
     from fleet_manager.server.trace_store import TraceStore
 
-    if day is None:
-        day, start_ts, end_ts = _yesterday_utc_bounds()
-    else:
-        dt = datetime.fromisoformat(day).replace(tzinfo=UTC)
-        start_ts = dt.timestamp()
-        end_ts = start_ts + 86400
+    # ``day`` is required: the one live caller (``community_telemetry.send_once``)
+    # decides which closed day to report, so this builder never guesses.
+    start_ts = datetime.fromisoformat(day).replace(tzinfo=UTC).timestamp()
+    end_ts = start_ts + 86400
 
     # 1. Token counts + latency samples per model.
     totals: dict[str, dict] = {}
@@ -181,7 +177,7 @@ async def build_anonymous_rollup(
                 entry["success_count"] = entry.get("success_count", 0) + 1
             elif status == "failed":
                 entry["error_count"] = entry.get("error_count", 0) + 1
-                category = _categorize_error(err_msg)
+                category = categorize_error(err_msg)
                 errors[category] = errors.get(category, 0) + 1
             # "retried" is an intermediate state: neither success nor error.
     finally:
@@ -193,8 +189,8 @@ async def build_anonymous_rollup(
     entries = []
     for model, agg in sorted(totals.items()):
         samples = latency_by_model.get(model, [])
-        p50 = _percentile(samples, 50)
-        p95 = _percentile(samples, 95)
+        p50 = percentile(samples, 50)
+        p95 = percentile(samples, 95)
         entries.append(
             {
                 "model": model[:160],

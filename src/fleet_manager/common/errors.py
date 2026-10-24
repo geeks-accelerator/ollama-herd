@@ -2,14 +2,14 @@
 
 Exceptions reach three places that all need a *non-empty* description: the
 JSONL log, the ``error_message`` column in ``request_traces``, and — via
-``_categorize_error`` — the anonymous community telemetry error histogram.
+``categorize_error`` — the anonymous community telemetry error histogram.
 
 The trap is that several exception classes we hit constantly stringify to the
 empty string.  ``httpx.ReadTimeout()``, ``httpx.ConnectTimeout()`` and
 ``asyncio.CancelledError()`` all have ``str(exc) == ""``, so the obvious
 ``error_message=str(exc)`` records a failure with no cause.  That is how the
 first real community telemetry payload arrived carrying ``errors:
-{"unknown": 1}``: ``_categorize_error`` returns ``"unknown"`` for any falsy
+{"unknown": 1}``: ``categorize_error`` returns ``"unknown"`` for any falsy
 message, so a missing message at the source looked like a categorisation gap
 in the histogram (``docs/issues.md`` — MLX empty ``error_message``).
 
@@ -18,7 +18,7 @@ a message, so paths that previously recorded ``str(exc)`` keep recording the
 exact same bytes.  It only changes the empty case, where it substitutes the
 class name — which is both the most useful thing available and, not by
 accident, categorisable: ``ReadTimeout`` contains "timeout", and
-``_categorize_error`` grew matching rules for the rest.
+``categorize_error`` grew matching rules for the rest.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ __all__ = [
     "UPSTREAM_INCOMPLETE",
     "UPSTREAM_INCOMPLETE_MESSAGE",
     "UpstreamIncomplete",
+    "categorize_error",
     "describe_exception",
     "describe_upstream_incomplete",
     "error_body",
@@ -69,6 +70,70 @@ def describe_exception(exc: BaseException | None) -> str | None:
 # ``done_reason`` that drives Responses' existing ``_map_status`` to ``failed``.
 # See docs/plans/upstream-changes-2026-10.md, Phase 1.
 
+
+def categorize_error(error_message: str | None) -> str:
+    """Map a raw error message to a short category name.
+
+    The categories are what the anonymous community telemetry publishes as
+    its error histogram (``errors`` in the payload), so they are part of the
+    wire contract: renaming one changes what ollamaherd.com receives.  Raw
+    error text never leaves the machine; only these names do.
+
+    Keep names short, snake_case, and descriptive enough that an
+    operator reading "error_breakdown: {context_too_long: 12}" on the
+    dashboard immediately knows what's wrong.
+    """
+    if not error_message:
+        return "unknown"
+    msg = error_message.lower()
+
+    # HTTP-layer errors (what we see most from Ollama)
+    if "404" in msg and "not found" in msg:
+        return "model_not_found"
+    if "400" in msg and ("context" in msg or "num_ctx" in msg):
+        return "context_too_long"
+    if "400" in msg:
+        return "bad_request"
+    if "500" in msg or "502" in msg or "503" in msg or "504" in msg:
+        return "server_error"
+
+    # Resource errors
+    if "out of memory" in msg or "vram" in msg or "cuda oom" in msg:
+        return "vram_exceeded"
+    if "context" in msg and ("too long" in msg or "exceeds" in msg):
+        return "context_too_long"
+    if "permission" in msg:
+        return "permission_error"
+
+    # Network / timeout.  The bare-class-name forms matter: several httpx and
+    # asyncio exceptions stringify to "", so describe_exception() records the
+    # class name instead and these rules are what keep it out of "unknown"
+    # (see fleet_manager.common.errors).  "ReadTimeout"/"ConnectTimeout" are
+    # already caught by the "timeout" substring above.
+    if "timeout" in msg or "timed out" in msg:
+        return "timeout"
+    if (
+        "connecterror" in msg
+        or "connectionerror" in msg
+        or "remoteprotocolerror" in msg
+        or "readerror" in msg
+        or "writeerror" in msg
+        or (
+            "connection" in msg
+            and ("refused" in msg or "reset" in msg or "closed" in msg or "aborted" in msg)
+        )
+    ):
+        return "connection_error"
+
+    # Client disconnects (streaming).  Starlette ends a disconnected streaming
+    # response by cancelling the task, so CancelledError is the common shape --
+    # and it is one of the exceptions whose str() is empty.
+    if "disconnect" in msg or "generatorexit" in msg or "cancellederror" in msg:
+        return "client_disconnected"
+
+    return "other"
+
+
 UPSTREAM_INCOMPLETE = "upstream_incomplete"
 """The ``done_reason`` meaning *the backend stream ended before completing*."""
 
@@ -89,7 +154,7 @@ class UpstreamIncomplete(Exception):  # noqa: N818 -- named for the condition, l
 def describe_upstream_incomplete(backend: str, *, produced_output: bool) -> str:
     """The trace ``error_message`` for a stream that ended before completing.
 
-    **Must stay free of digits.**  ``_categorize_error`` files a message by
+    **Must stay free of digits.**  ``categorize_error`` files a message by
     substring -- ``"500"``, ``"502"``, ``"400"`` anywhere in it -- so a chunk
     count of 500 would publish a truncated stream as ``server_error`` in the
     community telemetry histogram.  Exact counts go to the log line instead,

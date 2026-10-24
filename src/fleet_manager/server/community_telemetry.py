@@ -158,7 +158,8 @@ async def build_herd_rollup(
     install_id: str,
     agent_version: str,
     data_dir: str = "~/.fleet-manager",
-    day: str | None = None,
+    *,
+    day: str,
     nickname: str = "",
 ) -> dict:
     """Build the herd's payload for one closed day.
@@ -168,9 +169,6 @@ async def build_herd_rollup(
     deltas would silently under-count on replay with nothing to alert on.
     """
     from fleet_manager.node.anonymous_rollup import build_anonymous_rollup
-
-    if day is None:
-        day = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
 
     # Per-model aggregates reuse the v1 builder: same stores, same privacy
     # whitelist, same error categorisation.  Only the identity and the device

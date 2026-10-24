@@ -40,11 +40,11 @@ from fleet_manager.common.errors import (
     UPSTREAM_INCOMPLETE,
     UPSTREAM_INCOMPLETE_MESSAGE,
     UpstreamIncomplete,
+    categorize_error,
     describe_upstream_incomplete,
     error_body,
 )
 from fleet_manager.models.config import ServerSettings
-from fleet_manager.node.daily_rollup import _categorize_error
 from fleet_manager.server.anthropic_translator import (
     AnthropicSSEState,
     accumulate_anthropic_response,
@@ -96,7 +96,7 @@ HIT_MAX_TOKENS = [
 
 class TestTheTraceMessage:
     """The message reaches the published telemetry histogram via
-    ``_categorize_error``, which matches substrings like "500" anywhere."""
+    ``categorize_error``, which matches substrings like "500" anywhere."""
 
     @pytest.mark.parametrize("backend", ["Ollama", "mlx_lm.server"])
     @pytest.mark.parametrize("produced_output", [True, False])
@@ -105,11 +105,11 @@ class TestTheTraceMessage:
         assert not any(c.isdigit() for c in msg), msg
         # The previous message ("Stream ended without done:true from Ollama")
         # also filed as "other"; a fix here must not move the published category.
-        assert _categorize_error(msg) == "other"
+        assert categorize_error(msg) == "other"
 
     def test_a_count_in_the_message_would_have_been_misfiled(self):
         """Pins *why* the counts go to the log line and not the trace."""
-        assert _categorize_error("Stream ended after 500 chunks") == "server_error"
+        assert categorize_error("Stream ended after 500 chunks") == "server_error"
 
     def test_says_whether_the_client_got_anything(self):
         assert "partial" in describe_upstream_incomplete("Ollama", produced_output=True)

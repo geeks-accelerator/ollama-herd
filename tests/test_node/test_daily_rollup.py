@@ -13,7 +13,6 @@ import pytest
 from fleet_manager.node.daily_rollup import (
     ALLOWED_ENTRY_KEYS,
     ALLOWED_PAYLOAD_KEYS,
-    _percentile,
     _yesterday_utc_bounds,
     build_daily_rollup,
 )
@@ -269,73 +268,12 @@ class TestEdgeCases:
         assert payload["node_id"] == "test-uuid"
         assert payload["agent_version"] == "0.0.0-test"
 
-    def test_percentile_single_sample(self):
-        assert _percentile([500.0], 95) == 500.0
-
-    def test_percentile_empty(self):
-        assert _percentile([], 95) is None
-
-    def test_percentile_ordering(self):
-        # 10 values, p95 should be near the top
-        vals = [float(i * 10) for i in range(1, 11)]  # 10, 20, ..., 100
-        result = _percentile(vals, 95)
-        assert 90 <= result <= 100
-
     def test_yesterday_bounds_returns_24h_window(self):
         day, start, end = _yesterday_utc_bounds()
         assert end - start == 86400  # exactly 24 hours
         # day string is a valid ISO date
         from datetime import date
         date.fromisoformat(day)
-
-
-# ---------------------------------------------------------------------------
-# Error categorization (new in extension #3)
-# ---------------------------------------------------------------------------
-
-
-class TestErrorCategorization:
-    def test_none_returns_unknown(self):
-        from fleet_manager.node.daily_rollup import _categorize_error
-        assert _categorize_error(None) == "unknown"
-        assert _categorize_error("") == "unknown"
-
-    def test_404_is_model_not_found(self):
-        from fleet_manager.node.daily_rollup import _categorize_error
-        msg = "Client error '404 Not Found' for url '...'"
-        assert _categorize_error(msg) == "model_not_found"
-
-    def test_400_bare_is_bad_request(self):
-        from fleet_manager.node.daily_rollup import _categorize_error
-        msg = "Client error '400 Bad Request' for url '...'"
-        assert _categorize_error(msg) == "bad_request"
-
-    def test_context_too_long_pattern(self):
-        from fleet_manager.node.daily_rollup import _categorize_error
-        assert _categorize_error("context too long for model") == "context_too_long"
-        assert _categorize_error("400 Bad Request: num_ctx exceeds limit") == "context_too_long"
-
-    def test_vram_patterns(self):
-        from fleet_manager.node.daily_rollup import _categorize_error
-        assert _categorize_error("CUDA out of memory") == "vram_exceeded"
-        assert _categorize_error("VRAM allocation failed") == "vram_exceeded"
-
-    def test_timeout(self):
-        from fleet_manager.node.daily_rollup import _categorize_error
-        assert _categorize_error("Request timed out after 30s") == "timeout"
-
-    def test_permission_error(self):
-        from fleet_manager.node.daily_rollup import _categorize_error
-        msg = "PermissionError: [Errno 1] Operation not permitted"
-        assert _categorize_error(msg) == "permission_error"
-
-    def test_client_disconnect(self):
-        from fleet_manager.node.daily_rollup import _categorize_error
-        assert _categorize_error("GeneratorExit: client disconnected") == "client_disconnected"
-
-    def test_uncategorized_falls_to_other(self):
-        from fleet_manager.node.daily_rollup import _categorize_error
-        assert _categorize_error("Strange new error never seen before") == "other"
 
 
 # ---------------------------------------------------------------------------

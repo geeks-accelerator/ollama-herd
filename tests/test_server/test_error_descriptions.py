@@ -2,7 +2,7 @@
 
 The MLX path wrote status='failed' with an empty error_message, which surfaced
 as a dashboard failure with no cause and, worse, as an `unknown` bucket in the
-published community telemetry histogram -- `_categorize_error` returns
+published community telemetry histogram -- `categorize_error` returns
 "unknown" for any falsy message, so a missing message at the source reads as a
 categorisation gap in the stats. Found via the first real community payload
 carrying `errors: {"unknown": 1}`.
@@ -18,8 +18,7 @@ import pathlib
 import httpx
 import pytest
 
-from fleet_manager.common.errors import describe_exception
-from fleet_manager.node.daily_rollup import _categorize_error
+from fleet_manager.common.errors import categorize_error, describe_exception
 
 
 class TestDescribeException:
@@ -73,7 +72,7 @@ class TestCategorisation:
         ],
     )
     def test_bare_class_names_do_not_fall_through_to_unknown(self, exc, expected):
-        assert _categorize_error(describe_exception(exc)) == expected
+        assert categorize_error(describe_exception(exc)) == expected
 
     @pytest.mark.parametrize(
         "msg,expected",
@@ -88,11 +87,11 @@ class TestCategorisation:
     )
     def test_messages_that_already_categorised_still_do(self, msg, expected):
         """Regression guard: the new rules must not capture existing messages."""
-        assert _categorize_error(msg) == expected
+        assert categorize_error(msg) == expected
 
     def test_unknown_is_reserved_for_a_genuinely_absent_message(self):
-        assert _categorize_error(None) == "unknown"
-        assert _categorize_error("") == "unknown"
+        assert categorize_error(None) == "unknown"
+        assert categorize_error("") == "unknown"
 
 
 class TestMlxTraceNeverRecordsACauselessFailure:
@@ -122,7 +121,7 @@ class TestMlxTraceNeverRecordsACauselessFailure:
 
         asyncio.run(_run())
         assert recorded["error_message"]
-        assert _categorize_error(recorded["error_message"]) != "unknown"
+        assert categorize_error(recorded["error_message"]) != "unknown"
 
     def test_a_completed_status_is_not_given_a_fake_error(self):
         from fleet_manager.server.mlx_proxy import record_trace_mlx
@@ -163,3 +162,44 @@ class TestCallSitesUseTheHelper:
         assert "error_message=str(exc)" not in src
         assert "error_message=str(e) or repr(e)" not in src
         assert "describe_exception" in src
+
+
+# ---------------------------------------------------------------------------
+# categorize_error -- the published error histogram's categories
+# (moved here from test_daily_rollup when the account pipeline was removed)
+# ---------------------------------------------------------------------------
+
+
+class TestErrorCategorization:
+    def test_none_returns_unknown(self):
+        assert categorize_error(None) == "unknown"
+        assert categorize_error("") == "unknown"
+
+    def test_404_is_model_not_found(self):
+        msg = "Client error '404 Not Found' for url '...'"
+        assert categorize_error(msg) == "model_not_found"
+
+    def test_400_bare_is_bad_request(self):
+        msg = "Client error '400 Bad Request' for url '...'"
+        assert categorize_error(msg) == "bad_request"
+
+    def test_context_too_long_pattern(self):
+        assert categorize_error("context too long for model") == "context_too_long"
+        assert categorize_error("400 Bad Request: num_ctx exceeds limit") == "context_too_long"
+
+    def test_vram_patterns(self):
+        assert categorize_error("CUDA out of memory") == "vram_exceeded"
+        assert categorize_error("VRAM allocation failed") == "vram_exceeded"
+
+    def test_timeout(self):
+        assert categorize_error("Request timed out after 30s") == "timeout"
+
+    def test_permission_error(self):
+        msg = "PermissionError: [Errno 1] Operation not permitted"
+        assert categorize_error(msg) == "permission_error"
+
+    def test_client_disconnect(self):
+        assert categorize_error("GeneratorExit: client disconnected") == "client_disconnected"
+
+    def test_uncategorized_falls_to_other(self):
+        assert categorize_error("Strange new error never seen before") == "other"

@@ -22,6 +22,9 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 
+from fleet_manager.common.errors import categorize_error as _categorize_error
+from fleet_manager.common.stats import percentile as _percentile
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,86 +72,6 @@ def _yesterday_utc_bounds() -> tuple[str, float, float]:
         yesterday_start.timestamp(),
         today_start.timestamp(),
     )
-
-
-def _categorize_error(error_message: str | None) -> str:
-    """Map a raw error message to a short category name.
-
-    Categories are free-form strings — the platform treats them
-    opaquely.  New categories can be added without a platform migration.
-
-    Keep names short, snake_case, and descriptive enough that an
-    operator reading "error_breakdown: {context_too_long: 12}" on the
-    dashboard immediately knows what's wrong.
-    """
-    if not error_message:
-        return "unknown"
-    msg = error_message.lower()
-
-    # HTTP-layer errors (what we see most from Ollama)
-    if "404" in msg and "not found" in msg:
-        return "model_not_found"
-    if "400" in msg and ("context" in msg or "num_ctx" in msg):
-        return "context_too_long"
-    if "400" in msg:
-        return "bad_request"
-    if "500" in msg or "502" in msg or "503" in msg or "504" in msg:
-        return "server_error"
-
-    # Resource errors
-    if "out of memory" in msg or "vram" in msg or "cuda oom" in msg:
-        return "vram_exceeded"
-    if "context" in msg and ("too long" in msg or "exceeds" in msg):
-        return "context_too_long"
-    if "permission" in msg:
-        return "permission_error"
-
-    # Network / timeout.  The bare-class-name forms matter: several httpx and
-    # asyncio exceptions stringify to "", so describe_exception() records the
-    # class name instead and these rules are what keep it out of "unknown"
-    # (see fleet_manager.common.errors).  "ReadTimeout"/"ConnectTimeout" are
-    # already caught by the "timeout" substring above.
-    if "timeout" in msg or "timed out" in msg:
-        return "timeout"
-    if (
-        "connecterror" in msg
-        or "connectionerror" in msg
-        or "remoteprotocolerror" in msg
-        or "readerror" in msg
-        or "writeerror" in msg
-        or (
-            "connection" in msg
-            and ("refused" in msg or "reset" in msg or "closed" in msg or "aborted" in msg)
-        )
-    ):
-        return "connection_error"
-
-    # Client disconnects (streaming).  Starlette ends a disconnected streaming
-    # response by cancelling the task, so CancelledError is the common shape --
-    # and it is one of the exceptions whose str() is empty.
-    if "disconnect" in msg or "generatorexit" in msg or "cancellederror" in msg:
-        return "client_disconnected"
-
-    return "other"
-
-
-def _percentile(values: list[float], pct: int) -> float | None:
-    """Simple linear-interpolation percentile.  Returns None for empty input.
-
-    Kept inline rather than importing from latency_store to avoid a
-    circular dependency and because the caller holds a list of raw
-    numbers, not a histogram.
-    """
-    if not values:
-        return None
-    sorted_vals = sorted(values)
-    if len(sorted_vals) == 1:
-        return sorted_vals[0]
-    k = (len(sorted_vals) - 1) * pct / 100
-    lo = int(k)
-    hi = min(lo + 1, len(sorted_vals) - 1)
-    frac = k - lo
-    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
 
 
 async def build_daily_rollup(
