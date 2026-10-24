@@ -48,8 +48,6 @@ dependencies = [
     "aiosqlite>=0.20.0",
     # Parses transcription uploads; 0.0.31 closes five parser DoS advisories.
     "python-multipart>=0.0.31",
-    "cryptography>=42.0.0",
-    "websockets>=13.0",
     "tiktoken>=0.7.0",
     # Tool-call JSON repair — recovers model output with minor syntax
     # errors (trailing commas, missing brackets, unescaped quotes) that
