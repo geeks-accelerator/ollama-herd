@@ -308,5 +308,18 @@ category both fail it). The flag tests were mutation-checked too: echoing the to
 value fails 3, and unhiding and un-wiring one flag fails 2. A clean `pip install`
 of the wheel into a fresh Python 3.12 venv contains neither `cryptography` nor
 `cffi`, and `create_app`, the node agent and community telemetry import there.
-Test count 2024 → 1931.
+Test count 2024 → 1931, passing both with the operator's 19 `FLEET_*` variables
+present and with them stripped.
+
+**On the live fleet (2026-10-24):**
+- An isolated `herd --cloud --token … --cloud-url …` (private data dir, private mDNS
+  type, empty env file) started, printed three warnings, served `/fleet/status`, and
+  the token appeared nowhere in its output or logs.
+- The live router and node restarted onto this code with zero errors and warnings.
+  `/api/platform/status` now returns 404, and tool calls through gpt-oss and the
+  MLX coder, `/v1/messages`, `/v1/responses` and `/api/embed` all work.
+
+**Homebrew:** resolving the sdist's closure with brew's one-day cooldown gives 42
+packages, down from 45. `cffi`, `cryptography` and `pycparser` drop out, nothing is
+added, and `websockets` stays.
 
