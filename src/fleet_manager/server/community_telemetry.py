@@ -246,8 +246,7 @@ async def run_scheduler(
     """Daily loop on the router.  Exits immediately when telemetry is off.
 
     ``startup_catchup`` sends any missed day immediately instead of sleeping
-    straight to the next window -- the same behaviour ``telemetry_scheduler``
-    has had all along, which this scheduler should have matched from the start.
+    straight to the next window.
 
     Without it, the wall-clock schedule means **start time of day decides
     whether you report at all**: a router started at 00:10 UTC waits 23h55m for

@@ -39,8 +39,8 @@ Append-only JSONL is used because:
 Privacy
 -------
 This records user prompts, tool results, file contents, and responses.  **Only
-enable on fleets where you own every caller** — e.g. internal agent traffic
-via gotomy.ai.  Never enable on public gateways.
+enable on fleets where you own every caller** — e.g. your own agents on your
+own LAN.  Never enable on public gateways.
 
 Retention
 ---------

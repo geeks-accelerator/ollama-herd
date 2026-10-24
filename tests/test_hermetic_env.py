@@ -29,12 +29,6 @@ def test_no_fleet_vars_are_visible():
     assert leaked == [], f"operator env reached the suite: {leaked}"
 
 
-def test_operator_credential_is_not_visible():
-    """``CLOUD_FLEET_TOKEN`` is a real platform token when the operator has
-    one.  No test needs it, and a test that can read it can leak it."""
-    assert "CLOUD_FLEET_TOKEN" not in os.environ
-
-
 def test_settings_come_from_defaults_not_the_machine():
     """The specific variable that broke the three tests, and the two settings
     objects that would otherwise be built from whatever the shell holds."""

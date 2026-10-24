@@ -1,14 +1,11 @@
 """Build the anonymous community-telemetry payload.
 
-Distinct from ``daily_rollup.py``, which builds the *account* payload for a
-platform-connected fleet.  That one is keyed by a platform-issued node UUID and
-needs a token; this one is keyed by a random ``install_id`` and has no account
-at all.  They are deliberately separate because the receiving schemas differ:
-the account tables are FK'd to ``auth.users``, anonymous installs have no such
-row, so the community service has its own tables and its own endpoint.
+Keyed by a random ``install_id``; there is no account and no token.  (An
+account payload for the gotomy.ai platform, ``daily_rollup.py``, existed until
+0.12.0 and was removed with the never-deployed platform.)
 
-The two privacy-critical helpers -- error categorisation and the day window --
-are imported from ``daily_rollup`` rather than re-implemented.  Raw error text
+Error categorisation is ``common.errors.categorize_error`` and percentiles are
+``common.stats.percentile`` -- imported, never re-implemented.  Raw error text
 must never leave the machine, and a second copy of that mapping is a second
 place for it to rot.
 
@@ -33,7 +30,7 @@ from fleet_manager.common.stats import percentile
 
 logger = logging.getLogger(__name__)
 
-# Structural privacy, same discipline as daily_rollup: these are the ONLY keys
+# Structural privacy: these are the ONLY keys
 # that may appear.  Tests assert equality, not membership, so adding a field
 # without updating the published contract fails the build.
 ALLOWED_ENTRY_KEYS = frozenset(

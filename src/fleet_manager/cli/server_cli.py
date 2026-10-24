@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 
 import typer
 import uvicorn
@@ -25,7 +23,7 @@ from rich.logging import RichHandler
 # *inside* ``start()``, so the env file is loaded before any settings class
 # instantiates on every path.
 # See ``fleet_manager/common/env_file.py`` for the rationale.
-from fleet_manager.cli import version_callback
+from fleet_manager.cli import removed_option, version_callback
 from fleet_manager.common.env_file import load_env_file
 
 app = typer.Typer(
@@ -48,16 +46,16 @@ def start(
     host: str = typer.Option(None, help="Bind address  [env: FLEET_HOST]  [default: 0.0.0.0]"),
     port: int = typer.Option(None, help="Listen port  [env: FLEET_PORT]  [default: 11435]"),
     log_level: str = typer.Option("INFO", help="Log level"),
-    cloud: bool = typer.Option(False, "--cloud", help="Enable cloud tunnel to gotomy.ai"),
+    # Removed in 0.12.0 with the never-deployed gotomy.ai tunnel; accepted and
+    # ignored with a warning so an old start command still starts.  Delete in 0.14.0.
+    cloud: bool = typer.Option(
+        False, "--cloud", hidden=True, callback=removed_option, expose_value=False
+    ),
     cloud_token: str = typer.Option(
-        None,
-        "--token",
-        help="Fleet token from gotomy.ai (or set CLOUD_FLEET_TOKEN env var)",
+        None, "--token", hidden=True, callback=removed_option, expose_value=False
     ),
     cloud_url: str = typer.Option(
-        "https://gotomy.ai",
-        "--cloud-url",
-        help="Platform URL (default: https://gotomy.ai)",
+        None, "--cloud-url", hidden=True, callback=removed_option, expose_value=False
     ),
     version: bool = typer.Option(
         False,
@@ -92,8 +90,8 @@ def start(
     if port is not None:
         settings_kwargs["port"] = port
     settings = ServerSettings(**settings_kwargs)
-    # Read back the resolved values: everything below (the banner, the cloud
-    # tunnel URL, uvicorn) must bind and advertise what settings actually say,
+    # Read back the resolved values: everything below (the banner, uvicorn)
+    # must bind and advertise what settings actually say,
     # not the CLI's unset placeholder.
     host, port = settings.host, settings.port
     application = create_app(settings)
@@ -107,44 +105,6 @@ def start(
     typer.echo(f"  Dashboard:     http://localhost:{port}/dashboard")
     typer.echo(f"  Models:        http://localhost:{port}/v1/models")
     typer.echo("  Logs (JSONL):  ~/.fleet-manager/logs/herd.jsonl")
-
-    if cloud:
-        token = cloud_token or os.environ.get("CLOUD_FLEET_TOKEN")
-        if not token:
-            typer.echo("")
-            typer.secho(
-                "  ERROR: --cloud requires --token or CLOUD_FLEET_TOKEN env var.",
-                fg="red",
-            )
-            typer.echo("  Get a token at https://gotomy.ai → sign in → Create fleet")
-            raise typer.Exit(1)
-
-        from fleet_manager.cloud import CloudConnector
-
-        connector = CloudConnector(
-            platform_url=cloud_url,
-            fleet_token=token,
-            local_herd_url=f"http://localhost:{port}",
-        )
-
-        typer.echo("")
-        typer.echo(f"  Cloud tunnel:  {cloud_url} → local fleet")
-        typer.echo("  Remote clients can now hit this fleet via gotomy.ai")
-
-        # Run uvicorn + connector in the same event loop
-        async def _run():
-            import uvicorn as _u
-
-            config = _u.Config(application, host=host, port=port, log_level=log_level.lower())
-            server = _u.Server(config)
-            await asyncio.gather(
-                server.serve(),
-                connector.run_forever(),
-            )
-
-        typer.echo("")
-        asyncio.run(_run())
-        return
 
     typer.echo("")
     uvicorn.run(application, host=host, port=port, log_level=log_level.lower())

@@ -49,8 +49,7 @@ def _hermetic_env(monkeypatch):
     variables its own author remembered -- which is why the fourth caller was
     exposed.  One definition instead, for the same reason
     ``resident_context_for`` is one: several callers need the answer and must
-    not drift.  ``CLOUD_FLEET_TOKEN`` goes too; a test has no business reading
-    the operator's platform credential.
+    not drift.
 
     Tests that want a variable set it with ``monkeypatch.setenv``, which runs
     after this (autouse fixtures are ordered before the test body and before
@@ -59,7 +58,7 @@ def _hermetic_env(monkeypatch):
     import os
 
     for key in list(os.environ):
-        if key.startswith("FLEET_") or key == "CLOUD_FLEET_TOKEN":
+        if key.startswith("FLEET_"):
             monkeypatch.delenv(key, raising=False)
     yield
 

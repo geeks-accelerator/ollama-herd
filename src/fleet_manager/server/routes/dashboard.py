@@ -5766,10 +5766,6 @@ async function loadSettings() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Platform connection card
-// ─────────────────────────────────────────────────────────────
-
 window.addEventListener('DOMContentLoaded', function() {
   var dot = document.getElementById('sse-dot');
   var st = document.getElementById('sse-status');

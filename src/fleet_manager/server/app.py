@@ -328,7 +328,6 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         image_compat,
         ollama_compat,
         openai_compat,
-        platform,
         responses_compat,
         transcription_compat,
     )
@@ -341,7 +340,6 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     app.include_router(image_compat.router)
     app.include_router(transcription_compat.router)
     app.include_router(embedding_compat.router)
-    app.include_router(platform.router)
     app.include_router(fleet.router)
     app.include_router(dashboard.router)
 

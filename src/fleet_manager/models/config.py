@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -399,32 +397,16 @@ class NodeSettings(BaseSettings):
     enable_capacity_learning: bool = False
     data_dir: str = "~/.fleet-manager"
 
-    # Platform connection (all None when disconnected).
-    # The operator token is stored as SecretStr so it never appears in
-    # repr() / str() / model_dump() without explicit get_secret_value().
-    # Persisted separately to ~/.fleet-manager/platform.json with 0600
-    # permissions — never written to the main config.yaml.
-    platform_url: str | None = None
-    platform_token: SecretStr | None = None
-    platform_node_id: str | None = None
-    platform_connected_at: datetime | None = None
-
-    # Telemetry opt-ins (require platform connection to take effect)
-    telemetry_local_summary: bool = False
-    telemetry_include_tags: bool = False
-
     # ── Anonymous community telemetry ────────────────────────────────────
-    # A SEPARATE pipeline from the two opt-ins above, and the distinction
-    # matters: those send an *account's* usage to the platform and need a
-    # connection + token.  This one has no account, no token, and no auth --
-    # it POSTs a pseudonymous daily rollup keyed by a random ``install_id``.
-    # Do not merge the two.  The platform's account tables are FK'd to
-    # ``auth.users``; anonymous installs have no such row, which is why the
-    # receiving service has its own tables and its own endpoint.
+    # herd's only telemetry.  No account, no token, no auth: the router POSTs a
+    # pseudonymous daily rollup keyed by a random ``install_id``.  (An account
+    # pipeline to the gotomy.ai platform existed until 0.12.0; the platform was
+    # never deployed and the pipeline was removed --
+    # docs/plans/remove-platform-integration.md.)
     #
     # Default ON with a documented one-line opt-out.  The published contract
     # at ollamaherd.com/telemetry is the spec for what may be sent and must be
-    # kept in sync with ``daily_rollup.ALLOWED_*`` -- if they ever disagree,
+    # kept in sync with ``anonymous_rollup.ALLOWED_*`` -- if they ever disagree,
     # the published page wins and the code is the bug.
     telemetry: bool = True
     telemetry_url: str = "https://ollamaherd.com/api/v1/telemetry"
