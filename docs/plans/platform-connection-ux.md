@@ -1,6 +1,6 @@
 # Platform Connection UX
 
-**Status**: Proposed
+**Status**: ⛔ **Superseded by [`remove-platform-integration.md`](remove-platform-integration.md) (2026-10-24): the gotomy.ai platform was never deployed, and its integration was removed in 0.12.0.** Kept for the reasoning; nothing here describes current code.
 **Date**: April 2026
 **Coordinates with**: private platform repo (uses existing endpoints, no platform-side changes)
 **Related plans**: [platform-local-usage-telemetry.md](./platform-local-usage-telemetry.md) (depends on this), [platform-p2p-capability-advertisement.md](./platform-p2p-capability-advertisement.md) (depends on this)

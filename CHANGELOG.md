@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **The gotomy.ai platform integration.** The coordination platform it talked to was never deployed (`gotomy.ai` redirects to ollamaherd.com), so none of it could work for anyone: the `herd --cloud` tunnel, the node's platform connection and signed platform heartbeat, the **account** usage telemetry (`FLEET_NODE_TELEMETRY_LOCAL_SUMMARY`), the `/api/platform/status|connect|disconnect` endpoints, and the `platform_*` / `telemetry_local_summary` / `telemetry_include_tags` node settings. About 2,000 lines. `docs/plans/remove-platform-integration.md`.
+  - **Your start command keeps working.** `herd --cloud/--token/--cloud-url` and `herd-node --platform-token/--operator-token/--platform-url/--telemetry-local-summary/--telemetry-include-tags` are still accepted: each prints one warning and is ignored. Remove them from your start command or launch agent before **0.14.0**, when they stop being accepted. (Rejecting them now would make the process exit, and a launchd/systemd keep-alive agent would then restart it in a loop.)
+  - **Leftover configuration is inert.** `FLEET_NODE_PLATFORM_*`, `FLEET_NODE_TELEMETRY_LOCAL_SUMMARY`, `FLEET_NODE_TELEMETRY_INCLUDE_TAGS` and `CLOUD_FLEET_TOKEN` are ignored if still set, and `~/.fleet-manager/platform.json` is no longer read. All are safe to delete.
+- **`cryptography` and `websockets` are no longer direct dependencies.** Only the platform code imported them. A fresh install no longer pulls in `cryptography` (or `cffi` and `pycparser` under it) — one Rust extension fewer for the Homebrew formula to build. `websockets` is still installed through `uvicorn[standard]`.
+- The node-side anonymous telemetry sender (`node/anonymous_telemetry.py`), which nothing had run since the router took over sending.
+
+### Changed
+
+- **Anonymous community telemetry is unchanged** — same payload, same schedule, same `FLEET_TELEMETRY=false` opt-out. A new test pins the payload it sends byte for byte, written before any of the above moved. Its error categories now live in `common/errors.py` (`categorize_error`, beside `describe_exception`) and its percentile in `common/stats.py`, now also used by the benchmark report, which had its own copy.
+
 ## [0.11.4] - 2026-10-24
 
 ### Changed

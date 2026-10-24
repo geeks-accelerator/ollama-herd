@@ -2533,6 +2533,25 @@ The `in_flight` field on each queue was a `list`. Both `in` checks and `.remove(
 
 ## Code Quality
 
+### Delete the hidden platform flags in `0.14.0` `OPEN` (scheduled, 2026-10-24)
+
+**Severity:** low; this is planned removal, not a defect. `0.12.0` removed the
+gotomy.ai platform integration (`docs/plans/remove-platform-integration.md`) but
+kept its CLI flags as hidden, ignored options that warn once, so an operator's
+start command keeps working across the upgrade instead of crash-looping under a
+keep-alive agent:
+
+- `herd`: `--cloud`, `--token`, `--cloud-url`
+- `herd-node`: `--platform-token` / `--operator-token`, `--platform-url`,
+  `--telemetry-local-summary`, `--telemetry-include-tags`
+
+It is CLAUDE.md's one recorded exception to "no shim", and only temporary. **In
+0.14.0:** delete `removed_option` from `cli/__init__.py` and the option lines that
+use it in `cli/server_cli.py` and `cli/node_cli.py`, delete the flag tests in
+`tests/test_models/test_cli_removed_flags.py` (keep its leftover-env-var test),
+drop the exception sentence from CLAUDE.md's greenfield principle, and say so in
+the changelog. Two releases is the window an operator gets to see the warning.
+
 ### 4. `_request_tokens` Dict — Leaking Internal State `FIXED`
 
 **File:** `src/fleet_manager/server/streaming.py`

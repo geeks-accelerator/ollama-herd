@@ -453,19 +453,6 @@ Counterparts to the router's MLX vars. The node agent manages `mlx_lm.server`'s 
 | `FLEET_NODE_MLX_MEMORY_HEADROOM_GB` | `10.0` | Free-RAM headroom the memory gate requires beyond a model's estimated weight size before spawning its `mlx_lm.server`. Prevents OOM crash-loops when more servers are configured than the box can host; a blocked server reports `memory_blocked` in the heartbeat and is retried on a slower cadence. |
 | `FLEET_NODE_MLX_MEMORY_HEADROOM_GB` | `10.0` | Free-RAM headroom required before the supervisor will spawn each MLX server. The gate checks `(estimated_weights_size + headroom) <= psutil.virtual_memory().available` and skips with `memory_blocked` status if it won't fit. Set to `0.0` to disable the gate. The estimated size is computed by walking the HuggingFace cache on disk; if the model isn't cached, the gate proceeds (operator knows best). |
 
-### Platform Connection (opt-in — see [API Reference](api-reference.md#platform-connection))
-
-Connect a node to `gotomy.ai` for future P2P compute sharing, usage dashboards, and credit tracking. Local fleet routing works without a platform connection. When a token is configured, the node auto-connects on startup (equivalent to pasting the token in the dashboard's Settings tab).
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FLEET_NODE_PLATFORM_TOKEN` | *(none)* | Operator token from `gotomy.ai/web/`. Starts with `herd_`. |
-| `FLEET_NODE_PLATFORM_URL` | `https://gotomy.ai` | Platform URL (override for local testing) |
-| `FLEET_NODE_TELEMETRY_LOCAL_SUMMARY` | `false` | Opt in to daily usage rollups (per-model counts, tokens, latency, errors). Sent at ~00:05 UTC + jitter. 90 days rolling retention on the platform side. Never sends prompts or completion text. |
-| `FLEET_NODE_TELEMETRY_INCLUDE_TAGS` | `false` | **Second opt-in** on top of `TELEMETRY_LOCAL_SUMMARY`: include per-tag request counts. Off by default because tag values like `project:internal-audit` can be mildly identifying. |
-
-Once connected, the node also sends signed heartbeats to the platform every 60 seconds. Heartbeats power the platform's Nodes-detail dashboard (CPU, memory, VRAM, queue depth, loaded models, 24h uptime). No opt-in flag — heartbeats are automatic when the platform is connected. The heartbeat send is fire-and-forget (10s timeout, 1 attempt) so platform slowness can't back up into the node.
-
 ---
 
 ## Logging Settings

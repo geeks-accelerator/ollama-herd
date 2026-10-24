@@ -1,8 +1,8 @@
 # Remove the gotomy.ai platform integration
 
-**Status**: 📋 **PROPOSED — 2026-10-24, audited against the codebase the same day.**
-The inventory was verified by tracing importers, not inferred from names. The audit
-changed most phases; see § *What the audit changed* at the end.
+**Status**: ✅ **IMPLEMENTED on `main` 2026-10-24 (steps 1–6), unreleased — ships in `0.12.0`.**
+Audited against the codebase the same day; see § *What the audit changed* and
+§ *What implementation changed* at the end.
 **Target release**: `0.12.0` — removing endpoints, settings and a dependency is a
 breaking change even though nothing that works is lost.
 **Supersedes**: [`platform-connection-ux.md`](platform-connection-ux.md),
@@ -290,3 +290,23 @@ Each commit leaves the suite green:
 | Verify the send via a dashboard telemetry preview | Verify via the DEBUG send log line | No such preview exists |
 | Homebrew loses `cryptography` and `websockets` | Loses `cryptography`, `cffi`, `pycparser`; `websockets` stays via `uvicorn[standard]` | Measured with `uv tree --invert` |
 | New CLI test setup | Follow `tests/test_models/test_cli_version.py` | Existing `CliRunner` pattern |
+
+## What implementation changed
+
+| Plan said | Done instead | Why |
+|-----------|--------------|-----|
+| New module `cli/removed_flags.py` | `removed_option` in `cli/__init__.py`, beside `version_callback` | That module already *is* "shared helpers for the `herd` and `herd-node` entry points". Same single place to delete in 0.14.0. |
+| Each CLI checks the removed flags and warns | One Typer option `callback=` with `expose_value=False` | Mirrors `version_callback`'s eager-callback pattern. The values never reach `start()`, so neither CLI has any removal logic. |
+| Hidden options keep their `envvar=` | `envvar=` dropped | With it, a leftover `FLEET_NODE_PLATFORM_TOKEN` would set off the warning. Dropping it is what makes leftover variables inert. |
+| Guard benchmark's one unguarded `percentile` call | No change needed | All six benchmark call sites already guarded with `if latencies else None`. |
+| `day` required | `day` required **and keyword-only** | It follows a defaulted parameter; every caller already passed it by name. |
+| — | `scripts/health.sh` test floor lowered 1945 → 1923, with the reason in a comment | The floor is a ratchet against tests silently disappearing; this deletion was deliberate. |
+
+**Measured:** the golden payload test passed unchanged at every step (it was
+mutation-checked first: changing the percentile arithmetic or renaming one error
+category both fail it). The flag tests were mutation-checked too: echoing the token
+value fails 3, and unhiding and un-wiring one flag fails 2. A clean `pip install`
+of the wheel into a fresh Python 3.12 venv contains neither `cryptography` nor
+`cffi`, and `create_app`, the node agent and community telemetry import there.
+Test count 2024 → 1931.
+

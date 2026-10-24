@@ -7,7 +7,11 @@
 
 set -euo pipefail
 
-EXPECTED_MIN_TESTS=1945
+# A ratchet against tests silently disappearing: lower it only for a deliberate
+# deletion, and say which.  Lowered from 1945 on 2026-10-24 when the gotomy.ai
+# platform integration and its seven test modules were removed
+# (docs/plans/remove-platform-integration.md); kept 8 under the count, as before.
+EXPECTED_MIN_TESTS=1923
 PASS=0
 FAIL=0
 RESULTS=()

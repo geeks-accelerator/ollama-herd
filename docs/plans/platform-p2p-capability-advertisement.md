@@ -1,6 +1,6 @@
 # Platform Telemetry: P2P Capability Advertisement
 
-**Status**: Proposed (design questions)
+**Status**: ⛔ **Superseded by [`remove-platform-integration.md`](remove-platform-integration.md) (2026-10-24): the gotomy.ai platform was never deployed, and its integration was removed in 0.12.0.** Kept for the reasoning; nothing here describes current code.
 **Date**: April 2026
 **Coordinates with**: private platform repo — P2P routing (future phase)
 **Related plans**: [platform-local-usage-telemetry.md](./platform-local-usage-telemetry.md),
