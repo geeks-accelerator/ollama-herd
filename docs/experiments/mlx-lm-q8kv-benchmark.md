@@ -16,6 +16,20 @@
 > The speed findings below stand; the quality question they left open is
 > answered. See `docs/observations.md` (2026-10-22).
 
+## Running it against another server
+
+`--target custom` runs the same 25-turn session against any OpenAI-compatible server, keeping the
+`mlx` and `ollama` presets that produced the published results:
+
+```bash
+python3 docs/experiments/mlx-lm-q8kv-benchmark.py --target custom \
+    --url http://localhost:8000/v1/chat/completions --model <model as that server names it> \
+    --label "oMLX <version>, M3 Ultra 512GB" --out docs/experiments/omlx_results.json
+```
+
+The session is synthetic (Claude-Code-shaped: each turn appends about 500 tokens of file content
+and asks a new question), not a recorded one, which is also why its raw results can be published.
+
 ## Motivation
 
 Earlier testing showed Ollama (llama.cpp engine with `OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0`) was faster than raw `mlx_lm.server` on `qwen3-coder:30b`:

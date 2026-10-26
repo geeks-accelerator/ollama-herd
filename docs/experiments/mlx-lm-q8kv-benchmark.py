@@ -142,9 +142,25 @@ def run_session(label: str, url: str, model: str, n_turns: int, out_path: Path):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--target", choices=["mlx", "ollama", "both"], default="both")
+    # mlx / ollama / both are the two servers behind the published results
+    # (mlx_q8_server_results.json, ollama_results.json). "custom" runs the same
+    # session against any OpenAI-compatible server (oMLX, LM Studio, a newer
+    # Ollama, Ollama Herd), for the comparisons in
+    # ollama-herd-private docs/plans/growth-adoption-2026-10.md workstream 4.
+    ap.add_argument("--target", choices=["mlx", "ollama", "both", "custom"], default="both")
     ap.add_argument("--turns", type=int, default=25)
+    ap.add_argument("--url", help="custom: the server's /v1/chat/completions URL")
+    ap.add_argument("--model", help="custom: model name as that server knows it")
+    ap.add_argument("--label", help="custom: what ran (server, version, hardware), recorded in the output")
+    ap.add_argument("--out", type=Path, help="custom: results JSON path")
     args = ap.parse_args()
+
+    if args.target == "custom":
+        missing = [f"--{k}" for k in ("url", "model", "label", "out") if not getattr(args, k)]
+        if missing:
+            ap.error("--target custom needs " + ", ".join(missing))
+        run_session(args.label, args.url, args.model, args.turns, args.out)
+        raise SystemExit(0)
 
     outdir = Path("/tmp/mlx-experiment")
     if args.target in ("mlx", "both"):
