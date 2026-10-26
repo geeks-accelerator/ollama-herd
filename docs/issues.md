@@ -36,6 +36,62 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### Claude Code 2.1.220 got a 400 on its first request: `role: "system"` inside `messages[]` `FIXED` (2026-10-26, unreleased)
+
+**Seen:** 2026-10-26, testing a one-machine setup for the site's quickstart. Herd 0.11.4 from
+PyPI in a clean venv, router and node on one M4 Max, Ollama 0.40.3. Plain OpenAI chat through
+the router worked; `claude -p` with Claude Code **2.1.220** failed before anything was routed:
+
+```
+API Error: 400 1 validation error for AnthropicMessagesRequest
+messages.1.role
+  Input should be 'user' or 'assistant' [type=literal_error, input_value='system', input_type=str]
+```
+
+**Cause:** Claude Code now sends a system message inside `messages[]`, after the first user
+turn (its agent-types listing), in addition to the top-level `system` blocks. A captured body:
+top-level keys `model, messages, system (3 blocks), tools, metadata, max_tokens, thinking,
+context_management, output_config, stream`; `messages` = `[user, system]`.
+`AnthropicMessage.role` was `Literal["user", "assistant"]`, so pydantic rejected the whole
+request. Every Claude Code session on a current client hit it on turn one.
+
+**Likely the bulk of community telemetry's errors:** in the 30 days to 2026-10-26,
+`bad_request` was 94.25% of all errors herds reported (about 1,443). Not proven per request
+(telemetry carries error kinds, not paths), so watch that share after the release.
+
+**Fix:** accept `"system"` and translate it **in place** as a system message, the same as
+Ollama's own Anthropic layer (`anthropic/anthropic.go` `convertMessage` passes the role
+through). Not folded into the top-level prompt: moving it would change the cached prefix
+whenever its text changes, and the Qwen and Ollama renderers accept a non-leading system turn
+(Ollama 0.32.14 notes; Qwen3's HF template has `message.role == "system" and not loop.first`).
+Its text gets the same `cch=` normalization as the system prompt. The other new top-level keys
+were already ignored (`extra="ignore"`). `tests/test_server/test_anthropic_system_role.py`
+reproduces the shape (red before the fix) through the model, the translator, the MLX
+conversion, `/v1/messages` (streaming and not) and `count_tokens`.
+
+**Verified end to end** with real Claude Code 2.1.220 through a router built from this commit:
+`claude -p` answered; a Write-then-Read session on `qwen3.8:27b` wrote and read back the file
+in three turns (`stop=tool_use` Write, `stop=tool_use` Read, `end_turn`), each body carrying both
+system messages, later turns fast (170 s, 16 s, 6 s), so the prefix cache survives. A direct
+probe showed the mid-conversation system message does not change tool calling (Ollama
+`/api/chat`, `qwen3-coder:30b`: structured tool call 3/3 with it and 3/3 without).
+
+**Caveat:** a chat template that rejects any non-leading system turn (Gemma's HF template
+raises "roles must alternate") would fail on the MLX path. Qwen3's template accepts it
+(checked on `mlx-community/Qwen3-4B-4bit`); the Qwen3-Coder MLX template was not checked, and
+no such failure has been seen.
+
+### `qwen3-coder:30b` answers Claude Code with its tool call as text `OPEN` (2026-10-26)
+
+Seen while verifying the entry above, and **reproduced without Herd**: Claude Code 2.1.220
+pointed straight at Ollama 0.40.3's own `/v1/messages`, `--model qwen3-coder:30b`, asked to
+use Write: the reply is the model's XML tool-call text (`<parameter=content>…</tool_call>`),
+`stop=end_turn tools=0`, no file written. Herd's `tool_call_repair` did not recover it either.
+The same request shape with one tool and a short prompt gets a structured call 3/3, so it
+depends on Claude Code's ~18K-token prompt and 24 tools. `qwen3.8:27b` handles the same
+session. Next: find where Ollama's qwen3-coder parser gives up (prompt length, tool count),
+and whether `tool_call_repair` should parse this XML form.
+
 ### A truncated stream is reported to the client as a successful one `FIXED` (2026-10-22, unreleased)
 
 **Severity:** medium, low frequency. When it happens, a coding agent is handed

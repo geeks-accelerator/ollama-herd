@@ -80,7 +80,12 @@ ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock | Thinkin
 
 class AnthropicMessage(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    role: Literal["user", "assistant"]
+    # "system" inside ``messages[]``: Claude Code 2.1.220 sends one after the
+    # first user turn (its agent-types listing), on top of the top-level
+    # ``system`` field. Rejecting it 400'd every Claude Code request
+    # (docs/issues.md, "Claude Code 2.1.220 ..."). It is translated in
+    # place, as Ollama's own Anthropic layer does.
+    role: Literal["user", "assistant", "system"]
     content: str | list[dict[str, Any]]  # accept raw dicts; we parse downstream
 
 

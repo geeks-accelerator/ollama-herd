@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Claude Code 2.1.220 and later work again.** Current Claude Code sends a `role: "system"` message inside `messages[]` (its agent-types listing) as well as the top-level `system` prompt, and Herd rejected the whole request with a 400 (`messages.1.role Input should be 'user' or 'assistant'`) before routing anything, on the first turn of every session. The message is now accepted and kept in place as a system message, the same as Ollama's own Anthropic layer, with the same `cch=` normalization as the system prompt. Verified with real Claude Code 2.1.220, including a multi-turn tool-calling session.
+
 ### Removed
 
 - **The gotomy.ai platform integration.** The coordination platform it talked to was never deployed (`gotomy.ai` redirects to ollamaherd.com), so none of it could work for anyone: the `herd --cloud` tunnel, the node's platform connection and signed platform heartbeat, the **account** usage telemetry (`FLEET_NODE_TELEMETRY_LOCAL_SUMMARY`), the `/api/platform/status|connect|disconnect` endpoints, and the `platform_*` / `telemetry_local_summary` / `telemetry_include_tags` node settings. About 2,000 lines. `docs/plans/remove-platform-integration.md`.

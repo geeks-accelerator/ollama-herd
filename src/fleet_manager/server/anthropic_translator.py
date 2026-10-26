@@ -156,6 +156,8 @@ def anthropic_to_ollama_messages(
     """Translate Anthropic messages array → Ollama messages array.
 
     - Prepends system prompt as a `{role: "system"}` message if provided.
+    - A `role: "system"` message inside `messages` (Claude Code sends one) is
+      kept in place as a system message, its text normalized like the prompt.
     - For each Anthropic message, walks its content blocks and emits Ollama-
       shaped messages: text concatenates into `content`, images go into
       `images: []`, `tool_use` blocks become `tool_calls: []` on the assistant
@@ -239,9 +241,18 @@ def anthropic_to_ollama_messages(
 
         # Build the primary message for this turn (if any non-tool-result content)
         if text_parts or images or tool_calls:
+            text = "\n".join(t for t in text_parts if t)
+            if role == "system":
+                # A system message inside messages[] stays where the client put
+                # it (Ollama's Anthropic layer does the same, and the Qwen and
+                # Ollama renderers accept a non-leading system turn). Moving it
+                # into the top-level prompt would change the cached prefix every
+                # time its text changes. Its text is system text, so it gets the
+                # same per-request fingerprint normalization as the system prompt.
+                text = _normalize_cache_busting_tokens(text)
             primary: dict[str, Any] = {
                 "role": role,
-                "content": "\n".join(t for t in text_parts if t),
+                "content": text,
             }
             if images:
                 primary["images"] = images
