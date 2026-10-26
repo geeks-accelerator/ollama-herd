@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-26
+
 ### Fixed
 
 - **Claude Code 2.1.220 and later work again.** Current Claude Code sends a `role: "system"` message inside `messages[]` (its agent-types listing) as well as the top-level `system` prompt, and Herd rejected the whole request with a 400 (`messages.1.role Input should be 'user' or 'assistant'`) before routing anything, on the first turn of every session. The message is now accepted and kept in place as a system message, the same as Ollama's own Anthropic layer, with the same `cch=` normalization as the system prompt. Verified with real Claude Code 2.1.220, including a multi-turn tool-calling session.
