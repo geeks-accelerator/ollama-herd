@@ -5,21 +5,22 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Website](https://img.shields.io/badge/website-ollamaherd.com-00c853)](https://ollamaherd.com)
 
-Turn all your devices into one local AI cluster. Ollama Herd is a smart inference router and load balancer that auto-discovers Ollama nodes via mDNS, routes LLMs, image generation, speech-to-text, and embeddings to the optimal device using intelligent scoring. OpenAI-compatible API. Zero config. Zero cost.
+Ollama Herd is an open-source smart AI router that turns the machines you already own (Apple Silicon Macs, Linux servers, and Windows PCs, with or without NVIDIA GPUs) into one endpoint. It routes LLMs, embeddings, image generation, speech-to-text, and vision with 8-signal scoring, mDNS auto-discovery, and a real-time dashboard. Apple Silicon Macs get extras: an MLX backend, native image generation, and speech-to-text.
 
-**[ollamaherd.com](https://ollamaherd.com)** — full docs, guides, and the live dashboard walkthrough.
+**Works with** Claude Code (Anthropic Messages API), Codex (OpenAI Responses API), Open WebUI, and any OpenAI- or Ollama-compatible client, all on one URL.
 
-<!-- TODO: Add dashboard screenshot here -->
-<!-- ![Ollama Herd Dashboard](docs/images/dashboard-screenshot.png) -->
+![The Ollama Herd dashboard: two nodes side by side, a 512 GB Mac Studio and a 128 GB MacBook Pro, each listing the models it serves through Ollama and MLX](https://raw.githubusercontent.com/geeks-accelerator/ollama-herd/main/docs/images/dashboard-fleet.jpg)
+
+**[ollamaherd.com](https://ollamaherd.com)**: docs, guides, and the dashboard walkthrough.
 
 ## Why Ollama Herd?
 
-- **Your spare Mac is wasting compute** — pool all your devices into one fleet
-- **Single Ollama bottlenecks agents** — distribute requests across machines automatically
-- **Cloud APIs cost $450-1,800/month at fleet scale** — local inference is zero marginal cost
-- **No config files, no Docker, no Kubernetes** — two commands, mDNS auto-discovery
-- **Not just LLMs** — routes image generation (FLUX), speech-to-text (Qwen3-ASR), and embeddings too
-- **The fleet gets smarter over time** — capacity learning, thermal awareness, meeting detection
+- **Every machine you own, one endpoint**: Macs, Linux servers, and Windows PCs pooled into one fleet
+- **Agents stop queuing behind one Ollama**: each request goes to the best machine for that model right now
+- **Claude Code and Codex on your own hardware**: model ids auto-route to the best model you have loaded, no model map needed
+- **No config files, no Docker, no Kubernetes**: two commands, mDNS auto-discovery
+- **Not just LLMs**: embeddings, image generation, and speech-to-text route too (image generation and speech-to-text extras on Apple Silicon)
+- **Start on one machine**: run both commands on it, and add machines when you have them
 
 ## Quick Start
 
@@ -48,6 +49,8 @@ herd
 ```bash
 herd-node
 ```
+
+**One machine?** Run both commands on it, each in its own terminal.
 
 That's it. The node discovers the router via mDNS and starts sending heartbeats. No config files needed.
 

@@ -56,9 +56,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/geeks-accelerator/ollama-herd"
+Homepage = "https://ollamaherd.com"
 Repository = "https://github.com/geeks-accelerator/ollama-herd"
-Documentation = "https://github.com/geeks-accelerator/ollama-herd/tree/main/docs"
+Documentation = "https://ollamaherd.com/guides"
 Issues = "https://github.com/geeks-accelerator/ollama-herd/issues"
 
 [project.scripts]
