@@ -434,7 +434,7 @@ def test_json_exec_payload_is_repaired_to_a_javascript_call():
         '{"input": "{\\"cmd\\": \\"git pull\\", '
         '\\"sandbox_permissions\\": \\"require_escalated\\"}"}'
     )
-    assert out.startswith("await tools.exec_command(")
+    assert out.startswith("text(await tools.exec_command(")
     assert "require_escalated" in out
     assert "git pull" in out
 
@@ -446,8 +446,31 @@ def test_single_key_exec_payload_repairs_instead_of_degrading():
     from fleet_manager.server.responses_translator import _unwrap_custom_input
 
     assert _unwrap_custom_input('{"cmd": "git pull"}') == (
-        'await tools.exec_command({"cmd": "git pull"})'
+        'text(await tools.exec_command({"cmd": "git pull"}))'
     )
+
+
+def test_repaired_call_returns_its_result_to_the_model():
+    """Code mode returns only what a script passes to `text()`. A bare
+    `await tools.exec_command(...)` runs the command and hands back an empty
+    "Output:" — on codex-cli 0.164 gpt-oss re-ran `ls -R` a dozen times on it.
+    Every call herd writes must therefore return its result."""
+    from fleet_manager.server.responses_translator import (
+        _unwrap_custom_input,
+        responses_to_openai_body,
+    )
+
+    assert _unwrap_custom_input('{"cmd": "ls"}').startswith("text(")
+    out = responses_to_openai_body({"model": "m", "input": [
+        {"type": "additional_tools", "tools": [
+            {"type": "custom", "name": "exec", "description": "js",
+             "format": {"type": "grammar", "syntax": "lark", "definition": "x"}},
+        ]},
+        {"role": "user", "content": "go"},
+    ]})
+    fn = out["tools"][0]["function"]
+    assert 'text(await tools.exec_command({cmd: "git pull"}))' in fn["description"]
+    assert "text(" in fn["parameters"]["properties"]["input"]["description"]
 
 
 def test_valid_javascript_passes_through_untouched():
@@ -485,7 +508,7 @@ def test_unknown_sibling_keys_are_preserved():
         '{"cmd": "git pull", "justification": "needs network", '
         '"prefix_rule": ["git", "pull"], "timeout_ms": 5000}'
     )
-    inner = json.loads(out[len("await tools.exec_command(") : -1])
+    inner = json.loads(out[len("text(await tools.exec_command(") : -2])
     assert inner == {
         "cmd": "git pull",
         "justification": "needs network",
@@ -579,7 +602,7 @@ def test_nested_code_mode_tool_call_is_redirected():
     item = obj["output"][0]
     assert item["type"] == "custom_tool_call"
     assert item["name"] == "exec"          # routed to the host tool, not the nested one
-    assert item["input"] == 'await tools.exec_command({"cmd": "ls docs"})'
+    assert item["input"] == 'text(await tools.exec_command({"cmd": "ls docs"}))'
 
 
 def test_offered_tools_are_never_redirected():
@@ -608,6 +631,29 @@ def test_unknown_offered_set_never_redirects():
         input_tokens=1, output_tokens=1,
     )
     assert obj["output"][0]["type"] == "function_call"
+
+
+def test_default_functions_namespace_is_exposed_as_top_level_tools():
+    """codex-cli 0.164 sends no top-level tools: `exec` and friends sit inside a
+    `functions` namespace, Codex's default. Treating it as sandbox-only left the
+    model with `tools=0` and a run that edited nothing. Shape captured from a
+    real 0.164.0 session (2026-10-27)."""
+    out = responses_to_openai_body({"model": "m", "input": [
+        {"type": "additional_tools", "role": "developer", "tools": [
+            {"type": "namespace", "name": "functions", "description": "", "tools": [
+                {"type": "custom", "name": "exec", "description": "js",
+                 "format": {"type": "grammar", "syntax": "lark", "definition": "x"}},
+                {"type": "function", "name": "wait", "parameters": {}},
+            ]},
+            {"type": "namespace", "name": "clock", "description": "c", "tools": [
+                {"type": "function", "name": "sleep", "parameters": {}},
+            ]},
+        ]},
+        {"role": "user", "content": "go"},
+    ]})
+    assert out["_known_tool_names"] == ["exec", "wait"]
+    assert out["_custom_tool_names"] == ["exec"]
+    assert "no JSON" in out["tools"][0]["function"]["description"]
 
 
 def test_known_tool_names_are_exported_for_the_route():
@@ -840,3 +886,69 @@ def test_thinking_interleaved_with_a_tool_call_keeps_the_item_order():
                       if e["type"] == "response.output_item.added" and e["item"]["type"] == "function_call")
     assert msg_done < call_added
     assert t[-1] == "response.completed"
+
+
+# ---------------------------------------------------------------------------
+# codex-cli 0.164: nested tools must parse in Ollama to be redirected at all
+# ---------------------------------------------------------------------------
+
+_EXEC_0164_DESC = (
+    "Run JavaScript.\n"
+    "exec tool declaration:\n```ts\n"
+    "declare const tools: { apply_patch(input: string): Promise<unknown>; };\n```\n"
+    "exec tool declaration:\n```ts\n"
+    "declare const tools: { exec_command(args: {\n  cmd: string;\n}): Promise<unknown>; };\n```\n"
+)
+
+
+def _code_mode_0164_body():
+    return {"model": "m", "input": [
+        {"type": "additional_tools", "tools": [
+            {"type": "namespace", "name": "functions", "tools": [
+                {"type": "custom", "name": "exec", "description": _EXEC_0164_DESC,
+                 "format": {"type": "grammar", "syntax": "lark", "definition": "x"}},
+                {"type": "function", "name": "wait", "parameters": {}},
+            ]},
+        ]},
+        {"role": "user", "content": "go"},
+    ]}
+
+
+def test_nested_tools_are_declared_so_ollama_can_parse_a_direct_call():
+    """gpt-oss calls `apply_patch` directly; with no tool of that name in the
+    request, Ollama's harmony parser ends the stream before herd sees the call
+    (3 of 3 edits on codex-cli 0.164). Declaring the nested names lets it parse;
+    keeping them out of `_known_tool_names` keeps the redirect in charge."""
+    out = responses_to_openai_body(_code_mode_0164_body())
+    names = [t["function"]["name"] for t in out["tools"]]
+    assert names == ["exec", "wait", "apply_patch", "exec_command"]
+    assert out["_known_tool_names"] == ["exec", "wait"]
+    patch_params = out["tools"][2]["function"]["parameters"]
+    assert patch_params["properties"] == {"input": {"type": "string"}}
+
+
+def test_no_stubs_without_a_code_mode_tool():
+    out = responses_to_openai_body({"model": "m", "input": [
+        {"type": "additional_tools", "tools": [
+            {"type": "function", "name": "exec_command", "parameters": {}},
+        ]},
+        {"role": "user", "content": "go"},
+    ]})
+    assert [t["function"]["name"] for t in out["tools"]] == ["exec_command"]
+
+
+def test_direct_apply_patch_call_becomes_a_string_argument_exec_script():
+    """`apply_patch(input: string)` is freeform: it takes the patch text, not an
+    object. Passing `{"input": …}` would be rejected as no patch at all."""
+    from fleet_manager.server.responses_translator import build_responses_object
+
+    patch = "*** Begin Patch\n*** Update File: calc.py\n@@\n-    return a - b\n+    return a + b\n*** End Patch"
+    obj = build_responses_object(
+        model="m", text="",
+        tool_calls=[{"function": {"name": "apply_patch", "arguments": {"input": patch}}}],
+        custom_names={"exec"}, known_names={"exec", "wait"},
+        input_tokens=1, output_tokens=1,
+    )
+    item = obj["output"][0]
+    assert item["type"] == "custom_tool_call" and item["name"] == "exec"
+    assert item["input"] == f"text(await tools.apply_patch({json.dumps(patch)}))"

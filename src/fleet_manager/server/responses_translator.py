@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import Iterator
@@ -153,6 +154,38 @@ def input_has_images(input_value: Any) -> bool:
     return False
 
 
+# Codex's `DEFAULT_FUNCTION_NAMESPACE` (codex-rs/protocol/src/tool_name.rs).
+DEFAULT_FUNCTION_NAMESPACE = "functions"
+
+
+def _expand_default_namespace(tools: list[dict]) -> list[dict]:
+    """Splice the members of Codex's ``functions`` namespace in as top-level tools.
+
+    Since codex-cli 0.164 the Responses-Lite catalogue has no top-level tools at
+    all: everything, ``exec`` included, arrives inside namespaces, and
+    ``functions`` is the default one — Codex resolves a call with no namespace
+    (or ``functions``) to its members (``ToolName::is_default_namespace``). We
+    treated every namespace as sandbox-only, so the whole catalogue was dropped:
+    the model saw ``tools=0``, invented ``container.exec`` / ``list_files``, and
+    Codex answered every call ``unsupported call`` — the run ended having
+    edited nothing while the model narrated a fix.
+
+    Other namespaces (``clock``, ``collaboration``) stay recorded-not-exposed:
+    calling them needs ``namespace`` on the emitted call, which we don't send.
+    """
+    out: list[dict] = []
+    for t in tools:
+        if (
+            isinstance(t, dict)
+            and t.get("type") == "namespace"
+            and t.get("name") == DEFAULT_FUNCTION_NAMESPACE
+        ):
+            out.extend(m for m in t.get("tools") or [] if isinstance(m, dict))
+        else:
+            out.append(t)
+    return out
+
+
 def _tools_to_openai(
     tools: list[dict] | None, custom_names: set[str] | None = None
 ) -> list[dict] | None:
@@ -165,6 +198,7 @@ def _tools_to_openai(
     if not tools:
         return None
     custom_names = custom_names if custom_names is not None else set()
+    tools = _expand_default_namespace(tools)
     nested: list[str] = []
     converted: list[dict] = []
     dropped: list[str] = []
@@ -199,14 +233,16 @@ def _tools_to_openai(
                     f"\n\nProvide the raw {fmt.get('syntax', 'text')} source as the "
                     f"`{CUSTOM_TOOL_ARG}` argument — plain text only, no JSON "
                     f"wrapper and no markdown code fences. For example:\n"
-                    f'  await tools.exec_command({{cmd: "git pull"}})\n'
+                    f'  text(await tools.exec_command({{cmd: "git pull"}}))\n'
+                    f"Only what you pass to `text()` comes back to you — a bare "
+                    f"`await tools.exec_command(...)` runs but returns nothing.\n"
                     f"To run a command the sandbox would otherwise block, add "
                     f'`sandbox_permissions: "require_escalated"` and a '
                     f"one-sentence `justification`."
                 )
                 arg_desc = (
                     f"Raw {fmt.get('syntax', 'text')} source, e.g. "
-                    f'await tools.exec_command({{cmd: "git pull"}}) — not JSON.'
+                    f'text(await tools.exec_command({{cmd: "git pull"}})) — not JSON.'
                 )
             custom_names.add(name)
             converted.append(
@@ -544,6 +580,10 @@ def responses_to_openai_body(body: dict) -> dict:
     custom_names: set[str] = set()
     tools = _tools_to_openai(raw_tools, custom_names)
     out_custom = custom_names
+    known_names = sorted(t["function"]["name"] for t in tools or [])
+    stubs = _nested_tool_stubs(_expand_default_namespace(raw_tools), set(known_names))
+    if stubs:
+        tools = (tools or []) + stubs
     if tools:
         out["tools"] = tools
         # Only meaningful when the model has something to call — a plain chat
@@ -561,9 +601,63 @@ def responses_to_openai_body(body: dict) -> dict:
         out["_custom_tool_names"] = sorted(out_custom)
     if tools:
         # Also consumed by the route. Needed to spot a call to a tool we never
-        # offered — see `redirect_nested_tool_call`.
-        out["_known_tool_names"] = sorted(t["function"]["name"] for t in tools)
+        # offered — see `redirect_nested_tool_call`. The nested-tool stubs are
+        # deliberately absent: a call to one must be redirected, not passed on.
+        out["_known_tool_names"] = known_names
     return out
+
+
+# `declare const tools: { apply_patch(input: string): …` in a code-mode tool's
+# description — how Codex documents each tool reachable only inside `exec`.
+_NESTED_DECL = re.compile(r"declare const tools: \{\s*([A-Za-z_]\w*)\(\s*(\w+)\s*:\s*(string)?")
+
+
+def _nested_tool_stubs(raw_tools: list[dict], offered: set[str]) -> list[dict]:
+    """Function stubs for the tools a code-mode ``custom`` tool hosts.
+
+    Models call nested tools (`apply_patch`, `exec_command`) directly by name,
+    and `redirect_nested_tool_call` turns that into the `exec` script Codex can
+    run — but only if the call reaches us. With gpt-oss it doesn't: Ollama's
+    harmony parser finds no tool of that name in the request, logs "no reverse
+    mapping found for function name", and ends the stream without a `done`
+    line. On codex-cli 0.164 every attempt to edit a file died that way (3 of 3,
+    each to the millisecond of the parser warning), so Codex reconnected, gave
+    up, and the model reported a fix that was never written.
+
+    Declaring the names lets the call parse; it is still never forwarded as a
+    function call, because these names are kept out of ``_known_tool_names``.
+    """
+    stubs: list[dict] = []
+    seen = set(offered)
+    for t in raw_tools:
+        if not isinstance(t, dict) or t.get("type") != "custom":
+            continue
+        host = t.get("name", "")
+        for name, param, is_string in _NESTED_DECL.findall(t.get("description") or ""):
+            if name in seen:
+                continue
+            seen.add(name)
+            params: dict[str, Any] = {"type": "object"}
+            if is_string:
+                params = {
+                    "type": "object",
+                    "properties": {param: {"type": "string"}},
+                    "required": [param],
+                }
+            stubs.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": (
+                            f"Runs inside `{host}`. Prefer calling `{host}` with "
+                            f"`text(await tools.{name}(…))`."
+                        ),
+                        "parameters": params,
+                    },
+                }
+            )
+    return stubs
 
 
 def _patch_text_from_args(parsed: dict) -> str | None:
@@ -681,7 +775,13 @@ def redirect_nested_tool_call(
         f"nested tool of the code-mode {host!r} tool. Rewriting as "
         f"`await tools.{name}(…)` so Codex can run it instead of stalling."
     )
-    return host, f"await tools.{name}({json.dumps(parsed)})"
+    # Freeform nested tools (`apply_patch(input: string)`) take the text itself,
+    # not an object — `tools.apply_patch({input: …})` is rejected as no patch.
+    text_arg = _patch_text_from_args(parsed) if name == "apply_patch" else None
+    if text_arg is None and set(parsed) == {"input"} and isinstance(parsed["input"], str):
+        text_arg = parsed["input"]
+    arg = json.dumps(text_arg if text_arg is not None else parsed)
+    return host, f"text(await tools.{name}({arg}))"
 
 
 # ---------------------------------------------------------------------------
@@ -735,7 +835,7 @@ def _log_json_call_repair_once(name: str) -> None:
     _LOGGED_JSON_CALL_REPAIRS.add(name)
     logger.warning(
         f"Responses: model emitted a JSON object instead of {name!r} source — "
-        f"rewriting it as an `await tools.exec_command({{…}})` call. Codex's "
+        f"rewriting it as a `text(await tools.exec_command({{…}}))` call. Codex's "
         f"code-mode tool takes raw JavaScript, so the JSON form is a "
         f"SyntaxError and any escalation it requested would be lost."
     )
@@ -766,7 +866,10 @@ def _repair_if_json_exec(text: str, name: str) -> str:
     _log_json_call_repair_once(name)
     # `cmd` is a string in Codex's schema ("Shell command to execute.") — pass
     # it through as-is. `prefix_rule` is the array-typed field, not this one.
-    return f"await tools.exec_command({json.dumps(parsed)})"
+    # Wrapped in `text()` because code mode returns only what a script passes
+    # to it — a bare call runs the command and hands the model an empty result
+    # (codex-cli 0.164: the model re-ran `ls -R` a dozen times on "Output:").
+    return f"text(await tools.exec_command({json.dumps(parsed)}))"
 
 
 def _unwrap_custom_input(args: str, name: str = "exec") -> str:

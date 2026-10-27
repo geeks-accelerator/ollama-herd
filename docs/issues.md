@@ -36,6 +36,19 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### Codex CLI 0.164 got no tools: its catalogue moved into namespaces `FIXED` (2026-10-27, unreleased)
+
+**Symptom.** `codex exec` 0.164.0 against Herd on `gpt-oss:120b`, asked to fix a one-line bug: 113 requests, 360K tokens, zero edits, and a final message describing a fix (and functions) that did not exist. Herd logged `tools=0` on every request.
+
+**Cause, three layers, each found only after the one above was fixed:**
+1. **No tools.** 0.164's Responses-Lite catalogue has no top-level tools: `exec`, `wait` and `request_user_input` sit inside a `functions` namespace — Codex's `DEFAULT_FUNCTION_NAMESPACE`, which it resolves exactly like top-level (`ToolName::is_default_namespace`, `codex-rs/protocol/src/tool_name.rs`). `_tools_to_openai` treated every namespace as sandbox-only and dropped it. The model then called `container.exec`, `list_files`, `bash` — all `unsupported call`.
+2. **Empty results.** With tools restored, code mode returns only what a script passes to `text()`. Herd's own exemplar and its JSON repair both wrote a bare `await tools.exec_command(…)`, so every command came back as `Output:` and nothing else; the model re-ran `ls -R` a dozen times.
+3. **Edits killed the stream.** `apply_patch` is a nested tool of `exec` in 0.164 (`declare const tools: { apply_patch(input: string) … }`). gpt-oss called it directly; with no tool of that name in the request, Ollama's harmony parser logged `no reverse mapping found for function name harmonyFunctionName=apply_patch` and ended the stream with no `done` line — 3 of 3 edit attempts, each to the millisecond of the warning — so Herd never saw the call it already knew how to redirect.
+
+**Fix** (`responses_translator.py`): expand `functions` into top-level tools (other namespaces stay unexposed — calling them needs `namespace` on the emitted call); wrap every Herd-written call in `text(…)`; declare the `exec`-nested tools as stubs kept out of `_known_tool_names`, so a direct call parses and is redirected into `exec`, with `apply_patch` receiving the patch as a string.
+
+**Verified** with a real `codex exec` 0.164.0 (default model `gpt-6.1-sol` → `gpt-oss:120b`): pytest, `apply_patch` on `calc.py`, pytest green; 24 `exec` calls, 24 results, 25 requests all completed, no warnings. **Still worth knowing:** gpt-oss wrote `tools.apply_patch({input: …})` (object form, rejected) several times before the string form landed — model behaviour inside the script, not something Herd rewrites. **The guide's 0.145 verification did not cover any of this**, which is the lesson: a Codex release can change the wire shape with no version signal Herd sees, so re-run a real `codex exec` after upgrading Codex, not just the test suite.
+
 ### Claude Code 2.1.220 got a 400 on its first request: `role: "system"` inside `messages[]` `FIXED` (2026-10-26, unreleased)
 
 **Seen:** 2026-10-26, testing a one-machine setup for the site's quickstart. Herd 0.11.4 from
