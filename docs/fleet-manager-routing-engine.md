@@ -236,7 +236,7 @@ no session identity / no pin / expired pin       0
 
 On a single-node fleet this signal is inert. It matters the moment a second node joins, when a multi-turn session would otherwise bounce and re-prefill from cold on every turn.
 
-When estimated tokens exceed the context window on the winning node, the response includes an `X-Fleet-Context-Overflow` header warning the client that Ollama may truncate the input.
+When estimated tokens exceed the context window on the winning node, the response includes an `X-Fleet-Context-Overflow` header warning the client that Ollama may truncate the input. Ollama does so silently (HTTP 200), so after the response the router compares the backend's evaluated token count to the estimate; under half means the input was cut, and it is logged and surfaced as the `input_truncated` health check.
 
 ---
 

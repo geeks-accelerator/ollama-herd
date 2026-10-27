@@ -186,9 +186,12 @@ Meeting detection is disabled by default — it only activates when `FLEET_NODE_
 
 **Symptom:** Response includes header `X-Fleet-Context-Overflow: estimated_tokens=5000; context_length=4096`.
 
-**Cause:** The estimated input tokens exceed the model's context window on the winning node. Ollama will truncate the input, potentially losing important context.
+**Cause:** The estimated input tokens exceed the model's context window on the winning node. Ollama truncates the input **and still answers 200** — measured on 0.40.2 and 0.40.11 at a 2,048-token window with a ~6K-token prompt: one long message was cut to 1,027 tokens, and the same text split across turns lost the long message entirely (24–34 tokens left). The model never saw what was cut.
+
+The header is the *estimate*. When the backend's own count confirms the loss, herd also logs `Input truncated: <model> on <node> evaluated N of ~M estimated tokens` and raises the **`input_truncated`** card — INFO for a one-off, WARNING when one model truncates three times in 24 h, which means its window is wrong rather than that one request was big.
 
 **Fix:**
+- Raise the model's window with `FLEET_NUM_CTX_OVERRIDES` (reloads it once) — the right lever when `input_truncated` is a WARNING
 - Use a model with a larger context window (e.g., models with 32K or 128K context)
 - Split large inputs into smaller requests
 - Increase `FLEET_SCORE_CONTEXT_FIT_MAX` to more aggressively route long inputs to nodes with larger context windows
@@ -437,7 +440,10 @@ which Ollama treats as a different model and loads as a second runner. With
 `OLLAMA_KEEP_ALIVE=-1` neither copy ever idles out.
 
 Observed 2026-10-10 on both of this fleet's models after `0.40.2` arrived with a
-reboot: resident memory went 114 GB, then **156 GB**, for two logical models.
+reboot: resident memory went 114 GB, then **156 GB**, for two logical models. The
+deliberate `0.40.2` → `0.40.11` upgrade on 2026-10-27 rewrote neither digest, so
+`0.40.4`'s manifest-reuse change appears to have fixed it — but upgrades from older
+versions may still do this, so check after any upgrade.
 
 ```bash
 curl -s localhost:11434/api/ps | python3 -c "
@@ -628,14 +634,23 @@ sqlite3 -header -column ~/.fleet-manager/latency.db \
 honest reasons: the estimator is chars/4 plus 150 per image, the model's tokenizer
 is its own, and the chat template adds tokens the client never sent. Measured
 pairs include `5,685 / 4,288` (estimate high on a long prompt) and `10 / 73`
-(estimate low on a short one, where the template dominates). The signature of real
-truncation is **every** request to one model clipping at the same ceiling, not one
-short count. There is deliberately no automated threshold yet for this reason.
+(estimate low on a short one, where the template dominates). A low ratio alone is
+not truncation: Codex requests before the 0.164 fix sat under 30% because the
+estimate counted tools the translator then dropped.
 
-Separately, `routing.py` has always warned at dispatch when the estimate exceeds
-the node's window — `grep "Context overflow"` in `herd.jsonl`, and clients get an
-`X-Fleet-Context-Overflow` header. Since 0.10.3 that also records an event, so
-`get_context_protection_events()` can be asked how often it happens.
+**What real truncation looks like, measured:** evaluated far below the estimate
+*and* the estimate over the window. Ollama either keeps about half the window (one
+long message: 1,027 of ~6K at 2,048) or drops whole messages (split across turns:
+24–34 left) — and in the second case llama-server logs `truncated = 0`, so the
+server log will not tell you. Untruncated requests never went below 70% across
+54,454 samples.
+
+That rule is automated since 2026-10-27 (unreleased; ships in 0.12.0): routing
+warns at dispatch when the estimate exceeds the node's window (`grep "Context
+overflow"` in `herd.jsonl`, and the `X-Fleet-Context-Overflow` header), the trace
+step confirms it when the backend evaluated under half the estimate (`grep "Input
+truncated"`), and `input_truncated` reports it. Both are recorded as events, so
+`get_context_protection_events()` answers how often.
 
 ---
 

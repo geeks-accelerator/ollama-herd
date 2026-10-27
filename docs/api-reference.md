@@ -97,7 +97,7 @@ data: [DONE]\n\n
 | `X-Fleet-Backend` | ✅ | `ollama` / `mlx` / `native` / `vision` / `image` / `transcription` |
 | `X-Fleet-Retries` | ✅ | Retry count (`0` when none) |
 | `X-Fleet-Score` | scorer-routed | Winning routing score (integer) |
-| `X-Fleet-Context-Overflow` | on overflow | `estimated_tokens=N; context_length=M` when input exceeds the node's context window |
+| `X-Fleet-Context-Overflow` | on overflow | `estimated_tokens=N; context_length=M` when input exceeds the node's context window. Ollama truncates such input and still answers 200; when the backend's count confirms it, the router also raises the `input_truncated` health check |
 | `X-Thinking-Tokens` / `X-Output-Tokens` / `X-Budget-Used` / `X-Done-Reason` | thinking models, non-streaming | Reasoning-budget diagnostics |
 
 > `X-Fleet-Model` is **retired** (0.8.1) — use `X-Fleet-Served-Model`.

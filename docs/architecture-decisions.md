@@ -132,7 +132,7 @@ Concurrency is recalculated on every enqueue, so it adapts as memory conditions 
 
 **Design:** Returns +15 max when input tokens have plenty of headroom, −15 when they exceed the window. Only applies to loaded (hot) models with known `context_length` — cold models return 0 (neutral), keeping "avoid cold loads" as the #1 priority.
 
-**Overflow handling:** When estimated tokens exceed the context window on the winning node, the response includes an `X-Fleet-Context-Overflow` header. The router still serves the request — Ollama handles truncation.
+**Overflow handling:** When estimated tokens exceed the context window on the winning node, the response includes an `X-Fleet-Context-Overflow` header. The router still serves the request — Ollama handles truncation, silently. Since 2026-10-27 the router confirms it afterwards from the backend's evaluated token count and reports it (`input_truncated`), rather than leaving the header as the only trace.
 
 ---
 
