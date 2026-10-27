@@ -1803,3 +1803,50 @@ Notice it's gone → try to load → memory gate refuses → wait ten minutes �
 The second-order cost is the one that actually hurt: anything relying on that model being resident was silently getting cold loads or a fallback. **A promise the system stops keeping is worse than one it refuses outright**, because the caller has no signal to adapt to.
 
 **On log levels.** The retry was arguably INFO-worthy in isolation — one failed preload is routine. What is not routine is the *56th*. Severity belongs to the pattern, not the event, which is why the new `pin_cannot_fit` check counts occurrences over 24h rather than reacting to any single failure. Same reasoning as `trace_store_write_failures`, which was added after 40,000 individually-unremarkable write failures went unnoticed for four days.
+
+## 2026-10-27: Ollama truncates in silence, and the upgrade we feared rewrote nothing
+
+**Evidence — truncation.** Sent straight to Ollama at `num_ctx=2048` with a ~6K-token
+prompt carrying `SECRET=ALPHA7` at its start, `gemma3:4b`, HTTP 200 every time:
+
+| shape | Ollama | evaluated | reply |
+|---|---|---|---|
+| one long message | 0.40.2 | 1,027 | `blue` |
+| same text split across turns | 0.40.2 | 34 | `73` |
+| one long message | 0.40.11 | 1,027 | `blue` |
+| same text split across turns | 0.40.11 | 24 | `42` |
+
+Two different mechanisms. One message: llama-server keeps roughly half the window.
+Several: Ollama drops the oversized message whole *before* llama-server sees it —
+which then logs `truncated = 0`, so **the server log is not a truncation signal**.
+`done_reason` was `stop` in all four. Nothing in the response says the model never
+read the question's premise.
+
+**Insight — measure the failure when the estimator is too noisy to threshold.** The
+context-window plan had deferred a truncation check for 18 days waiting on
+calibration, and the calibration (135,928 trace pairs) mostly said a ratio alone is
+hopeless: tiny prompts estimate ~8x low, and 51 Codex requests sat under 0.3 with no
+truncation at all — their estimate counted tools the pre-fix translator dropped. What
+made it buildable was the failure's own signature: truncation leaves the evaluated
+count far *below* the 0.70 floor that 54,454 untruncated requests never crossed,
+while overestimation does not. Gated on routing also finding the estimate over the
+resident window, `input_truncated` cannot fire on that Codex shape. Verified through
+herd on `/api/chat` and `/v1/chat/completions`.
+
+**Evidence — upgrade `0.40.2` → `0.40.11`.** The plan's hypothesis was that `0.40.4`'s
+"reusing verified manifests" stopped upgrades rewriting resident digests (the
+`0.40.2` upgrade had doubled both models). Before and after: identical digests,
+per-slot contexts, launch args and `runner`; no `duplicate_runners`; `/api/ps`
+`context_length` still per-slot; `sched.go`'s serial family list identical to
+`OLLAMA_SERIAL_FAMILIES`. One upgrade, clean relaunch, nothing resident across it —
+supportive, not proof.
+
+**Two process notes from the swap.**
+- `osascript -e 'quit app "Ollama"'` failed with `User canceled (-128)` — the app
+  appears to answer a quit with a prompt. `pkill -9 -f Ollama.app/Contents` was needed.
+- **The relaunched app sat in process state `T` (stopped) and never started
+  `ollama serve`** — twice, from `open -a` run in an agent shell. `ps -o stat -p <pid>`
+  showed it; `kill -CONT <pid>` resumed it and the server came up within seconds.
+  Cause not established. If an Ollama relaunch never starts serving, read its process
+  state before suspecting the new version. The ~5 minutes this cost was the whole
+  outage: 25 rejected requests (15 gpt-oss, 10 dinov2).

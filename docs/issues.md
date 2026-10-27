@@ -517,6 +517,14 @@ threshold on its own."* Health score 78 → 85. Covered by
 
 ### One model resident twice makes "the resident context" ambiguous, and the pin guesses `FIXED` (2026-10-11)
 
+> **Upgrade test, 2026-10-27: `0.40.2` → `0.40.11` did NOT rewrite either digest.**
+> gpt-oss `ad84bf7720de` and gemma3 `8dda00f4f636` before and after, no
+> `duplicate_runners`, launch args unchanged (`-c 524288 -np 4` / `-c 131072 -np 4`).
+> Consistent with `0.40.4`'s "reusing verified manifests" note, but it is one
+> upgrade, done as a clean quit-and-relaunch with nothing resident across it — the
+> 0.40.2 rewrite came with a reboot. The check stays, per the plan: other operators
+> upgrade from older versions.
+
 **Severity:** MEDIUM — observed on the live fleet; the expensive half is
 reasoned from the code and a simulation, not yet witnessed.
 

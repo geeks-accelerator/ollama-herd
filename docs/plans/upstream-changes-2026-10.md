@@ -1,12 +1,12 @@
 # Upstream changes, October 2026: what herd should do about them
 
-**Status**: 🔨 **Phases 1, 2, 4, 5 DONE (2026-10-22, unreleased); 3 gated; 6 scope only.**
+**Status**: ✅ **Phases 1, 2, 4, 5 DONE (2026-10-22, shipped in 0.11.4); 3 DONE 2026-10-27; 6 scope only.**
 
 | Phase | Outcome |
 |-------|---------|
 | 1 — truncated response reported as success | **Done, and broader than planned.** Non-streaming paths too (now 502), mid-stream exceptions now end in-protocol instead of tearing the connection, and two bugs found while live-testing: gpt-oss's OpenAI tool calls were dropped (they ride the `done` line), and OpenAI clients could never see `finish_reason: "length"`. Verified with the real OpenAI and Anthropic SDKs, Python and TypeScript; **not** with Claude Code or Codex themselves (a nested Claude Code refuses to launch inside a session, and was not bypassed). |
 | 2 — Ollama's four Responses-layer bugs | **No fixes needed.** Each either cannot occur in herd's translator or is already handled; three tests pin that. |
-| 3 — upgrade this box's Ollama | **Not done, deliberately.** Waits for the `0.11.3` day-after check (2026-10-23) so a fleet change cannot confound it, and needs the operator's go-ahead for the app download. |
+| 3 — upgrade this box's Ollama | **Done 2026-10-27, `0.40.2` → `0.40.11`.** Hypothesis held: neither digest was rewritten, so no duplicates (`duplicate_runners` silent). Contexts, launch args and `runner=llamacpp` unchanged; `/api/ps` `context_length` still per-slot; `OLLAMA_SERIAL_FAMILIES` identical to `sched.go` at the tag. Cost: ~5 min down, 25 rejected requests. See `docs/observations.md` (2026-10-27). |
 | 4 — mlx-lm `0.32.2` | **Done, and it found a correctness bug.** Coder 65 → 124 tok/s, GLM 45 → 64. `--quantized-kv-start 0` broke tool calling (0/5 vs 8/8 at `5000`); now `5000`. This box had been on a patched `0.31.3`. One start-`5000` instance answered wrongly from birth — OPEN in `docs/issues.md`. |
 | 5 — Windows docs | **Done.** `docs/troubleshooting.md` § *Running a node on Windows*, README platform note. |
 | 6 — text-to-speech | Scope only, as planned. |
