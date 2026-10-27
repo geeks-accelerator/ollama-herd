@@ -95,6 +95,8 @@ class HealthEngine:
     MEMORY_UNDERUTIL_PCT = 50.0
     RETRY_RATE_THRESHOLD = 0.3  # avg retries per request
     RECENT_WINDOW_S = 3600  # 1 hour — used to detect if issues are still active
+    # Confirmed truncations on one model in 24h before input_truncated is a WARNING.
+    TRUNCATION_REPEAT_THRESHOLD = 3
 
     async def analyze(self, registry, trace_store) -> HealthReport:
         """Run all health checks and return a complete report."""
@@ -1415,6 +1417,44 @@ class HealthEngine:
                 )
             )
 
+        truncated = [e for e in events if e["action"] == "truncated"]
+        if truncated:
+            by_model = Counter(e["model"] for e in truncated)
+            worst_model, worst = by_model.most_common(1)[0]
+            windows = sorted({e["loaded_ctx"] for e in truncated})
+            model_lines = ", ".join(f"{m} ({c}x)" for m, c in by_model.most_common(5))
+            recs.append(
+                Recommendation(
+                    check_id="input_truncated",
+                    # One oversized prompt is a client sending too much; the same
+                    # model truncating repeatedly means its window is wrong.
+                    severity=(
+                        Severity.WARNING
+                        if worst >= self.TRUNCATION_REPEAT_THRESHOLD
+                        else Severity.INFO
+                    ),
+                    title=f"Input silently truncated for {len(truncated)} request(s) in 24h",
+                    description=(
+                        f"The backend evaluated less than half of a prompt that was "
+                        f"already estimated over the model's context window, and "
+                        f"answered with HTTP 200 anyway — the model never saw the "
+                        f"rest. Affected: {model_lines}. Resident window(s): "
+                        f"{', '.join(str(w) for w in windows)} tokens."
+                    ),
+                    fix=(
+                        f"Raise the window for {worst_model} with "
+                        f"FLEET_NUM_CTX_OVERRIDES (it reloads the model once), or have "
+                        f"the client send less. Clients can see this per request in the "
+                        f"X-Fleet-Context-Overflow response header."
+                    ),
+                    data={
+                        "truncated": len(truncated),
+                        "by_model": dict(by_model.most_common(5)),
+                        "windows": windows,
+                    },
+                )
+            )
+
         if pinned > 0 or upgraded > 0:
             parts = []
             if pinned:
@@ -1425,7 +1465,7 @@ class HealthEngine:
                 Recommendation(
                     check_id="context_protection_active",
                     severity=Severity.INFO,
-                    title=f"Context protection active: {len(events)} event(s) in 24h",
+                    title=f"Context protection active: {pinned + upgraded} event(s) in 24h",
                     description=(
                         f"The router intercepted num_ctx values to prevent Ollama model "
                         f"reloads: {', '.join(parts)}. This is expected behavior that "

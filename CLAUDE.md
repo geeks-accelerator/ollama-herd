@@ -18,7 +18,7 @@ The `--extra embedding` now also installs `fastembed` for the **native text embe
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 1946 tests (~25s)
+uv run pytest                    # run all 1959 tests (~25s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -293,7 +293,7 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `server/hardware_lookup.py` | Chip → memory bandwidth table (Apple Silicon + discrete GPUs) powering device-aware scoring |
 | `server/queue_manager.py` | Per `node:model` queues with dynamic concurrency + zombie reaper |
 | `server/streaming.py` | httpx proxy to Ollama + NDJSON↔SSE + auto-retry + context protection + thinking model inflate |
-| `server/health_engine.py` | 49 health checks (offline, degraded, memory, KV bloat, context waste, thrashing, timeouts, errors, retries, disconnects, streams, version, protection, zombies, connection failures, priority models) |
+| `server/health_engine.py` | 50 health checks (offline, degraded, memory, KV bloat, context waste, thrashing, timeouts, errors, retries, disconnects, streams, version, protection, zombies, connection failures, priority models) |
 | `server/context_optimizer.py` | Dynamic num_ctx: analyzes token usage, auto-calculates optimal context, queues Ollama restarts via heartbeat commands |
 | `server/benchmark_engine.py` | Benchmark core: fleet discovery, multimodal request gen (LLM + embed + image), report building |
 | `server/benchmark_runner.py` | Server-side runner: smart mode (fill memory from disk/catalog), progress tracking, model type selection |
@@ -514,10 +514,10 @@ Silent failures are dishonest. Fail fast, fail loud.
   — the order that used to fail three tests — passes 67/67). **Verify before
   acting on anything below.**
 
-  1. **Phase 1 step 3** of `docs/plans/context-window-blindness.md` — the truncation threshold, deliberately unbuilt. Calibration argues for a size-banded rule, not one ratio: 176 `estimated_tokens`/`prompt_tokens` pairs give a 0.94 median above 100 estimated tokens and ~8x below it, where the chat template dominates.
+  1. ~~**Phase 1 step 3**~~ — **DONE 2026-10-27** as `input_truncated` (the 50th check). The calibration said a ratio alone cannot work (51 of 164 Codex requests sat under 0.3 untruncated, from the pre-fix tool drop); measuring Ollama's actual truncation (1,027 and 34 tokens evaluated of ~6K, HTTP 200 both times) gave a rule that can: estimate over the resident window **and** evaluated < 0.5 x estimate, against a 0.70 floor over 54,454 untruncated requests. See the plan's as-built section.
   2. **The `/api/ps` total-vs-per-slot contradiction**, still OPEN — and 0.40's `RUNNER` column may have changed what it reports.
   3. **No CI, and every test runs on one OS** (`docs/issues.md`, 2026-10-22) — the gap that let `herd-node` ship unable to start on Windows past nineteen hundred tests. The real fix is a GitHub Actions matrix (macOS, Ubuntu, Windows) asserting one heartbeat registers; four `sys.platform` mocks prove a guard exists, not that the agent starts.
-  4. **`/api/embed-text` is unreachable** (`docs/issues.md`, 2026-10-22) — decorated on a router `app.py` never includes, so it 404s and is absent from all 72 paths in `/openapi.json`. Documented in a test docstring for months, which is the point: a docstring did not get it removed.
+  4. ~~**`/api/embed-text` is unreachable**~~ — **removed 2026-10-27**, and `tests/test_server/test_routers_mounted.py` now fails on any route module whose router the app never mounts.
   5. **Post-publish checks** — `0.11.3` week-after **2026-10-29** (its day-after ran 2026-10-23: clean, 110 downloads on release day, no new issues); `0.11.4` day-after **2026-10-25**, week-after **2026-10-31**.
   6. **Upstream changes, October 2026** (`docs/plans/upstream-changes-2026-10.md`) — Phases 1, 2, 4 and 5 **shipped in `0.11.4`**; the plan opens with each phase's outcome. **Remaining: Phase 3**, upgrading this box's Ollama `0.40.2` → latest as the test of whether `0.40.4` fixed the digest-rewrite duplicates — deliberately after `0.11.4`'s day-after check so the two are not measured together, and it needs the operator's go-ahead for the app download. Also OPEN from that work: one MLX coder instance answered wrongly from its first request at the fixed `--quantized-kv-start 5000` (`docs/issues.md`) — if it recurs, keep it running and diff it against a fresh instance before restarting anything.
   7. **gotomy.ai platform integration — REMOVED on `main` (2026-10-24), ships in `0.12.0`** per `docs/plans/remove-platform-integration.md`: about 2,000 lines, seven test modules, and the `cryptography` dependency (with `cffi` and `pycparser` under it); a clean wheel install no longer contains them. Anonymous community telemetry is unchanged, pinned byte for byte by `test_community_payload_golden.py`. Removed CLI flags warn and are ignored until `0.14.0` (OPEN entry in `docs/issues.md`).
@@ -560,7 +560,7 @@ Silent failures are dishonest. Fail fast, fail loud.
   Refresh **all four locations**, not just CLAUDE.md — the skills are where the drift hides.
 
 - **Three checks added 2026-10-11** — `duplicate_runners` (one name, two digests, one node; rates by reclaimable GB and carries the two-call `ollama stop` remediation), `mlx_routing_disabled` (a node running `mlx_lm.server` while the router has `FLEET_MLX_ENABLED` unset — nothing surfaced it, because `mlx_backend_active` fires INFO on that same state), and `mlx_requests_unservable` (traffic for an `mlx:` model no healthy server hosts). Runbooks for all three plus the rate-check sample floor are in `docs/troubleshooting.md`.
-- **Health:** 49 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
+- **Health:** 50 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
 
 ## Conventions
 

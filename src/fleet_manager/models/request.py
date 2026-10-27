@@ -98,6 +98,10 @@ class InferenceRequest(BaseModel):
     # data for a threshold rather than guessing one.  None on paths that never
     # score (embeddings, images).
     estimated_tokens: int | None = None
+    # The winning node's resident context, set only when routing found the
+    # estimate over it (``check_context_overflow``).  Lets the trace step test
+    # whether Ollama then truncated, by comparing what it actually evaluated.
+    overflow_context_length: int | None = None
 
     @model_validator(mode="after")
     def _normalize_model_names(self) -> InferenceRequest:

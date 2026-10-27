@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.12.0] - 2026-10-26
 
+### Added
+
+- **Silent input truncation is now detected and reported** (`input_truncated`, the 50th health check). Ollama truncates a prompt longer than the model's context window and still answers 200 — measured on 0.40.2 at `num_ctx=2048` with a ~6K-token prompt: one long message was evaluated at 1,027 tokens, the same text split across turns at 34 (the long message dropped whole), and the model lost a fact planted at its start both times. Herd already warned when its *estimate* exceeded the resident window; it now confirms the loss from the backend's own count — under half the estimate, against a floor of 0.70 across 54,454 untruncated requests — logs `Input truncated: …`, and raises a card (INFO for a one-off, WARNING when one model truncates three times in a day, meaning its window is wrong). Verified live through `/api/chat` and `/v1/chat/completions`.
+
 ### Fixed
 
 - **Claude Code 2.1.220 and later work again.** Current Claude Code sends a `role: "system"` message inside `messages[]` (its agent-types listing) as well as the top-level `system` prompt, and Herd rejected the whole request with a 400 (`messages.1.role Input should be 'user' or 'assistant'`) before routing anything, on the first turn of every session. The message is now accepted and kept in place as a system message, the same as Ollama's own Anthropic layer, with the same `cch=` normalization as the system prompt. Verified with real Claude Code 2.1.220, including a multi-turn tool-calling session.
@@ -22,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Your start command keeps working.** `herd --cloud/--token/--cloud-url` and `herd-node --platform-token/--operator-token/--platform-url/--telemetry-local-summary/--telemetry-include-tags` are still accepted: each prints one warning and is ignored. Remove them from your start command or launch agent before **0.14.0**, when they stop being accepted. (Rejecting them now would make the process exit, and a launchd/systemd keep-alive agent would then restart it in a loop.)
   - **Leftover configuration is inert.** `FLEET_NODE_PLATFORM_*`, `FLEET_NODE_TELEMETRY_LOCAL_SUMMARY`, `FLEET_NODE_TELEMETRY_INCLUDE_TAGS` and `CLOUD_FLEET_TOKEN` are ignored if still set, and `~/.fleet-manager/platform.json` is no longer read. All are safe to delete.
 - **`cryptography` and `websockets` are no longer direct dependencies.** Only the platform code imported them. A fresh install no longer pulls in `cryptography` (or `cffi` and `pycparser` under it) — one Rust extension fewer for the Homebrew formula to build. `websockets` is still installed through `uvicorn[standard]`.
+- **`/api/embed-text`**, an endpoint that was never reachable: its handler was decorated on a router the app never mounted, so it answered 404. Text embeddings go through `/api/embed` and `/v1/embeddings` as before. A new test fails if any route module declares a router the app does not serve.
 - The node-side anonymous telemetry sender (`node/anonymous_telemetry.py`), which nothing had run since the router took over sending.
 
 ### Changed

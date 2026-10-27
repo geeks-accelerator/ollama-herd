@@ -75,7 +75,7 @@ router to report it. Ready-made launchd agents are in
 | **Smart Benchmarks** | Auto-discovers fleet, benchmarks all 5 model types, tracks performance over time |
 | **Dynamic Context** | Measures actual token usage, auto-adjusts context windows to free KV cache memory |
 | **Fleet Intelligence** | AI-generated fleet briefings with health summaries, trend analysis, and actionable recommendations |
-| **Health Engine** | 49 automated checks: memory, thermal, context waste, thrashing, timeouts, errors, zombies, priority models, and more |
+| **Health Engine** | 50 automated checks: memory, thermal, context waste, thrashing, timeouts, errors, zombies, priority models, and more |
 | **Request Tagging** | Per-app analytics via tags — track usage, latency, and errors per application or team |
 
 ## Usage
@@ -303,7 +303,7 @@ uv run herd                          # start router
 uv run herd-node                     # start node agent
 
 uv sync --extra dev                  # install test deps
-uv run pytest                        # run all 1946 tests (~26s)
+uv run pytest                        # run all 1959 tests (~26s)
 uv run ruff check src/               # lint
 uv run ruff format src/              # format
 ```

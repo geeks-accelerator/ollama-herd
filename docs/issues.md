@@ -2708,7 +2708,16 @@ The dashboard is a large amount of inline HTML/CSS/JS in Python strings across 5
 
 ## Test Coverage Gaps
 
-### `/api/embed-text` is an endpoint that cannot be reached `OPEN` (2026-10-22)
+### `/api/embed-text` is an endpoint that cannot be reached `FIXED` (2026-10-27)
+
+> **Removed rather than mounted** — nothing documented it and nothing called it;
+> `/api/embed` and `/v1/embeddings` are the text-embedding surface. The class is now
+> pinned rather than the instance: `tests/test_server/test_routers_mounted.py`
+> imports every module under `server/routes/` and fails if any module-level
+> `APIRouter` has paths the real app does not serve (verified to fail with the old
+> decorator restored). Note FastAPI 0.15x mounts routers lazily as
+> `_IncludedRouter` objects without a `.path`, so the test matches by router
+> identity first and falls back to paths for older FastAPI.
 
 **Severity:** low. Dead code, not a malfunction — but it is an endpoint, so it reads
 as API surface.

@@ -9,7 +9,7 @@
 > branch. So the reported failure mode did reach herd, by a different route than
 > the one dismissed here. Fixed; see `docs/issues.md`.
 
-**Status**: **IMPLEMENTED 2026-10-09**, except Phase 1 step 3, which is deliberately deferred until the trace field it depends on has produced calibration data. Deployed and verified live. Revised earlier the same day after a codebase audit that cut the plan roughly in half.
+**Status**: **COMPLETE 2026-10-27.** Phases 1.1, 1.2, 2, 3 and 4 landed 2026-10-09; Phase 1 step 3 waited for calibration data and landed 2026-10-27 as `input_truncated` (see "Phase 1 step 3 — as built" below). Deployed and verified live. Revised earlier the same day after a codebase audit that cut the plan roughly in half.
 
 **What landed:** `estimated_tokens` on the request, the trace and the schema; the pre-existing overflow detection in `routing.py` now persisted as an `overflow` event; `num_ctx_unmanaged`; `MlxServerInfo.context_length = None` as an explicit unknown; and `no_output` as a fourth `status` value folded into the existing `_check_stream_reliability` as `empty_generations`. 46 health checks, 1,773 tests.
 
@@ -100,6 +100,16 @@ Add an explicit unknown for MLX entries, following the `backend_clients` convent
 **The trap, and it is the main risk in this plan.** Thinking models legitimately emit **zero content tokens** when the whole `num_predict` budget goes to reasoning — documented at `model_knowledge.py:898` and `streaming.py:1565`, and the reason `thinking_min_predict` exists. A check reading content length would mislabel every thinking model on a tight budget. It must read **total** output including the reasoning channel, which `streaming.py:707,709` already counts separately (`thinking_token_count` / `output_token_count`).
 
 **What it fires on when everything is working:** a thinking model that spent its budget reasoning, if implemented carelessly. Hence last, and hence the explicit test for it.
+
+## Phase 1 step 3 — as built (2026-10-27)
+
+**The calibration answered the plan's own question, and changed the design.** 135,928 trace pairs: for Ollama-format requests estimated at ≥1,000 tokens (n=54,454) the evaluated/estimate ratio never fell below **0.70** (p1 0.73, mean 0.87); under 100 estimated tokens it runs ~2.5–10x *high*, where the chat template dominates. Responses-format requests had 51 of 164 under 0.3 — every one from Codex runs *before* the 0.164 namespace fix, when herd dropped the tools the estimate had counted; after the fix they sit at 0.88–1.01. So a ratio alone is not evidence of truncation, exactly as feared.
+
+**What made it buildable was measuring the failure rather than the estimator.** On Ollama 0.40.2 at `num_ctx=2048`, a ~6K-token prompt came back 200 both ways: one long message evaluated at **1,027** tokens (llama-server keeps about half the window), the same text split across turns at **34** (Ollama dropped the long message whole — llama-server then logs `truncated = 0`, so its log is *not* a reliable signal). The model lost a fact planted at the start both times. Truncation therefore leaves a ratio far below the 0.70 floor, while overestimation does not.
+
+**Rule:** both halves, never one — routing found the estimate over the resident window (the existing overflow branch, which now also stamps `InferenceRequest.overflow_context_length`), **and** the backend evaluated under `TRUNCATION_RATIO = 0.5` of the estimate. Checked in `StreamingProxy._record_trace`, recorded as a `truncated` context-protection event, surfaced as `input_truncated`: INFO for a one-off, WARNING at three on one model in 24 h (`HealthEngine.TRUNCATION_REPEAT_THRESHOLD`).
+
+**What it fires on when everything is working:** nothing — 0 overflow events in this fleet's entire log history, because its smallest resident window is 32,768 and its largest estimate ~10K. **What it misses, deliberately:** truncation that keeps most of the prompt (Ollama dropping one small message from a long conversation), and any cold-loaded model whose window routing does not yet know. Losing sensitivity is the cheaper error than reporting data loss that did not happen. Verified live through `/api/chat` and `/v1/chat/completions` against `gemma3:4b` resident at 2048.
 
 ## Order and dependencies
 

@@ -812,6 +812,8 @@ def check_context_overflow(
     # that ordering load-bearing for no benefit.
     from fleet_manager.server.streaming import _record_context_protection
 
+    if ctx_length > 0:
+        inference_req.overflow_context_length = ctx_length
     _record_context_protection(
         "overflow",
         inference_req.model,

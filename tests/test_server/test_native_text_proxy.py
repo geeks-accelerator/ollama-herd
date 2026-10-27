@@ -2,8 +2,9 @@
 
 ``embed_text`` had one end-to-end test (the success path, via ``/api/embed``)
 and a test that grepped its source for two strings.  It is reached only through
-``/api/embed`` → ``dispatch_embed``: its own ``/api/embed-text`` decorator sits
-on a router that is never mounted, so these drive the real entry point.  These pin each outcome
+``/api/embed`` → ``dispatch_embed`` (an ``/api/embed-text`` decorator on a
+router that was never mounted has been removed), so these drive the real entry
+point.  These pin each outcome
 — success, timeout, transport error, backend error, no server — and the trace
 each one leaves, so the proxy core can be shared with ``/v1/rerank`` without
 anything moving.

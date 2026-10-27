@@ -93,6 +93,35 @@ def _record_context_protection(
         _context_protection_events.pop(0)
 
 
+# A prompt the backend evaluated at under this fraction of the router's estimate,
+# when that estimate already exceeded the resident window, was truncated.  Ollama
+# truncates silently and answers 200: measured 2026-10-27 on 0.40.2 at
+# num_ctx=2048 with a ~6K-token prompt, one long message came back evaluated at
+# 1,027 tokens and the same text split across turns at 34 (the long message
+# dropped whole), and the model lost a fact planted at the start both times.
+# Calibrated against 54,454 untruncated Ollama-format requests estimated at
+# >=1,000 tokens: the lowest evaluated/estimate ratio was 0.70 (p1 0.73), so 0.5
+# leaves a margin.  It misses truncation that keeps most of the prompt (Ollama
+# dropping one small message), deliberately: losing sensitivity is the cheaper
+# error than reporting data loss that did not happen.
+TRUNCATION_RATIO = 0.5
+
+
+def confirmed_truncation(request, prompt_tokens: int | None) -> bool:
+    """Did the backend evaluate far less of an overflowing prompt than was sent?
+
+    Needs both halves: routing must have found the estimate over the resident
+    window (``overflow_context_length``), and the backend's own count must fall
+    below ``TRUNCATION_RATIO`` of the estimate.  Either alone is not evidence --
+    the estimator runs ~8x low on tiny prompts and the overflow test is only an
+    estimate.
+    """
+    estimated = request.estimated_tokens
+    if not request.overflow_context_length or not estimated or prompt_tokens is None:
+        return False
+    return prompt_tokens < estimated * TRUNCATION_RATIO
+
+
 def get_context_protection_events(hours: float = 24) -> list[dict]:
     """Return context protection events from the last N hours."""
     cutoff = time.time() - (hours * 3600)
@@ -347,6 +376,19 @@ class StreamingProxy:
         # to stop" from "it exhausted num_predict" — otherwise a turn that ends
         # mid-task is only diagnosable by eyeballing completion_tokens.
         finish_reason = self._request_done_reason.pop(entry.request.request_id, "") or None
+        if confirmed_truncation(entry.request, prompt_tokens):
+            logger.warning(
+                f"Input truncated: {entry.request.model} on {node_id} evaluated "
+                f"{prompt_tokens} of ~{entry.request.estimated_tokens} estimated tokens "
+                f"(window {entry.request.overflow_context_length}) and answered anyway"
+            )
+            _record_context_protection(
+                "truncated",
+                entry.request.model,
+                node_id,
+                entry.request.estimated_tokens,
+                entry.request.overflow_context_length,
+            )
 
         if self._trace_store:
             _create_logged_task(

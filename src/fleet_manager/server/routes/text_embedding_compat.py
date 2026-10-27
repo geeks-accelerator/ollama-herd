@@ -24,7 +24,7 @@ from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from fleet_manager.models.node import NodeStatus
@@ -34,15 +34,12 @@ from fleet_manager.server.routes.routing import direct_proxy_tracer, record_rout
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["text-embedding"])
-
 # Re-export so ollama_compat.py only needs one import from this module
 __all__ = [
     "RERANK",
     "is_text_embedding_model",
     "embed_text",
     "proxy_to_native_text_server",
-    "router",
 ]
 
 
@@ -278,14 +275,14 @@ async def proxy_to_native_text_server(
     )
 
 
-@router.post("/api/embed-text")
 async def embed_text(request: Request):
     """Proxy a text embedding request to the best node's fastembed server.
 
     Reached via ``ollama_compat.dispatch_embed`` when the requested model is in
     the text embedding registry — the caller sees the same Ollama-compatible
-    JSON shape regardless of which path was taken.  (This module's router is
-    not mounted, so the decorator path is not served on its own.)
+    JSON shape regardless of which path was taken.  It has no route of its
+    own: an ``/api/embed-text`` decorator sat on a router ``app.py`` never
+    mounted, and was removed rather than mounted (2026-10-27).
 
     Request (Ollama /api/embed compatible):
         {
