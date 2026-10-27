@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Codex tool-call repairs that succeed now log at INFO, not WARNING.** Herd rewrites three shapes local models get wrong — a nested code-mode tool (`apply_patch`, `exec_command`) called directly, `apply_patch` called as a tool on older Codex, and a JSON payload where `exec` expects JavaScript. Every real Codex run on `gpt-oss:120b` hits the first, so each session logged warnings for a repair that worked, and a soak could not say "zero warnings" while Codex was in use. A rewrite that *cannot* be made (an `apply_patch` call with no recognisable patch, which Codex will reject) still logs WARNING. The messages are unchanged, so existing greps still find them.
+
 ## [0.12.0] - 2026-10-27
 
 ### Added

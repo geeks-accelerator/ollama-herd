@@ -523,7 +523,7 @@ def test_repair_is_audible_once_per_tool(caplog):
     from fleet_manager.server import responses_translator as rt
 
     rt._LOGGED_JSON_CALL_REPAIRS.clear()
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         rt._unwrap_custom_input('{"cmd": "ls"}', "exec")
         rt._unwrap_custom_input('{"cmd": "pwd"}', "exec")
     assert caplog.text.count("instead of 'exec' source") == 1
@@ -603,6 +603,40 @@ def test_nested_code_mode_tool_call_is_redirected():
     assert item["type"] == "custom_tool_call"
     assert item["name"] == "exec"          # routed to the host tool, not the nested one
     assert item["input"] == 'text(await tools.exec_command({"cmd": "ls docs"}))'
+
+
+def test_successful_repairs_log_info_and_a_failed_one_warns(caplog):
+    """A repair that worked is routine with local models — every real Codex run
+    on gpt-oss hit the nested-tool one — so it logs INFO and a soak can still read
+    "zero warnings". A repair that could NOT be made means Codex will reject the
+    call, which is worth a WARNING."""
+    import json
+    import logging
+
+    from fleet_manager.server import responses_translator as rt
+
+    rt._LOGGED_JSON_CALL_REPAIRS.clear()
+    with caplog.at_level(logging.INFO):
+        rt.build_responses_object(
+            model="m", text="",
+            tool_calls=[{"function": {"name": "exec_command", "arguments": {"cmd": "ls"}}}],
+            custom_names={"exec"}, known_names={"exec", "wait"},
+            input_tokens=1, output_tokens=1,
+        )
+        rt._unwrap_custom_input('{"cmd": "ls"}', "exec")
+        patch = "*** Begin Patch\n*** End Patch"
+        assert rt.redirect_apply_patch_call(
+            "apply_patch", json.dumps({"input": patch}), {"exec_command"}
+        )
+        assert rt.redirect_apply_patch_call(
+            "apply_patch", json.dumps({"nothing": 1}), {"exec_command"}
+        ) is None
+    levels = {r.getMessage()[:60]: r.levelname for r in caplog.records}
+    repairs = [lvl for msg, lvl in levels.items()
+               if "never offered" in msg or "JSON object instead" in msg
+               or "as a tool" in msg]
+    assert repairs and set(repairs) == {"INFO"}, levels
+    assert [lvl for msg, lvl in levels.items() if "no recognisable" in msg] == ["WARNING"]
 
 
 def test_offered_tools_are_never_redirected():

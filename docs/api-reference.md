@@ -273,7 +273,7 @@ as a plain string. The nested tools are declared to the model as stubs so that
 Ollama can parse such a call at all; they are never returned to the client as
 tools. When `exec_command` is offered as a top-level tool (older Codex), an
 `apply_patch` tool call becomes an `exec_command` heredoc instead (`apply_patch`
-was a binary on the sandbox PATH there). All rewrites are logged at WARNING.
+was a binary on the sandbox PATH there). Successful rewrites are logged at INFO (WARNING through 0.12.0); a call that cannot be rewritten logs WARNING.
 
 **Response** (non-streaming) is a Responses object whose `output` is a list of
 items — an assistant `message` plus one `function_call` / `custom_tool_call` per

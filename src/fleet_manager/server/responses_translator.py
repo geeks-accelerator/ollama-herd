@@ -726,7 +726,7 @@ def redirect_apply_patch_call(
             f"in _patch_text_from_args."
         )
         return None
-    logger.warning(
+    logger.info(
         "Responses: model called 'apply_patch' as a tool — it is a binary on the "
         "sandbox PATH, not a tool, and Codex rejects the call outright. Rewriting "
         "as an `exec_command` heredoc so the edit actually lands."
@@ -770,7 +770,9 @@ def redirect_nested_tool_call(
         return None
     if not isinstance(parsed, dict):
         return None
-    logger.warning(
+    # A repair that succeeded is routine with local models: INFO, so a soak
+    # can still read "zero warnings" while Codex is in use (2026-10-27).
+    logger.info(
         f"Responses: model called {name!r}, which was never offered — it is a "
         f"nested tool of the code-mode {host!r} tool. Rewriting as "
         f"`await tools.{name}(…)` so Codex can run it instead of stalling."
@@ -833,7 +835,7 @@ def _log_json_call_repair_once(name: str) -> None:
     if name in _LOGGED_JSON_CALL_REPAIRS:
         return
     _LOGGED_JSON_CALL_REPAIRS.add(name)
-    logger.warning(
+    logger.info(
         f"Responses: model emitted a JSON object instead of {name!r} source — "
         f"rewriting it as a `text(await tools.exec_command({{…}}))` call. Codex's "
         f"code-mode tool takes raw JavaScript, so the JSON form is a "

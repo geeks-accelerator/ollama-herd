@@ -141,7 +141,12 @@ The Lite shape is [openai/codex#31894](https://github.com/openai/codex/issues/31
 
 Codex's tool *descriptions* document an API its tool *schema* doesn't expose.
 Frontier models are tuned around the discrepancy; local models read the prose and
-call exactly what it says. Every rewrite below is automatic and logged at WARNING.
+call exactly what it says. Every rewrite below is automatic and logged at INFO
+(WARNING through 0.12.0) — a repair that worked is routine with local models, and
+at WARNING it made every Codex session break a "zero warnings" soak. A rewrite
+that *cannot* be made, such as an `apply_patch` call with no recognisable patch,
+still warns, because Codex will reject it. `grep 'never offered\|instead of' ~/.fleet-manager/logs/herd.jsonl`
+finds them either way: the JSONL log records INFO.
 
 **Results only come back through `text()`.** In code mode, `exec` returns only
 what the script passes to the `text()` helper — a bare

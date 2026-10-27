@@ -18,7 +18,7 @@ The `--extra embedding` now also installs `fastembed` for the **native text embe
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 1959 tests (~25s)
+uv run pytest                    # run all 1960 tests (~25s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -397,9 +397,9 @@ Silent failures are dishonest. Fail fast, fail loud.
 
 ## Current State (as of 2026-10-27, after the 0.12.0 release)
 
-- **Version: `0.12.0` — published** to PyPI + GitHub + Homebrew on 2026-10-27 (tag `v0.12.0` at `184fc5d`). Removes the never-deployed gotomy.ai platform integration (and `cryptography`/`cffi`/`pycparser`), fixes Claude Code ≥2.1.220 (`role:"system"` inside `messages[]`) and **Codex CLI 0.164** (namespaced tools, `text()` results, nested-tool stubs), adds `input_truncated` (the 50th check) and removes the unreachable `/api/embed-text`. **1959 tests, 50 checks.**
+- **Version: `0.12.0` — published** to PyPI + GitHub + Homebrew on 2026-10-27 (tag `v0.12.0` at `184fc5d`). Removes the never-deployed gotomy.ai platform integration (and `cryptography`/`cffi`/`pycparser`), fixes Claude Code ≥2.1.220 (`role:"system"` inside `messages[]`) and **Codex CLI 0.164** (namespaced tools, `text()` results, nested-tool stubs), adds `input_truncated` (the 50th check) and removes the unreachable `/api/embed-text`. **Nineteen hundred fifty-nine tests and 50 checks at release.**
 
-  **Soaked 9.5 h on Ollama `0.40.11`** (03:59–13:30 UTC): zero errors, zero warnings outside the upgrade's own minute, 100% completion, fast-mode share 55.7%. **Then real clients, concurrently:** Claude Code 2.1.311 and Codex 0.164.0 each fixed a four-bug, two-file project through the router (15 and 9 requests, all completed, tests untouched). Codex's run logged three `model called 'apply_patch' … never offered` WARNINGs — the nested-tool rewrite working, but it means **any Codex use breaks a "zero warnings" soak claim**; consider INFO or a separate count. **The router had to be restarted before publishing**: `health_engine.py` was saved 45 s after it started, so the soaked process lacked one line of the release. `find src/ -newermt "<router start>"` caught it — run it every release.
+  **Soaked 9.5 h on Ollama `0.40.11`** (03:59–13:30 UTC): zero errors, zero warnings outside the upgrade's own minute, 100% completion, fast-mode share 55.7%. **Then real clients, concurrently:** Claude Code 2.1.311 and Codex 0.164.0 each fixed a four-bug, two-file project through the router (15 and 9 requests, all completed, tests untouched). Codex's run logged three `model called 'apply_patch' … never offered` WARNINGs — the nested-tool rewrite working, but it meant **any Codex use broke a "zero warnings" soak claim**. **Lowered to INFO on `main` the same day** (unreleased): the three repairs that succeed log INFO, the one that cannot be made still warns, and a test pins both levels. **The router had to be restarted before publishing**: `health_engine.py` was saved 45 s after it started, so the soaked process lacked one line of the release. `find src/ -newermt "<router start>"` caught it — run it every release.
 
   **The publish gate failed again, the same way 0.11.2's did.** `python3 - <<'EOF' && \` ends the `&&` chain at the heredoc — the body is a separate statement — so a NameError in the artifact check did not stop `uv publish`. The artifact was correct (11 checks re-run against the built files, sha256 of both matching PyPI's). **Put artifact checks in a script file and chain `python3 check.py && … && uv publish` on one logical line**; never a heredoc inside an `&&` chain.
 
