@@ -2,18 +2,24 @@
 
 Point [OpenAI Codex](https://github.com/openai/codex) at your own hardware — inference runs on your fleet, and Herd routes each request to the best node and model you have loaded.
 
-> **Agentic coding works, with no configuration** — end-to-end verified 2026-07-18 on a real `codex-cli 0.145.0-alpha.18` (`codex exec`, `qwen3-coder:30b`). Codex ran `pytest`, read the source, wrote a correct fix through `apply_patch`, and re-ran `pytest` to green — entirely on local hardware, no model map, no per-tool config. Any model name works, including the Desktop app's default `gpt-5.6-sol`.
+> **Agentic coding works, with no configuration** — end-to-end verified 2026-10-27 on a real `codex-cli 0.164.0` (`codex exec`, default model `gpt-6.1-sol` auto-routed to `gpt-oss:120b`). Codex ran `pytest`, read the source, patched `calc.py` through `apply_patch`, and re-ran `pytest` to green — entirely on local hardware, no model map, no per-tool config. Any model name works. (First verified 2026-07-18 on `codex-cli 0.145.0-alpha.18` with `qwen3-coder:30b`.)
 >
 > ```
 > $ python3 -m pytest -q
-> ..                                                       [100%]
-> 2 passed
+> .                                                        [100%]
+> 1 passed
 > ```
 >
-> Herd bridges two gaps to make this work, because Codex's tool *descriptions*
-> document an API its tool *schema* doesn't expose — and local models call what
-> the prose tells them to. Both are automatic; see
+> Herd bridges the gaps between what Codex's tool *descriptions* document and
+> what its tool *schema* exposes — local models call what the prose tells them
+> to. All of it is automatic; see
 > [Two Codex tool protocols](#two-codex-tool-protocols-both-handled).
+>
+> **Codex changes its wire format between releases without any version signal
+> Herd can see.** 0.164 moved every tool into namespaces and broke the
+> integration outright (fixed in Herd 0.12.0). After upgrading Codex, run one
+> real `codex exec` task and check `tools=` in the herd log — see
+> [After upgrading Codex](#after-upgrading-codex).
 
 ## Quick start
 
@@ -99,10 +105,10 @@ Tool-use quality is the thing that matters here — the loop only closes if the 
 | Model | Agentic coding | Notes |
 |---|---|---|
 | `qwen3-coder:30b` | ✅ verified end-to-end via `codex exec` | Best general-purpose pick. ~19 GB, 256K context |
-| `gpt-oss:120b` | ⚠️ drives the loop, weak at converging | Reasoning model. Sustained 40+ tool-calling turns but explored without landing an edit; prefer it for analysis, not editing |
+| `gpt-oss:120b` | ✅ verified end-to-end on `codex-cli 0.164.0` (2026-10-27) | Reasoning model. Lands the edit, but takes several tries to get `apply_patch`'s call shape right (it passes `{input: …}` before the plain string); budget ~200K tokens for a one-line fix. On `0.145` it explored without landing an edit |
 | `qwen3:32b` | untested | Strong reasoning, good tool use |
 
-Verified tasks: fix an even-length `median()` bug, fix a whole-percent discount bug, and **create a new module from scratch** to satisfy failing imports — each run ending with the model executing pytest itself and reaching green. The `median()` task was re-run end-to-end on 2026-07-18 against `codex exec`: Codex ran pytest, read the source, patched it via `apply_patch`, and re-ran pytest to `2 passed` — and went beyond the ask, adding an empty-sequence guard.
+Verified tasks: fix an even-length `median()` bug, fix a whole-percent discount bug, and **create a new module from scratch** to satisfy failing imports — each run ending with the model executing pytest itself and reaching green. The `median()` task was re-run end-to-end on 2026-07-18 against `codex exec`: Codex ran pytest, read the source, patched it via `apply_patch`, and re-ran pytest to `2 passed` — and went beyond the ask, adding an empty-sequence guard. On 2026-10-27, `codex-cli 0.164.0` with `gpt-oss:120b` fixed a subtraction-for-addition bug the same way: 24 `exec` calls, 24 results, 25 requests, all completed.
 
 Smaller / non-coding-tuned models tend to drop tool calls or hallucinate arguments.
 
@@ -114,7 +120,7 @@ Smaller / non-coding-tuned models tend to drop tool calls or hallucinate argumen
 - **Approval prompts depend on the model asking for them.** Codex escalation is model-initiated: the model must set `sandbox_permissions: "require_escalated"` plus a `justification` on the tool call. There is no approval item type in the protocol for Herd to synthesise. Local models do request escalation, but not always — if a sandboxed command fails with no prompt, that's why. Setting **Full Access** removes the need for the prompt, but it's a workaround, not a fix.
 - **Codex may stop mid-task after announcing an action.** Measured at ~3% of turns on qwen3-coder:30b — the model says "Let me run pytest, then fix it" and ends the turn, which the protocol reads as "done". Flat across conversation depth, so it is stochastic rather than context rot; a fresh chat won't help. Just say "continue". Herd now logs each occurrence — `grep 'ABANDONED PREAMBLE' ~/.fleet-manager/logs/herd.jsonl` — because the turn otherwise *succeeds* by every server-side measure. Auto-continuation is designed in [`../plans/codex-preamble-continuation.md`](../plans/codex-preamble-continuation.md) but deliberately not built yet.
 - **Don't trust the model's self-report — check the diff.** In a run that produced a *correct* fix, the model also claimed *"I wasn't able to run pytest due to missing Python tools in the environment"* — it had run pytest successfully minutes earlier in that same session. The code was right; the narration was not.
-- **Budget for tokens.** A one-line fix cost ~109K tokens end-to-end. Agentic loops re-send the full conversation each turn, and Codex's system prompt alone is ~27KB.
+- **Budget for tokens.** A one-line fix cost ~109K tokens end-to-end on `qwen3-coder:30b`, and ~206K on `gpt-oss:120b` with `codex-cli 0.164`. Agentic loops re-send the full conversation each turn, and Codex's system prompt alone is ~27KB.
 - **Hosted tools are dropped.** `web_search` / `file_search` / MCP items have no local equivalent.
 - **Images auto-route to a vision model.** Codex's `view_image` sends the picture on the next turn. Herd extracts it into Ollama's `images` list and routes the request to a vision-capable model (gemma3, llama4, …) even when the conversation's coding model isn't one — the same `has_images` signal the Claude Code route already uses. Verified 2026-07-18: red/blue/green PNGs identified correctly via `gemma3:27b`. Remote `http(s)` image URLs are still dropped with a warning, since Ollama can't fetch them — send images inline as `data:` URIs. If no vision model is on the fleet, `ollama pull gemma3:4b` is the cheap fix (~6 GB).
 - **Codex won't recognise your model's metadata** — it keys off its own built-in table of OpenAI slugs, so you'll see `Model metadata for <name> not found. Defaulting to fallback metadata`. Harmless in practice: tool calling, editing and multi-turn all work anyway (verified). Herd emits the model-listing schema Codex asks for, which silences the per-turn refresh errors, but cannot make Codex *recognise* a non-OpenAI model name.
@@ -126,44 +132,79 @@ Codex sends its tools one of two ways depending on the model slug, and Herd tran
 
 | Slug family | What Codex sends | What Herd does |
 |---|---|---|
-| `sol` / `terra` / `luna` ("Responses-Lite", incl. the Desktop default) | tools hidden in an `additional_tools` input item; the primary tool is a `custom`-typed `exec` taking raw JavaScript | extracts them, bridges `exec` to a function taking one string, converts the call back to a `custom_tool_call` |
+| `sol` / `terra` / `luna` ("Responses-Lite", incl. the default `gpt-6.1-sol`) | tools hidden in an `additional_tools` input item; the primary tool is a `custom`-typed `exec` taking raw JavaScript. **Since 0.164 every tool sits inside a namespace** — `exec`, `wait` and `request_user_input` in the default `functions` namespace, others in `clock` and `collaboration` | extracts them, exposes the `functions` namespace's members as ordinary tools (Codex resolves them that way itself), bridges `exec` to a function taking one string, converts the call back to a `custom_tool_call`. Other namespaces are not exposed yet |
 | everything else | a normal top-level `tools` array of ~12 plain functions (`exec_command`, `write_stdin`, …) | passes them straight through |
 
 The Lite shape is [openai/codex#31894](https://github.com/openai/codex/issues/31894) — it leaves the model with nothing callable even against OpenAI's own hosted models. Herd handles it so you don't hit that.
 
-### Two calls Herd rewrites, and why
+### What Herd rewrites, and why
 
 Codex's tool *descriptions* document an API its tool *schema* doesn't expose.
 Frontier models are tuned around the discrepancy; local models read the prose and
-call exactly what it says. Both rewrites are automatic and logged at WARNING.
+call exactly what it says. Every rewrite below is automatic and logged at WARNING.
 
-**`exec_command` called as a top-level tool.** In code mode the only callable
-tool is `exec` — everything else lives behind `await tools.exec_command(…)`
-inside the JavaScript it evaluates. The `exec` description is ~14 KB and dense
-with `tools.exec_command(...)`, so models call that name directly. Measured on
-gpt-oss:120b: **4/4** calls went to a tool that was never offered. Codex receives
-a `function_call` it has no handler for, cannot execute it, and **the run stops
-with no error displayed** — the transcript just shows a tool call, then nothing.
-Herd rewrites it as a `custom_tool_call` on `exec` carrying the equivalent
-JavaScript.
+**Results only come back through `text()`.** In code mode, `exec` returns only
+what the script passes to the `text()` helper — a bare
+`await tools.exec_command({cmd: "ls"})` runs the command and returns an empty
+`Output:`. On `codex-cli 0.164` gpt-oss re-ran `ls -R` a dozen times on that
+before finding `text()` itself. So every call Herd writes, and the example it
+adds to `exec`'s description, has the form
+`text(await tools.exec_command({cmd: "ls"}))`.
 
-**`apply_patch` called as a tool.** `apply_patch` is a **binary**, not a tool —
-Codex injects it at the front of the sandbox PATH
+**A nested tool called directly** (`exec_command`, `apply_patch`, …). In code mode
+the only callable tool is `exec` — everything else lives behind
+`await tools.<name>(…)` inside the JavaScript it evaluates. The `exec` description
+is ~15 KB and dense with `tools.exec_command(...)`, so models call those names
+directly. Measured on gpt-oss:120b: **4/4** calls went to a tool that was never
+offered. Codex receives a `function_call` it has no handler for, cannot execute it,
+and **the run stops with no error displayed**. Herd rewrites it as a
+`custom_tool_call` on `exec` carrying the equivalent JavaScript.
+
+That rewrite can only happen if the call reaches Herd, and with gpt-oss it did not:
+Ollama's harmony parser, finding no tool of that name in the request, logs
+`no reverse mapping found for function name` and **ends the stream** — on
+`codex-cli 0.164` every edit attempt died that way. So Herd also declares the
+nested tools listed in `exec`'s description as stubs, which lets the call parse;
+they are never forwarded to Codex as tools. `apply_patch` in 0.164 is one of these
+nested tools and takes the patch as a plain string, so a direct call becomes
+`text(await tools.apply_patch("*** Begin Patch…"))`.
+
+**`apply_patch` called as a tool, on older Codex.** Before 0.164, `apply_patch`
+was a **binary**, not a tool — Codex injected it at the front of the sandbox PATH
 (`~/.codex/tmp/arg0/codex-arg0…/apply_patch`, confirmed with `which -a`), and its
-instructions describe an argv-array invocation while calling it "the `apply_patch`
-tool". Models call it as a tool and Codex rejects it outright:
+instructions described an argv-array invocation while calling it "the
+`apply_patch` tool". Models called it as a tool and Codex rejected it outright:
 
 ```
 ERROR codex_core::tools::router: error=unsupported call: apply_patch
 ```
 
-The session then reads and executes fine but **can never write** — it explores
-forever and edits nothing. Herd rewrites it into an `exec_command` heredoc, so
-patch bodies containing quotes, backslashes or `$` reach the binary intact.
+The session then read and executed fine but **could never write**. When Codex
+offers `exec_command` as a top-level tool (the non-Lite slugs), Herd rewrites the
+call into an `exec_command` heredoc, so patch bodies containing quotes,
+backslashes or `$` reach the binary intact.
 
-Both rewrites decline to act when they'd be guessing: if the tool really was
+Every rewrite declines to act when it would be guessing: if the tool really was
 offered, or if no `*** Begin Patch` envelope is recognisable, the call passes
 through untouched.
+
+## After upgrading Codex
+
+Codex has changed how it sends tools at least twice (`additional_tools` in 0.145,
+namespaces in 0.164), and the first sign was a run that edited nothing while the
+model described a finished fix. After any Codex upgrade:
+
+```bash
+codex --version
+# in a scratch git repo with one failing test:
+codex exec "Run python3 -m pytest -q, fix the bug, then re-run the tests."
+git diff                                                    # did anything change?
+grep 'Responses\[' ~/.fleet-manager/logs/herd.jsonl | tail -3  # tools=0 means none reached the model
+grep -c 'no reverse mapping found' ~/.ollama/logs/server.log    # rising = calls Ollama could not parse
+```
+
+A non-empty `git diff` and a green re-run are the only evidence that counts —
+see *Don't trust the model's self-report* above.
 
 ## If Codex says it "cannot execute commands"
 
@@ -180,8 +221,9 @@ It also **confabulates specifics** — inventing detailed lists of "blocked oper
 
 ```bash
 grep 'Responses\[' ~/.fleet-manager/logs/herd.jsonl | tail -3
-#  tools=3 custom=['exec']  -> tools ARE reaching the model
-#  tools=0                  -> genuinely no tools; check your provider config
+#  tools=4 custom=['exec']  -> tools ARE reaching the model (codex-cli 0.164)
+#  tools=0                  -> genuinely no tools; check your provider config,
+#                              and whether your Codex is newer than your Herd
 ```
 
 ## If commands fail sandboxed instead of asking for approval
@@ -226,7 +268,7 @@ model_provider = "herd"     # ← first line, before ANY [section]
 
 **Codex errors about the wire protocol** — confirm `wire_api = "responses"` in `~/.codex/config.toml`. `wire_api = "chat"` was removed from Codex in Feb 2026.
 
-**Codex narrates actions instead of performing them** ("I fixed the bug, tests pass" — but nothing changed). Almost always the Lite-slug bug above: check the herd log for `tools=0` or `tools=2`. If it says `tools=12`, tools are reaching the model and the issue is steering — be explicit ("use the apply_patch command"). Either way, verify the files before trusting a success report.
+**Codex narrates actions instead of performing them** ("I fixed the bug, tests pass" — but nothing changed). Check the herd log first: `tools=0` means no tools reached the model — on a Codex newer than this guide, a changed wire format is the first suspect (0.164's namespaces did exactly this; Herd before 0.12.0 shows `tools=0` with it). If tools are arriving (`tools=4 custom=['exec']` on 0.164, `tools=12` on non-Lite slugs), look for stream failures (`grep 'no reverse mapping found' ~/.ollama/logs/server.log`), then for steering — be explicit ("use apply_patch to fix X"). Either way, verify the files before trusting a success report.
 
 ## See also
 

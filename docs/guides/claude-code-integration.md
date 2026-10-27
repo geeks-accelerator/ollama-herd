@@ -6,6 +6,8 @@ This works because ollama-herd exposes a native **Anthropic Messages API** (`/v1
 
 > **Agentic coding verified end-to-end** — 2026-07-18, `claude` 2.1.68 headless (`claude -p`) against `qwen3-coder:30b` on a local fleet. Given a repo whose test suite didn't even collect, Claude Code created a module from scratch, fixed two logic bugs, and reached `6 passed` on its own.
 >
+> **Re-verified 2026-10-27 on `claude` 2.1.311** (Herd 0.12.0, `gpt-oss:120b`): a one-shot reply, and a Write-then-Read tool session that created a file and read it back. Claude Code 2.1.220 and later send a `role: "system"` message inside `messages[]` as well as the top-level `system` field; Herd before 0.12.0 rejected every such request with a 400 on the first turn. **After upgrading Claude Code, run one real session** — a client release can change the request shape without warning, and a passing test suite cannot tell you that.
+>
 > | measure | result |
 > |---|---|
 > | turns | 14 |
@@ -39,6 +41,7 @@ The router accepts requests in Anthropic Messages format (`/v1/messages` and `/v
 |---|---|---|
 | `messages[].content` blocks (text, image, tool_use, tool_result) | Ollama `messages` (string `content` + `images[]` + `tool_calls[]` + `role:"tool"` for results) | Order preserved; `thinking` blocks dropped on input |
 | `system` (string or text-block array) | Prepended `role:"system"` message | Both forms supported |
+| `role: "system"` inside `messages[]` | `role:"system"` message kept in place | Sent by Claude Code 2.1.220+; accepted since Herd 0.12.0 |
 | `tools[]` with `input_schema` | Ollama `tools[]` with `parameters` | JSON schema passes through |
 | `tool_choice: auto` / `none` / `any` / `tool` | `auto` / strip / system-prompt nudge / system-prompt nudge | `any` and `tool` are best-effort since Ollama doesn't natively force tool calls |
 | Streaming SSE | `message_start` → `content_block_start/delta/stop` → `message_delta` → `message_stop` | Full event protocol; tool calls open new content blocks mid-stream |

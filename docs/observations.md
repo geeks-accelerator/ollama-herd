@@ -650,6 +650,35 @@ pass with them stripped.
 
 ---
 
+## 2026-10-27: The client upgraded under us, and the run reported success while editing nothing
+
+**Evidence.** `codex-cli 0.164.0`, installed fresh to test Herd 0.12.0, was given a
+one-line bug to fix through Herd on `gpt-oss:120b`. It made 113 requests, spent
+360K tokens, changed no file, and ended describing a fix to functions that do not
+exist. The guide said Codex worked — verified on 0.145 in July. Herd logged
+`tools=0` on every request: 0.164 had moved every tool into namespaces, which Herd
+dropped as sandbox-only. Fixing that exposed two more failures that were invisible
+behind it — results only return through `text()`, and a direct `apply_patch` call
+made Ollama end the stream (`no reverse mapping found for function name`) before
+Herd could redirect it. Three layers, each found only after the one above it was
+gone; the fourth run landed the edit and went green.
+
+**Insight.** Herd's compatibility with Codex and Claude Code is a claim about
+*someone else's release*, and neither client announces a wire change. Claude Code
+2.1.220's `role: "system"` inside `messages[]` broke the same week the same way:
+first-turn failure for everyone on the new version, nothing in Herd's own tests.
+Community telemetry's `bad_request` bucket — 94% of all reported errors over the
+prior 30 days — is the likely trace of it, sitting in plain view until someone
+ran the client.
+
+**Pattern.** A passing suite proves Herd matches the shapes it was written against.
+After upgrading either CLI, run one real agentic task and judge it by `git diff`
+and a green re-run, never by the model's closing message — that message was
+confidently wrong in every failed run here. The Codex guide now carries the
+procedure ("After upgrading Codex").
+
+---
+
 ## 2026-10-10: An upgrade duplicated every resident model, and "is herd running?" was the only reason anyone looked
 
 **Context.** A reboot. The question asked was whether herd needed starting; it

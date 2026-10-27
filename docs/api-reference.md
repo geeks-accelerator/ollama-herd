@@ -260,13 +260,20 @@ vision-capable model.
 **Tools** — two shapes are accepted and both are translated:
 - a top-level `tools` array of plain functions, and
 - Codex's `additional_tools` input item, whose primary tool is a `custom`-typed
-  `exec` taking raw JavaScript ("code mode").
+  `exec` taking raw JavaScript ("code mode"). Since `codex-cli 0.164` its tools
+  arrive inside `namespace` entries; members of the default `functions`
+  namespace are exposed as ordinary tools, other namespaces are not exposed.
 
-Herd also rewrites two calls models reliably get wrong, because Codex's tool
-*descriptions* document an API its tool *schema* doesn't expose: a top-level
-`exec_command` call becomes a `custom_tool_call` on `exec`, and an `apply_patch`
-tool call becomes an `exec_command` heredoc (`apply_patch` is a binary on the
-sandbox PATH, not a tool). Both are logged at WARNING.
+Herd also rewrites calls models reliably get wrong, because Codex's tool
+*descriptions* document an API its tool *schema* doesn't expose. A direct call to
+a tool nested inside `exec` (`exec_command`, `apply_patch`, …) becomes a
+`custom_tool_call` on `exec` of the form `text(await tools.<name>(…))` — code mode
+returns only what a script passes to `text()`, and `apply_patch` takes the patch
+as a plain string. The nested tools are declared to the model as stubs so that
+Ollama can parse such a call at all; they are never returned to the client as
+tools. When `exec_command` is offered as a top-level tool (older Codex), an
+`apply_patch` tool call becomes an `exec_command` heredoc instead (`apply_patch`
+was a binary on the sandbox PATH there). All rewrites are logged at WARNING.
 
 **Response** (non-streaming) is a Responses object whose `output` is a list of
 items — an assistant `message` plus one `function_call` / `custom_tool_call` per

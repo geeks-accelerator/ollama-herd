@@ -341,7 +341,7 @@ Key docs (Claude reads on demand — NOT loaded every turn):
 - `docs/troubleshooting.md` — common issues, LAN debugging, operational gotchas
 - `docs/openclaw-integration.md` — OpenClaw agent setup guide
 - `docs/guides/claude-code-integration.md` — point Claude Code CLI at the herd via `ANTHROPIC_BASE_URL` (native `/v1/messages` endpoint, full tool use)
-- `docs/guides/codex-integration.md` — point OpenAI Codex at the herd via `/v1/responses` (agentic coding verified end-to-end 2026-07-18)
+- `docs/guides/codex-integration.md` — point OpenAI Codex at the herd via `/v1/responses` (agentic coding verified end-to-end on `codex-cli 0.164.0`, 2026-10-27; re-verify after any Codex upgrade)
 - `docs/issues.md` — known issues (mark `FIXED` when resolved, never delete)
 - `docs/observations.md` — operational insights (append new learnings, never delete)
 - `docs/plans/` — implementation plans for major features
