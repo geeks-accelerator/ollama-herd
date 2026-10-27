@@ -1850,3 +1850,48 @@ supportive, not proof.
   Cause not established. If an Ollama relaunch never starts serving, read its process
   state before suspecting the new version. The ~5 minutes this cost was the whole
   outage: 25 rejected requests (15 gpt-oss, 10 dinov2).
+
+---
+
+## 2026-10-27: The 0.12.0 soak numbers were quoted against the wrong window, and the run figures behind the team update
+
+**Correction.** The 0.12.0 release notes (commit `184fc5d`, CLAUDE.md, the team update)
+quoted "9.5 h (03:59–13:30 UTC), 3,042 requests, zero warnings outside the upgrade's
+own minute, TTFT 926 ms, fast share 55.7%". The 3,042 and 926 ms came from a query run
+at 12:41:20 UTC with **no upper bound**, so they cover **8.7 h**, all models. They were
+then labelled with the 9.5 h window. A teammate's review of the trace store caught it.
+Measured over the windows involved (gpt-oss TTFT and fast share over completed gpt-oss
+requests; fast share uses `completion_tokens > 20`):
+
+| window (UTC) | total | gpt-oss | dinov2 | nomic | rejected | gpt-oss TTFT | fast share |
+|---|---|---|---|---|---|---|---|
+| 03:59–12:41:20 (as queried) | 3,042 | 2,716 | 324 | 2 | 2 | 926 ms | 55.7% |
+| **03:59–13:30 (as labelled)** | **3,362** | **3,036** | 324 | 2 | 2 | **953 ms** | **55.1%** |
+| 03:59–13:56:40 (router restart) | 3,568 | 3,242 | 324 | 2 | 2 | 957 ms | 53.5% |
+
+The 03:59–13:30 window also contains **three WARNINGs** (13:23–13:24, `model called
+'exec_command'/'apply_patch', which was never offered`) from the release-day Codex run
+below, so "zero warnings outside the upgrade's minute" was false for it. That repair was
+lowered to INFO in 0.12.1. Errors: zero in every window. Both rejections were at 03:59:17–18,
+the tail of the Ollama upgrade outage.
+
+**Lesson:** a figure needs its window and filter attached at the moment it is measured.
+An unbounded `timestamp > start` query is a different window every time it runs.
+
+**Release-day real-client run (13:23:30 UTC).** Concurrent, same four-bug project,
+`gpt-oss:120b`, no model map. From `request_traces` (`timestamp >= 1793107410`,
+grouped by `original_format`) and the shell's `time` output:
+
+| client | format | requests | max `prompt_tokens` | first–last trace | wall time |
+|---|---|---|---|---|---|
+| Codex 0.164.0 (`gpt-6.1-sol`) | responses | 9, all completed | 7,737 | 13:23:53–13:25:13 | 1m39.30s |
+| Claude Code 2.1.311 (`claude-opus-5-5`) | anthropic | 15, all completed | 20,371 | 13:23:55–13:25:23 | 1m46.06s |
+
+Both ended at 4 passed with the test file unchanged. The 0.12.1 Codex re-run (19
+`responses` requests, all completed, five repairs at INFO, zero warnings) followed after
+the router restart at 07:28:34 PDT.
+
+**The 45-second gap.** The router was started at 2026-10-26 20:51:29 PDT (`ps -o lstart`);
+`src/fleet_manager/server/health_engine.py` had mtime 20:52:14 PDT (`stat`), 45 s later.
+That edit (the `context_protection_active` title count) was therefore not in the soaked
+process, which is why the router was restarted before publishing.
