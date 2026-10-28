@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **One-shot requests from one machine no longer all stick to one node.** Without a `session:<id>` tag, session affinity keyed a request by client IP and model, so every call from a batch script, bot or n8n workflow counted as one conversation and followed whichever node answered first; a node that joined later got none of them until the queue grew deep enough to decay the bonus. The IP-and-model fallback now applies only to a request that continues a conversation (it carries an earlier assistant turn), so one-shot calls spread by load with no tagging. Multi-turn sessions are unchanged from their second turn; their first turn still reaches the node holding their system prompt through prefix affinity. Found while recording the demo video, where a laptop that joined mid-run received no requests.
+
 ## [0.12.1] - 2026-10-27
 
 ### Changed

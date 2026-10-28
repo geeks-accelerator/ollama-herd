@@ -16,12 +16,21 @@ from fleet_manager.server.session_affinity import (
 )
 
 
+ONE_SHOT = [{"role": "user", "content": "Tag this support ticket"}]
+SECOND_TURN = [
+    {"role": "user", "content": "Fix the failing test"},
+    {"role": "assistant", "content": "Reading the test file."},
+    {"role": "user", "content": "Go ahead"},
+]
+
+
 class _Req:
-    def __init__(self, tags=None, client_ip="", model="m", original_model=""):
+    def __init__(self, tags=None, client_ip="", model="m", original_model="", messages=None):
         self.tags = tags or []
         self.client_ip = client_ip
         self.model = model
         self.original_model = original_model
+        self.messages = SECOND_TURN if messages is None else messages
 
 
 class TestSessionKey:
@@ -31,6 +40,10 @@ class TestSessionKey:
             _Req(tags=["session:abc123", "other"], client_ip="1.2.3.4")
         ) == "session:abc123"
 
+    def test_explicit_tag_wins_even_on_a_one_shot_request(self):
+        req = _Req(tags=["session:job-7"], client_ip="1.2.3.4", messages=ONE_SHOT)
+        assert session_key_for(req) == "session:job-7"
+
     def test_falls_back_to_client_and_model(self):
         key = session_key_for(_Req(client_ip="1.2.3.4", original_model="claude-sonnet-4"))
         assert key == "1.2.3.4|claude-sonnet-4"
@@ -38,6 +51,16 @@ class TestSessionKey:
     def test_no_identity_means_no_affinity(self):
         """Stateless callers must score exactly as they did before signal 8."""
         assert session_key_for(_Req()) == ""
+
+    def test_one_shot_requests_are_not_pinned_by_ip(self):
+        """A batch script's calls share an IP and model but no history. Keyed
+        together, they all followed the first call's node, and a node that
+        joined later got none of them."""
+        assert session_key_for(_Req(client_ip="1.2.3.4", messages=ONE_SHOT)) == ""
+
+    def test_requests_without_messages_are_not_pinned_by_ip(self):
+        """Embeddings and prompt-only generate calls have no conversation."""
+        assert session_key_for(_Req(client_ip="1.2.3.4", messages=[])) == ""
 
 
 class TestTracker:

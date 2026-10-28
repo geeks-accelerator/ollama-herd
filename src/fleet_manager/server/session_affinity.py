@@ -105,10 +105,21 @@ def session_key_for(request) -> str:
     two concurrent sessions from one IP on one model share a pin and may
     collide.  That is strictly better than no affinity, which is a cold
     prefill *every* turn.
+
+    The fallback applies only to a request that continues a conversation (it
+    carries an earlier assistant turn).  A one-shot request has no history
+    for a warm cache to save, and keying it by IP pinned a whole batch script
+    to whichever node answered its first call: a node that joined later got
+    nothing until the queue grew deep enough to decay the bonus away.  A
+    conversation's first turn still reaches its node's warm system prompt
+    through ``prefix_key_for``, and is pinned from its second turn on.
     """
     for tag in getattr(request, "tags", None) or []:
         if isinstance(tag, str) and tag.startswith("session:"):
             return tag
+    messages = getattr(request, "messages", None) or []
+    if not any(isinstance(m, dict) and m.get("role") == "assistant" for m in messages):
+        return ""
     ip = getattr(request, "client_ip", "") or ""
     model = getattr(request, "original_model", "") or getattr(request, "model", "")
     return f"{ip}|{model}" if ip else ""

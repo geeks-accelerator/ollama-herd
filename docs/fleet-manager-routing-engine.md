@@ -228,7 +228,7 @@ session pinned to this node, pin still fresh   +20
 no session identity / no pin / expired pin       0
 ```
 
-**Session identity** comes from an explicit `session:<id>` tag when the client provides one, otherwise `client_ip|model`. The fallback is right for the common case (one agentic session per client) and wrong in a way that costs only a cold prefill — two concurrent sessions from one IP on one model share a pin and may collide, which is still better than a cold prefill on *every* turn.
+**Session identity** comes from an explicit `session:<id>` tag when the client provides one, otherwise `client_ip|model`. The fallback is right for the common case (one agentic session per client) and wrong in a way that costs only a cold prefill — two concurrent sessions from one IP on one model share a pin and may collide, which is still better than a cold prefill on *every* turn. The fallback applies only to a request that continues a conversation (it carries an earlier assistant turn): one-shot requests from a batch script or bot share an IP and model but no history, and keying them together pinned every call to whichever node answered the first, so a node that joined later got none of them. A conversation's first turn still finds its warm system prompt through prefix affinity, and is pinned from its second turn on.
 
 **Why 20.** Enough to beat ordinary jitter between comparable nodes; deliberately less than Signal 1's 50, so a warm cache never routes traffic into a node that is about to throttle. Affinity is a preference, never a constraint — elimination runs first, so an offline, drained or over-full node is never chosen because a session once landed there.
 
