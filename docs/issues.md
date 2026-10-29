@@ -36,6 +36,16 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### gpt-oss tool calls with malformed JSON failed the whole turn `FIXED` (2026-10-28, unreleased)
+
+**Symptom.** Recording the Claude Code demo on `gpt-oss:120b`, one step showed `API error, retrying` eight times in a row and the session stalled. Herd's logs said nothing about why: the stream simply ended.
+
+**Cause.** gpt-oss emits almost-JSON tool arguments, typically a stray `]` after a string value (`{"command":"pytest -q"], "description":"Run pytest", "timeout": 120000}`). Ollama's parser rejects it and ends the stream with `{"error":"error parsing tool call: raw='...', err=invalid character ']' after object key:value pair"}` and no `done:true`. Herd passed the error line through without logging it, the client saw a failed turn, retried, and gpt-oss resampled the same shape. The error carries the raw arguments but not the tool name.
+
+**Fix** (`tool_call_repair.recover_tool_call_from_ollama_error`, `StreamingProxy._recover_backend_errors`): parse the arguments (strict, then the targeted stray-bracket fix, then json-repair, in that order, because json-repair drops a trailing newline from file content), and infer the tool from the request's tools by schema. Rules: a field no offered tool declares disqualifies the call (dropping `cwd` would move a command); a field belonging to another offered tool is dropped (gpt-oss put Bash's `timeout` on a Write, seen live); required fields that `fixup_tool_schemas` promoted from optional-with-default do not block a match (missed on the first build, seen live); a recovery happens only when exactly one tool fits. The rebuilt call is emitted as a normal Ollama tool-call line plus `done`, so every translator handles it unchanged. An error that cannot be recovered still fails the request (502 non-streaming) and is now logged at WARNING with Ollama's message.
+
+**Verified:** 22 tests in `tests/test_server/test_ollama_tool_parse_error.py`, the route tests run over Anthropic, OpenAI and Responses against a fake Ollama; disabling the recovery fails 6, disabling the bracket fix fails the byte-for-byte content test. Live: three Claude Code runs after the fix, 91 requests, all completed, 5 tool calls recovered at INFO, zero warnings.
+
 ### Codex CLI 0.164 got no tools: its catalogue moved into namespaces `FIXED` (2026-10-27, unreleased)
 
 **Symptom.** `codex exec` 0.164.0 against Herd on `gpt-oss:120b`, asked to fix a one-line bug: 113 requests, 360K tokens, zero edits, and a final message describing a fix (and functions) that did not exist. Herd logged `tools=0` on every request.

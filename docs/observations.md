@@ -1895,3 +1895,13 @@ the router restart at 07:28:34 PDT.
 `src/fleet_manager/server/health_engine.py` had mtime 20:52:14 PDT (`stat`), 45 s later.
 That edit (the `context_protection_active` title count) was therefore not in the soaked
 process, which is why the router was restarted before publishing.
+
+## 2026-10-28: A stalled agent turn was an error herd forwarded without reading
+
+**Evidence.** Recording the Claude Code demo through herd on `gpt-oss:120b`, one step failed eight times running (`API error, retrying`). `request_traces` showed the failures but no cause; herd's logs had nothing. The cause was in the stream itself: Ollama's last line was `{"error":"error parsing tool call: raw='{"command":"pytest -q"], ...}'"}`, a single stray bracket in otherwise valid arguments. After teaching herd to rebuild the call (see `docs/issues.md`), three full Claude Code runs made 91 requests, all completed, with 5 calls recovered.
+
+**Insight: the backend's error text is evidence, and a proxy that forwards it unread throws it away.** Herd already had an elaborate repair layer for tool calls that *arrived*; the failure mode here was a tool call that never arrived as one, and the only record of it was an error string passing through untouched. The client's retry made it worse, not better: a sampling failure that recurs on the same prompt is not transient, so eight retries were eight copies of one bug.
+
+**And guessing has to be bounded by what the request offered.** The error does not name the tool, so recovery infers it from schemas. Two live counter-examples shaped the rule: a Write call carrying Bash's `timeout` (a field from another offered tool, safe to drop) and required fields that herd's own schema fixup had promoted (not the model's to supply). A field nobody declared stays disqualifying, because the cost of a wrong guess is a command run somewhere the model never asked for.
+
+**Also from that recording:** a laptop that joined mid-run got no requests, because IP-keyed session affinity pinned every one-shot call from the recording script to the first node. Fixed separately in `3f571a5`. Recording a demo with real clients found two bugs in one afternoon.

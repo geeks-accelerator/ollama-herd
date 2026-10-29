@@ -20,6 +20,7 @@ from fleet_manager.common.errors import (
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server import debug_log
 from fleet_manager.server.registry import NodeRegistry
+from fleet_manager.server.tool_call_repair import recover_tool_call_from_ollama_error
 
 logger = logging.getLogger(__name__)
 
@@ -832,7 +833,9 @@ class StreamingProxy:
                     f"{request.model}: {body.decode(errors='replace')[:500]}"
                 )
             response.raise_for_status()
-            async for line in response.aiter_lines():
+            async for line in self._recover_backend_errors(
+                response.aiter_lines(), node_id, request, ollama_body
+            ):
                 if not line:
                     continue
                 # Extract token counts and thinking/output breakdown
@@ -905,6 +908,75 @@ class StreamingProxy:
             yield (
                 "data: [DONE]\n\n" if saw_done else openai_stream_error(UPSTREAM_INCOMPLETE_MESSAGE)
             )
+
+    @staticmethod
+    async def _recover_backend_errors(
+        lines: AsyncIterator[str],
+        node_id: str,
+        request: InferenceRequest,
+        ollama_body: dict,
+    ) -> AsyncIterator[str]:
+        """Pass Ollama's lines through, handling the error line that ends a failed stream.
+
+        Ollama ends a failed stream with ``{"error": ...}`` instead of
+        ``done:true``.  It is always logged -- without it the incomplete-stream
+        warning can say *that* the backend gave up, never why.  When the error is
+        gpt-oss's tool-call JSON failing Ollama's parser and the call can be
+        rebuilt unambiguously (``recover_tool_call_from_ollama_error``), the
+        error line is replaced by that tool call and a ``done:true`` line, so the
+        client gets the call the model meant instead of a failed turn.  Token
+        counts are unknown on that path and recorded as such.
+        """
+        async for line in lines:
+            parsed = None
+            if line and '"error"' in line:
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    parsed = None
+            err = parsed.get("error") if isinstance(parsed, dict) else None
+            if not err:
+                yield line
+                continue
+            err = str(err)
+            recovered = recover_tool_call_from_ollama_error(err, ollama_body.get("tools"))
+            if recovered:
+                name, args = recovered
+                # A repair that succeeded is routine with local models: INFO,
+                # matching the Codex repairs (see 0.12.1).
+                logger.info(
+                    f"Recovered a {name} tool call for {request.request_id[:8]} on "
+                    f"{node_id} ({request.model}) from Ollama's tool-call parse error"
+                )
+                base = {"model": parsed.get("model") or request.model}
+                yield json.dumps(
+                    {
+                        **base,
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{"function": {"name": name, "arguments": args}}],
+                        },
+                        "done": False,
+                    }
+                )
+                yield json.dumps(
+                    {
+                        **base,
+                        "message": {"role": "assistant", "content": ""},
+                        "done": True,
+                        "done_reason": "stop",
+                    }
+                )
+                continue
+            # Keep head and tail: Ollama's tool-call parse error embeds the raw
+            # call first and puts its reason last.
+            shown = err if len(err) <= 900 else f"{err[:300]} … {err[-500:]}"
+            logger.warning(
+                f"Ollama {node_id} ended {request.request_id[:8]} ({request.model}) "
+                f"with an error: {shown}"
+            )
+            yield line
 
     def _resolved_num_ctx(self, model: str) -> int | None:
         """The num_ctx this model should load with, or None if unconfigured.

@@ -323,3 +323,96 @@ def repair_tool_use_input(
         repaired_str[:120],
     )
     return repaired_dict, True
+
+
+# Ollama's text when its gpt-oss parser rejects the model's tool-call JSON.  It
+# ends the stream with this instead of done:true, so the call never reaches us
+# as a tool call -- only as an error carrying the raw arguments, without the
+# tool's name.  Observed 2026-10-27: `{"command":"pytest -q"], ...}` (a stray
+# `]`) failed a Claude Code turn eight times running, because the client's
+# retries resample the same broken shape.
+_OLLAMA_TOOL_PARSE_ERROR = re.compile(r"^error parsing tool call: raw='(.*)', err=", re.DOTALL)
+
+# gpt-oss's usual slip: a `]` after a string value, as if closing an array it
+# never opened.  Not after `\"`, which is a quote inside the string.
+_STRAY_BRACKET = re.compile(r'(?<!\\)"\](?=\s*[,}])')
+
+
+def _parse_tool_args(raw: str) -> Any:
+    """Strict, then the known stray-bracket fix, then ``json-repair``.
+
+    The targeted fix runs first because json-repair is lossy on exactly the
+    payload that matters most: it dropped the trailing newline from a
+    ``Write`` call's file content in testing.
+    """
+    for candidate in (raw, _STRAY_BRACKET.sub('"', raw)):
+        try:
+            return json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    try:
+        from json_repair import loads as repair_loads
+    except ImportError:
+        return None
+    try:
+        return repair_loads(raw)
+    except Exception:  # noqa: BLE001 — repair must be fail-safe
+        return None
+
+
+def recover_tool_call_from_ollama_error(
+    error: str,
+    tools: list[dict[str, Any]] | None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Rebuild ``(tool_name, arguments)`` from Ollama's tool-call parse error.
+
+    The arguments are parsed strictly, then with ``json-repair``.  The name is
+    not in the error, so it is inferred from the request's own tools: a tool
+    matches when the arguments carry all its required fields, only fields it
+    declares (or that another offered tool declares, which is dropped), and
+    the declared primitive types.  Exactly one match or nothing -- a guessed
+    tool would run a command the model never asked for, which is worse than
+    the failure it replaces.
+    """
+    m = _OLLAMA_TOOL_PARSE_ERROR.match(error or "")
+    if not m or not tools:
+        return None
+    args = _parse_tool_args(m.group(1))
+    if not isinstance(args, dict) or not args:
+        return None
+
+    schemas = []
+    for tool in tools:
+        fn = (tool or {}).get("function") or {}
+        schema = fn.get("parameters") or {}
+        properties = schema.get("properties")
+        if fn.get("name") and isinstance(properties, dict) and properties:
+            schemas.append((fn["name"], schema, properties))
+    # Fields some offered tool declares.  gpt-oss bleeds one tool's field into
+    # another's call (Bash's ``timeout`` on a Write, seen 2026-10-27); such a
+    # field means nothing to the tool it landed on and is dropped.  A field no
+    # tool declares is kept as a reason to refuse: dropping an unknown ``cwd``
+    # would run a command somewhere the model never asked for.
+    known = {f for _, _, properties in schemas for f in properties}
+
+    matches = []
+    for name, schema, properties in schemas:
+        extra = set(args) - set(properties)
+        if extra - known or len(extra) >= len(set(args) & set(properties)):
+            continue
+        fitted = {k: v for k, v in args.items() if k in properties}
+        # A required field with a default is one ``fixup_tool_schemas``
+        # promoted; the client fills it, so its absence rules nothing out.
+        required = [
+            r
+            for r in schema.get("required") or []
+            if "default" not in (properties.get(r) if isinstance(properties.get(r), dict) else {})
+        ]
+        if _structurally_valid_against_schema(fitted, {**schema, "required": required}):
+            matches.append((len(extra), name, fitted))
+    # Prefer the tool that needed nothing dropped; still exactly one or none.
+    fewest = min((m[0] for m in matches), default=None)
+    best = [m for m in matches if m[0] == fewest]
+    if len(best) != 1:
+        return None
+    return best[0][1], best[0][2]
