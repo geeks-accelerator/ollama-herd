@@ -300,3 +300,105 @@ class TestServiceTypeIsConfigurable:
             ).start()
         assert len(azc) == 1, "a config error must not be retried"
         azc[0].async_close.assert_awaited_once()
+
+
+class TestAddressChanges:
+    """The advertised address used to be read once, at startup.  On 2026-10-30
+    launchd started the router at boot before the network was up, it advertised
+    ``127.0.0.1``, and kept doing so until a manual restart -- a node discovering
+    it would have been told to connect to itself.  ``watch_address`` re-checks."""
+
+    @pytest.fixture
+    def ip(self, monkeypatch, azc):
+        box = {"ip": "127.0.0.1"}
+        monkeypatch.setattr(discovery, "get_local_ip", lambda **k: box["ip"])
+        orig = discovery.AsyncZeroconf
+
+        def _factory(*a, **k):
+            m = orig(*a, **k)
+            m.async_update_service = AsyncMock(return_value=None)
+            return m
+
+        monkeypatch.setattr(discovery, "AsyncZeroconf", _factory)
+        return box
+
+    async def test_a_loopback_start_warns_and_says_it_will_retry(self, ip, azc, caplog):
+        with caplog.at_level("WARNING", logger="fleet_manager.common.discovery"):
+            await FleetServiceAdvertiser(port=11435).start()
+        assert any("re-advertising" in r.getMessage() for r in caplog.records)
+
+    async def test_the_network_coming_up_re_advertises_the_real_address(self, ip, azc, caplog):
+        a = FleetServiceAdvertiser(port=11435)
+        await a.start()
+        ip["ip"] = "10.0.0.92"
+        with caplog.at_level("INFO", logger="fleet_manager.common.discovery"):
+            assert await a.refresh_address() is True
+        azc[0].async_update_service.assert_awaited_once()
+        updated = azc[0].async_update_service.await_args.args[0]
+        assert updated is a._info, "update the registered info, so a renamed service keeps its name"
+        assert updated.addresses == [socket.inet_aton("10.0.0.92")]
+        assert any("127.0.0.1 -> 10.0.0.92" in r.getMessage() for r in caplog.records)
+
+    async def test_an_unchanged_address_does_nothing(self, ip, azc):
+        ip["ip"] = "10.0.0.92"
+        a = FleetServiceAdvertiser(port=11435)
+        await a.start()
+        assert await a.refresh_address() is False
+        azc[0].async_update_service.assert_not_awaited()
+
+    async def test_a_lease_change_moves_it_again(self, ip, azc):
+        ip["ip"] = "10.0.0.92"
+        a = FleetServiceAdvertiser(port=11435)
+        await a.start()
+        ip["ip"] = "192.168.1.20"
+        assert await a.refresh_address() is True
+        assert a._info.addresses == [socket.inet_aton("192.168.1.20")]
+
+    async def test_refresh_before_start_is_a_no_op(self, ip):
+        assert await FleetServiceAdvertiser(port=11435).refresh_address() is False
+
+    async def test_one_failed_check_does_not_stop_the_watch(self, ip, azc, monkeypatch):
+        a = FleetServiceAdvertiser(port=11435)
+        monkeypatch.setattr(a, "ADDRESS_CHECK_INTERVAL_S", 0)
+        calls = []
+
+        async def _refresh():
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("zeroconf hiccup")
+            if len(calls) == 3:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(a, "refresh_address", _refresh)
+        with pytest.raises(asyncio.CancelledError):
+            await a.watch_address()
+        assert len(calls) == 3, "the loop must survive a failed check and keep checking"
+
+    def test_the_router_runs_the_watch(self):
+        import inspect
+
+        from fleet_manager.server import app
+
+        src = inspect.getsource(app)
+        assert "asyncio.create_task(advertiser.watch_address())" in src
+        assert "advertiser_task.cancel()" in src
+
+
+def test_get_local_ip_can_stay_quiet(monkeypatch, caplog):
+    """The watch polls every 30 s; with the network down, one warning per tick
+    would bury the log.  It reports the change itself instead."""
+    from fleet_manager.common import system_metrics
+
+    class _Down:
+        def __init__(self, *a, **k):
+            pass
+
+        def connect(self, *a):
+            raise OSError(51, "Network is unreachable")
+
+    monkeypatch.setattr(socket, "socket", _Down)
+    with caplog.at_level("WARNING"):
+        assert system_metrics.get_local_ip(warn=False) == "127.0.0.1"
+        assert not caplog.records
+        assert system_metrics.get_local_ip() == "127.0.0.1"
+        assert caplog.records, "the default still warns"

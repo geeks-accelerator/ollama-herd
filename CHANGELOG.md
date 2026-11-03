@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A router that starts before the network no longer advertises `127.0.0.1` until restarted.** The router read its LAN address once, at startup, and published it over mDNS. Started by launchd at boot before the network was up, it advertised `127.0.0.1` for as long as it ran, so a node discovering it was told to connect to itself. It now re-checks the address every 30 seconds and re-advertises when it changes, which also covers a new DHCP lease or a Wi-Fi switch. Starting without a LAN address now logs a warning saying so, and the change logs at INFO. Found after a reboot on 2026-10-30; verified against real zeroconf, where a separate process discovered `127.0.0.1` before the change and the LAN address after it.
+
 ## [0.12.2] - 2026-10-29
 
 ### Fixed

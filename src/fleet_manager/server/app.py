@@ -201,6 +201,7 @@ async def lifespan(app: FastAPI):
         settings.port, settings.mdns_service_name, settings.mdns_service_type
     )
     await advertiser.start()
+    advertiser_task = asyncio.create_task(advertiser.watch_address())
 
     # Start background tasks
     monitor_task = asyncio.create_task(registry.monitor_heartbeats())
@@ -288,6 +289,9 @@ async def lifespan(app: FastAPI):
     preload_task.cancel()
     community_telemetry_task.cancel()
     checkpoint_task.cancel()
+    advertiser_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await advertiser_task
     with contextlib.suppress(asyncio.CancelledError):
         await monitor_task
     with contextlib.suppress(asyncio.CancelledError):

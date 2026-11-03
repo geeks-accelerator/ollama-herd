@@ -36,6 +36,18 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### The router advertised `127.0.0.1` after booting before the network `FIXED` (2026-11-02, unreleased)
+
+**Seen:** 2026-10-30. The Mac Studio rebooted; launchd started `herd` at 18:18 UTC, about three minutes before the network came up. `get_local_ip()` failed with `[Errno 51] Network is unreachable`, fell back to `127.0.0.1`, and `FleetServiceAdvertiser.start()` published that over mDNS: `mDNS: advertising Fleet Manager at 127.0.0.1:11435`. It never looked again, so for 4h40m any node discovering the router by mDNS would have been told to connect to itself. This fleet's own node was unaffected only because it sets `FLEET_NODE_ROUTER_URL`; the node agent also re-reads its LAN address on every heartbeat, which is why its warnings stopped on their own and the router's state did not. Cleared by a manual router restart.
+
+**Fix** (`common/discovery.py`): `FleetServiceAdvertiser.watch_address()` runs as a lifespan task and calls `refresh_address()` every `ADDRESS_CHECK_INTERVAL_S` (30 s), which updates the registered `AsyncServiceInfo` in place via `async_update_service` when the address differs. Updating the same object keeps a name zeroconf may have changed at registration (`allow_name_change`). `get_local_ip(warn=False)` keeps a minutes-long outage from logging a warning per tick; the advertiser logs the start state (WARNING at `127.0.0.1`, naming that it will re-advertise) and each change (INFO). A failed check is logged and retried on the next tick rather than ending the loop.
+
+**Verified:** 8 new tests in `tests/test_common/test_discovery.py` (disabling the update call fails the test asserting the new address reaches zeroconf). Live, with real zeroconf on an isolated service type: started at `127.0.0.1`, a **separate process** running `FleetServiceDiscoverer` resolved `('127.0.0.1', 19999)`; after the address changed it resolved `('10.0.0.92', 19999)`. Same machine, so the multicast path between two hosts was not exercised.
+
+### The node's LAN proxy decision is also made once, at startup `OPEN` (2026-11-02)
+
+**Found while fixing the above.** `NodeAgent.start()` calls `_ensure_lan_proxy()` once; it returns early when `get_local_ip()` gives `127.0.0.1`. A node booted before the network therefore never starts the proxy that makes a localhost-only Ollama reachable from the router. **Severity: low** -- it only matters when Ollama binds to loopback, and Ollama's default is `*:11434` (this fleet's is). **Proposed fix:** retry `_ensure_lan_proxy()` from the heartbeat loop until it has run with a real LAN address, mirroring the router's `watch_address`.
+
 ### gpt-oss tool calls with malformed JSON failed the whole turn `FIXED` (2026-10-28, unreleased)
 
 **Symptom.** Recording the Claude Code demo on `gpt-oss:120b`, one step showed `API error, retrying` eight times in a row and the session stalled. Herd's logs said nothing about why: the stream simply ended.

@@ -286,8 +286,12 @@ def _get_thermal_windows() -> ThermalMetrics:
     return ThermalMetrics(state=state, temperature_c=round(peak_c, 1), source=peak_source)
 
 
-def get_local_ip() -> str:
-    """Get the LAN IP address of this machine."""
+def get_local_ip(*, warn: bool = True) -> str:
+    """Get the LAN IP address of this machine.
+
+    ``warn=False`` is for callers that poll and report a change themselves, so a
+    network that is down for minutes does not log the same warning every tick.
+    """
     import socket
 
     try:
@@ -297,5 +301,6 @@ def get_local_ip() -> str:
         s.close()
         return ip
     except Exception as e:
-        logger.warning(f"Could not determine LAN IP (defaulting to 127.0.0.1): {e}")
+        if warn:
+            logger.warning(f"Could not determine LAN IP (defaulting to 127.0.0.1): {e}")
         return "127.0.0.1"

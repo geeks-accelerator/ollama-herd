@@ -23,7 +23,16 @@ router on the same machine advertised itself beside the live one."""
 
 
 class FleetServiceAdvertiser:
-    """Registers the router as an mDNS service so nodes can discover it."""
+    """Registers the router as an mDNS service so nodes can discover it.
+
+    The advertised address is re-checked every ``ADDRESS_CHECK_INTERVAL_S`` by
+    ``watch_address()``.  It used to be read once at startup, so a router that
+    launched before the network was up (launchd at boot, 2026-10-30) advertised
+    ``127.0.0.1`` until someone restarted it -- and a node discovering it was
+    told to connect to itself.  A DHCP lease or Wi-Fi change does the same.
+    """
+
+    ADDRESS_CHECK_INTERVAL_S = 30.0
 
     def __init__(
         self,
@@ -35,11 +44,13 @@ class FleetServiceAdvertiser:
         self._service_name = service_name
         self._service_type = service_type
         self._azc: AsyncZeroconf | None = None
+        self._info: AsyncServiceInfo | None = None
+        self._ip: str | None = None
 
     async def start(self):
         ip = get_local_ip()
         self._azc = AsyncZeroconf()
-        info = AsyncServiceInfo(
+        self._info = info = AsyncServiceInfo(
             self._service_type,
             f"{self._service_name}.{self._service_type}",
             addresses=[socket.inet_aton(ip)],
@@ -65,7 +76,43 @@ class FleetServiceAdvertiser:
             await self._azc.async_close()
             self._azc = AsyncZeroconf()
             await self._azc.async_register_service(info, allow_name_change=True)
-        logger.info(f"mDNS: advertising Fleet Manager at {ip}:{self._port}")
+        self._ip = ip
+        if ip == "127.0.0.1":
+            logger.warning(
+                f"mDNS: advertising Fleet Manager at {ip}:{self._port} -- no LAN address "
+                f"yet, so other machines cannot reach it; re-advertising when the "
+                f"network comes up"
+            )
+        else:
+            logger.info(f"mDNS: advertising Fleet Manager at {ip}:{self._port}")
+
+    async def refresh_address(self) -> bool:
+        """Re-advertise if the LAN address changed.  Returns True when it did."""
+        if self._azc is None or self._info is None:
+            return False
+        ip = get_local_ip(warn=False)
+        if ip == self._ip:
+            return False
+        # The same info object, so a name zeroconf changed at registration
+        # (allow_name_change) is kept rather than registered a second time.
+        self._info.addresses = [socket.inet_aton(ip)]
+        await self._azc.async_update_service(self._info)
+        logger.info(
+            f"mDNS: address changed {self._ip} -> {ip}, re-advertising at {ip}:{self._port}"
+        )
+        self._ip = ip
+        return True
+
+    async def watch_address(self):
+        """Run ``refresh_address`` forever; one failed check never stops the loop."""
+        while True:
+            await asyncio.sleep(self.ADDRESS_CHECK_INTERVAL_S)
+            try:
+                await self.refresh_address()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- retried on the next tick
+                logger.warning(f"mDNS: could not re-advertise the router's address: {exc}")
 
     async def stop(self):
         if self._azc:
