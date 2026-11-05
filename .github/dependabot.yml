@@ -1,0 +1,39 @@
+# Dependabot for this repo's manifests: the package's dependencies
+# (pyproject.toml) and GitHub Actions. An update reaches users only in a
+# release, so merging one changes nothing installed until the next version.
+version: 2
+updates:
+  # ollama-herd's dependencies, as pyproject.toml declares them.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    groups:
+      dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "deps"
+    # Wait before taking a release, so a compromised one is pulled before it
+    # reaches us. Security updates skip it.
+    cooldown:
+      default-days: 5
+      semver-major-days: 30
+
+  # No workflows today; watched so any that are added are.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    # Wait before taking a release, so a compromised one is pulled before it
+    # reaches us. Security updates skip it.
+    cooldown:
+      default-days: 5
+      semver-major-days: 30
