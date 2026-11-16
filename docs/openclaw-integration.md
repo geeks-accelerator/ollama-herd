@@ -321,7 +321,7 @@ Herd's dashboard and trace store provide visibility that OpenClaw itself doesn't
 - **Token usage** — track how many tokens your agent pipeline consumes per task
 - **Queue depth over time** — see if your fleet is sized appropriately for your agent workload
 
-Visit `http://your-router:8080` to see the dashboard. Check traces at `/dashboard` under the **Model Insights** tab.
+Visit `http://your-router:8080` to see the dashboard. Check per-model latency and tokens on the dashboard's **Models** tab (`/dashboard/models`).
 
 ---
 

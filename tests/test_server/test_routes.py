@@ -363,77 +363,87 @@ class TestDashboard:
         resp = client.get("/dashboard")
         assert "/dashboard/events" in resp.text
 
-    def test_trends_page_html(self, client):
-        resp = client.get("/dashboard/trends")
-        assert resp.status_code == 200
-        assert "text/html" in resp.headers["content-type"]
-        assert "chart.js" in resp.text
-        assert "Trends" in resp.text
-
     def test_models_page_html(self, client):
+        """Models absorbed Trends: one page, one time range."""
         resp = client.get("/dashboard/models")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
         assert "chart.js" in resp.text
-        assert "Model Insights" in resp.text
+        assert "<h1 class=\"page-title\">Models</h1>" in resp.text
+        assert 'id="trends"' in resp.text
+        assert "requests-chart" in resp.text and "model-table" in resp.text
 
     def test_tags_page_html(self, client):
         resp = client.get("/dashboard/tags")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
         assert "chart.js" in resp.text
-        assert "Tags" in resp.text
+        assert "Usage" in resp.text
         assert "X-Herd-Tags" in resp.text  # Usage instructions
 
-    def test_apps_page_redirect(self, client):
-        """Old /dashboard/apps URL still works (backwards compat)."""
-        resp = client.get("/dashboard/apps")
-        assert resp.status_code == 200
-
-    def test_benchmarks_page_html(self, client):
-        resp = client.get("/dashboard/benchmarks")
-        assert resp.status_code == 200
-        assert "text/html" in resp.headers["content-type"]
-        assert "chart.js" in resp.text
-        assert "Benchmarks" in resp.text
-        assert "Capacity Growth" in resp.text
-
     def test_health_page_html(self, client):
+        """Health absorbed Recommendations and the briefing history."""
         resp = client.get("/dashboard/health")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert "Health" in resp.text
-        assert "Fleet Vitals" in resp.text
-        assert "Recommendations" in resp.text
+        assert "Fleet vitals" in resp.text
+        assert 'id="recommendations"' in resp.text
+        assert 'id="briefings"' in resp.text
 
     def test_settings_page_html(self, client):
+        """Settings absorbed Benchmarks and gained Appearance."""
         resp = client.get("/dashboard/settings")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
         assert "Settings" in resp.text
-        assert "Feature Toggles" in resp.text
-        assert "Fleet Nodes" in resp.text
+        assert 'id="appearance"' in resp.text
+        assert "Features" in resp.text
+        assert "Fleet nodes" in resp.text
+        assert 'id="benchmarks"' in resp.text and "Capacity growth" in resp.text
+        assert "chart.js" in resp.text
+
+    @pytest.mark.parametrize(
+        ("old", "home", "section"),
+        [
+            ("/dashboard/trends", "/dashboard/models", 'id="trends"'),
+            ("/dashboard/recommendations", "/dashboard/health", 'id="recommendations"'),
+            ("/dashboard/benchmarks", "/dashboard/settings", 'id="benchmarks"'),
+            ("/dashboard/apps", "/dashboard/tags", "X-Herd-Tags"),
+        ],
+    )
+    def test_merged_pages_keep_their_old_urls(self, client, old, home, section):
+        """Bookmarks to a merged page still work: the same page renders at the
+        old URL, and the shared script scrolls to the section it names."""
+        resp = client.get(old)
+        assert resp.status_code == 200
+        assert resp.text == client.get(home).text
+        assert section in resp.text
+        assert f"'{old}'" in resp.text or old == "/dashboard/apps"
 
     def test_all_pages_have_nav(self, client):
-        """All dashboard pages include navigation links to all tabs."""
-        for path in ("/dashboard", "/dashboard/trends", "/dashboard/models", "/dashboard/tags", "/dashboard/benchmarks", "/dashboard/health", "/dashboard/settings"):
+        """Every page carries the same five tabs, with its own marked current."""
+        pages = {
+            "/dashboard": "Overview",
+            "/dashboard/health": "Health",
+            "/dashboard/models": "Models",
+            "/dashboard/tags": "Usage",
+            "/dashboard/settings": "Settings",
+        }
+        for path, label in pages.items():
             resp = client.get(path)
             assert resp.status_code == 200
-            assert "/dashboard" in resp.text
-            assert "/dashboard/trends" in resp.text
-            assert "/dashboard/models" in resp.text
-            assert "/dashboard/tags" in resp.text
-            assert "/dashboard/benchmarks" in resp.text
-            assert "/dashboard/health" in resp.text
-            assert "/dashboard/settings" in resp.text
-            # Nav tab labels
-            assert "Dashboard" in resp.text
-            assert "Trends" in resp.text
-            assert "Model Insights" in resp.text
-            assert "Tags" in resp.text
-            assert "Benchmarks" in resp.text
-            assert "Health" in resp.text
-            assert "Settings" in resp.text
+            for href, lab in pages.items():
+                assert f'href="{href}"' in resp.text
+                assert f">{lab}</a>" in resp.text
+            assert f'class="nav-tab active" aria-current="page">{label}</a>' in resp.text
+
+    def test_footer_shows_the_installed_version(self, client):
+        """The footer said v0.1.0 on every release before the dashboard redesign."""
+        from fleet_manager import __version__
+
+        resp = client.get("/dashboard")
+        assert f"Ollama Herd v{__version__}" in resp.text
+        assert "v0.1.0" not in resp.text or __version__ == "0.1.0"
 
 
 class TestDashboardAPI:

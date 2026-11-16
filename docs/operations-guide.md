@@ -135,7 +135,7 @@ curl -s http://localhost:11435/dashboard/api/models
 curl -s http://localhost:11435/dashboard/api/overview
 ```
 
-Via the dashboard UI: open `http://localhost:11435` and navigate to the **Model Insights** tab.
+Via the dashboard UI: open `http://localhost:11435` and navigate to the **Models** tab.
 
 ---
 

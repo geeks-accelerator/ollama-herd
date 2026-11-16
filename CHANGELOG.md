@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The dashboard is redesigned: calm, glanceable, and readable in light and dark.** Every page opens with the answer it exists for. The Overview leads with a one-line verdict (Healthy, Needs attention, Critical) and the health score, then five figures, then the nodes and the models that are actually doing work; idle models fold into one line, and the Fleet Intelligence briefing moves below the fold instead of filling the top of the page with a loading message. Colour now means state only: green, amber and red appear when something is online, degraded or failing, a zero is grey, and labels are neutral. Eight tabs become five (Overview, Health, Models, Usage, Settings): Health absorbs Recommendations, Models absorbs Trends behind one time range, and Settings absorbs Benchmarks and gains an Appearance section. **Every old URL still works** and scrolls to its section. Light mode follows the system, with a per-browser override; the header is the only translucent surface and turns solid when you ask for less transparency or more contrast. Text contrast is checked by tests in both appearances, including the header at its worst case. Plan and audit: `docs/plans/dashboard-calm-redesign.md`.
+- **`/dashboard/api/health` returns a `status` verdict** (`healthy`, `degraded` or `critical`): the worst open severity. Suggestions (INFO) and resolved findings never move it off `healthy`, and the dashboard reads it instead of inventing its own thresholds.
+
+### Fixed
+
+- **The dashboard footer showed "v0.1.0" on every release.** It now shows the installed version.
+- **The Models page summary ignored its time range.** The figures and the per-model table stayed all-time while the range buttons above them suggested otherwise; `/dashboard/api/models` now applies `start_ts`/`end_ts` to the summary too.
+- **Smaller dashboard fixes found during the redesign:** the colour reference page rendered its bars unstyled (their CSS lived only on the Overview); the Recommendations page's section headings were unstyled for the same reason; context-window usage painted a deliberately pinned model red; horizontal bar charts labelled their model axis 0, 1, 2; briefing text was inserted without escaping; categories without a label showed raw ids.
+
 ## [0.12.3] - 2026-11-02
 
 ### Fixed

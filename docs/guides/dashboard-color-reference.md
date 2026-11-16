@@ -15,7 +15,7 @@ The upshot: at 95% memory with `pressure=normal`, a bar shows a vivid purple fil
 
 ### Bar fills (`utilizationColor(pct, metric)`)
 
-Used on: CPU bar, memory bar (`/dashboard`), RAM bar (`/dashboard/recommendations`).
+Used on: CPU bar, memory bar (`/dashboard`), RAM bar (model recommendations on `/dashboard/health`).
 
 | Utilization | CPU bar (cyan → purple) | Memory bar (soft blue → deep purple) | Reads as |
 |---|---|---|---|
@@ -39,7 +39,7 @@ Yellow / orange / red for Axis B are chosen for maximum contrast against the coo
 
 ### Busy-is-bad (`barColor(pct)`) — use sparingly
 
-Used on: **disk usage bar** on `/dashboard/recommendations`, **capacity availability score** (input inverted).
+Used on: **disk usage bar** in the model recommendations on `/dashboard/health`. (Before the dashboard redesign, also the capacity availability score; it is now a plain percentage, because availability is not a warning.)
 
 Green at low % → red at high %. Correct for metrics where "high" is a genuine warning:
 - **Disk usage**: at 95% full, model downloads fail and the SQLite trace DB stops writing. High *is* bad.
@@ -53,11 +53,11 @@ Used where items differ by *kind*, not by *amount*.
 
 | Palette | What it codes |
 |---|---|
-| Status dots: green / yellow / red | Node liveness (`online` / `degraded` / `offline`) — NOT utilization |
+| Status dots: green / amber / red, always with a word | Node liveness (`online` / `degraded` / `offline`) — NOT utilization |
 | Health badges: info / warning / critical | Severity from the 18-check engine |
-| Model chips: purple-ish / orange / green / blue | ollama / image / stt / embed (type-coding) |
+| Model labels | Neutral grey since the dashboard redesign (`.tag`) — type is a word, not a colour |
 | MLX server rows: green / amber / red / grey | `healthy` / `starting|memory_blocked` / `unhealthy` / `stopped` |
-| Chart.js palettes on `/dashboard/trends` + `/dashboard/models` | Time-series line differentiation — categorical, no scale |
+| Chart series (`--series-1` to `--series-6`) on `/dashboard/models`, `/dashboard/tags`, benchmarks | Line and bar differentiation — categorical, no scale |
 
 Rule: if the color has a meaning, it's nominal (this-vs-that) not ordinal (this-is-more-than-that).
 

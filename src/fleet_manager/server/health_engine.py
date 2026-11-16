@@ -60,6 +60,26 @@ class HealthReport(BaseModel):
     vitals: FleetVitals
     recommendations: list[Recommendation] = Field(default_factory=list)
     checked_at: float = Field(default_factory=time.time)
+    # The one-word verdict the dashboard leads with: "healthy", "degraded" or
+    # "critical".  Decided here, from severities, so the page never invents its
+    # own thresholds -- see fleet_status().
+    status: str = "healthy"
+
+
+def fleet_status(recommendations: list[Recommendation]) -> str:
+    """The worst open severity, as a verdict.
+
+    INFO never moves it off "healthy": a standing list of no-action items is
+    how a status line stops being read.  A finding marked resolved in its data
+    (a condition that has cleared but is still reported for context) does not
+    count either.
+    """
+    open_recs = [r for r in recommendations if not r.data.get("resolved")]
+    if any(r.severity == Severity.CRITICAL for r in open_recs):
+        return "critical"
+    if any(r.severity == Severity.WARNING for r in open_recs):
+        return "degraded"
+    return "healthy"
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +265,11 @@ class HealthEngine:
         severity_order = {Severity.CRITICAL: 0, Severity.WARNING: 1, Severity.INFO: 2}
         recommendations.sort(key=lambda r: severity_order[r.severity])
 
-        return HealthReport(vitals=vitals, recommendations=recommendations)
+        return HealthReport(
+            vitals=vitals,
+            recommendations=recommendations,
+            status=fleet_status(recommendations),
+        )
 
     # ------------------------------------------------------------------
     # Vitals

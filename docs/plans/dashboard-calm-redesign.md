@@ -1,6 +1,6 @@
 # Dashboard calm redesign: glanceable, quiet, Apple-restrained
 
-**Status:** Proposed, not yet scheduled
+**Status:** Implemented on `main` 2026-11-15, all five phases (unreleased). See § *As built* at the end for where the build departed from this plan.
 **Filed:** 2026-11-15
 **Scope:** the router's dashboard at `/dashboard/*`, all rendered from
 `src/fleet_manager/server/routes/dashboard.py`. **Not** the ollamaherd.com site.
@@ -111,6 +111,63 @@ own problems, listed above, not by trend.
    `prefers-color-scheme`, with a manual override in Settings stored in
    `localStorage` (a per-viewer convenience, so browser storage is right here).
 
+## Audit: what already exists, and what this plan reuses
+
+Audited 2026-11-15 against `dashboard.py` (5,779 lines). The redesign is mostly
+**consolidation**: the patterns it needs exist, often more than once, and the
+debt is in the copies. Every phase below names the existing code it extends.
+**Greenfield rule:** each step replaces the old version in the same change.
+There is no flag, no "v2" helper beside the old one, and no period where two
+designs coexist on one page.
+
+### Already right, keep as is
+
+| Pattern | Where | Use in this plan |
+|---|---|---|
+| One page shell for every tab | `_dashboard_page()` + `_SHARED_CSS` | Home of the tokens, shared JS helpers, header and footer |
+| Shared JS in the page head | `barColor()`, `utilizationColor()` in `_dashboard_page` | Where every helper consolidated below moves to |
+| Charts read colours from CSS variables | `getComputedStyle(...)` → `const C` on the chart pages | Tokens reach Chart.js with no new mechanism |
+| Status dot classes | `.status-dot.online / .degraded / .offline` | The dot in dot-plus-word status |
+| Status in the favicon and tab title | `setTabAlert()` + `_FAVICON_SVG_ALERT` (offline only today) | Phase 4 extends it to degraded/critical; nothing new is built |
+| Health score and severities, cached | `/dashboard/api/health` (30 s cache), `scoreClass()` (80 / 50) | Source of the home-page status line; no new endpoint |
+| AI briefing as its own endpoint and poll | `/dashboard/api/briefing`, `fetchBriefing()` (30 s) | Moving it below the fold is markup only |
+| Old URL kept by a second route decorator | `/dashboard/apps` on the Tags handler | The pattern for every merged tab (render, not redirect) |
+| Toast | `showToast()` | Confirmation feedback, unchanged |
+| Colour reference page | `/dashboard/color-states`, already rendering `utilizationColor` live | Becomes the token reference in both appearances |
+| Version string | `fleet_manager.__version__`, used by `app.py` and `health_engine.py` | Footer fix |
+| Settings that persist | `toggleSetting()` → `common/env_writer.py` | **Not** for the theme: see below |
+
+### Duplicated, consolidate (the main debt)
+
+| What | Copies today | Consolidation |
+|---|---|---|
+| `fmtNum()` | **3**, with two behaviours: two abbreviate (`96.9K`), one uses `toLocaleString` (`96,995`) | One `fmtNum` (full, separators) and one `fmtCompact` (K/M, for axes and tight cells), in the shared head. Delete the page copies |
+| `fmtMs()` | **2**, different output: `340ms`/`1.2s` vs always seconds | One, in the shared head |
+| Other formatters | `fmtTime`, `fmtDate`, `fmtDay`, `fmtShortDate`, `fmtDuration`, `fmtElapsed`, `formatGB`, `timeAgo`, each page-local | Move to the shared head when the page that owns them is redesigned |
+| Chart colour object `const C` + `chartDefaults` | **4** copies, already drifting (`textDim` vs `dim`, `border` vs `grid`, a hex fallback in one) | One `chartTheme()` in the shared head that reads the tokens. It must be re-run on an appearance change, because `getComputedStyle` is read once at load today |
+| `MODEL_COLORS` | Model Insights page, five hard-coded hexes beside tokens | Series colours become tokens |
+| Colour scales | `barColor` (warning), `utilizationColor` (utilization), `barGradient` (purple→green, benchmark progress only), plus inline `>= 80 / >= 40` green/yellow/red thresholds on the overview | Two scales: utilization and warning. Progress bars use the accent. Inline thresholds go through one helper |
+| Health thresholds | `scoreClass()` uses 80 / 50; overview cards use 80 / 40 | One helper, one set of thresholds |
+| Status-dot markup | `statusDotHtml()` (Settings page, with inline styles and a broken `border-radius:50` with no unit) beside hand-written `<span class="status-dot">` | One `statusDot(status, label)` in the shared head, no inline style, returning dot plus word |
+| Disclosure | `toggleDetail()` + an `.open` class, used once (Benchmarks) | Native `<details>/<summary>` for every collapse (idle models, INFO findings, node details). No JS, keyboard-accessible. Convert the Benchmarks use when that page is redesigned, so one pattern remains |
+| Page-local `<style>` blocks | 6, beside `_SHARED_CSS` | Each page's block folds into token classes in that page's redesign PR |
+| Inline `style="…"` | 169 | Same, per page |
+| Radii | 7 values: 3, 4, 6, 8, 10, 12, 20 px | `--radius-1/2/3` with the concentric rule |
+| Font sizes | 13 values from 9 to 28 px | `--fs-display/title/body/label` |
+| Glow on status dots | `box-shadow: 0 0 8px` on online and degraded | Removed: a quiet dot, per rule 2 |
+
+### Genuinely new (small, and justified)
+
+- **`prefers-color-scheme` light tokens, `prefers-reduced-motion`,
+  `prefers-reduced-transparency` / `prefers-contrast`.** None exist today.
+- **`localStorage` for the manual appearance override.** Nothing in the dashboard
+  uses it today, and Settings persists through `env_writer` to
+  `~/.fleet-manager/env`. That is right for fleet settings and **wrong for
+  appearance**: one person choosing light mode would switch every viewer's
+  dashboard. Appearance is per viewer, so it is the one thing stored in the
+  browser. Wrapped in try/catch, defaulting to the system setting.
+- **Number easing on SSE updates (Phase 4).** No existing equivalent.
+
 ## Plan
 
 Each phase ships on its own, keeps every existing URL working, and leaves the
@@ -134,15 +191,22 @@ The groundwork every later phase needs, plus one bug.
    Define every token for dark under `:root`, and for light under
    `@media (prefers-color-scheme: light)`, guarded by
    `:root:not([data-theme="dark"])` so the manual override wins.
-3. **Number formatting helper.** One JS function, `fmt(n, {unit})`, using
-   `Intl.NumberFormat`. Every rendered count goes through it, so nothing is
-   formatted by hand in two places.
+3. **Consolidate the number formatters.** Move `fmtNum` (full, with separators)
+   and `fmtMs` into the shared head of `_dashboard_page`, beside `barColor`; add
+   `fmtCompact` for K/M. Delete the 3 + 2 page-local copies in the same change.
+   Not a new `fmt()`: the existing names stay, so call sites barely move.
 4. **Base typography.** Keep the system font stack (already correct). Add
    `font-variant-numeric: tabular-nums` on `body`; add a `.figure` / `.label`
    pair for value and caption.
 5. **Reduced-motion and focus.** Add the global `prefers-reduced-motion` block and
    a visible `:focus-visible` ring using `--accent`.
-6. **Radius scale.** `--radius-1/2/3` tokens, with the concentric rule written down
+6. **One chart theme.** Replace the four `const C` + `chartDefaults` copies with a
+   single `chartTheme()` in the shared head that reads the tokens, so the light
+   tokens reach every chart.
+7. **One status dot.** Replace `statusDotHtml()` and the hand-written spans with
+   `statusDot(status, label)`; drop the inline styles (including the broken
+   `border-radius:50`) and the glow.
+8. **Radius scale.** `--radius-1/2/3` tokens, with the concentric rule written down
    beside them, replacing the per-component radii.
 
 **Exit:** visually the same in dark mode, but every colour is a token, light mode
@@ -169,7 +233,8 @@ The page most people look at most often; this is where the redesign earns its ke
 3. **Nodes.** One calm row per node: status dot, name, chip, CPU and memory bars
    in utilization colours, and models resident. Details sit behind a disclosure.
    The current node card's information is kept; only its visual weight changes.
-4. **Active models.** Models with in-flight or recent requests get a full row:
+4. **Active models.** Collapse uses native `<details>`, the one disclosure pattern
+   (see the audit). Models with in-flight or recent requests get a full row:
    in-flight versus capacity, queued, completed, failures (red only if > 0), time
    to first token.
    - Idle models collapse into one line, *"8 idle models"*, expandable to a
@@ -209,9 +274,9 @@ against the 2026-11-15 screenshots.
    | **Usage** | Tags |
    | **Settings** | Settings, with Benchmarks as a section (a tool, rarely used) |
 
-   - **Every old URL keeps working.** `/dashboard/recommendations`,
-     `/dashboard/trends` and `/dashboard/benchmarks` redirect (or render) into
-     their new home, exactly as `/dashboard/apps` was kept for `/dashboard/tags`.
+   - **Every old URL keeps working**, with the existing pattern: a second route
+     decorator on the new handler, exactly as `/dashboard/apps` is kept for
+     `/dashboard/tags`. Render, don't redirect, so there is one pattern.
    - Update `test_routes.py::…navigation links to all tabs` to the new set, and
      add a test per old URL.
 3. **Footer** shrinks to one quiet line: version, the live-connection dot, and
@@ -238,8 +303,8 @@ page's cleanup ships with that page's redesign, so no PR is pure churn.
 
 - Number transitions on SSE updates, as an ease from old value to new; skipped
   under reduced motion.
-- A favicon and tab title that reflect status (the alert favicon already exists
-  in `_FAVICON_SVG_ALERT`).
+- A favicon and tab title that reflect status: extend the existing
+  `setTabAlert()`, which only knows "offline" today, to degraded and critical.
 - A phone-width pass. Operators check fleets from a phone: single column, at
   least 16px side gutters, no horizontal scroll.
 
@@ -277,3 +342,57 @@ page's cleanup ships with that page's redesign, so no PR is pure churn.
 - The ollamaherd.com site (separate repo, separate design system).
 - New data or new endpoints. If a phase seems to need one, stop and file it separately.
 - A frontend framework or build step.
+
+## As built (2026-11-15)
+
+All five phases shipped in one change rather than one PR per page, because merging
+pages (Health + Recommendations, Models + Trends, Settings + Benchmarks) made
+the per-page bodies depend on the shared helpers at the same moment; a page
+half-converted would have redefined `fmtNum` beside the shared one, which is
+the debt this plan exists to remove. Measured after: inline `style=` attributes
+**169 to 6**, all data-driven (bar widths, per-series swatch colours); hard-coded
+hex colours outside the token table **24 to 0**; `fmtNum` copies **3 to 1**, chart
+colour objects **4 to 1**. `tests/test_server/test_dashboard_design.py` pins all
+of it, so a page that reintroduces a copy or a hex colour fails the build.
+
+**Where the build departed from the plan, and why:**
+
+- **The status verdict is computed server-side** (`health_engine.fleet_status`,
+  returned as `status` by `/dashboard/api/health`), not in the page. The plan
+  wanted it unit-tested; Python can test it, page JavaScript cannot be tested in
+  this repo's suite. The page adds one thing the server cannot know quickly: a
+  node going offline in the 2 s live stream lifts the verdict before the 30 s
+  health cache turns over.
+- **Decode speed is not on the home page.** The plan asked for the fast-mode
+  share; no endpoint reports it, and the plan's own rule was to stop and file
+  rather than add data mid-redesign. The figure row uses what the health vitals
+  already carry (requests, time to first token, error rate) plus live queue
+  depth. Open follow-up: add the fast-mode share to the vitals.
+- **The header's worst-case contrast is computed by the test, not stored as
+  tokens.** Tokens nothing renders are debt; the test blends the header tint
+  (`_HEADER_TINT_PCT`, asserted to match the CSS) over white and black and checks
+  both. Measuring it moved the tint **82% to 88%**: at 82, light mode's nav text
+  over dark content was 4.0:1.
+- **`--text-3` was darkened** so it clears 4.5:1 on every surface it sits on,
+  because it ended up carrying small de-emphasised text, not only large figures.
+- **The colour tokens are one Python dict** (`_TOKENS`) that generates the CSS
+  for both appearances, so light values are written once, and the contrast test
+  reads the same source the page renders.
+- **Benchmark runs became a list of `<details>`** rather than table rows with a
+  hidden detail row, because a disclosure cannot span table rows; this removed
+  `toggleDetail`, the last hand-rolled collapse.
+- **The Models summary now honours the time range** (a pre-existing bug found by
+  the redesign's own range control): `latency_store.get_model_summary` takes
+  `start_ts`/`end_ts`.
+- **Old URLs render and then re-align** on the section a few times while the
+  page settles (content above loads asynchronously and pushed the target down),
+  stopping the moment the viewer scrolls.
+
+**Verified** in the browser pane and in Chrome on the live fleet: every page in
+dark and light, the four theme combinations (system light/dark, manual
+override each way), the transparency fallback (blur to solid), 375 px width with
+no horizontal scroll on any page, every old URL landing on its section, node and
+idle disclosures surviving the 2 s live updates, and a real WARNING (a transient
+connection failure after a router restart) turning the status line amber, the
+tab title prefixed, and the finding expanded on Health with suggestions folded.
+

@@ -1,6 +1,6 @@
 # Dashboard color semantics — utilization is the product, not the problem
 
-**Status:** Proposed — not yet scheduled
+**Status:** Implemented. Axis A (`utilizationColor`) and Axis B (`.bar-warning` / `.bar-critical` / `.bar-thermal`) shipped before 0.12; the rule is carried forward as a constraint by [`dashboard-calm-redesign.md`](dashboard-calm-redesign.md).
 **Filed:** 2026-04-24
 **Owner:** unassigned
 **Risk:** Low code risk, moderate UX-decision risk (easy to ship a pretty but wrong palette)

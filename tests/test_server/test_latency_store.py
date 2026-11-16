@@ -212,6 +212,27 @@ class TestLatencyStore:
         assert summary[1]["total_requests"] == 1
         await store.close()
 
+    async def test_get_model_summary_honours_a_time_range(self, tmp_path):
+        """The Models page sends its range; the summary used to ignore it and
+        stay all-time under range buttons that said otherwise."""
+        import time
+
+        store = LatencyStore(data_dir=str(tmp_path))
+        await store.initialize()
+        await store.record("studio", "phi4:14b", 500.0, prompt_tokens=50, completion_tokens=200)
+        await store.record("studio", "llama3.3:70b", 900.0, prompt_tokens=10, completion_tokens=20)
+        await store._db.execute(
+            "UPDATE latency_observations SET timestamp = timestamp - 30 * 86400 WHERE model_name = ?",
+            ("llama3.3:70b",),
+        )
+        await store._db.commit()
+
+        now = time.time()
+        recent = await store.get_model_summary(start_ts=now - 86400, end_ts=now + 1)
+        assert [m["model_name"] for m in recent] == ["phi4:14b"]
+        assert len(await store.get_model_summary()) == 2  # all time without a range
+        await store.close()
+
     async def test_migration_idempotent(self, tmp_path):
         # Initialize twice — should not error
         store = LatencyStore(data_dir=str(tmp_path))

@@ -243,12 +243,20 @@ class LatencyStore:
             for row in rows
         ]
 
-    async def get_model_summary(self) -> list[dict]:
-        """All-time per-model aggregate stats."""
+    async def get_model_summary(self, start_ts: float = 0, end_ts: float = 0) -> list[dict]:
+        """Per-model aggregate stats, all time unless a range is given.
+
+        The Models page sends its time range; before it could, the summary and
+        table stayed all-time while the range buttons above them suggested
+        otherwise.
+        """
         if not self._db:
             return []
+        where, params = "", ()
+        if start_ts and end_ts:
+            where, params = "WHERE timestamp >= ? AND timestamp <= ?", (start_ts, end_ts)
         cursor = await self._read_db.execute(
-            """
+            f"""
             SELECT
                 model_name,
                 COUNT(*) AS total_requests,
@@ -260,9 +268,11 @@ class LatencyStore:
                 MIN(timestamp) AS first_seen,
                 MAX(timestamp) AS last_seen
             FROM latency_observations
+            {where}
             GROUP BY model_name
             ORDER BY total_requests DESC
-            """
+            """,
+            params,
         )
         rows = await cursor.fetchall()
         return [
