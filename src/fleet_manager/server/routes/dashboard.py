@@ -1988,7 +1988,11 @@ a.figure:hover { text-decoration: none; border-color: color-mix(in srgb, var(--a
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.primary { background: var(--accent-fill); color: var(--accent-ink); border-color: transparent; }
 .btn.primary:hover { opacity: 0.9; }
-.btn.danger { background: var(--fail); color: #fff; border-color: transparent; }
+/* Destructive actions read as red words on a neutral button, the macOS
+   convention: white on --fail is 2.8:1 in dark, and a filled red block shouts
+   on a page where red means "failing now". */
+.btn.danger { color: var(--fail); border-color: color-mix(in srgb, var(--fail) 45%, var(--hairline)); }
+.btn.danger:hover { background: color-mix(in srgb, var(--fail) 10%, var(--surface-2)); border-color: var(--fail); }
 .btn.quiet { background: transparent; color: var(--text-2); }
 .btn.small { padding: 3px 9px; font-size: var(--fs-label); }
 .btn svg { width: 14px; height: 14px; }
@@ -2140,7 +2144,14 @@ function onThemeChange(cb) { _themeListeners.push(cb); }
 function _fireThemeChange() { _themeListeners.forEach(function(cb) { try { cb(); } catch (e) { console.error(e); } }); }
 try { window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', _fireThemeChange); } catch (e) {}
 function setAppearance(key, value) { HerdPrefs.set(key, value); applyAppearance(); _fireThemeChange(); }
-var REDUCED_MOTION = (function() { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } })();
+// Live, not read once: a viewer who turns on Reduce Motion mid-session gets it
+// without a reload.  Charts take it at creation, so they are rebuilt.
+var REDUCED_MOTION = false;
+try {
+  var _motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  REDUCED_MOTION = _motionQuery.matches;
+  _motionQuery.addEventListener('change', function(e) { REDUCED_MOTION = e.matches; _fireThemeChange(); });
+} catch (e) {}
 
 // ---- Formatting: every rendered number goes through these ----
 var _nf = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
@@ -3761,7 +3772,6 @@ _RECOMMENDATIONS_BODY = """
 .pull-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
 .pull-progress, .delete-progress { font-size: var(--fs-label); color: var(--text-2); }
 .mgmt-table td.status-col { white-space: nowrap; }
-.mgmt-table tr.unused-row td { background: color-mix(in srgb, var(--warn) 6%, transparent); }
 .mgmt-table code { font-size: 11px; color: var(--text-2); }
 .delete-section { display: flex; align-items: center; gap: 10px; padding: 12px 14px; }
 .delete-status { font-size: 11px; font-weight: 500; margin-left: 4px; }
@@ -4176,9 +4186,8 @@ function renderModelManagement(nodeData) {
   html += '</tr></thead><tbody>';
 
   models.forEach(function(m) {
-    var rowClass = m.unused ? 'unused-row' : '';
     var safeId = m.name.replace(/[^a-zA-Z0-9]/g, '-');
-    html += '<tr class="' + rowClass + '">';
+    html += '<tr>';
     html += '<td><input type="checkbox" class="mgmt-check" data-node="' + nodeData.node_id + '" data-model="' + m.name + '"';
     if (m.loaded_in_vram) html += ' data-loaded="1"';
     html += '></td>';

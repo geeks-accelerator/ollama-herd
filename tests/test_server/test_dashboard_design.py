@@ -9,6 +9,7 @@ and a status verdict decided by the health engine rather than by the page.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -62,6 +63,33 @@ def test_text_tokens_are_readable_as_body_text(theme, fg, bg):
 def test_primary_buttons_are_readable(theme):
     t = d._TOKENS[theme]
     assert _contrast(t["accent-ink"], t["accent-fill"]) >= 4.5
+
+
+@pytest.mark.parametrize("theme", THEMES)
+@pytest.mark.parametrize("fg", ["text-1", "fail"])
+def test_button_labels_are_readable(theme, fg):
+    """Buttons sit on --surface-2, a pair the surface test above never sees.
+    The danger button once read white on --fail at 2.8:1 in dark: found by the
+    rendered sweep (scripts/dashboard-contrast-sweep.py), not by this file."""
+    t = d._TOKENS[theme]
+    assert _contrast(t[fg], t["surface-2"]) >= 4.5, f"{theme}: --{fg} on --surface-2"
+
+
+def test_danger_button_is_red_words_not_a_red_block():
+    rule = re.search(r"\.btn\.danger \{([^}]*)\}", d._SHARED_CSS).group(1)
+    assert "color: var(--fail)" in rule and "background" not in rule
+
+
+def test_unused_models_are_not_tinted_as_a_warning():
+    """Unused is not a fault: the tag says so, a warn tint behind the row would
+    use colour for something other than state (and cost "never" its contrast)."""
+    assert "unused-row" not in Path(d.__file__).read_text()
+
+
+def test_reduced_motion_is_followed_live():
+    js = d._SHARED_JS
+    assert "_motionQuery.addEventListener('change'" in js
+    assert "REDUCED_MOTION = e.matches; _fireThemeChange();" in js
 
 
 @pytest.mark.parametrize("theme", THEMES)

@@ -77,6 +77,14 @@ own problems, listed above, not by trend.
 2. **Colour is a signal, never decoration.**
    - Neutral greys for structure.
    - One accent (the existing `#6c63ff`) for interaction: links, the active tab, focus rings.
+   - **The accent is never green**, and must not converge with ollamaherd.com's
+     green (`--neon`). On the site green means "you can press this"; here green
+     means "online / OK", so a green link would read as a status. The two
+     products differ on purpose, decided 2026-11-16 alongside the site's own
+     minimal redesign: do not "unify the brand" by changing either.
+   - **Destructive buttons are red words on a neutral button**, never a filled
+     red block: white on `--fail` is 2.8:1 in dark, and a red block shouts on a
+     page where red means "failing now".
    - **Status colours only for state:** green means online, amber means degraded, red means failing *now*.
    - A zero is grey. "0 failed" is never red.
    - Status is shown as a small coloured dot plus a word ("● Online",
@@ -323,6 +331,12 @@ page's cleanup ships with that page's redesign, so no PR is pure churn.
 - **Fallbacks:** with reduced transparency and with high contrast emulated, the
   header renders solid.
 - **Reduced motion:** with `prefers-reduced-motion: reduce` emulated, nothing animates.
+- **All of the rendered checks are one script:**
+  `uv run --with playwright python scripts/dashboard-contrast-sweep.py` against a
+  running router. It measures each text node against the background composited
+  from every layer beneath it, on every page in both appearances, then checks
+  reduced motion at load and when it is switched mid-session. Exit status is the
+  failure count. Run it on any styling change; see "Follow-up" under As built.
 
 ## Risks
 
@@ -395,4 +409,30 @@ no horizontal scroll on any page, every old URL landing on its section, node and
 idle disclosures surviving the 2 s live updates, and a real WARNING (a transient
 connection failure after a router restart) turning the status line amber, the
 tab title prefixed, and the finding expanded on Health with suggestions folded.
+
+### Follow-up (2026-11-16): the token test was not enough
+
+Reviewing ollamaherd.com's minimal-redesign plan, whose rendered contrast sweep
+found failures Lighthouse never reported, the same method run here found two
+that `test_dashboard_design.py` had passed, both in dark mode on Health:
+
+- **The danger button** was white on `--fail`, **2.82:1**. The token test checks
+  text tokens on the surfaces text sits on; a button sits on `--surface-2` with
+  its own ink, a pair nobody had listed. Now red words on a neutral button
+  (5.9:1 dark, 4.7:1 light), and the button pairs are tested.
+- **"never" in an unused-model row** was **4.43:1**, because the row carried a
+  6% warn tint. That tint also broke the colour rule: an unused model is not a
+  fault, and its "never used" tag already says so. Removed.
+
+A third finding was not contrast: `REDUCED_MOTION` was read once at load, so a
+viewer who turned on Reduce Motion mid-session kept the animations until a
+reload. It now follows the media query and rebuilds the charts on change.
+Reduced motion had also never been *emulated* during the original verification,
+only asserted in CSS; the sweep now does both.
+
+Run against the pre-fix code, the script reports exactly these three; against
+the fix it reports none. **Lesson: a pair test proves the pairs you thought of.
+Measure what the browser paints.** One more number worth knowing: light `--ok`
+on `--surface-2` is 4.47:1, so green text must not go on a button or other
+`--surface-2` background without darkening the token first; nothing does today.
 

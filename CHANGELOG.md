@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The dashboard footer showed "v0.1.0" on every release.** It now shows the installed version.
 - **The Models page summary ignored its time range.** The figures and the per-model table stayed all-time while the range buttons above them suggested otherwise; `/dashboard/api/models` now applies `start_ts`/`end_ts` to the summary too.
+- **The dashboard's red buttons and unused-model rows were hard to read in dark mode.** The Delete button was white on red at 2.8:1; it is now red text on a neutral button. Unused models no longer sit on an amber tint, which made "never" 4.4:1 and used a warning colour for something that is not a fault. Found by a new rendered check, `scripts/dashboard-contrast-sweep.py`, which measures what the browser paints on every page in both appearances and checks reduced motion.
+- **Turning on Reduce Motion while the dashboard was open did nothing until a reload.** It now takes effect immediately, charts included.
 - **Smaller dashboard fixes found during the redesign:** the colour reference page rendered its bars unstyled (their CSS lived only on the Overview); the Recommendations page's section headings were unstyled for the same reason; context-window usage painted a deliberately pinned model red; horizontal bar charts labelled their model axis 0, 1, 2; briefing text was inserted without escaping; categories without a label showed raw ids.
 
 ## [0.12.3] - 2026-11-02
