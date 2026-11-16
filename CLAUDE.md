@@ -18,7 +18,7 @@ The `--extra embedding` now also installs `fastembed` for the **native text embe
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 2068 tests (~25s)
+uv run pytest                    # run all 2078 tests (~25s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -317,6 +317,7 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `common/install_id.py` | Random per-herd UUID in `~/.fleet-manager/install_id`. Never machine-derived — tests fail the build if it is the hostname or a hash of it |
 | `common/telemetry_notice.py` | One-time visible first-run notice. **Must stay a `typer.echo`, never a log line** — it is what makes default-on defensible |
 | `common/env_writer.py` | Persists dashboard toggles to `~/.fleet-manager/env`, line-based so hand-written comments survive |
+| `server/fleet_history.py` | In-memory, 3-hour history of per-node CPU/memory/queue sampled every 5 s, for the Overview's sparklines. Memory only by design: cleared on restart, nothing on disk |
 | `server/model_preloader.py` | Priority model loading after restart — weighted 24h/7d usage scoring |
 | `server/cors.py` | Opt-in CORS for browser clients (`FLEET_CORS_ORIGINS`, `OLLAMA_ORIGINS` syntax). Empty default installs no middleware at all |
 

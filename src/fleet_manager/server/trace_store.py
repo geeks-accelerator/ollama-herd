@@ -812,6 +812,81 @@ class TraceStore:
             "total_retries": row[1] if row and row[1] else 0,
         }
 
+    async def get_timeseries(
+        self, window_s: int = 3600, step_s: int = 60, now: float | None = None
+    ) -> dict:
+        """Requests, generated tokens, TTFT and failures per time bucket.
+
+        Feeds the Overview's live charts.  Buckets are aligned to ``step_s`` and
+        the window always ends at the bucket holding ``now``, so successive
+        fetches line up and the right edge is the current, partial bucket.
+
+        A failure is any status other than ``completed`` or ``retried`` -- the
+        definition ``get_overall_stats_24h`` uses for the error-rate vital, so
+        the chart and the figure above it count the same thing.  ``retried``
+        rows are per-attempt and would double-count a request, so they are not
+        requests here either.  Token series are keyed ``node:model`` like the
+        queue keys the page already renders, plus per-model and per-node sums.
+        """
+        from fleet_manager.common.stats import percentile
+
+        step_s = max(10, int(step_s))
+        now = time.time() if now is None else now
+        last = int(now // step_s) * step_s
+        n = max(1, int(window_s // step_s))
+        first = last - (n - 1) * step_s
+        buckets = [first + i * step_s for i in range(n)]
+        out = {
+            "window_s": n * step_s,
+            "step_s": step_s,
+            "buckets": buckets,
+            "requests": [0] * n,
+            "failed": [0] * n,
+            "tokens": [0] * n,
+            "ttft_p50_ms": [None] * n,
+            "by_model": {},
+            "by_node": {},
+            "by_node_model": {},
+            "requests_by_node_model": {},
+        }
+        if not self._db:
+            return out
+        cursor = await self._read_db.execute(
+            """
+            SELECT timestamp, node_id, model, status, completion_tokens,
+                   time_to_first_token_ms
+            FROM request_traces
+            WHERE timestamp >= ? AND status != 'retried'
+            """,
+            (first,),
+        )
+        ttfts: list[list[float]] = [[] for _ in range(n)]
+
+        def series(table: dict, key: str) -> list:
+            return table.setdefault(key, [0] * n)
+
+        for ts, node, model, status, tokens, ttft in await cursor.fetchall():
+            i = int((ts - first) // step_s)
+            if not 0 <= i < n:
+                continue
+            out["requests"][i] += 1
+            if status != "completed":
+                out["failed"][i] += 1
+            if ttft:
+                ttfts[i].append(ttft)
+            if node:
+                series(out["requests_by_node_model"], f"{node}:{model}")[i] += 1
+            if tokens:
+                out["tokens"][i] += tokens
+                series(out["by_model"], model)[i] += tokens
+                if node:
+                    series(out["by_node"], node)[i] += tokens
+                    series(out["by_node_model"], f"{node}:{model}")[i] += tokens
+        for i, vals in enumerate(ttfts):
+            p = percentile(vals, 50)
+            out["ttft_p50_ms"][i] = round(p, 1) if p is not None else None
+        return out
+
     async def get_overall_stats_24h(self) -> dict:
         """Overall request stats for the last 24 hours: count, error rate, avg TTFT."""
         if not self._db:

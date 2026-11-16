@@ -1236,7 +1236,7 @@ Use `estimated_wait_ms` to decide whether to send a request now or back off. `qu
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /dashboard` | Overview — the fleet's status and health score, key figures, nodes, models at work, Fleet Intelligence briefing |
+| `GET /dashboard` | Overview — the fleet's status and health score; live figures with sparklines; an activity chart (tokens/s by model, requests/min, failures); node cards with CPU, memory and tokens/s sparklines; models at work; Fleet Intelligence briefing. Uses the full window width |
 | `GET /dashboard/models` | Models — traffic trends (requests, latency, tokens per hour) and per-model performance, one time range for both |
 | `GET /dashboard/benchmarks` | Benchmarks — fleet throughput under controlled load, run history and charts; linked from Models and Settings (not a nav tab) |
 | `GET /dashboard/tags` | Usage — per-tag analytics with latency, tokens, errors, daily trends |
@@ -1265,6 +1265,20 @@ Server-Sent Events stream for real-time fleet updates. Pushes a JSON snapshot ev
 Each node includes `cpu`, `memory`, `ollama`, and optionally `capacity` fields (when adaptive capacity learning is enabled).
 
 ### JSON APIs
+
+#### `GET /dashboard/api/timeseries`
+
+Per-bucket request activity for the Overview's live charts, from the trace store.
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `window` | `3600` | Seconds. Snapped to the nearest of 3600, 7200, 10800 (60 s buckets), 21600 (180 s) or 86400 (600 s), so every viewer's buckets align |
+
+Returns `window_s`, `step_s`, `buckets` (bucket start times; the last is the current, partial bucket), and arrays aligned to them: `requests`, `failed` (any status other than `completed` or `retried`, as the error-rate vital counts it), `tokens` (completion tokens), `ttft_p50_ms` (`null` for an empty bucket). Token series are also split as `by_model`, `by_node` and `by_node_model` (keyed `node:model`, like `/fleet/queue`), plus `requests_by_node_model`.
+
+#### `GET /dashboard/api/node-history`
+
+CPU %, memory %, queued and running per node, sampled by the router every 5 s and kept **in memory for 3 hours** (cleared on restart). `window` (seconds, max 10800). Returns `t` plus `queued`/`running` fleet totals aligned to it, and `nodes[id]` with `cpu`, `mem`, `queued`, `running` arrays; `null` where a node was not online at that sample.
 
 #### `GET /dashboard/api/trends`
 

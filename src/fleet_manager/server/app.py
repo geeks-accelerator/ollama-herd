@@ -205,6 +205,12 @@ async def lifespan(app: FastAPI):
 
     # Start background tasks
     monitor_task = asyncio.create_task(registry.monitor_heartbeats())
+    # Short in-memory history of node metrics for the Overview's live charts.
+    from fleet_manager.server.fleet_history import FleetHistory
+
+    fleet_history = FleetHistory(registry, queue_mgr)
+    app.state.fleet_history = fleet_history
+    history_task = asyncio.create_task(fleet_history.run())
     rebalancer_task = asyncio.create_task(rebalancer.run())
     optimizer_task = asyncio.create_task(context_optimizer.run())
     queue_mgr.start_reaper()
@@ -290,8 +296,11 @@ async def lifespan(app: FastAPI):
     community_telemetry_task.cancel()
     checkpoint_task.cancel()
     advertiser_task.cancel()
+    history_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await advertiser_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await history_task
     with contextlib.suppress(asyncio.CancelledError):
         await monitor_task
     with contextlib.suppress(asyncio.CancelledError):

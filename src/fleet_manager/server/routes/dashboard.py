@@ -445,6 +445,30 @@ async def dashboard_trends_data(
     return {"hours": hours, "data": data}
 
 
+# Live-chart windows: (window, bucket).  Fixed choices rather than free input
+# so every viewer's buckets align and the query stays one indexed range scan.
+_TIMESERIES_STEPS = {3600: 60, 7200: 60, 10800: 60, 21600: 180, 86400: 600}
+
+
+@router.get("/dashboard/api/timeseries")
+async def dashboard_timeseries(request: Request, window: int = 3600):
+    """Per-bucket requests, tokens, TTFT and failures for the Overview charts."""
+    window = min(_TIMESERIES_STEPS, key=lambda w: abs(w - window))
+    trace_store = getattr(request.app.state, "trace_store", None)
+    if not trace_store:
+        return {"window_s": window, "step_s": _TIMESERIES_STEPS[window], "buckets": []}
+    return await trace_store.get_timeseries(window, _TIMESERIES_STEPS[window])
+
+
+@router.get("/dashboard/api/node-history")
+async def dashboard_node_history(request: Request, window: int = 3600):
+    """CPU, memory and queue samples (in memory, last 3 h) for node sparklines."""
+    history = getattr(request.app.state, "fleet_history", None)
+    if not history:
+        return {"interval_s": 0, "t": [], "queued": [], "running": [], "nodes": {}}
+    return history.snapshot(max(60, min(window, 3 * 3600)))
+
+
 @router.get("/dashboard/api/models")
 async def dashboard_models_data(
     request: Request,
@@ -1701,7 +1725,9 @@ async def dashboard_pinned_models_set(request: Request):
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page():
     """Overview: the fleet's status first, then what is busy, then the nodes."""
-    return _dashboard_page("Overview", "overview", _OVERVIEW_BODY)
+    return _dashboard_page(
+        "Overview", "overview", _OVERVIEW_BODY, extra_head=_CHART_JS_HEAD, wide=True
+    )
 
 
 # Merged pages keep their old URLs as a second route on the page that absorbed
@@ -1941,11 +1967,24 @@ code, .mono { font-family: 'SF Mono', ui-monospace, Menlo, monospace; font-size:
   padding: 18px 20px;
 }
 .card.flush { padding: 0; overflow: hidden; }
+/* A monitoring page uses the whole window; reading pages keep their measure.
+   Prose inside a wide page still caps itself at 72-80ch. */
+.main.wide { max-width: none; padding-left: 24px; padding-right: 24px; }
 .inset {
   background: var(--surface-2); border-radius: var(--radius-2); padding: 10px 12px;
 }
 .empty-state { color: var(--text-2); font-size: var(--fs-small); text-align: center; padding: 32px 16px; }
 .empty-state h3 { color: var(--text-1); font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+
+/* --- Sparklines: one path, no axes, neutral unless the value is in a warning
+   state.  Drawn by sparkline() in the shared script. --- */
+.spark { display: block; width: 100%; height: 100%; overflow: visible; }
+.spark .line { fill: none; stroke: var(--text-2); stroke-width: 1.5; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+.spark .area { fill: color-mix(in srgb, var(--text-2) 12%, transparent); }
+.spark.warn .line { stroke: var(--warn); }
+.spark.warn .area { fill: color-mix(in srgb, var(--warn) 15%, transparent); }
+.spark.fail .line { stroke: var(--fail); }
+.spark.fail .area { fill: color-mix(in srgb, var(--fail) 15%, transparent); }
 
 /* --- Figures: big quiet numbers, small sentence-case labels --- */
 .figures { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
@@ -2207,6 +2246,39 @@ function escapeHtml(s) {
   });
 }
 
+// One sparkline as inline SVG.  The time domain (t0..t1) and value range are
+// passed in, so small multiples share axes and a 1% wobble cannot look like a
+// 40% swing; a null value is a gap, never a fake zero.  A level (latency)
+// rather than a quantity passes area: false -- filling to zero implies volume.  No library and no
+// chart instance: dozens of these redraw every 2 s.
+function sparkline(ts, vs, o) {
+  o = o || {};
+  var W = 100, H = 30;
+  var t0 = o.t0 != null ? o.t0 : ts[0], t1 = o.t1 != null ? o.t1 : ts[ts.length - 1];
+  var lo = o.min != null ? o.min : 0;
+  var hi = o.max;
+  if (hi == null) { hi = lo; vs.forEach(function(v) { if (v != null && v > hi) hi = v; }); }
+  if (!(hi > lo)) hi = lo + 1;
+  var span = (t1 - t0) || 1, line = '', area = '', seg = [];
+  function flush() {
+    if (seg.length > 1) {
+      line += 'M' + seg.join('L');
+      area += 'M' + seg[0].split(',')[0] + ',' + H + 'L' + seg.join('L') + 'L' + seg[seg.length - 1].split(',')[0] + ',' + H + 'Z';
+    }
+    seg = [];
+  }
+  for (var i = 0; i < ts.length; i++) {
+    var v = vs[i];
+    if (v == null || ts[i] < t0) { flush(); continue; }
+    var x = (ts[i] - t0) / span * W;
+    var y = H - (Math.min(Math.max(v, lo), hi) - lo) / (hi - lo) * (H - 1.5) - 0.75;
+    seg.push(x.toFixed(2) + ',' + y.toFixed(2));
+  }
+  flush();
+  return '<svg class="spark ' + (o.state || '') + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true">' +
+    (line ? (o.area === false ? '' : '<path class="area" d="' + area + '"/>') + '<path class="line" d="' + line + '"/>' : '') + '</svg>';
+}
+
 // Ease a number to its new value.  Explains a change instead of jumping;
 // skipped under reduced motion and on first render.
 function setNum(el, value, fmt) {
@@ -2402,7 +2474,9 @@ _NAV_ITEMS = (
 )
 
 
-def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str = "") -> str:
+def _dashboard_page(
+    title: str, active_tab: str, body_html: str, extra_head: str = "", wide: bool = False
+) -> str:
     """Generate a full dashboard HTML page with shared nav, styles, and footer."""
     from fleet_manager import __version__
 
@@ -2428,7 +2502,7 @@ def _dashboard_page(title: str, active_tab: str, body_html: str, extra_head: str
   <a class="brand" href="/dashboard">Ollama Herd</a>
   <nav class="nav-tabs" aria-label="Dashboard">{nav_html}</nav>
 </header>
-<main class="main">
+<main class="main{" wide" if wide else ""}">
 {body_html}
 </main>
 <footer class="footer">
@@ -2466,18 +2540,41 @@ _OVERVIEW_BODY = """
 .score-ring.warn { --ring: var(--warn); }
 .score-ring.fail { --ring: var(--fail); }
 a.score-ring:hover { text-decoration: none; }
-.node-row { display: grid; grid-template-columns: minmax(150px, 1.1fr) 1fr 1fr auto; gap: 18px; align-items: center; padding: 14px 18px; }
-.node-row + .node-detail-wrap { padding: 0 18px 4px; }
+/* Layout: symptoms (requests, tokens, latency, errors) on top, then the
+   activity chart, the nodes that explain it, and the models doing the work.
+   Wide windows put the nodes beside the chart so the fleet fits one screen. */
+.figures.live { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.figures.live .figure { position: relative; overflow: hidden; padding-bottom: 40px; }
+.figures.live .figure > span { position: relative; }
+.figure-spark { position: absolute; left: 0; right: 0; bottom: 0; height: 36px; pointer-events: none; }
+.ov-grid { display: grid; gap: 28px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "activity" "nodes" "models"; }
+.ov-activity { grid-area: activity; } .ov-nodes { grid-area: nodes; } .ov-models { grid-area: models; }
+@media (min-width: 1600px) {
+  .ov-grid { grid-template-columns: minmax(0, 1.6fr) minmax(420px, 1fr); grid-template-areas: "activity nodes" "models nodes"; align-items: start; }
+}
+.activity-box { position: relative; height: clamp(220px, 30vh, 400px); }
+.activity-legend { font-size: var(--fs-label); color: var(--text-2); }
+/* Card grids: one card fills the row, several share it -- about three across a
+   laptop, two in the side column of a wide screen.  min() keeps a phone from
+   overflowing. */
+.node-grid, .model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 12px; }
+.model-card { background: var(--surface-1); border: 1px solid var(--hairline); border-radius: var(--radius-3); padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.model-card .stats { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; max-width: 560px; }
+.model-card .stat { align-items: flex-start; }
+.model-card .row-spark { width: 100%; height: 36px; }
+.node-card { padding: 16px 18px 12px; }
+.node-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
 .node-name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .node-chip { font-size: var(--fs-label); color: var(--text-2); margin-top: 2px; }
-.meter-label { display: flex; justify-content: space-between; font-size: var(--fs-label); color: var(--text-2); }
-.meter-label b { color: var(--text-1); font-weight: 600; }
-.meter-extra { font-size: 11px; color: var(--text-2); margin-top: 3px; }
-.meter-extra:empty { display: none; }
 .node-models-count { font-size: var(--fs-label); color: var(--text-2); text-align: right; white-space: nowrap; }
 .node-models-count b { color: var(--text-1); font-size: 15px; font-weight: 600; display: block; }
-.node-group { border-top: 1px solid var(--hairline); }
-.node-group:first-child { border-top: none; }
+.node-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.metric-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; font-size: var(--fs-label); color: var(--text-2); }
+.metric-head b { color: var(--text-1); font-weight: 600; white-space: nowrap; }
+.metric-spark { height: 34px; margin-top: 6px; }
+.meter-extra { font-size: 11px; color: var(--text-2); margin-top: 8px; }
+.meter-extra:empty { display: none; }
+.node-card .node-detail-wrap { margin-top: 8px; }
 .detail-grid { display: grid; gap: 14px; padding-bottom: 14px; }
 .detail-block h5 { font-size: var(--fs-label); font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
 .model-lines { display: flex; flex-direction: column; gap: 4px; }
@@ -2495,15 +2592,9 @@ a.score-ring:hover { text-decoration: none; }
 .svc-kind { min-width: 84px; }
 .briefing-body { font-size: var(--fs-small); line-height: 1.7; padding: 4px 0 6px; max-width: 72ch; }
 .briefing-meta { font-size: var(--fs-label); color: var(--text-2); display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
-@media (max-width: 900px) {
-  .node-row { grid-template-columns: 1fr 1fr; }
-  .node-row > :first-child { grid-column: 1 / -1; }
-  .node-models-count { text-align: left; }
-}
 @media (max-width: 560px) {
   .hero { flex-direction: column-reverse; align-items: flex-start; }
   .hero-title { font-size: 22px; }
-  .node-row { grid-template-columns: 1fr; }
 }
 </style>
 
@@ -2515,23 +2606,38 @@ a.score-ring:hover { text-decoration: none; }
   <a class="score-ring" id="hero-score" href="/dashboard/health" title="Health score — open Health"><span>—</span></a>
 </section>
 
-<section class="figures" id="figures" aria-label="Key figures">
-  <a class="figure" href="/dashboard/models"><span class="figure-value" id="fig-requests">—</span><span class="figure-label">Requests, last 24 h</span></a>
-  <a class="figure" href="/dashboard/models"><span class="figure-value" id="fig-ttft">—</span><span class="figure-label">Time to first token</span></a>
-  <a class="figure" id="fig-errors-card" href="/dashboard/health"><span class="figure-value" id="fig-errors">—</span><span class="figure-label">Error rate, 24 h</span></a>
-  <div class="figure" id="fig-queued-card"><span class="figure-value" id="fig-queued">—</span><span class="figure-label">Waiting in queue</span></div>
-  <div class="figure" id="fig-inflight-card"><span class="figure-value" id="fig-inflight">—</span><span class="figure-label">Running now</span></div>
+<section class="figures live" id="figures" aria-label="Key figures">
+  <a class="figure" id="fig-rpm-card" href="/dashboard/models" title="Average of the last five minutes"><span class="figure-value" id="fig-rpm">—</span><span class="figure-label">Requests / min</span><div class="figure-spark" id="spark-rpm"></div></a>
+  <a class="figure" id="fig-tps-card" href="/dashboard/models" title="Generated tokens, average of the last five minutes"><span class="figure-value" id="fig-tps">—</span><span class="figure-label">Tokens / s</span><div class="figure-spark" id="spark-tps"></div></a>
+  <a class="figure" id="fig-ttft-card" href="/dashboard/models" title="Median, last five minutes"><span class="figure-value" id="fig-ttft">—</span><span class="figure-label">Time to first token</span><div class="figure-spark" id="spark-ttft"></div></a>
+  <a class="figure" id="fig-errors-card" href="/dashboard/health"><span class="figure-value" id="fig-errors">—</span><span class="figure-label" id="fig-errors-label">Error rate</span><div class="figure-spark" id="spark-errors"></div></a>
+  <div class="figure" id="fig-inflight-card"><span class="figure-value" id="fig-inflight">—</span><span class="figure-label">Running now</span><div class="figure-spark" id="spark-inflight"></div></div>
+  <div class="figure" id="fig-queued-card"><span class="figure-value" id="fig-queued">—</span><span class="figure-label">Waiting in queue</span><div class="figure-spark" id="spark-queued"></div></div>
 </section>
 
-<section class="section" id="nodes">
-  <div class="section-head"><h2 class="section-title">Nodes</h2></div>
-  <div class="list" id="nodes-container"><div class="empty-state">Waiting for nodes…</div></div>
+<div class="ov-grid">
+<section class="section ov-activity" id="activity">
+  <div class="section-head">
+    <h2 class="section-title">Activity</h2>
+    <div class="segmented" id="window-control" role="radiogroup" aria-label="Time window">
+      <button data-window="auto" role="radio" title="As much history as fits the window">Fit</button><button data-window="3600" role="radio">1 h</button><button data-window="21600" role="radio">6 h</button><button data-window="86400" role="radio">24 h</button>
+    </div>
+  </div>
+  <div class="chart-card">
+    <div class="activity-box"><canvas id="activity-chart" aria-label="Tokens per second by model, requests per minute, and failures over time" role="img"></canvas></div>
+  </div>
 </section>
 
-<section class="section" id="models">
+<section class="section ov-nodes" id="nodes">
+  <div class="section-head"><h2 class="section-title">Nodes</h2><span class="small muted" id="nodes-window"></span></div>
+  <div class="node-grid" id="nodes-container"><div class="card empty-state">Waiting for nodes…</div></div>
+</section>
+
+<section class="section ov-models" id="models">
   <div class="section-head"><h2 class="section-title">Models at work</h2><span class="small muted" id="models-summary"></span></div>
   <div id="queues-container"><div class="empty-state">No models loaded</div></div>
 </section>
+</div>
 
 <section class="section" id="briefing-section" hidden>
   <details class="disclosure card" id="briefing">
@@ -2602,23 +2708,222 @@ function renderStatus() {
   document.getElementById('fig-inflight-card').classList.toggle('zero', !running);
 }
 
-function renderFigures(v) {
-  setNum(document.getElementById('fig-requests'), v.total_requests_24h);
-  var ttft = document.getElementById('fig-ttft');
-  ttft.textContent = v.avg_ttft_ms != null ? fmtMs(v.avg_ttft_ms) : '\\u2014';
-  var err = v.overall_error_rate_pct;
-  document.getElementById('fig-errors').textContent = fmtPct(err);
-  var card = document.getElementById('fig-errors-card');
-  card.classList.toggle('zero', !err);
-  card.classList.toggle('warn', err > 1 && err <= 5);
-  card.classList.toggle('fail', err > 5);
+// ---- Live series: request history from the trace store, node metrics from
+// the router's in-memory sampler.  Every chart shares one fixed time window,
+// so a dip in one lines up with a spike in another. ----
+var _ts = null, _nh = null, _winChoice = 'auto', _activityChart = null;
+try { _winChoice = HerdPrefs.get('overviewWindow') || 'auto'; } catch (e) {}
+var AUTO_WINDOWS = [3600, 7200, 10800];
+function windowSeconds() {
+  if (_winChoice !== 'auto') return +_winChoice;
+  // About 4 px per one-minute point (Netdata sizes its live window the same
+  // way): wider screens show more history at the same resolution.
+  var box = document.querySelector('.activity-box');
+  var minutes = box ? box.clientWidth / 4 : 60;
+  var pick = AUTO_WINDOWS[0];
+  AUTO_WINDOWS.forEach(function(w) { if (w / 60 <= minutes) pick = w; });
+  return pick;
 }
+function windowLabel(w) { return w >= 86400 ? '24 h' : (w / 3600) + ' h'; }
+function errState(pct) { return pct > 5 ? 'fail' : pct > 1 ? 'warn' : ''; }
+
+// Rates for the figures are the last five minutes of COMPLETE buckets: the
+// current bucket is still filling and would read low.
+function recent(arr, ts) {
+  var span = Math.max(1, Math.round(300 / ts.step_s));
+  var end = arr.length - 1, out = [];
+  for (var i = Math.max(0, end - span); i < end; i++) out.push(arr[i]);
+  return out.length ? out : arr.slice(-1);
+}
+function sum(a) { return a.reduce(function(x, y) { return x + (y || 0); }, 0); }
+function median(a) {
+  var v = a.filter(function(x) { return x != null; }).sort(function(x, y) { return x - y; });
+  return v.length ? v[Math.floor(v.length / 2)] : null;
+}
+
+function renderFigureSeries() {
+  if (!_ts || !_ts.buckets || !_ts.buckets.length) return;
+  var step = _ts.step_s, t = _ts.buckets, w = { t0: t[0], t1: t[t.length - 1] + step };
+  var rpm = _ts.requests.map(function(r) { return r * 60 / step; });
+  var tps = _ts.tokens.map(function(k) { return k / step; });
+  var errPct = _ts.requests.map(function(r, i) { return r ? 100 * _ts.failed[i] / r : null; });
+  var rRpm = recent(rpm, _ts), rTps = recent(tps, _ts);
+  var vRpm = sum(rRpm) / rRpm.length, vTps = sum(rTps) / rTps.length;
+  var vTtft = median(recent(_ts.ttft_p50_ms, _ts));
+  var reqs = sum(_ts.requests), fails = sum(_ts.failed), vErr = reqs ? 100 * fails / reqs : 0;
+  setNum(document.getElementById('fig-rpm'), Math.round(vRpm * 10) / 10);
+  setNum(document.getElementById('fig-tps'), Math.round(vTps));
+  document.getElementById('fig-ttft').textContent = vTtft != null ? fmtMs(vTtft) : '\u2014';
+  document.getElementById('fig-errors').textContent = fmtPct(vErr);
+  document.getElementById('fig-errors-label').textContent = 'Error rate, ' + windowLabel(_ts.window_s);
+  document.getElementById('fig-rpm-card').classList.toggle('zero', !vRpm);
+  document.getElementById('fig-tps-card').classList.toggle('zero', !vTps);
+  document.getElementById('fig-ttft-card').classList.toggle('zero', vTtft == null);
+  var ec = document.getElementById('fig-errors-card');
+  ec.classList.toggle('zero', !vErr);
+  ec.classList.toggle('warn', errState(vErr) === 'warn');
+  ec.classList.toggle('fail', errState(vErr) === 'fail');
+  // Points sit at bucket centres so the line ends at "now", not a step early.
+  var tc = t.map(function(x) { return x + step / 2; });
+  document.getElementById('spark-rpm').innerHTML = sparkline(tc, rpm, w);
+  document.getElementById('spark-tps').innerHTML = sparkline(tc, tps, w);
+  document.getElementById('spark-ttft').innerHTML = sparkline(tc, _ts.ttft_p50_ms, Object.assign({ area: false }, w));
+  document.getElementById('spark-errors').innerHTML = sparkline(tc, errPct, Object.assign({ max: Math.max(5, Math.max.apply(null, errPct.map(function(v) { return v || 0; }))), state: errState(vErr) }, w));
+}
+
+function nhWindow() {
+  var w = windowSeconds(), now = Date.now() / 1000;
+  return { t0: now - w, t1: now };
+}
+function renderQueueSparks() {
+  if (!_nh) return;
+  var w = nhWindow();
+  var qmax = Math.max(4, Math.max.apply(null, _nh.queued.concat(_nh.running)));
+  document.getElementById('spark-inflight').innerHTML = sparkline(_nh.t, _nh.running, Object.assign({ max: qmax }, w));
+  document.getElementById('spark-queued').innerHTML = sparkline(_nh.t, _nh.queued, Object.assign({ max: qmax }, w));
+}
+
+function renderActivity() {
+  if (!_ts || !_ts.buckets || typeof Chart === 'undefined') return;
+  var T = chartTheme({ fixed: true }), step = _ts.step_s;
+  var x = _ts.buckets.map(function(b) { return (b + step / 2) * 1000; });
+  // Busiest models first; past six, the tail folds into "Other" so the
+  // stack stays readable and the colours stay distinguishable.
+  var models = Object.keys(_ts.by_model).sort(function(a, b) { return sum(_ts.by_model[b]) - sum(_ts.by_model[a]); });
+  var shown = models.slice(0, 5), rest = models.slice(5);
+  var stacks = shown.map(function(m) { return { label: m, data: _ts.by_model[m] }; });
+  if (rest.length) stacks.push({ label: 'Other (' + rest.length + ')', data: _ts.buckets.map(function(_, i) { return sum(rest.map(function(m) { return _ts.by_model[m][i]; })); }) });
+  var datasets = stacks.map(function(st, i) {
+    var c = T.color(i);
+    return { type: 'line', label: st.label, yAxisID: 'y', stack: 'tok', fill: i === 0 ? 'origin' : '-1',
+      data: st.data.map(function(k, j) { return { x: x[j], y: k / step }; }),
+      borderColor: c, backgroundColor: withAlpha(c, 0.28), borderWidth: 1.5, pointRadius: 0, tension: 0.25 };
+  });
+  datasets.push({ type: 'line', label: 'Requests / min', yAxisID: 'y1', fill: false,
+    data: _ts.requests.map(function(r, j) { return { x: x[j], y: r * 60 / step }; }),
+    borderColor: T.dim, borderDash: [4, 3], borderWidth: 1.25, pointRadius: 0, tension: 0.25 });
+  datasets.push({ type: 'scatter', label: 'Failed', yAxisID: 'y1',
+    data: _ts.failed.map(function(f, j) { return f ? { x: x[j], y: f * 60 / step } : null; }).filter(Boolean),
+    backgroundColor: token('fail'), borderColor: token('fail'), pointRadius: 3.5, pointHoverRadius: 5 });
+  var timeFmt = new Intl.DateTimeFormat(undefined, _ts.window_s > 21600 ? { weekday: 'short', hour: 'numeric' } : { hour: 'numeric', minute: '2-digit' });
+  var opts = Object.assign({}, T.defaults, {
+    interaction: { mode: 'index', intersect: false },
+    scales: {
+      x: { type: 'linear', min: x[0] - step * 500, max: x[x.length - 1] + step * 500,
+           grid: { color: T.grid, drawTicks: false }, border: { display: false },
+           ticks: { color: T.dim, maxTicksLimit: 8, maxRotation: 0, callback: function(v) { return timeFmt.format(new Date(v)); } } },
+      y: { stacked: true, beginAtZero: true, grid: { color: T.grid }, border: { display: false },
+           title: { display: true, text: 'tokens / s', color: T.dim, font: { size: 11 } },
+           ticks: { color: T.dim, maxTicksLimit: 5, callback: function(v) { return fmtCompact(v); } } },
+      y1: { position: 'right', beginAtZero: true, grid: { display: false }, border: { display: false },
+            title: { display: true, text: 'requests / min', color: T.dim, font: { size: 11 } },
+            ticks: { color: T.dim, maxTicksLimit: 5, callback: function(v) { return fmtCompact(v); } } },
+    },
+    plugins: Object.assign({}, T.defaults.plugins, {
+      legend: { position: 'bottom', labels: { color: T.dim, font: { size: 11 }, boxWidth: 10, boxHeight: 10 } },
+      tooltip: { callbacks: {
+        title: function(items) { return items.length ? new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(items[0].parsed.x)) : ''; },
+        label: function(ctx) { return ctx.dataset.label + ': ' + fmtNum(Math.round(ctx.parsed.y * 10) / 10); },
+      } },
+    }),
+  });
+  var sig = datasets.map(function(d) { return d.label; }).join('|') + '|' + _ts.window_s;
+  // Same series as last time: update in place without animating, so the
+  // line slides rather than redraws.  New series or window: rebuild.
+  if (_activityChart && _activityChart._herdSig === sig) {
+    _activityChart.data.datasets.forEach(function(d, i) { d.data = datasets[i].data; });
+    _activityChart.options.scales.x.min = opts.scales.x.min;
+    _activityChart.options.scales.x.max = opts.scales.x.max;
+    _activityChart.update('none');
+    return;
+  }
+  if (_activityChart) _activityChart.destroy();
+  _activityChart = new Chart(document.getElementById('activity-chart'), { data: { datasets: datasets }, options: opts });
+  _activityChart._herdSig = sig;
+}
+
+var _seriesTimer = null, _loadingSeries = false;
+async function loadSeries() {
+  if (_loadingSeries) return;
+  _loadingSeries = true;
+  try {
+    var w = windowSeconds();
+    var res = await Promise.all([fetch('/dashboard/api/timeseries?window=' + w), fetch('/dashboard/api/node-history?window=' + w)]);
+    _ts = await res[0].json();
+    _nh = await res[1].json();
+    renderFigureSeries();
+    renderQueueSparks();
+    renderActivity();
+    renderNodeSparks();
+    if (_sse) renderQueues(_sse.queues);
+    // Node history is in memory and starts when the router does; say so rather
+    // than leave a half-empty sparkline looking broken.
+    var since = _nh.t.length ? _nh.t[0] : Date.now() / 1000;
+    var label = 'last ' + windowLabel(_ts.window_s);
+    if (since > Date.now() / 1000 - w + 120) label += ' \\u00b7 CPU and memory since ' + new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(since * 1000));
+    document.getElementById('nodes-window').textContent = label;
+  } catch (e) { console.warn('series load failed', e); }
+  finally { _loadingSeries = false; }
+  clearTimeout(_seriesTimer);
+  // Short windows move visibly, so refresh often; a 24 h window changes per
+  // 10-minute bucket.  Background tabs skip a beat and catch up on return.
+  _seriesTimer = setTimeout(function tick() { if (document.hidden) { _seriesTimer = setTimeout(tick, 15000); return; } loadSeries(); }, windowSeconds() <= 10800 ? 15000 : 60000);
+}
+document.addEventListener('visibilitychange', function() { if (!document.hidden) loadSeries(); });
+
+// Between fetches, the live stream extends the node history so CPU, memory
+// and queue sparklines move every 2 s.
+function appendLiveSample(data) {
+  if (!_nh || !data) return;
+  var t = data.timestamp || Date.now() / 1000, queued = 0, running = 0, per = {};
+  Object.values(data.queues || {}).forEach(function(q) {
+    queued += q.pending || 0; running += q.in_flight || 0;
+    var p = per[q.node_id] = per[q.node_id] || { queued: 0, running: 0 };
+    p.queued += q.pending || 0; p.running += q.in_flight || 0;
+  });
+  _nh.t.push(t); _nh.queued.push(queued); _nh.running.push(running);
+  (data.nodes || []).forEach(function(n) {
+    if (!_nh.nodes[n.node_id]) {
+      _nh.nodes[n.node_id] = { cpu: _nh.t.slice(0, -1).map(function() { return null; }), mem: [], queued: [], running: [] };
+      ['mem', 'queued', 'running'].forEach(function(k) { _nh.nodes[n.node_id][k] = _nh.nodes[n.node_id].cpu.slice(); });
+    }
+  });
+  Object.keys(_nh.nodes).forEach(function(id) {
+    var node = (data.nodes || []).filter(function(n) { return n.node_id === id && n.status === 'online'; })[0];
+    var h = _nh.nodes[id], m = node && node.memory;
+    h.cpu.push(node && node.cpu ? node.cpu.utilization_pct : null);
+    h.mem.push(m && m.total_gb ? 100 * m.used_gb / m.total_gb : null);
+    h.queued.push(node ? (per[id] || {}).queued || 0 : null);
+    h.running.push(node ? (per[id] || {}).running || 0 : null);
+  });
+  // Trim to the window so a page left open for days stays the same size.
+  var cut = t - windowSeconds(), drop = 0;
+  while (drop < _nh.t.length && _nh.t[drop] < cut) drop++;
+  if (drop) {
+    ['t', 'queued', 'running'].forEach(function(k) { _nh[k].splice(0, drop); });
+    Object.values(_nh.nodes).forEach(function(h) { ['cpu', 'mem', 'queued', 'running'].forEach(function(k) { h[k].splice(0, drop); }); });
+  }
+}
+
+function initWindowControl() {
+  var c = document.getElementById('window-control');
+  function mark() { c.querySelectorAll('button').forEach(function(b) { var on = b.dataset.window === _winChoice; b.classList.toggle('active', on); b.setAttribute('aria-checked', on); }); }
+  c.addEventListener('click', function(e) {
+    var b = e.target.closest('button'); if (!b) return;
+    _winChoice = b.dataset.window;
+    try { HerdPrefs.set('overviewWindow', _winChoice); } catch (err) {}
+    mark(); loadSeries();
+  });
+  mark();
+  var lastW = windowSeconds();
+  window.addEventListener('resize', function() { if (_winChoice === 'auto' && windowSeconds() !== lastW) { lastW = windowSeconds(); loadSeries(); } });
+}
+onThemeChange(function() { if (_activityChart) { _activityChart.destroy(); _activityChart = null; } renderActivity(); });
 
 async function loadHealth() {
   try {
     var r = await fetch('/dashboard/api/health');
     _health = await r.json();
-    renderFigures(_health.vitals);
     renderStatus();
   } catch (e) { console.warn('health load failed', e); }
 }
@@ -2689,10 +2994,11 @@ function nodeDetails(node) {
   return blocks.join('');
 }
 
+function nodeDomId(id) { return 'node-' + id.replace(/[^a-zA-Z0-9]/g, '-'); }
 function renderNodes(nodes) {
   var container = document.getElementById('nodes-container');
   if (!nodes.length) {
-    container.innerHTML = '<div class="empty-state">No nodes connected. Start <code>herd-node</code> on a machine with Ollama.</div>';
+    container.innerHTML = '<div class="card empty-state">No nodes connected. Start <code>herd-node</code> on a machine with Ollama.</div>';
     _lastNodeKey = '';
     return;
   }
@@ -2705,19 +3011,21 @@ function renderNodes(nodes) {
   if (key !== _lastNodeKey) {
     _lastNodeKey = key;
     container.innerHTML = nodes.map(function(node) {
-      var id = 'node-' + node.node_id.replace(/[^a-zA-Z0-9]/g, '-');
       var hw = node.hardware || {};
       var chip = [hw.chip, hw.memory_total_gb ? Math.round(hw.memory_total_gb) + ' GB' : '', hw.cores_physical ? hw.cores_physical + ' cores' : ''].filter(Boolean).join(' \\u00b7 ');
       var loaded = (node.ollama ? node.ollama.models_loaded.length + (node.ollama.mlx_models || []).length : 0);
       var onDisk = node.ollama ? node.ollama.models_available_count : 0;
       var details = nodeDetails(node);
-      return '<div class="node-group" id="' + id + '">' +
-        '<div class="node-row">' +
+      function metric(cls, label) {
+        return '<div><div class="metric-head"><span class="' + cls + '-label">' + label + '</span><b class="' + cls + '-val">\\u2014</b></div><div class="metric-spark ' + cls + '-spark"></div></div>';
+      }
+      return '<div class="card node-card" id="' + nodeDomId(node.node_id) + '">' +
+        '<div class="node-head">' +
           '<div><div class="node-name">' + dot(node.status) + escapeHtml(node.node_id) + ' <span class="faint small">' + node.status + '</span></div><div class="node-chip">' + escapeHtml(chip) + '</div></div>' +
-          '<div><div class="meter-label"><span>CPU</span><b class="cpu-val"></b></div><div class="bar-container cpu-outer"><div class="bar-fill cpu-bar"></div></div></div>' +
-          '<div><div class="meter-label"><span class="mem-label">Memory</span><b class="mem-val"></b></div><div class="bar-container mem-outer"><div class="bar-fill mem-bar"></div></div><div class="meter-extra mem-extra"></div></div>' +
           '<div class="node-models-count"><b>' + loaded + '</b>loaded \\u00b7 ' + onDisk + ' on disk</div>' +
         '</div>' +
+        '<div class="node-metrics">' + metric('cpu', 'CPU') + metric('mem', 'Memory') + metric('tps', 'Tokens / s') + '</div>' +
+        '<div class="meter-extra mem-extra"></div>' +
         (details ? '<div class="node-detail-wrap"><details class="disclosure" data-node="' + escapeHtml(node.node_id) + '"' + (_openNodes[node.node_id] ? ' open' : '') + '><summary>Details</summary><div class="detail-grid">' + details + '</div></details></div>' : '') +
       '</div>';
     }).join('');
@@ -2726,23 +3034,47 @@ function renderNodes(nodes) {
     });
   }
   nodes.forEach(function(node) {
-    var card = document.getElementById('node-' + node.node_id.replace(/[^a-zA-Z0-9]/g, '-'));
+    var card = document.getElementById(nodeDomId(node.node_id));
     if (!card) return;
     var cpu = node.cpu ? node.cpu.utilization_pct : 0;
     var memUsed = node.memory ? node.memory.used_gb : 0;
     var memTotal = node.memory ? node.memory.total_gb : (node.hardware || {}).memory_total_gb || 0;
-    var memPct = memTotal > 0 ? (memUsed / memTotal) * 100 : 0;
     var pressure = node.memory ? node.memory.pressure : 'normal';
-    card.querySelector('.cpu-val').textContent = cpu.toFixed(0) + '%';
-    var cb = card.querySelector('.cpu-bar'); cb.style.width = cpu + '%'; cb.style.background = utilizationColor(cpu, 'cpu');
-    card.querySelector('.mem-val').textContent = formatGB(memUsed) + ' of ' + formatGB(memTotal);
-    var mb = card.querySelector('.mem-bar'); mb.style.width = memPct + '%'; mb.style.background = utilizationColor(memPct, 'mem');
-    card.querySelector('.mem-extra').textContent = memExtras(node.memory);
-    card.querySelector('.mem-label').textContent = pressure === 'normal' ? 'Memory' : 'Memory \\u00b7 pressure ' + pressure;
-    var mo = card.querySelector('.mem-outer');
-    mo.classList.toggle('bar-warning', pressure === 'warn');
-    mo.classList.toggle('bar-critical', pressure === 'critical');
-    card.querySelector('.cpu-outer').classList.toggle('bar-thermal', thermalHot(node, cpu));
+    card.querySelector('.cpu-val').textContent = node.cpu ? cpu.toFixed(0) + '%' : '\\u2014';
+    card.querySelector('.cpu-label').textContent = thermalHot(node, cpu) ? 'CPU \\u00b7 hot' : 'CPU';
+    card.querySelector('.mem-val').textContent = memTotal ? Math.round(100 * memUsed / memTotal) + '%' : '\\u2014';
+    card.querySelector('.mem-label').textContent = pressure === 'normal' ? 'Memory' : 'Memory \\u00b7 ' + pressure;
+    var extras = memExtras(node.memory);
+    card.querySelector('.mem-extra').textContent = memTotal ? 'Memory ' + formatGB(memUsed) + ' of ' + formatGB(memTotal) + (extras ? ' \\u00b7 ' + extras : '') : '';
+    card.dataset.pressure = pressure;
+    card.dataset.hot = thermalHot(node, cpu) ? '1' : '';
+  });
+  renderNodeSparks();
+}
+
+// Small multiples: every node card draws CPU and memory on 0-100 and tokens/s
+// on one fleet-wide maximum, so the odd node out is visible at a glance.
+function renderNodeSparks() {
+  var w = nhWindow();
+  var tpsMax = 1;
+  if (_ts && _ts.by_node) Object.values(_ts.by_node).forEach(function(a) { a.forEach(function(k) { tpsMax = Math.max(tpsMax, k / _ts.step_s); }); });
+  document.querySelectorAll('.node-card').forEach(function(card) {
+    var nodeId = null;
+    (_sse ? _sse.nodes : []).forEach(function(n) { if (nodeDomId(n.node_id) === card.id) nodeId = n.node_id; });
+    if (!nodeId) return;
+    var h = _nh && _nh.nodes[nodeId];
+    var pressure = card.dataset.pressure;
+    if (h) {
+      card.querySelector('.cpu-spark').innerHTML = sparkline(_nh.t, h.cpu, Object.assign({ min: 0, max: 100, state: card.dataset.hot ? 'warn' : '' }, w));
+      card.querySelector('.mem-spark').innerHTML = sparkline(_nh.t, h.mem, Object.assign({ min: 0, max: 100, state: pressure === 'critical' ? 'fail' : pressure === 'warn' ? 'warn' : '' }, w));
+    }
+    if (_ts && _ts.buckets.length) {
+      var step = _ts.step_s, row = (_ts.by_node || {})[nodeId] || _ts.buckets.map(function() { return 0; });
+      var tc = _ts.buckets.map(function(b) { return b + step / 2; });
+      card.querySelector('.tps-spark').innerHTML = sparkline(tc, row.map(function(k) { return k / step; }), { min: 0, max: tpsMax, t0: _ts.buckets[0], t1: _ts.buckets[_ts.buckets.length - 1] + step });
+      var r = recent(row, _ts);
+      card.querySelector('.tps-val').textContent = fmtNum(Math.round(sum(r) / r.length / step));
+    }
   });
 }
 
@@ -2778,9 +3110,23 @@ function modelRow(key, q) {
   else if (q.cache_hit_rate != null) extras.push('<span class="tag" title="Rolling prompt-cache hit rate">cache ' + Math.round(q.cache_hit_rate * 100) + '%</span>');
   if (q.cached === false) extras.push('<span class="tag" title="Weights download on the first request">downloads on first use</span>');
   if (!q.instant && q.stats_samples) extras.push('<span class="load">avg ' + fmtNum(Math.round(q.avg_prompt_tokens || 0)) + ' in \\u00b7 ' + fmtNum(Math.round(q.avg_completion_tokens || 0)) + ' out</span>');
-  return '<div class="list-row model-row">' +
+  return '<div class="model-card model-row">' +
     '<div><div class="row">' + dot(st) + '<span class="name">' + escapeHtml(name) + '</span>' + extras.join('') + '</div><div class="where">' + escapeHtml(node) + '</div></div>' +
+    modelSpark(key, q) +
     '<div class="stats">' + stats + '</div></div>';
+}
+// Text models plot tokens/s, embedding models requests/min; each kind shares
+// one maximum across its rows, set in renderQueues.
+var _sparkMax = { tok: 1, req: 1 };
+function modelSpark(key, q) {
+  if (!_ts || !_ts.buckets || !_ts.buckets.length) return '';
+  var step = _ts.step_s, tc = _ts.buckets.map(function(b) { return b + step / 2; });
+  var w = { t0: _ts.buckets[0], t1: _ts.buckets[_ts.buckets.length - 1] + step, min: 0 };
+  var row, title;
+  if (q.instant) { row = (_ts.requests_by_node_model[key] || []).map(function(r) { return r * 60 / step; }); w.max = _sparkMax.req; title = 'Requests per minute, last ' + windowLabel(_ts.window_s); }
+  else { row = (_ts.by_node_model[key] || []).map(function(k) { return k / step; }); w.max = _sparkMax.tok; title = 'Tokens per second, last ' + windowLabel(_ts.window_s); }
+  if (!row.length) row = _ts.buckets.map(function() { return 0; });
+  return '<div class="row-spark" title="' + title + '">' + sparkline(tc, row, w) + '</div>';
 }
 function isActive(q) { return (q.in_flight || 0) + (q.pending || 0) + (q.completed || 0) + (q.failed || 0) > 0; }
 function renderQueues(queues) {
@@ -2793,12 +3139,17 @@ function renderQueues(queues) {
     var qa = a[1], qb = b[1];
     return ((qb.in_flight || 0) + (qb.pending || 0)) - ((qa.in_flight || 0) + (qa.pending || 0)) || (qb.completed || 0) - (qa.completed || 0);
   }
+  if (_ts && _ts.by_node_model) {
+    _sparkMax.tok = 1; _sparkMax.req = 1;
+    Object.values(_ts.by_node_model).forEach(function(a) { a.forEach(function(k) { _sparkMax.tok = Math.max(_sparkMax.tok, k / _ts.step_s); }); });
+    Object.values(_ts.requests_by_node_model).forEach(function(a) { a.forEach(function(r) { _sparkMax.req = Math.max(_sparkMax.req, r * 60 / _ts.step_s); }); });
+  }
   var active = text.filter(function(e) { return isActive(e[1]); }).sort(byLoad);
   var activeEmbed = embed.filter(function(e) { return isActive(e[1]); }).sort(byLoad);
   var idle = text.filter(function(e) { return !isActive(e[1]); }).concat(embed.filter(function(e) { return !isActive(e[1]); }));
   var html = '';
-  if (active.length) html += '<div class="list">' + active.map(function(e) { return modelRow(e[0], e[1]); }).join('') + '</div>';
-  if (activeEmbed.length) html += '<div class="section-title subhead">Embeddings and rerank</div><div class="list">' + activeEmbed.map(function(e) { return modelRow(e[0], e[1]); }).join('') + '</div>';
+  if (active.length) html += '<div class="model-grid">' + active.map(function(e) { return modelRow(e[0], e[1]); }).join('') + '</div>';
+  if (activeEmbed.length) html += '<div class="section-title subhead">Embeddings and rerank</div><div class="model-grid">' + activeEmbed.map(function(e) { return modelRow(e[0], e[1]); }).join('') + '</div>';
   if (!active.length && !activeEmbed.length) html += '<div class="card empty-state">No requests since the router started.</div>';
   if (idle.length) {
     html += '<details class="disclosure" id="idle-models"' + (_idleOpen ? ' open' : '') + '><summary>' + idle.length + (idle.length === 1 ? ' idle model' : ' idle models') + '</summary>' +
@@ -2886,6 +3237,8 @@ function connect() {
     resetWatchdog();
     try {
       _sse = JSON.parse(e.data);
+      appendLiveSample(_sse);
+      renderQueueSparks();
       notifyOnOffline(_sse.nodes);
       renderNodes(_sse.nodes);
       renderQueues(_sse.queues);
@@ -2921,7 +3274,9 @@ async function fetchBriefing(force) {
 }
 
 renderNotifyButton();
+initWindowControl();
 connect();
+loadSeries();
 loadHealth();
 setInterval(loadHealth, 15000);
 fetchBriefing();

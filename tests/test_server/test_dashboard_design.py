@@ -151,6 +151,7 @@ HELPERS = [
     "setTabAlert",
     "renderBriefing",
     "initTimeRange",
+    "sparkline",
 ]
 
 
