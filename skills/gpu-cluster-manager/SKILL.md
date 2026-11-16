@@ -140,7 +140,7 @@ curl -s http://localhost:11435/v1/chat/completions \
 
 ## GPU Cluster Dashboard
 
-Open `http://localhost:11435/dashboard` for a visual GPU cluster overview. Eight tabs: Fleet Overview (live GPU cluster node cards), Trends (charts), Model Insights (performance comparison), Apps (per-app usage), Benchmarks, Health (automated GPU cluster checks), Recommendations (what models to run), Settings.
+Open `http://localhost:11435/dashboard` for a visual GPU cluster overview. Five tabs: Overview (live GPU cluster node cards with CPU, memory and tokens/s sparklines, plus an activity chart), Models (trends and performance comparison), Usage (per-app), Health (automated GPU cluster checks and what models to run), Settings; plus a Benchmarks page.
 
 ## Try the GPU cluster
 

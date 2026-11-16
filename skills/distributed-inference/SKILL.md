@@ -167,7 +167,7 @@ Structured distributed inference logs at `~/.fleet-manager/logs/herd.jsonl` — 
 
 ## Distributed Inference Dashboard
 
-`http://localhost:11435/dashboard` — eight tabs covering distributed inference fleet overview, trends, model insights, per-app analytics, benchmarks, health checks, model recommendations, and settings.
+`http://localhost:11435/dashboard` — five tabs covering a live distributed inference overview (sparklines, activity chart, per-node CPU/memory/tokens), models over time, per-app usage, health checks with model recommendations, and settings; plus a Benchmarks page.
 
 ## Distributed Inference Constraints
 

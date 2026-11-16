@@ -492,7 +492,7 @@ response = client.chat.completions.create(
 
 ### View your agent's stats
 
-Open `http://localhost:11435/dashboard` → **Apps** tab to see per-tag analytics: request count, latency, tokens, error rate.
+Open `http://localhost:11435/dashboard` → **Usage** tab to see per-tag analytics: request count, latency, tokens, error rate.
 
 Or query via API:
 

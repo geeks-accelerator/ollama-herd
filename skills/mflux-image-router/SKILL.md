@@ -177,7 +177,7 @@ curl -s http://localhost:11435/dashboard/api/image-stats | python3 -m json.tool
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 ```
 
-Dashboard at `http://localhost:11435/dashboard` — mflux image generation queues show with [IMAGE] badge.
+Dashboard at `http://localhost:11435/dashboard` — mflux image generation queues show under Models at work.
 
 ## Full documentation
 

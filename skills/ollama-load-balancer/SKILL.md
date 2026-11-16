@@ -139,7 +139,7 @@ curl -s http://localhost:11435/dashboard/api/apps | python3 -m json.tool
 
 ## Load Balancer Dashboard
 
-Web dashboard at `http://localhost:11435/dashboard` with eight tabs: Fleet Overview, Trends, Model Insights, Apps, Benchmarks, Health, Recommendations, Settings. All load balancer data updates in real-time via Server-Sent Events.
+Web dashboard at `http://localhost:11435/dashboard` with five tabs: Overview (live sparklines, activity chart, per-node CPU/memory/tokens), Models, Usage (per-app analytics), Health (50 checks plus model recommendations), Settings; plus a Benchmarks page. All load balancer data updates in real-time via Server-Sent Events.
 
 ## Load Balancer Operational Queries
 

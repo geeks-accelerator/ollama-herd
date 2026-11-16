@@ -156,7 +156,7 @@ curl -s http://localhost:11435/dashboard/api/transcription-stats | python3 -m js
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 ```
 
-Dashboard at `http://localhost:11435/dashboard` — speech-to-text transcription queues show with [STT] badge alongside LLM and image queues.
+Dashboard at `http://localhost:11435/dashboard` — speech-to-text transcription queues show alongside LLM and image queues under Models at work.
 
 ## Full documentation
 

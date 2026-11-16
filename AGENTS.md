@@ -109,8 +109,9 @@ src/fleet_manager/
     scorer.py              7-signal routing scorer (thermal, memory, queue, wait, affinity, availability, context fit)
     queue_manager.py       per-node:model queues, dynamic concurrency, zombie reaper
     streaming.py           httpx proxy → Ollama, NDJSON↔SSE, auto-retry, context protection
-    health_engine.py       41 automated health checks — all wired to /dashboard/api/health
+    health_engine.py       50 automated health checks — all wired to /dashboard/api/health
     registry.py            in-memory node registry, heartbeat ingestion, node state
+    fleet_history.py       3 h in-memory history of node CPU/memory/queue for the Overview sparklines
     context_optimizer.py   dynamic num_ctx: analyzes token usage, queues Ollama restarts
     trace_store.py         SQLite WAL trace storage, dual-connection (read/write separation)
     mlx_proxy.py           server-side proxy for mlx: prefixed models → mlx_lm.server
@@ -120,7 +121,7 @@ src/fleet_manager/
       openai_compat.py     /v1/* (OpenAI format)
       ollama_compat.py     /api/* (Ollama format) — embed dispatch lives here
       fleet.py             /fleet/status, /fleet/queue
-      dashboard.py         /dashboard/* + SSE stream for live Node Models cards
+      dashboard.py         /dashboard/* pages, SSE stream, live-chart APIs (timeseries, node-history)
       embedding_compat.py  vision embedding proxy → :11438
       text_embedding_compat.py  text embedding proxy → :11439
       image_compat.py      /api/generate-image routing

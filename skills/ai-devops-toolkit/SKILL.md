@@ -202,10 +202,10 @@ grep "Stream error" ~/.fleet-manager/logs/herd.jsonl | tail -10
 ## DevOps Dashboard
 
 Web dashboard at `http://localhost:11435/dashboard`. Key DevOps tabs:
-- **Trends** — DevOps requests/hour, latency, token throughput over 24h–7d
-- **Apps** — DevOps per-tag analytics with daily breakdowns
-- **Health** — automated DevOps health checks with severity and recommendations
-- **Model Insights** — per-model DevOps latency and throughput comparison
+- **Overview** — live DevOps view: sparklines for requests, tokens/s, latency and errors, an activity chart with failures marked, per-node CPU and memory
+- **Models** — DevOps requests, latency and token throughput over time, per-model comparison
+- **Usage** — DevOps per-tag analytics with daily breakdowns
+- **Health** — 50 automated DevOps health checks with severity and recommendations
 
 ## Guardrails
 

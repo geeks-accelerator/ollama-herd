@@ -54,10 +54,11 @@ Used where items differ by *kind*, not by *amount*.
 | Palette | What it codes |
 |---|---|
 | Status dots: green / amber / red, always with a word | Node liveness (`online` / `degraded` / `offline`) — NOT utilization |
-| Health badges: info / warning / critical | Severity from the 18-check engine |
+| Health badges: info / warning / critical | Severity from the 50-check health engine |
 | Model labels | Neutral grey since the dashboard redesign (`.tag`) — type is a word, not a colour |
 | MLX server rows: green / amber / red / grey | `healthy` / `starting|memory_blocked` / `unhealthy` / `stopped` |
-| Chart series (`--series-1` to `--series-6`) on `/dashboard/models`, `/dashboard/tags`, benchmarks | Line and bar differentiation — categorical, no scale |
+| Chart series (`--series-1` to `--series-6`) on the Overview activity chart, `/dashboard/models`, `/dashboard/tags`, benchmarks | Line and bar differentiation — categorical, no scale |
+| Sparklines (figures, node cards, model cards) | Neutral grey by default; amber or red only when the value is in a warning state (memory pressure, a hot CPU, an error rate over 1% / 5%). Failures on the activity chart are red marks |
 
 Rule: if the color has a meaning, it's nominal (this-vs-that) not ordinal (this-is-more-than-that).
 
@@ -66,7 +67,7 @@ Rule: if the color has a meaning, it's nominal (this-vs-that) not ordinal (this-
 Before picking a color, decide which category the new element falls into:
 
 1. **Is it a utilization metric?** (CPU, memory, model cache, GPU usage, etc.) → use `utilizationColor(pct, 'cpu'|'mem')`. Default `'mem'` for anything that isn't compute-time-like.
-2. **Is it a warning state?** (OS pressure, thermal, health alert) → overlay it as an outline/badge via `.bar-warning`/`.bar-critical`/`.bar-thermal` or a severity badge. Don't encode it in the fill.
+2. **Is it a warning state?** (OS pressure, thermal, health alert) → overlay it as an outline/badge via `.bar-warning`/`.bar-critical`/`.bar-thermal` or a severity badge. Don't encode it in the fill. On a sparkline, pass `state: 'warn'|'fail'` to `sparkline()`; never colour a trend line by its value.
 3. **Is it a hard-ceiling capacity?** (disk, quota, rate limit where running out actually breaks things) → use `barColor(pct)`. High genuinely is bad.
 4. **Is it categorical?** (status, type, kind) → pick a color from the palette, not from a scale.
 

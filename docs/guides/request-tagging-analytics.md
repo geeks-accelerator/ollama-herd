@@ -136,9 +136,9 @@ Image, embedding, and STT tags appear in the same Apps dashboard alongside LLM t
 
 ## Seeing the results
 
-### Dashboard: Apps tab
+### Dashboard: Usage tab
 
-Open `http://localhost:11435/dashboard` and click **Apps**. You'll see:
+Open `http://localhost:11435/dashboard` and click **Usage**. You'll see:
 
 - **Request volume per tag** — which projects are making the most calls
 - **Average latency per tag** — is one project's workload slower than others?
@@ -273,7 +273,7 @@ headers = {
 
 3. **Trace storage** — Tags are stored as a JSON array in the `tags` column of the `request_traces` table in SQLite (`~/.fleet-manager/latency.db`). An index on the column enables efficient queries.
 
-4. **Dashboard** — The Apps tab queries the trace store, aggregates by tag, and renders charts and tables. Auto-refreshes.
+4. **Dashboard** — The Usage tab queries the trace store, aggregates by tag, and renders charts and tables. Auto-refreshes.
 
 ## Tips
 

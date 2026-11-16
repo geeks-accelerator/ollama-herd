@@ -165,7 +165,7 @@ curl -s http://localhost:11435/dashboard/api/apps?days=7
 curl -s http://localhost:11435/dashboard/api/apps/daily?days=7
 ```
 
-Via the dashboard UI: open `http://localhost:11435` and navigate to the **Apps** tab.
+Via the dashboard UI: open `http://localhost:11435` and navigate to the **Usage** tab (`/dashboard/tags`; the old `/dashboard/apps` URL still works).
 
 ### Querying tags in SQLite
 

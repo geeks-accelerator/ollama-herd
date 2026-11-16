@@ -199,7 +199,7 @@ Per-team usage tracking:
 
 ## Analytics Dashboard
 
-The **Apps** tab on the dashboard (`/dashboard/apps`) provides per-tag analytics:
+The **Usage** tab on the dashboard (`/dashboard/tags`; `/dashboard/apps` still works) provides per-tag analytics:
 
 ### Summary Cards
 

@@ -119,7 +119,7 @@ for n in json.load(sys.stdin).get('nodes', []):
 "
 ```
 
-Web dashboard at `http://localhost:11435/dashboard` — Stable Diffusion queues show with `[IMAGE]` badge alongside LLM queues.
+Web dashboard at `http://localhost:11435/dashboard` — Stable Diffusion queues show alongside LLM queues under Models at work.
 
 ## Also Available on This Fleet
 

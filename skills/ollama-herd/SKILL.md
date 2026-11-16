@@ -136,15 +136,13 @@ curl -s http://localhost:11435/dashboard/api/apps | python3 -m json.tool
 
 ## Ollama Dashboard
 
-The Ollama web dashboard is at `http://localhost:11435/dashboard`. It has eight tabs:
-- **Fleet Overview** — live Ollama node cards, queue depths, and request counts via SSE
-- **Trends** — Ollama requests per hour, average latency, and token throughput charts (24h–7d)
-- **Model Insights** — per-Ollama-model latency, tokens/sec, usage comparison
-- **Apps** — per-tag Ollama analytics with request volume, latency, tokens, error rates
-- **Benchmarks** — Ollama capacity growth over time with per-run throughput and latency percentiles
-- **Health** — 16 automated Ollama fleet health checks with severity levels
-- **Recommendations** — Ollama model mix recommendations per node with one-click pull
-- **Settings** — Ollama runtime toggle switches, read-only config tables, and node version tracking
+The Ollama web dashboard is at `http://localhost:11435/dashboard`. It has five tabs plus a Benchmarks page:
+- **Overview** — Ollama live status line and health score, figures with sparklines (requests/min, tokens/s, time to first token, error rate, queue), an activity chart (tokens/s by model, requests/min, failures), node cards with CPU, memory and tokens/s sparklines, and models at work. Fills the browser width; updates live
+- **Models** — Ollama requests, latency and tokens over time, and per-model performance
+- **Usage** — per-tag analytics with request volume, latency, tokens, error rates
+- **Health** — 50 automated Ollama health checks, model recommendations with one-click pull, briefing history
+- **Settings** — appearance (light/dark), runtime toggles, context windows, nodes, configuration
+- **Benchmarks** (linked from Models and Settings) — capacity growth over time with per-run throughput and latency
 
 Direct the user to open this URL in their browser for visual Ollama monitoring.
 

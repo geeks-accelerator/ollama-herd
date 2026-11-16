@@ -129,7 +129,7 @@ curl http://localhost:11435/api/embeddings -d '{"model":"nomic-embed-text","prom
 
 ## Ollama Dashboard
 
-`http://localhost:11435/dashboard` — 8 tabs: Ollama Fleet Overview, Trends, Ollama Model Insights, Apps, Benchmarks, Ollama Health, Recommendations, Settings. Real-time Ollama queue visibility with [TEXT], [IMAGE], [STT], [EMBED] badges.
+`http://localhost:11435/dashboard` — five tabs: Ollama Overview (live sparklines, activity chart, per-node CPU/memory/tokens), Models, Usage, Ollama Health (50 checks plus recommendations), Settings; plus a Benchmarks page. Real-time Ollama queue visibility for text, image, speech and embedding models.
 
 ## Ollama Request tagging
 
