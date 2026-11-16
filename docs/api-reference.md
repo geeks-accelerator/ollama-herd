@@ -1237,13 +1237,14 @@ Use `estimated_wait_ms` to decide whether to send a request now or back off. `qu
 | Endpoint | Description |
 |----------|-------------|
 | `GET /dashboard` | Overview — the fleet's status and health score, key figures, nodes, models at work, Fleet Intelligence briefing |
-| `GET /dashboard/health` | Health — findings by severity (suggestions folded), fleet vitals, model recommendations with one-click pull, briefing history |
 | `GET /dashboard/models` | Models — traffic trends (requests, latency, tokens per hour) and per-model performance, one time range for both |
+| `GET /dashboard/benchmarks` | Benchmarks — fleet throughput under controlled load, run history and charts; linked from Models and Settings (not a nav tab) |
 | `GET /dashboard/tags` | Usage — per-tag analytics with latency, tokens, errors, daily trends |
-| `GET /dashboard/settings` | Settings — appearance (per browser), runtime toggles, context windows, nodes, configuration, benchmarks |
+| `GET /dashboard/health` | Health — findings by severity (suggestions folded), fleet vitals, model recommendations with one-click pull, briefing history |
+| `GET /dashboard/settings` | Settings — appearance (per browser), runtime toggles, context windows, nodes, configuration |
 | `GET /dashboard/color-states` | Colour reference — every colour token in both appearances, and the utilization bars in each warning state |
 
-Pages merged by the dashboard redesign keep their URLs: `/dashboard/trends` renders Models, `/dashboard/recommendations` renders Health, `/dashboard/benchmarks` renders Settings, and `/dashboard/apps` renders Usage. Each scrolls to the section it used to be.
+Pages merged by the dashboard redesign keep their URLs: `/dashboard/trends` renders Models, `/dashboard/recommendations` renders Health, and `/dashboard/apps` renders Usage. Each scrolls to the section it used to be.
 
 ### SSE Stream
 

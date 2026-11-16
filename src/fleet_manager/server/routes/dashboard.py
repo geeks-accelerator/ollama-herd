@@ -1736,15 +1736,19 @@ async def dashboard_tags_page():
 
 
 @router.get("/dashboard/settings", response_class=HTMLResponse)
-@router.get("/dashboard/benchmarks", response_class=HTMLResponse)
 async def dashboard_settings_page():
-    """Settings: appearance, toggles, nodes, configuration, benchmarks."""
-    return _dashboard_page(
-        "Settings",
-        "settings",
-        _SETTINGS_BODY + _BENCHMARKS_BODY,
-        extra_head=_CHART_JS_HEAD,
-    )
+    """Settings: appearance, toggles, nodes, configuration."""
+    return _dashboard_page("Settings", "settings", _SETTINGS_BODY)
+
+
+@router.get("/dashboard/benchmarks", response_class=HTMLResponse)
+async def dashboard_benchmarks_page():
+    """Benchmarks: measured fleet throughput under load, and its history.
+
+    Not a nav tab -- a tool run occasionally -- so it is reached from Models
+    (whose numbers it measures under controlled load) and Settings.  The nav
+    marks Models, the tab it belongs under."""
+    return _dashboard_page("Benchmarks", "models", _BENCHMARKS_BODY, extra_head=_CHART_JS_HEAD)
 
 
 @router.get("/dashboard/color-states", response_class=HTMLResponse)
@@ -1917,6 +1921,7 @@ code, .mono { font-family: 'SF Mono', ui-monospace, Menlo, monospace; font-size:
   display: flex; flex-direction: column; gap: 28px; flex: 1;
 }
 .section { display: flex; flex-direction: column; gap: 12px; scroll-margin-top: 72px; }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .section-title { font-size: var(--fs-small); font-weight: 600; color: var(--text-2); }
 .page-title { font-size: var(--fs-title); font-weight: 600; letter-spacing: -0.2px; }
@@ -2027,6 +2032,9 @@ details.disclosure > summary:hover { color: var(--text-1); }
 .list-row { display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-top: 1px solid var(--hairline); flex-wrap: wrap; }
 .list-row:first-child { border-top: none; }
 .list-row .name { font-weight: 500; }
+a.list-row { color: inherit; flex-wrap: nowrap; }
+a.list-row:hover { background: var(--surface-2); text-decoration: none; }
+a.list-row .chev { margin-left: auto; color: var(--text-3); font-size: 1.2em; line-height: 1; }
 .list-row .stats { display: flex; gap: 22px; margin-left: auto; flex-wrap: wrap; }
 .stat { display: flex; flex-direction: column; align-items: flex-end; min-width: 52px; }
 .stat .v { font-size: 15px; font-weight: 600; }
@@ -2327,12 +2335,12 @@ function showToast(msg) {
   t._h = setTimeout(function() { t.classList.remove('show'); }, 2500);
 }
 
-// Merged pages keep their old URLs (/dashboard/trends, /recommendations,
-// /benchmarks): land on the section that URL used to be.
+// Merged pages keep their old URLs (/dashboard/trends, /recommendations):
+// land on the section that URL used to be.
 // Sections above load asynchronously and push the target down, so re-align
 // while the page settles -- and stop the moment the viewer scrolls.
 window.addEventListener('load', function() {
-  var target = { '/dashboard/trends': 'trends', '/dashboard/recommendations': 'recommendations', '/dashboard/benchmarks': 'benchmarks' }[location.pathname];
+  var target = { '/dashboard/trends': 'trends', '/dashboard/recommendations': 'recommendations' }[location.pathname];
   var el = target && document.getElementById(target);
   if (!el) return;
   var userMoved = false;
@@ -2387,9 +2395,9 @@ function initTimeRange(containerId, callback, defaultRange) {
 # page that absorbed them (the pattern /dashboard/apps set for /dashboard/tags).
 _NAV_ITEMS = (
     ("overview", "Overview", "/dashboard"),
-    ("health", "Health", "/dashboard/health"),
     ("models", "Models", "/dashboard/models"),
     ("usage", "Usage", "/dashboard/tags"),
+    ("health", "Health", "/dashboard/health"),
     ("settings", "Settings", "/dashboard/settings"),
 )
 
@@ -2926,10 +2934,6 @@ setInterval(fetchBriefing, 30000);
 # ---------------------------------------------------------------------------
 
 _MODELS_BODY = """
-<style>
-.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-</style>
-
 <div class="page-head">
   <div><h1 class="page-title">Models</h1><p class="page-sub">Traffic across the fleet, and how each model performs</p></div>
   <div id="models-time-range"></div>
@@ -2964,6 +2968,13 @@ _MODELS_BODY = """
     <div class="chart-card"><h4 id="daily-title">Daily requests</h4><canvas id="daily-requests-chart"></canvas></div>
     <div class="chart-card"><h4>Daily average latency</h4><canvas id="daily-latency-chart"></canvas></div>
   </div>
+</section>
+
+<section class="section" id="benchmarks-link">
+  <a class="list list-row" href="/dashboard/benchmarks">
+    <span><span class="name">Benchmarks</span><br><span class="small muted">These figures come from real traffic. Benchmarks measure what the fleet can do under controlled load.</span></span>
+    <span class="chev" aria-hidden="true">›</span>
+  </a>
 </section>
 
 <script>
@@ -3098,7 +3109,6 @@ initTimeRange('models-time-range', loadAll, '72h');
 
 _TAGS_BODY = """
 <style>
-.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .howto { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; padding-bottom: 6px; }
 .howto pre { font-family: 'SF Mono', ui-monospace, Menlo, monospace; font-size: var(--fs-label); color: var(--text-2); overflow-x: auto; margin-top: 6px; }
 .howto h5 { font-size: var(--fs-small); font-weight: 600; }
@@ -3262,11 +3272,12 @@ details.bench-run > summary::before { display: none; }
 }
 </style>
 
-<section class="section" id="benchmarks">
-  <div class="section-head">
-    <h2 class="section-title">Benchmarks</h2>
-    <button class="btn primary" id="run-bench-btn" onclick="showBenchDialog()">Run benchmark</button>
-  </div>
+<div class="page-head">
+  <div><h1 class="page-title">Benchmarks</h1><p class="page-sub">Fleet throughput under controlled load, and how it has changed</p></div>
+  <button class="btn primary" id="run-bench-btn" onclick="showBenchDialog()">Run benchmark</button>
+</div>
+
+<section class="section" id="benchmarks" aria-label="Benchmark results">
   <div id="bench-progress" class="card" hidden></div>
   <div class="figures" id="bench-summary"></div>
   <div class="charts-row">
@@ -4579,6 +4590,13 @@ _SETTINGS_BODY = """
   <div class="section-head"><h2 class="section-title">Router configuration</h2></div>
   <div id="config-tables"></div>
   <p class="note">Set through environment variables with the FLEET_ prefix. Restart the router to apply changes.</p>
+</section>
+
+<section class="section" id="benchmarks-link">
+  <a class="list list-row" href="/dashboard/benchmarks">
+    <span><span class="name">Benchmarks</span><br><span class="small muted">Run a benchmark and see the fleet's throughput history.</span></span>
+    <span class="chev" aria-hidden="true">›</span>
+  </a>
 </section>
 
 <script>

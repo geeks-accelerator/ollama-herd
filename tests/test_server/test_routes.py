@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from contextlib import asynccontextmanager
@@ -391,7 +392,7 @@ class TestDashboard:
         assert 'id="briefings"' in resp.text
 
     def test_settings_page_html(self, client):
-        """Settings absorbed Benchmarks and gained Appearance."""
+        """Settings has Appearance, and links to Benchmarks rather than holding it."""
         resp = client.get("/dashboard/settings")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
@@ -399,15 +400,32 @@ class TestDashboard:
         assert 'id="appearance"' in resp.text
         assert "Features" in resp.text
         assert "Fleet nodes" in resp.text
-        assert 'id="benchmarks"' in resp.text and "Capacity growth" in resp.text
-        assert "chart.js" in resp.text
+        assert 'href="/dashboard/benchmarks"' in resp.text
+        assert "Capacity growth" not in resp.text and "chart.js" not in resp.text
+
+    def test_benchmarks_is_its_own_page(self, client):
+        """Benchmarks has a page of its own, linked from Models and Settings and
+        marked under Models in the nav (it is not a tab)."""
+        resp = client.get("/dashboard/benchmarks")
+        assert resp.status_code == 200
+        assert '<h1 class="page-title">Benchmarks</h1>' in resp.text
+        assert "Capacity growth" in resp.text and "chart.js" in resp.text
+        assert 'href="/dashboard/models" class="nav-tab active"' in resp.text
+        assert ">Benchmarks</a>" not in resp.text  # no nav tab
+        assert 'href="/dashboard/benchmarks"' in client.get("/dashboard/models").text
+
+    def test_nav_order(self, client):
+        """What the fleet is doing first; Health beside Settings."""
+        html = client.get("/dashboard").text
+        nav = html[html.index('<nav class="nav-tabs"') : html.index("</nav>")]
+        labels = re.findall(r">([A-Za-z]+)</a>", nav)
+        assert labels == ["Overview", "Models", "Usage", "Health", "Settings"]
 
     @pytest.mark.parametrize(
         ("old", "home", "section"),
         [
             ("/dashboard/trends", "/dashboard/models", 'id="trends"'),
             ("/dashboard/recommendations", "/dashboard/health", 'id="recommendations"'),
-            ("/dashboard/benchmarks", "/dashboard/settings", 'id="benchmarks"'),
             ("/dashboard/apps", "/dashboard/tags", "X-Herd-Tags"),
         ],
     )

@@ -436,3 +436,19 @@ Measure what the browser paints.** One more number worth knowing: light `--ok`
 on `--surface-2` is 4.47:1, so green text must not go on a button or other
 `--surface-2` background without darkening the token first; nothing does today.
 
+### Follow-up (2026-11-16): Benchmarks back on its own page, Health beside Settings
+
+Reviewed in use, two calls from the plan were reversed:
+
+- **Benchmarks is its own page again** (`/dashboard/benchmarks`), not a section
+  of Settings. As a section it put six charts and a run history under the
+  toggles, so Settings stopped being a settings page and loaded Chart.js for
+  it. It is still not a nav tab (a tool, run occasionally); it is reached from
+  a link row at the bottom of Models, whose traffic figures it complements
+  with measurements under controlled load, and from the bottom of Settings.
+  The nav marks Models while on it. `.page-head` moved into the shared CSS on
+  the way, since three pages now declared it.
+- **The nav reads Overview, Models, Usage, Health, Settings**: what the fleet is
+  doing first, then the operator's corner. Health still announces itself when
+  it matters, through the Overview's status line and the tab title.
+

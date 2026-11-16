@@ -135,6 +135,7 @@ PAGES = [
     "/dashboard/models",
     "/dashboard/tags",
     "/dashboard/settings",
+    "/dashboard/benchmarks",
     "/dashboard/color-states",
 ]
 HELPERS = [

@@ -36,6 +36,7 @@ PAGES = [
     "/dashboard/models",
     "/dashboard/tags",
     "/dashboard/settings",
+    "/dashboard/benchmarks",
 ]
 
 # Open every disclosure and the panels that start hidden, so folded rows are
