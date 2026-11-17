@@ -283,3 +283,90 @@ class TestNativeNonStreamingTruncation:
         assert resp.status_code == 200
         assert resp.json()["done"] is True
         assert resp.json()["message"]["content"] == "Served"
+
+
+# ---------------------------------------------------------------------------
+# Step 2: a loopback heartbeat is local only if the node's lan_ip is ours
+# ---------------------------------------------------------------------------
+
+ROUTER_IP = "10.0.0.92"
+REMOTE_IP = "10.0.0.50"
+
+
+def _url(monkeypatch, *, request_ip, lan_ip, ollama_host, router_ip=ROUTER_IP):
+    from fleet_manager.models.config import ServerSettings
+    from fleet_manager.server.registry import NodeRegistry
+
+    monkeypatch.setattr("fleet_manager.server.registry.get_local_ip", lambda **_: router_ip)
+    hb = make_heartbeat(node_id="n", lan_ip=lan_ip, ollama_host=ollama_host)
+    return NodeRegistry(ServerSettings())._build_ollama_url(hb, request_ip=request_ip)
+
+
+class TestLoopbackHeartbeats:
+    @pytest.mark.parametrize("loopback", ["127.0.0.1", "::1", ""])
+    def test_a_remote_node_forwarded_over_loopback_keeps_its_own_ollama(
+        self, monkeypatch, loopback
+    ):
+        """The bug: an SSH tunnel or nginx's default proxy_pass delivers a remote
+        node's heartbeat from loopback, and it was sent to *this* machine's
+        Ollama (reproduced: 3 of 3 requests 404'd).  The collector has already
+        rewritten its ollama_host to its LAN address, which is honoured."""
+        url = _url(
+            monkeypatch,
+            request_ip=loopback,
+            lan_ip=REMOTE_IP,
+            ollama_host=f"http://{REMOTE_IP}:11434",
+        )
+        assert url == f"http://{REMOTE_IP}:11434"
+
+    def test_a_remote_node_with_a_loopback_ollama_host_falls_back_to_its_lan_ip(self, monkeypatch):
+        url = _url(
+            monkeypatch,
+            request_ip="127.0.0.1",
+            lan_ip=REMOTE_IP,
+            ollama_host="http://localhost:11500",
+        )
+        assert url == f"http://{REMOTE_IP}:11500"
+
+    @pytest.mark.parametrize(
+        "ollama_host, expected",
+        [
+            # what the collector sends for a default local Ollama (rewritten)
+            (f"http://{ROUTER_IP}:11434", "http://localhost:11434"),
+            ("http://localhost:11500", "http://localhost:11500"),
+            # a node on this box deliberately driving another machine's Ollama
+            (f"http://{REMOTE_IP}:11434", f"http://{REMOTE_IP}:11434"),
+        ],
+    )
+    def test_a_node_on_this_machine(self, monkeypatch, ollama_host, expected):
+        url = _url(monkeypatch, request_ip="127.0.0.1", lan_ip=ROUTER_IP, ollama_host=ollama_host)
+        assert url == expected
+
+    @pytest.mark.parametrize("lan_ip", ["", "127.0.0.1"])
+    def test_a_node_with_no_network_can_only_be_local(self, monkeypatch, lan_ip):
+        url = _url(
+            monkeypatch, request_ip="127.0.0.1", lan_ip=lan_ip, ollama_host="http://localhost:11434"
+        )
+        assert url == "http://localhost:11434"
+
+    def test_a_router_booted_before_the_network_still_reaches_a_local_node(self, monkeypatch):
+        """get_local_ip() falls back to 127.0.0.1 with no network (the 0.12.3
+        case).  The co-located node is then not recognised as local, and gets its
+        own LAN address instead -- which is this machine, so still reachable."""
+        url = _url(
+            monkeypatch,
+            request_ip="127.0.0.1",
+            lan_ip=ROUTER_IP,
+            ollama_host=f"http://{ROUTER_IP}:11434",
+            router_ip="127.0.0.1",
+        )
+        assert url == f"http://{ROUTER_IP}:11434"
+
+    def test_a_heartbeat_over_the_lan_is_unchanged(self, monkeypatch):
+        url = _url(
+            monkeypatch,
+            request_ip=REMOTE_IP,
+            lan_ip=REMOTE_IP,
+            ollama_host=f"http://{REMOTE_IP}:11434",
+        )
+        assert url == f"http://{REMOTE_IP}:11434"

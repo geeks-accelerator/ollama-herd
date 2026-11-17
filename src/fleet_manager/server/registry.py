@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 
+from fleet_manager.common.system_metrics import get_local_ip
 from fleet_manager.models.config import ServerSettings
 from fleet_manager.models.node import (
     HardwareProfile,
@@ -15,6 +16,8 @@ from fleet_manager.models.node import (
 )
 
 logger = logging.getLogger(__name__)
+
+_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
 
 
 class NodeRegistry:
@@ -263,24 +266,26 @@ class NodeRegistry:
     def _build_ollama_url(self, payload: HeartbeatPayload, request_ip: str = "") -> str:
         """Build the network-reachable Ollama URL from the heartbeat.
 
-        If the node is on the same machine as the router (heartbeat from localhost),
-        use localhost directly — more reliable than going through the LAN IP since
-        it avoids network stack issues (firewall, IP changes, macOS quirks).
-        For remote nodes the order is: an explicitly-configured non-loopback
-        ollama_host, then the IP the heartbeat arrived from (reachable by
-        construction), then the self-reported lan_ip as a last resort.
+        If the node is on the same machine as the router, use localhost directly
+        -- more reliable than going through the LAN IP since it avoids network
+        stack issues (firewall, IP changes, macOS quirks).  For remote nodes the
+        order is: an explicitly-configured non-loopback ollama_host, then the IP
+        the heartbeat arrived from (reachable by construction), then the
+        self-reported lan_ip as a last resort.
         """
         from urllib.parse import urlparse
 
-        # If heartbeat came from loopback, the node is on this machine
-        is_local = request_ip in ("127.0.0.1", "::1", "")
-        if is_local:
-            # Node on same machine — use localhost for reliability.
-            # The collector may have rewritten ollama_host to the LAN IP,
-            # but for co-located router+node, localhost is always reachable.
-            parsed = urlparse(payload.ollama_host)
-            port = parsed.port or 11434
-            return f"http://localhost:{port}"
+        parsed = urlparse(payload.ollama_host)
+        if self._node_is_on_this_machine(payload, request_ip):
+            # The collector rewrites a loopback ollama_host to its LAN address
+            # before sending (collector._make_lan_reachable_url), so a host equal
+            # to lan_ip means "my own Ollama": use localhost.  A host naming some
+            # other machine is a deliberate FLEET_NODE_OLLAMA_HOST -- a node on
+            # this box driving a remote Ollama -- and is honoured.
+            host = parsed.hostname or ""
+            if host and host not in _LOOPBACK_HOSTS and host != payload.lan_ip:
+                return payload.ollama_host
+            return f"http://localhost:{parsed.port or 11434}"
 
         # An operator who set a non-loopback ollama_host knows their topology
         # better than we can infer it.  The node's collector only rewrites
@@ -292,8 +297,7 @@ class NodeRegistry:
         # inside a container lan_ip is the bridge address (172.17.0.x), which
         # the router cannot reach, so every routed request failed with
         # ConnectError even though FLEET_NODE_OLLAMA_HOST was set correctly.
-        parsed = urlparse(payload.ollama_host)
-        if parsed.hostname and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+        if parsed.hostname and parsed.hostname not in _LOOPBACK_HOSTS:
             return payload.ollama_host
 
         port = parsed.port or 11434
@@ -301,9 +305,35 @@ class NodeRegistry:
         # Otherwise prefer the address the heartbeat actually arrived from.
         # It is reachable by construction -- the packet got here -- whereas
         # lan_ip is self-reported and wrong inside any NAT'd network namespace.
-        if request_ip and request_ip not in ("127.0.0.1", "::1"):
+        if request_ip and request_ip not in _LOOPBACK_HOSTS:
             return f"http://{request_ip}:{port}"
 
         if payload.lan_ip and payload.lan_ip != "127.0.0.1":
             return f"http://{payload.lan_ip}:{port}"
         return payload.ollama_host
+
+    @staticmethod
+    def _node_is_on_this_machine(payload: HeartbeatPayload, request_ip: str) -> bool:
+        """Did this heartbeat come from a node running on the router's machine?
+
+        Arriving over loopback is necessary but not sufficient.  Anything on
+        this machine that forwards the heartbeat makes a remote node look local
+        -- an SSH tunnel (``ssh -L 11435:...``), or nginx's default
+        ``proxy_pass``, which sets no ``X-Forwarded-For`` for uvicorn to
+        recover the client from.  Treating those as local routed every remote
+        node's traffic to *this* machine's Ollama: served by the wrong box when
+        it had the model, a 404 when it did not.  The loopback test alone was
+        the whole check until 2026-11-17 (docs/plans/backend-model-not-found.md).
+
+        So also require the node's own LAN address to be ours.  The node fills
+        ``lan_ip`` with ``get_local_ip()``; the same function on the same
+        machine, over the same routing table, gives the same answer, which is
+        why this needs no interface enumeration.  An empty or loopback
+        ``lan_ip`` (a node with no network) can only be local.
+        """
+        if request_ip not in _LOOPBACK_HOSTS and request_ip != "":
+            return False
+        lan_ip = payload.lan_ip or ""
+        if not lan_ip or lan_ip in _LOOPBACK_HOSTS:
+            return True
+        return lan_ip == get_local_ip(warn=False)

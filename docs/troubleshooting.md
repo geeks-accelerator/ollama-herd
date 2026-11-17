@@ -48,6 +48,30 @@ You should see at least one node in the `nodes` array with `"status": "online"`.
 
 ---
 
+## "model 'x' not found" from a node that lists the model
+
+**Symptom:** the node card lists the model, but requests fail with the backend's
+own `404 {"error": "model 'x' not found"}` (or `... not found, try pulling it first`).
+With more than one node holding the model, herd retries on another one and the
+client is served; the failed attempt is traced `retried`. With only one, the client
+gets that 404.
+
+**Causes, in the order worth checking:**
+
+1. **herd is talking to a different Ollama than the node describes.** Compare the
+   URL herd uses (`ollama_url` in `curl -s localhost:11435/fleet/status`) with the
+   Ollama the node actually runs. Before 0.12.5, a remote node whose heartbeat
+   reached the router over loopback (an SSH tunnel such as `ssh -L 11435:...`, or
+   nginx's default `proxy_pass`, which sets no `X-Forwarded-For`) was sent to the
+   *router machine's* `localhost:11434`. Now a loopback heartbeat counts as local
+   only when the node's LAN address is the router's own. If you put a proxy in
+   front of `:11435`, make it pass `X-Forwarded-For` (Caddy and Tailscale Serve
+   do; uvicorn trusts it from `127.0.0.1`).
+2. **The model's files are gone but its manifest remains.** Ollama lists it in
+   `/api/tags` and cannot load it. On that node: `ollama pull <model>`.
+
+---
+
 ## LAN Connectivity Issues
 
 ### Timeout (no connection)

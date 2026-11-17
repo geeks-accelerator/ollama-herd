@@ -1,6 +1,6 @@
 # A node advertises a model its backend says it does not have
 
-**Status:** Steps 0 and 1 **implemented 2026-11-17** (unreleased); steps 2-5 proposed.
+**Status:** Steps 0, 1 and 2 **implemented 2026-11-17** (unreleased); steps 3-5 proposed.
 Investigated, reproduced, and audited against the code. **"Implementation plan (after the codebase audit)" at the end is the plan**; the
 earlier "Plan" and "Revised plan" lists are kept for their reasoning only.
 **Issue:** `docs/issues.md`, "A backend 404 is never retried…" (OPEN).
@@ -330,3 +330,36 @@ moving parts, and the only one that distinguishes gap 2 from a corrupt store.
 - **Tests:** `tests/test_server/test_backend_model_not_found.py` (36), and
   `test_retry.py::test_no_nodes_left_after_exclusion` updated to the new contract.
   2114 pass.
+
+## As built: step 2 (2026-11-17)
+
+- **`NodeRegistry._node_is_on_this_machine`.** A heartbeat is local only if it
+  arrived from loopback (or an empty address) **and** the node's `lan_ip` is empty,
+  loopback, or equal to the router's `get_local_ip(warn=False)`. The node fills
+  `lan_ip` with the same function (`collector.py`), so on the same machine the two
+  agree without enumerating interfaces.
+- **Local:** `localhost` with `ollama_host`'s port, unless `ollama_host` names a
+  host other than `lan_ip`. That is a deliberate setting (a node on this box driving
+  another machine's Ollama), and it is now honoured; it used to be sent to
+  `localhost` too.
+- **Not local:** the existing remote order is unchanged. The collector has already
+  rewritten a loopback `ollama_host` to `http://<lan_ip>:<port>`, so a tunnelled
+  node resolves to its own address.
+- **A router booted before the network** (`get_local_ip` falls back to `127.0.0.1`,
+  the 0.12.3 case) does not recognise its co-located node as local. The node then
+  gets its own LAN address, which is this machine, so it is still reachable.
+- **Tests:** 11 in `test_backend_model_not_found.py::TestLoopbackHeartbeats`. Two
+  existing co-located tests used a `lan_ip` that was not the host's, so they now
+  patch `get_local_ip`. 2125 pass.
+- **Verified live.**
+  - Scratch router: the tunnel scenario (`lan_ip=10.255.255.1`, heartbeat over
+    loopback) resolves to `http://10.255.255.1:11434`, where it used to resolve to
+    `http://localhost:11434`.
+  - Live router restarted onto the change: node `bb` still resolves to
+    `http://localhost:11434` and serves.
+- **Side effect of the testing, reverted.** The scratch router has no
+  `FLEET_NUM_CTX_OVERRIDES`, so its requests to the real Ollama reloaded
+  `gemma3:27b` at 131072 per slot. `ollama stop gemma3:27b` plus one request
+  through the live router restored 32768 (`-c 131072 -np 4`). **Run any future
+  scratch router with the operator's override settings, or against a fake backend
+  only.**

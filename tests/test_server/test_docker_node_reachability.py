@@ -64,8 +64,9 @@ class TestExplicitOllamaHostIsRespected:
         )
         assert url.endswith(":11500")
 
-    def test_colocated_node_still_uses_localhost(self):
+    def test_colocated_node_still_uses_localhost(self, monkeypatch):
         """Unchanged behaviour for the common single-machine case."""
+        monkeypatch.setattr("fleet_manager.server.registry.get_local_ip", lambda **_: "10.0.0.5")
         url = self._registry()._build_ollama_url(
             _payload("http://localhost:11434", "10.0.0.5"), request_ip="127.0.0.1"
         )

@@ -99,7 +99,11 @@ class TestNodeRegistry:
         assert "llama3.3:70b" in node.model_unloaded_at
         assert "phi4:14b" not in node.model_unloaded_at
 
-    async def test_ollama_url_local_node(self, registry):
+    async def test_ollama_url_local_node(self, registry, monkeypatch):
+        # Local means loopback *and* the node's lan_ip is this machine's address.
+        monkeypatch.setattr(
+            "fleet_manager.server.registry.get_local_ip", lambda **_: "192.168.1.100"
+        )
         hb = make_heartbeat(
             node_id="local",
             lan_ip="192.168.1.100",
