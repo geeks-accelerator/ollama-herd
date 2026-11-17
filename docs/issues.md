@@ -36,6 +36,41 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### A backend 404 is never retried, and the router can send remote nodes to its own Ollama `OPEN` (2026-11-17)
+
+**Seen in community telemetry, not on this fleet.** `model_not_found` is 58% of all
+reported errors over 30 days (1,515 of 2,594), and 95% of it is one install on one day:
+`qwen2.5-coder:14b`, 1,440 requests at one a minute, **zero successes**, every one sent
+to the same node. Telemetry counts only `failed` traces, so each was herd dispatching to
+a node that advertised the model and that node's backend answering 404.
+
+**Reproduced** on a throwaway router; three defects. **Severity: high** for the third
+(it affects every Ollama-native client on any backend 4xx), medium for the others.
+
+1. **No learning.** `_is_retryable_error` retries only 5xx and connection failures, so a
+   404 is not tried on another node that has the model, and the registry keeps
+   advertising it. Two nodes with the model, the favoured one 404ing: 4 of 4 requests
+   failed, the healthy node never tried.
+2. **Loopback shortcut.** `NodeRegistry._build_ollama_url` maps any heartbeat from
+   `127.0.0.1` to `http://localhost:<port>` before looking at the node's `ollama_host`.
+   A remote node behind an SSH tunnel or a default nginx `proxy_pass` is then routed to
+   the router machine's Ollama. Verified: `ollama_host=http://10.0.0.50:11434` via
+   loopback resolves to `http://localhost:11434`.
+3. **The Ollama-native surface answers a backend 4xx with a 500.** `/api/chat` and
+   `/api/generate` never call `routing.client_error_passthrough` (OpenAI, Anthropic and
+   Responses do): non-streaming returns plain-text `Internal Server Error`, streaming
+   drops the connection mid-body. Streaming errors on the other surfaces carry httpx's
+   text including the backend URL.
+4. **Found in the audit: native non-streaming reports a truncated answer as finished.**
+   When the backend stream ends without `done:true`, `ollama_compat._route_and_stream`
+   synthesizes `"done": true` with the partial text and answers 200. That is the same
+   failure 0.11.4 fixed on every other surface. The streaming half is deliberately
+   left bare (a native client checks `done` itself); the non-streaming half fabricates
+   the very field it relies on.
+
+**Proposed fix and full evidence:**
+[`docs/plans/backend-model-not-found.md`](plans/backend-model-not-found.md).
+
 ### The router advertised `127.0.0.1` after booting before the network `FIXED` (2026-11-02, unreleased)
 
 **Seen:** 2026-10-30. The Mac Studio rebooted; launchd started `herd` at 18:18 UTC, about three minutes before the network came up. `get_local_ip()` failed with `[Errno 51] Network is unreachable`, fell back to `127.0.0.1`, and `FleetServiceAdvertiser.start()` published that over mDNS: `mDNS: advertising Fleet Manager at 127.0.0.1:11435`. It never looked again, so for 4h40m any node discovering the router by mDNS would have been told to connect to itself. This fleet's own node was unaffected only because it sets `FLEET_NODE_ROUTER_URL`; the node agent also re-reads its LAN address on every heartbeat, which is why its warnings stopped on their own and the router's state did not. Cleared by a manual router restart.
