@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A node whose backend says "model not found" no longer fails every request sent to it.** A backend 404 naming the model now retries on another node that has it, like a connection failure or a 5xx; a 404 for any other reason is still final. Before, a node advertising a model its Ollama could not serve kept winning the routing and failing, while a healthy peer sat idle: in community telemetry one install failed 1,440 requests in a row this way. Plan: `docs/plans/backend-model-not-found.md`.
+- **The Ollama-native API (`/api/chat`, `/api/generate`) now answers backend errors in its own protocol.** A backend 4xx used to reach the client as a plain-text `500 Internal Server Error` (non-streaming) or a dropped connection mid-stream, so "model not found" was never seen. Now a 4xx comes back as the same status with the backend's message, anything else is a 502, and a failed stream ends with an `{"error": ...}` line, as Ollama's own streams do.
+- **A truncated non-streaming answer on the Ollama-native API is a 502, not a finished one.** When the backend stopped before its final line, the route returned 200 with `"done": true` over the partial text, the same failure 0.11.4 fixed on every other API.
+- **Error messages sent to clients no longer include a backend's internal address.** Stream errors and 502s on the OpenAI, Anthropic and Responses APIs carried httpx's text (`... for url 'http://10.0.0.5:11434/api/chat'`); they now carry the backend's own message, or just the HTTP status. Logs and traces keep the full text.
+- **A request that fails on the only node that has its model is recorded as failed.** When every candidate had been tried, the retry loop raised `No available nodes after excluding [...]` after recording only a "retried" trace, so the request had no final outcome in the trace database and the client got a 502 instead of the backend's error.
+
 ## [0.12.4] - 2026-11-16
 
 ### Changed

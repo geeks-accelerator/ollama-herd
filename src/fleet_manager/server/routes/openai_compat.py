@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fleet_manager.common.errors import (
     UPSTREAM_INCOMPLETE_MESSAGE,
+    client_error_message,
     describe_exception,
     describe_upstream_incomplete,
     error_body,
@@ -227,7 +228,7 @@ async def _serve_openai_via_mlx(
             # 502 described by describe_exception, unchanged.
             return client_error_passthrough(
                 exc, model=inference_req.model
-            ) or upstream_failure_response(describe_exception(exc))
+            ) or upstream_failure_response(client_error_message(exc))
         # pop_token_counts folds cached_tokens into rolling stats as a side effect.
         mlx_proxy.pop_token_counts(inference_req.request_id)
         record_trace_mlx(trace_store, inference_req, t_start, t_start, "completed")
@@ -290,7 +291,7 @@ async def _serve_openai_via_mlx(
         except Exception as exc:  # noqa: BLE001 — reported in-stream, not re-raised
             error = exc
             logger.exception(f"OpenAI MLX stream aborted: {type(exc).__name__}: {exc}")
-            yield openai_stream_error(describe_exception(exc)).encode()
+            yield openai_stream_error(client_error_message(exc)).encode()
         finally:
             mlx_proxy._release_slot(model_key)
             mlx_proxy.pop_token_counts(inference_req.request_id)
@@ -510,7 +511,7 @@ async def chat_completions(request: Request):
                     f"OpenAI stream aborted for {inference_req.request_id[:8]}: "
                     f"{type(exc).__name__}: {exc}"
                 )
-                yield openai_stream_error(describe_exception(exc))
+                yield openai_stream_error(client_error_message(exc))
             # Streaming callers don't use token counts in the response,
             # so clean up the side-channel dict here.
             proxy.pop_token_counts(inference_req.request_id)
@@ -570,7 +571,7 @@ async def chat_completions(request: Request):
             # Retries are spent by now (the proxy retries before the first
             # chunk); a re-raise only produced an opaque 500 and a closed
             # connection.  Report the backend failure as one.
-            return upstream_failure_response(describe_exception(exc))
+            return upstream_failure_response(client_error_message(exc))
 
         if upstream_failed or finish_reason is None:
             proxy.pop_token_counts(inference_req.request_id)

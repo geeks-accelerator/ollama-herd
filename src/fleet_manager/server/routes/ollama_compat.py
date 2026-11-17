@@ -13,6 +13,7 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from fleet_manager.common.errors import UPSTREAM_INCOMPLETE_MESSAGE, client_error_message
 from fleet_manager.models.node import ModelTagMeta, NodeStatus
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
@@ -1084,11 +1085,21 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
     if inference_req.stream:
 
         async def _stream_and_cleanup():
-            async for chunk in stream:
-                yield chunk
-            # Add thinking headers for streaming (trailer-style — available after stream)
-            proxy.pop_token_counts(inference_req.request_id)
-            proxy.pop_request_meta(inference_req.request_id)
+            try:
+                async for chunk in stream:
+                    yield chunk
+            except Exception as exc:  # noqa: BLE001 — reported in-stream, not re-raised
+                # The proxy already traced it "failed".  Headers are sent, so
+                # re-raising only drops the connection mid-body; end the stream
+                # the way Ollama ends a failed one, with an error line.
+                logger.warning(
+                    f"Ollama stream failed for {inference_req.request_id[:8]} on "
+                    f"{entry.assigned_node}: {type(exc).__name__}: {exc}"
+                )
+                yield json.dumps({"error": client_error_message(exc)}) + "\n"
+            finally:
+                proxy.pop_token_counts(inference_req.request_id)
+                proxy.pop_request_meta(inference_req.request_id)
 
         return StreamingResponse(
             _stream_and_cleanup(),
@@ -1099,17 +1110,40 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         # Non-streaming: accumulate full response, consume entire stream
         full_response = ""
         final_data = None
-        async for chunk in stream:
-            chunk = chunk.strip()
-            if chunk:
-                try:
-                    data = json.loads(chunk)
-                    full_response += data.get("message", {}).get("content", "")
-                    full_response += data.get("response", "")
-                    if data.get("done"):
-                        final_data = data
-                except json.JSONDecodeError as e:
-                    logger.debug(f"Skipping malformed Ollama chunk: {e}")
+        try:
+            async for chunk in stream:
+                chunk = chunk.strip()
+                if chunk:
+                    try:
+                        data = json.loads(chunk)
+                        full_response += data.get("message", {}).get("content", "")
+                        full_response += data.get("response", "")
+                        if data.get("done"):
+                            final_data = data
+                    except json.JSONDecodeError as e:
+                        logger.debug(f"Skipping malformed Ollama chunk: {e}")
+        except Exception as exc:  # noqa: BLE001 — answered in-protocol below
+            # Letting this leave the app made FastAPI answer a plain-text 500
+            # for *any* backend error -- including Ollama's own 404 "model not
+            # found", which the client then never saw -- and uvicorn closed the
+            # keep-alive connection too.  A backend 4xx is the client's answer
+            # and passes through with the backend's message, like
+            # ``client_error_passthrough`` on the other surfaces; anything else
+            # is a 502.  The proxy already traced the failure.
+            proxy.pop_token_counts(inference_req.request_id)
+            proxy.pop_request_meta(inference_req.request_id)
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if not (isinstance(status, int) and 400 <= status < 500):
+                status = 502
+            logger.warning(
+                f"Ollama request {inference_req.request_id[:8]} failed on "
+                f"{entry.assigned_node}: {type(exc).__name__}: {exc} -> HTTP {status}"
+            )
+            return JSONResponse(
+                status_code=status,
+                content={"error": client_error_message(exc)},
+                headers=headers,
+            )
 
         # Add thinking-aware headers to non-streaming response
         headers.update(_build_thinking_headers(proxy, inference_req.request_id))
@@ -1149,11 +1183,13 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
             final_data["response"] = full_response
             final_data["message"] = {"role": "assistant", "content": full_response}
             return JSONResponse(content=final_data, headers=headers)
+        # The backend stream ended without its done:true line: the answer is
+        # truncated (the proxy traced it "incomplete").  This used to answer
+        # 200 with ``"done": true`` and the partial text -- fabricating the one
+        # field a native client checks to know the answer finished.  0.11.4
+        # fixed the same failure on every other surface with a 502.
         return JSONResponse(
-            content={
-                "response": full_response,
-                "message": {"role": "assistant", "content": full_response},
-                "done": True,
-            },
+            status_code=502,
+            content={"error": UPSTREAM_INCOMPLETE_MESSAGE},
             headers=headers,
         )

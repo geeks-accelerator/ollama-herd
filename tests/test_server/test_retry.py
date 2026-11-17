@@ -297,7 +297,8 @@ class TestStreamWithRetry:
 
     @pytest.mark.asyncio
     async def test_no_nodes_left_after_exclusion(self):
-        """When re-scoring returns empty (all excluded), error propagates."""
+        """When re-scoring returns empty (all excluded), the backend's own error
+        propagates and the attempt is traced as the terminal failure."""
         registry = MagicMock()
         proxy = StreamingProxy(registry)
         queue_mgr = _mock_queue_mgr()
@@ -312,12 +313,16 @@ class TestStreamWithRetry:
             yield  # makes this an async generator
 
         proxy.stream_from_node = fail
+        proxy._record_trace = MagicMock()
 
-        with pytest.raises(RuntimeError, match="No available nodes"):
+        with pytest.raises(httpx.ConnectError, match="refused"):
             async for _ in proxy._stream_with_retry(
                 entry, "node-a:phi4:14b", queue_mgr, scorer, settings
             ):
                 pass
+        statuses = [c.args[4] for c in proxy._record_trace.call_args_list]
+        assert statuses == ["failed"]
+        queue_mgr.mark_failed.assert_called_once()
 
 
 class TestTraceReliability:

@@ -26,6 +26,7 @@ from pydantic import ValidationError
 
 from fleet_manager.common.errors import (
     UpstreamIncomplete,
+    client_error_message,
     describe_exception,
     describe_upstream_incomplete,
 )
@@ -436,7 +437,7 @@ async def _serve_via_mlx(
                 # stays a 502 described by describe_exception, unchanged.
                 return client_error_passthrough(
                     exc, model=body.model, anthropic=True
-                ) or upstream_failure_response(describe_exception(exc), anthropic=True)
+                ) or upstream_failure_response(client_error_message(exc), anthropic=True)
             record_trace_mlx(
                 trace_store,
                 inference_req,
@@ -606,7 +607,7 @@ async def _serve_via_mlx(
             logger.exception(f"Anthropic[{rid}] MLX stream aborted: {type(exc).__name__}: {exc}")
             # Headers are already sent, so re-raising only tears the connection
             # with no explanation.  Tell the client in its own protocol instead.
-            yield anthropic_stream_error(describe_exception(exc))
+            yield anthropic_stream_error(client_error_message(exc))
         finally:
             # Release the admission slot we acquired before entering the
             # StreamingResponse — guaranteed to fire whether iteration
@@ -1162,7 +1163,7 @@ async def messages(
                 )
                 # Headers are already sent: re-raising only tears the connection
                 # with no explanation.  Tell the client in its own protocol.
-                yield anthropic_stream_error(describe_exception(exc))
+                yield anthropic_stream_error(client_error_message(exc))
             finally:
                 proxy.pop_token_counts(inference_req.request_id)
                 proxy.pop_request_meta(inference_req.request_id)
@@ -1209,7 +1210,7 @@ async def messages(
         # Retries are spent by now (the proxy retries before the first
         # chunk); a re-raise only produced an opaque 500 and a closed
         # connection.  Report the backend failure as one.
-        return upstream_failure_response(describe_exception(exc), anthropic=True)
+        return upstream_failure_response(client_error_message(exc), anthropic=True)
     finally:
         proxy.pop_token_counts(inference_req.request_id)
         proxy.pop_request_meta(inference_req.request_id)

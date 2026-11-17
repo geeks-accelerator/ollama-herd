@@ -27,7 +27,9 @@ __all__ = [
     "UPSTREAM_INCOMPLETE",
     "UPSTREAM_INCOMPLETE_MESSAGE",
     "UpstreamIncomplete",
+    "backend_error_detail",
     "categorize_error",
+    "client_error_message",
     "describe_exception",
     "describe_upstream_incomplete",
     "error_body",
@@ -47,6 +49,63 @@ def describe_exception(exc: BaseException | None) -> str | None:
         return None
     detail = str(exc).strip()
     return detail or type(exc).__name__
+
+
+def backend_error_detail(exc: BaseException | None) -> str | None:
+    """The backend's own message from an HTTP error response, or ``None``.
+
+    Ollama answers a failure with ``{"error": "..."}`` (mlx_lm.server and other
+    OpenAI-shaped servers with ``{"error": {"message": ...}}`` or a ``message``
+    key), and that text -- ``model 'x' not found``, ``x does not support
+    tools`` -- is the most useful thing a client can be told.  ``None`` when
+    ``exc`` is not an HTTP status error or its body carries nothing readable.
+
+    Duck-typed on ``exc.response`` so this module stays free of httpx.  The
+    body must already have been read, which ``stream_from_node`` does before
+    ``raise_for_status``; an unread streaming body reads as ``None`` here.
+    """
+    response = getattr(exc, "response", None)
+    if response is None or not hasattr(response, "status_code"):
+        return None
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001 -- empty, non-JSON or unread body
+        pass
+    else:
+        # JSON without a message is not something to show anyone verbatim.
+        if not isinstance(body, dict):
+            return None
+        err = body.get("error")
+        if isinstance(err, dict):
+            err = err.get("message")
+        return str(err or body.get("message") or "").strip() or None
+    try:
+        text = (response.text or "").strip()
+    except Exception:  # noqa: BLE001 -- unread streaming body
+        return None
+    return text[:300] or None
+
+
+def client_error_message(exc: BaseException) -> str:
+    """What a *client* is told about ``exc``: never a backend URL.
+
+    ``describe_exception`` is the right text for logs and traces (and the
+    traces feed ``categorize_error``, so they must keep it), but for an HTTP
+    status error it is httpx's ``Client error '404 Not Found' for url
+    'http://10.0.0.5:11434/api/chat'``, which hands a backend's address to
+    whoever sent the request.  This prefers the backend's own message, then
+    the bare status, and only falls back to ``describe_exception`` for errors
+    that carry no response (connection failures, timeouts), whose text holds
+    no URL.
+    """
+    detail = backend_error_detail(exc)
+    if detail:
+        return detail
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        return f"backend returned HTTP {status}"
+    return describe_exception(exc) or type(exc).__name__
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 # A node advertises a model its backend says it does not have
 
-**Status:** Proposed (2026-11-17). Investigated, reproduced, and audited against the
-code. **"Implementation plan (after the codebase audit)" at the end is the plan**; the
+**Status:** Steps 0 and 1 **implemented 2026-11-17** (unreleased); steps 2-5 proposed.
+Investigated, reproduced, and audited against the code. **"Implementation plan (after the codebase audit)" at the end is the plan**; the
 earlier "Plan" and "Revised plan" lists are kept for their reasoning only.
 **Issue:** `docs/issues.md`, "A backend 404 is never retried…" (OPEN).
 **Found in:** community telemetry, not on this fleet. `model_not_found` is 58% of all
@@ -287,3 +287,46 @@ same function, same accumulator.
 Order and size: 0 and 1 are small and independent, and fix every multi-node failure
 and every misleading answer. 2 is a few lines plus tests. 3 is the only step with new
 moving parts, and the only one that distinguishes gap 2 from a corrupt store.
+
+## As built: steps 0 and 1 (2026-11-17)
+
+- **`common/errors.backend_error_detail` and `client_error_message`.**
+  - `client_error_passthrough` now calls the first.
+  - The ten client-facing sites call the second: five in-stream errors and five
+    non-streaming 502s. The 502s also carried the backend URL, for a backend 5xx;
+    the audit had counted only the in-stream half.
+  - Traces and log lines keep `describe_exception`, so the telemetry category is
+    unchanged. A test pins this.
+- **Native routes.**
+  - Non-streaming: a backend 4xx is returned with the same status and
+    `{"error": msg}`; anything else is a 502. No `done` line is a 502 with
+    `UPSTREAM_INCOMPLETE_MESSAGE`.
+  - Streaming: a failure ends the stream with an `{"error": msg}` line.
+- **`_is_model_not_found_error` and `_is_transport_error`** sit beside
+  `_is_queue_full_error`. The pooled client is now dropped only on a transport
+  error, so a 5xx no longer drops it either, since an HTTP answer proves the
+  connection works.
+- **Found while testing: the retry loop lost the backend's error when no other node
+  was left.** It recorded `retried`, then raised `RuntimeError("No available nodes
+  after excluding [...]")`.
+  - The failure was invisible before, because only connection errors and 5xx
+    reached it. Retrying 404s made it the single-node path, where it turned
+    Ollama's 404 into a 502.
+  - It also left the request with **no terminal trace**: the same gap the
+    "retries exhausted" branch was fixed for.
+  - Now the loop looks for an alternative node *before* recording anything. With
+    none, the attempt is traced `failed` and the original exception propagates.
+- **Telemetry consequence:** a 404 that a peer then serves is traced `retried`, and
+  telemetry counts only `failed` traces. So after release `model_not_found` will
+  show only the single-node cases (the `a238cc88` shape), which steps 2 and 3
+  address. The retried ones are what step 4 surfaces locally.
+- **Verified live** on a scratch router (`:11535`):
+  - Two nodes, favoured one 404ing: 7 of 7 surface and stream combinations served
+    (7 `retried` on the broken node, 7 `completed` on the good one). Before the
+    fix, every one failed.
+  - One node: native non-streaming 404 `{"error":"model '...' not found"}`; native
+    stream ends with that line; OpenAI and Anthropic streams carry the message
+    with no URL. All five traced `failed`.
+- **Tests:** `tests/test_server/test_backend_model_not_found.py` (36), and
+  `test_retry.py::test_no_nodes_left_after_exclusion` updated to the new contract.
+  2114 pass.

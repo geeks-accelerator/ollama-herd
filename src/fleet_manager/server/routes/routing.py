@@ -10,7 +10,11 @@ import uuid
 import httpx
 from fastapi.responses import JSONResponse
 
-from fleet_manager.common.errors import UPSTREAM_INCOMPLETE_MESSAGE, error_body
+from fleet_manager.common.errors import (
+    UPSTREAM_INCOMPLETE_MESSAGE,
+    backend_error_detail,
+    error_body,
+)
 from fleet_manager.models.node import MemoryPressure, NodeStatus
 from fleet_manager.models.request import InferenceRequest, RoutingResult
 from fleet_manager.server.model_knowledge import classify_model
@@ -88,17 +92,7 @@ def client_error_passthrough(exc, *, model: str = "", anthropic: bool = False):
     if not (400 <= status < 500):
         return None
 
-    detail = ""
-    try:
-        body = exc.response.json()
-        if isinstance(body, dict):
-            detail = str(body.get("error") or body.get("message") or "")
-    except Exception:  # noqa: BLE001 — body may be empty or non-JSON
-        try:
-            detail = (exc.response.text or "")[:300]
-        except Exception:  # noqa: BLE001
-            detail = ""
-    msg = detail or f"backend rejected the request ({status})"
+    msg = backend_error_detail(exc) or f"backend rejected the request ({status})"
     if model and model not in msg:
         msg = f"{msg} (model: {model})"
 

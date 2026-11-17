@@ -13,6 +13,7 @@ import httpx
 
 from fleet_manager.common.errors import (
     UPSTREAM_INCOMPLETE_MESSAGE,
+    backend_error_detail,
     describe_exception,
     describe_upstream_incomplete,
     error_body,
@@ -317,7 +318,7 @@ class StreamingProxy:
         except Exception as e:
             error_occurred = True
             # Invalidate stale client on connection errors so next request gets a fresh one
-            if self._is_retryable_error(e):
+            if self._is_transport_error(e):
                 self._invalidate_client(entry.assigned_node)
             queue_manager.mark_failed(queue_key, entry)
             logger.error(
@@ -475,9 +476,28 @@ class StreamingProxy:
         return "maximum pending requests" in body.lower()
 
     @staticmethod
-    def _is_retryable_error(e: Exception) -> bool:
-        """Return True if the error suggests a node infrastructure failure worth retrying."""
-        if isinstance(
+    def _is_model_not_found_error(e: Exception) -> bool:
+        """True when the backend answered 404 because it does not have the model.
+
+        A routing fact about *that node*, not a client error: another node that
+        lists the model may well serve it.  Ollama's two shapes are
+        ``model 'x' not found`` (no manifest) and ``model "x" not found, try
+        pulling it first`` (a manifest whose blobs are gone).  Before this a
+        404 was terminal, so a node advertising a model its backend could not
+        serve failed every request sent to it while a healthy peer sat idle:
+        1,440 failures in a row on one install in community telemetry
+        (docs/plans/backend-model-not-found.md).  A 404 for anything else -- a
+        wrong endpoint -- is still terminal.
+        """
+        if not isinstance(e, httpx.HTTPStatusError) or e.response.status_code != 404:
+            return False
+        detail = (backend_error_detail(e) or "").lower()
+        return "model" in detail and "not found" in detail
+
+    @staticmethod
+    def _is_transport_error(e: Exception) -> bool:
+        """The connection itself failed, so the pooled client may be stale."""
+        return isinstance(
             e,
             (
                 httpx.ConnectError,
@@ -486,7 +506,14 @@ class StreamingProxy:
                 httpx.RemoteProtocolError,
                 httpx.ReadError,
             ),
-        ):
+        )
+
+    @staticmethod
+    def _is_retryable_error(e: Exception) -> bool:
+        """Return True if the error is worth retrying on another node."""
+        if StreamingProxy._is_transport_error(e):
+            return True
+        if StreamingProxy._is_model_not_found_error(e):
             return True
         if isinstance(e, httpx.HTTPStatusError):
             # Queue-full is a saturation signal — never retry it (would amplify).
@@ -557,8 +584,9 @@ class StreamingProxy:
                     raise  # never swallow a cancellation
                 return
             except Exception as e:
-                # Invalidate stale client on connection errors
-                if self._is_retryable_error(e):
+                # Invalidate stale client on connection errors -- not on an
+                # HTTP answer, which proves the connection works.
+                if self._is_transport_error(e):
                     self._invalidate_client(current_node)
 
                 if first_chunk_sent or not self._is_retryable_error(e):
@@ -614,6 +642,34 @@ class StreamingProxy:
                     )
                     raise
 
+                # Is there anywhere else to send it?  Ask before recording
+                # "retried": with no alternative this attempt is the terminal
+                # failure, and the caller must see the backend's own error.
+                # This used to raise RuntimeError("No available nodes after
+                # excluding [...]") after a "retried" trace -- so a request that
+                # failed on its only node left no terminal trace, and a backend
+                # 404 "model not found" reached the client as an opaque 502.
+                queue_depths = queue_manager.get_queue_depths()
+                results = scorer.score_request(entry.request.model, queue_depths)
+                results = [r for r in results if r.node_id not in excluded_nodes]
+
+                if not results:
+                    queue_manager.mark_failed(current_queue_key, entry)
+                    self._record_trace(
+                        entry,
+                        current_node,
+                        start_time,
+                        None,
+                        "failed",
+                        error_message=describe_exception(e),
+                        response_chunks=capture_chunks,
+                    )
+                    logger.error(
+                        f"No other node can serve {entry.request.model} for "
+                        f"{entry.request.request_id[:8]} (excluded {excluded_nodes})"
+                    )
+                    raise
+
                 # Record "retried" trace for this failed attempt (we will retry)
                 self._record_trace(
                     entry,
@@ -624,17 +680,6 @@ class StreamingProxy:
                     error_message=describe_exception(e),
                     response_chunks=capture_chunks,
                 )
-
-                # Re-score excluding failed nodes
-                queue_depths = queue_manager.get_queue_depths()
-                results = scorer.score_request(entry.request.model, queue_depths)
-                results = [r for r in results if r.node_id not in excluded_nodes]
-
-                if not results:
-                    queue_manager.mark_failed(current_queue_key, entry)
-                    raise RuntimeError(
-                        f"No available nodes after excluding {excluded_nodes}"
-                    ) from e
 
                 next_winner = results[0]
                 current_node = next_winner.node_id

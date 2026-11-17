@@ -36,7 +36,7 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
-### A backend 404 is never retried, and the router can send remote nodes to its own Ollama `OPEN` (2026-11-17)
+### A backend 404 is never retried, and the router can send remote nodes to its own Ollama `OPEN` (2026-11-17; 1, 3 and 4 FIXED on `main`, unreleased)
 
 **Seen in community telemetry, not on this fleet.** `model_not_found` is 58% of all
 reported errors over 30 days (1,515 of 2,594), and 95% of it is one install on one day:
@@ -67,6 +67,13 @@ a node that advertised the model and that node's backend answering 404.
    failure 0.11.4 fixed on every other surface. The streaming half is deliberately
    left bare (a native client checks `done` itself); the non-streaming half fabricates
    the very field it relies on.
+
+**Fixed on `main` (2026-11-17, unreleased): 1, 3 and 4.** A model 404 retries on a peer;
+the native surface answers in-protocol; a truncated native answer is a 502; client-facing
+errors carry no backend URL. Also fixed, found while testing: with no other node left the
+retry loop raised `RuntimeError("No available nodes ...")`, losing the backend's error and
+leaving no terminal trace. **Still OPEN: 2** (the loopback shortcut) and the plan's checks
+(steps 3-5).
 
 **Proposed fix and full evidence:**
 [`docs/plans/backend-model-not-found.md`](plans/backend-model-not-found.md).

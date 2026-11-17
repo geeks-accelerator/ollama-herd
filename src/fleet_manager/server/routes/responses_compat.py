@@ -23,7 +23,10 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from fleet_manager.common.errors import UpstreamIncomplete, describe_exception
+from fleet_manager.common.errors import (
+    UpstreamIncomplete,
+    client_error_message,
+)
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.anthropic_autoroute import resolve_model
 from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
@@ -300,7 +303,7 @@ async def responses(request: Request):
                 )
                 # Headers are already sent: re-raising only tears the connection,
                 # which Codex reads as a network error with no explanation.
-                for event in responses_failure_events(state, describe_exception(exc)):
+                for event in responses_failure_events(state, client_error_message(exc)):
                     yield event
             finally:
                 proxy.pop_token_counts(inference_req.request_id)
@@ -347,7 +350,7 @@ async def responses(request: Request):
         # Retries are spent by now (the proxy retries before the first
         # chunk); a re-raise only produced an opaque 500 and a closed
         # connection.  Report the backend failure as one.
-        return upstream_failure_response(describe_exception(exc))
+        return upstream_failure_response(client_error_message(exc))
     finally:
         proxy.pop_token_counts(inference_req.request_id)
         proxy.pop_request_meta(inference_req.request_id)
