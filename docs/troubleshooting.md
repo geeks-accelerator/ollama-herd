@@ -56,6 +56,13 @@ With more than one node holding the model, herd retries on another one and the
 client is served; the failed attempt is traced `retried`. With only one, the client
 gets that 404.
 
+Two health checks name it: **`backend_model_missing`** (from traces: which node,
+which model, how many requests were served elsewhere and how many reached the
+client) and **`backend_mismatch`** (the router asks `/api/tags` at the URL it
+dispatches to, every 5 minutes and whenever that URL changes, and names the models
+the node reports but that URL does not have). Both together mean cause 1 below;
+`backend_model_missing` alone means cause 2.
+
 **Causes, in the order worth checking:**
 
 1. **herd is talking to a different Ollama than the node describes.** Compare the

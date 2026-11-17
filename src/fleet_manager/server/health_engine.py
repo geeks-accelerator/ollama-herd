@@ -155,6 +155,8 @@ class HealthEngine:
         # with no trace data, which is precisely when herd is least able to
         # explain a throughput drop any other way.
         recommendations.extend(self._check_backend_bypass_clients(nodes))
+        # The router's own probe of each backend (backend_verifier); no traces.
+        recommendations.extend(self._check_backend_mismatch(nodes))
         # Node state plus the router's own process; needs no trace data.
         recommendations.extend(self._check_process_memory(nodes))
 
@@ -202,6 +204,8 @@ class HealthEngine:
             )
             recommendations.extend(self._check_error_rates(error_rates, recent_errors))
             recommendations.extend(self._check_retry_rates(retry_stats))
+            not_found = await trace_store.get_backend_not_found()
+            recommendations.extend(self._check_backend_model_missing(not_found, nodes))
 
             # Context waste analysis
             mlx_counts = await trace_store.get_request_count_by_model(seconds=86400)
@@ -2062,6 +2066,122 @@ class HealthEngine:
                 data={"servers": stranded},
             )
         ]
+
+    def _check_backend_mismatch(self, nodes) -> list[Recommendation]:
+        """herd's URL for a node serves a different set of models than it reports.
+
+        Read from ``backend_verifier``, which asks ``/api/tags`` at the URL herd
+        dispatches to.  A model the node reports and that URL does not have is
+        a request that will be answered 404 -- or, with a peer holding it,
+        retried there.  Usually herd is talking to a different Ollama than the
+        node describes.  See docs/plans/backend-model-not-found.md.
+
+        What does it fire on when everything is working? Nothing: the probe
+        compares two snapshots taken together, an unreachable backend is not a
+        finding, and only models still in the node's current list are named.
+        """
+        from fleet_manager.server.backend_verifier import get_backend_checks
+
+        checks = get_backend_checks()
+        recs = []
+        for node in nodes:
+            check = checks.get(node.node_id)
+            if check is None or node.status.value != "online" or not node.ollama:
+                continue
+            missing = sorted(check.missing & set(node.ollama.models_available))
+            if not missing:
+                continue
+            names = ", ".join(missing[:5])
+            if len(missing) > 5:
+                names += f" and {len(missing) - 5} more"
+            it = "it" if len(missing) == 1 else "them"
+            other = (
+                f" It serves {len(check.extra)} model(s) the node never reported, so it "
+                f"is most likely a different Ollama."
+                if check.extra
+                else ""
+            )
+            recs.append(
+                Recommendation(
+                    check_id="backend_mismatch",
+                    severity=Severity.WARNING,
+                    title=f"{node.node_id}: herd's backend URL is missing {len(missing)} model(s)",
+                    description=(
+                        f"herd sends {node.node_id}'s requests to {check.url}, which does not "
+                        f"have {names}, though the node reports {it}.{other} Requests "
+                        f"for {it} fail there with 404 'model not found', or are retried "
+                        f"on another node."
+                    ),
+                    fix=(
+                        f"Check that {check.url} is the Ollama herd-node on {node.node_id} "
+                        f"uses. A node behind an SSH tunnel or a proxy that hides the "
+                        f"client address is the usual cause; set FLEET_NODE_OLLAMA_HOST "
+                        f"on the node to an address the router can reach, or make the "
+                        f"proxy pass X-Forwarded-For."
+                    ),
+                    node_id=node.node_id,
+                    data={
+                        "url": check.url,
+                        "missing": missing,
+                        "extra": sorted(check.extra),
+                        "checked_at": check.checked_at,
+                    },
+                )
+            )
+        return recs
+
+    def _check_backend_model_missing(self, not_found, nodes) -> list[Recommendation]:
+        """A node's backend answered 404 "model not found" for a model it lists.
+
+        From traces (``get_backend_not_found``), so it needs no state of its
+        own.  ``retried`` rows were served by a peer -- the client is fine and
+        the node is still wrong; ``failed`` rows reached the client.  Before
+        the retry existed, one install failed 1,440 requests in a row this way
+        and nothing on the board said so.
+
+        What does it fire on when everything is working? Nothing: a backend
+        does not 404 a model its own ``/api/tags`` lists unless its store is
+        damaged, or herd is asking the wrong backend (``backend_mismatch``).
+        """
+        if not not_found:
+            return []
+        urls = {n.node_id: n.ollama_base_url for n in nodes}
+        recent_cutoff = time.time() - self.RECENT_WINDOW_S
+        by_node: dict[str, dict[str, dict]] = {}
+        for (node_id, model), row in not_found.items():
+            by_node.setdefault(node_id, {})[model] = row
+        recs = []
+        for node_id, models in sorted(by_node.items()):
+            failed = sum(r["failed"] for r in models.values())
+            retried = sum(r["retried"] for r in models.values())
+            active = any(r["last_ts"] >= recent_cutoff for r in models.values())
+            names = ", ".join(sorted(models))
+            outcome = []
+            if failed:
+                outcome.append(f"{failed} reached the client as errors")
+            if retried:
+                outcome.append(f"{retried} were served by another node")
+            recs.append(
+                Recommendation(
+                    check_id="backend_model_missing",
+                    severity=Severity.WARNING if active else Severity.INFO,
+                    title=f"{node_id}'s backend says it does not have {names}",
+                    description=(
+                        f"In the last 24h the backend herd uses for {node_id} "
+                        f"({urls.get(node_id) or 'unknown URL'}) answered 404 'model "
+                        f"not found' for {names}, which the node lists: "
+                        f"{' and '.join(outcome)}." + ("" if active else " None in the last hour.")
+                    ),
+                    fix=(
+                        "If backend_mismatch also names this node, herd is asking the "
+                        "wrong Ollama; fix that first. Otherwise the model's files are "
+                        f"damaged on {node_id}: run `ollama pull <model>` there."
+                    ),
+                    node_id=node_id,
+                    data={"models": models, "failed": failed, "retried": retried},
+                )
+            )
+        return recs
 
     def _check_mlx_requests_unservable(
         self, nodes, mlx_request_counts: dict[str, int] | None = None

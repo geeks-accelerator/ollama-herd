@@ -1157,6 +1157,40 @@ class TraceStore:
         total = sum(by_node.values())
         return {"total_count": total, "by_node": by_node, "by_model": by_model}
 
+    async def get_backend_not_found(self, lookback_s: int = 86400) -> dict[tuple[str, str], dict]:
+        """Backend "model not found" answers by ``(node_id, model)``.
+
+        ``retried`` rows were served by a peer afterwards; ``failed`` rows reached
+        the client.  Both mean the node advertised a model its backend did not
+        have.  Categorised with ``categorize_error`` -- the definition the
+        community telemetry publishes -- so this check and the published
+        ``model_not_found`` count can never disagree; the ``LIKE`` only narrows
+        the rows read, and every category that matters here contains "404".
+        """
+        if not self._db:
+            return {}
+        from fleet_manager.common.errors import categorize_error
+
+        cursor = await self._read_db.execute(
+            """
+            SELECT node_id, model, status, error_message, timestamp
+            FROM request_traces
+            WHERE timestamp >= ?
+              AND status IN ('retried', 'failed')
+              AND node_id != ''
+              AND error_message LIKE '%404%'
+            """,
+            (time.time() - lookback_s,),
+        )
+        out: dict[tuple[str, str], dict] = {}
+        for node_id, model, status, message, ts in await cursor.fetchall():
+            if categorize_error(message) != "model_not_found":
+                continue
+            row = out.setdefault((node_id, model), {"retried": 0, "failed": 0, "last_ts": 0.0})
+            row[status] += 1
+            row["last_ts"] = max(row["last_ts"], ts)
+        return out
+
     # -- Benchmark runs --
 
     async def save_benchmark_run(self, data: dict):

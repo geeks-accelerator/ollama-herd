@@ -9,7 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`backend_mismatch` health check: herd now checks it is talking to the Ollama each node describes.** Every 5 minutes, and whenever a node's URL changes, the router asks `/api/tags` at the URL it dispatches to and compares the answer with what the node reported. Models the node lists but that URL lacks are named with the URL, and a URL serving models the node never reported is called out as most likely a different Ollama. An unreachable backend is not a finding. This is what tells "herd is asking the wrong Ollama" apart from "the node's model files are damaged".
+- **`backend_model_missing` health check.** Names each node whose backend answered 404 "model not found" for a model it lists in the last 24 hours, with how many of those requests another node then served and how many reached the client. WARNING while it is still happening, INFO once an hour has passed without one.
+
 ### Fixed
+
+- **An `mlx:` model on the Ollama API (`/api/chat`, `/api/generate`) gets a reason, not `invalid model name`.** Those models are served by `mlx_lm.server`, which speaks only the OpenAI API, so the native routes cannot reach them even though the native `/api/tags` lists them. The 400 now says so and points at `/v1/chat/completions` or `/v1/messages`.
 
 - **A node whose backend says "model not found" no longer fails every request sent to it.** A backend 404 naming the model now retries on another node that has it, like a connection failure or a 5xx; a 404 for any other reason is still final. Before, a node advertising a model its Ollama could not serve kept winning the routing and failing, while a healthy peer sat idle: in community telemetry one install failed 1,440 requests in a row this way. Plan: `docs/plans/backend-model-not-found.md`.
 - **The Ollama-native API (`/api/chat`, `/api/generate`) now answers backend errors in its own protocol.** A backend 4xx used to reach the client as a plain-text `500 Internal Server Error` (non-streaming) or a dropped connection mid-stream, so "model not found" was never seen. Now a 4xx comes back as the same status with the backend's message, anything else is a 502, and a failed stream ends with an `{"error": ...}` line, as Ollama's own streams do.

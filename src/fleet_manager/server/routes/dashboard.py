@@ -1601,7 +1601,7 @@ async def dashboard_model_management(request: Request):
             continue
 
         # Query Ollama for full model details (including disk size)
-        model_details = await proxy.query_node_models(node.node_id)
+        model_details = await proxy.query_node_models(node.node_id) or []
         detail_map = {m["name"]: m for m in model_details}
 
         # Models currently loaded in VRAM

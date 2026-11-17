@@ -1,6 +1,7 @@
 # A node advertises a model its backend says it does not have
 
-**Status:** Steps 0, 1 and 2 **implemented 2026-11-17** (unreleased); steps 3-5 proposed.
+**Status:** **Implemented 2026-11-17** (unreleased): steps 0-4 and 5a. Step 5b (embedding-only
+models on chat) was dropped as unnecessary once step 0 shipped; see "As built: steps 3-5".
 Investigated, reproduced, and audited against the code. **"Implementation plan (after the codebase audit)" at the end is the plan**; the
 earlier "Plan" and "Revised plan" lists are kept for their reasoning only.
 **Issue:** `docs/issues.md`, "A backend 404 is never retried…" (OPEN).
@@ -363,3 +364,44 @@ moving parts, and the only one that distinguishes gap 2 from a corrupt store.
   through the live router restored 32768 (`-c 131072 -np 4`). **Run any future
   scratch router with the operator's override settings, or against a fake backend
   only.**
+
+## As built: steps 3-5 (2026-11-17)
+
+- **Step 3, `server/backend_verifier.py`.**
+  - `BackendVerifier` is started in the app lifespan beside `FleetHistory`. Every
+    15 s it probes each online node whose URL changed, or whose last probe is
+    older than 5 minutes.
+  - It reuses `query_node_models`, which now returns `None` for "could not ask"
+    instead of `[]`. Its one other caller, the dashboard, takes `or []`.
+  - Results live at module level (`get_backend_checks()`), because `HealthEngine`
+    is built fresh for each report.
+  - **`backend_mismatch`** (WARNING) names only models that are still in the node's
+    current list. Each probe snapshots the heartbeat at the same moment, so a pull
+    between probes shows as `extra`, never as `missing`, and a deletion drops out
+    with the next heartbeat.
+  - Agreement logs DEBUG, so a silent check is provably a probe that ran.
+- **Step 4, `TraceStore.get_backend_not_found`.**
+  - Failed and retried rows, categorised in Python with `categorize_error`, so this
+    check and the published telemetry count share one definition. The SQL `LIKE
+    '%404%'` only narrows the rows read.
+  - **`backend_model_missing`**, one finding per node: WARNING if the latest 404 is
+    within the last hour, else INFO. It needs no state beyond the traces the retry
+    already writes, which is why the registry mark was dropped.
+- **Step 5a.** `_route_and_stream` rejects an `mlx:` model with a 400 naming
+  `mlx_lm.server` and the routes that reach it. The rejection is recorded with
+  `record_routing_rejection`.
+  - **Not** `no_mlx_server_reason`, as the audit suggested. That helper answers
+    "is a server up for it?"; on this surface the answer is "never", whatever the
+    servers' state.
+- **Step 5b dropped.** After step 0, an embedding-only model on `/api/chat` already
+  gets Ollama's own 400, `"nomic-embed-text:latest" does not support chat`
+  (verified live). An up-front rejection would add a second code path for the
+  same answer.
+- **Verified live.**
+  - Scratch router, fake backend only (no real Ollama, per the lesson above): a
+    node advertising `qwen2.5-coder:14b` on a backend that lacks it gave both
+    checks at WARNING, with URL, model and outcome; `mlx:` on `/api/chat` gave the
+    new 400.
+  - Live router: the verifier probed `bb`, which had all 32 reported models at
+    `http://localhost:11434`; no `backend_*` finding; `mlx:` gave the new 400.
+- **Count:** 52 checks (two added). Tests: 2140.

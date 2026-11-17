@@ -370,3 +370,266 @@ class TestLoopbackHeartbeats:
             ollama_host=f"http://{REMOTE_IP}:11434",
         )
         assert url == f"http://{REMOTE_IP}:11434"
+
+
+# ---------------------------------------------------------------------------
+# Step 4: backend_model_missing, from traces
+# ---------------------------------------------------------------------------
+
+NOT_FOUND_TRACE = "Client error '404 Not Found' for url 'http://10.0.0.1:11434/api/chat'"
+
+
+@pytest.fixture
+async def store(tmp_path):
+    from fleet_manager.server.trace_store import TraceStore
+
+    s = TraceStore(data_dir=str(tmp_path))
+    await s.initialize()
+    yield s
+    await s.close()
+
+
+async def _trace(store, node, model, status, message, ts=None):
+    import uuid
+
+    await store.record_trace(
+        request_id=uuid.uuid4().hex,
+        model=model,
+        original_model=model,
+        node_id=node,
+        status=status,
+        error_message=message,
+    )
+    if ts is not None:
+        await store._db.execute(
+            "UPDATE request_traces SET timestamp=? "
+            "WHERE rowid=(SELECT MAX(rowid) FROM request_traces)",
+            (ts,),
+        )
+        await store._db.commit()
+
+
+class TestBackendNotFoundQuery:
+    @pytest.mark.asyncio
+    async def test_counts_by_node_and_model_and_outcome(self, store):
+        await _trace(store, "broken", MODEL, "retried", NOT_FOUND_TRACE)
+        await _trace(store, "broken", MODEL, "retried", NOT_FOUND_TRACE)
+        await _trace(store, "broken", MODEL, "failed", NOT_FOUND_TRACE)
+        rows = await store.get_backend_not_found()
+        assert rows[("broken", MODEL)]["retried"] == 2
+        assert rows[("broken", MODEL)]["failed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_uses_the_published_category_only(self, store):
+        """A 404 that categorize_error does not call model_not_found, a 400,
+        a completed request and a routing rejection (no node) are all out."""
+        await _trace(store, "broken", MODEL, "failed", "Client error '404' for url 'x/api/chat'")
+        await _trace(store, "broken", MODEL, "failed", "Client error '400 Bad Request'")
+        await _trace(store, "broken", MODEL, "completed", None)
+        await _trace(store, "", MODEL, "rejected", "none of ['x'] exist; 404 not found")
+        assert await store.get_backend_not_found() == {}
+
+    @pytest.mark.asyncio
+    async def test_window(self, store):
+        import time
+
+        await _trace(store, "broken", MODEL, "failed", NOT_FOUND_TRACE, ts=time.time() - 2 * 86400)
+        assert await store.get_backend_not_found() == {}
+
+
+class TestBackendModelMissingCheck:
+    def _nodes(self):
+        node = MagicMock()
+        node.node_id = "broken"
+        node.ollama_base_url = "http://10.0.0.1:11434"
+        return [node]
+
+    def _check(self, rows):
+        from fleet_manager.server.health_engine import HealthEngine
+
+        return HealthEngine()._check_backend_model_missing(rows, self._nodes())
+
+    def test_silent_with_no_rows(self):
+        assert self._check({}) == []
+
+    def test_recent_is_a_warning_naming_the_url_and_both_outcomes(self):
+        import time
+
+        recs = self._check({("broken", MODEL): {"retried": 4, "failed": 1, "last_ts": time.time()}})
+        assert len(recs) == 1
+        r = recs[0]
+        assert (r.check_id, r.severity.value, r.node_id) == (
+            "backend_model_missing",
+            "warning",
+            "broken",
+        )
+        assert "http://10.0.0.1:11434" in r.description
+        assert "1 reached the client" in r.description
+        assert "4 were served by another node" in r.description
+
+    def test_only_older_than_an_hour_is_info(self):
+        import time
+
+        recs = self._check(
+            {("broken", MODEL): {"retried": 1, "failed": 0, "last_ts": time.time() - 7200}}
+        )
+        assert recs[0].severity.value == "info"
+        assert "None in the last hour" in recs[0].description
+
+
+class TestBackendModelMissingEndToEnd:
+    def test_a_retried_404_shows_on_the_health_board(self, two_nodes):
+        import time
+
+        # create_test_app builds the proxy without a trace store; wire it as app.py does.
+        two_nodes.app.state.streaming_proxy._trace_store = two_nodes.app.state.trace_store
+
+        assert _post(two_nodes, "ollama", stream=False).status_code == 200
+        from fleet_manager.server.routes import dashboard
+
+        for _ in range(20):  # trace writes are fire-and-forget
+            dashboard._HEALTH_CACHE["payload"] = None  # 30 s cache, shared across tests
+            report = two_nodes.get("/dashboard/api/health").json()
+            ids = [r["check_id"] for r in report["recommendations"]]
+            if "backend_model_missing" in ids:
+                break
+            time.sleep(0.05)
+        rec = next(r for r in report["recommendations"] if r["check_id"] == "backend_model_missing")
+        assert rec["node_id"] == "broken"
+        assert rec["data"]["retried"] >= 1 and rec["data"]["failed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Step 3: backend_verifier and backend_mismatch
+# ---------------------------------------------------------------------------
+
+
+class _Node:
+    def __init__(self, node_id="n", url="http://10.0.0.1:11434", models=(), status="online"):
+        self.node_id = node_id
+        self.ollama_base_url = url
+        self.status = MagicMock(value=status)
+        self.ollama = MagicMock(models_available=list(models))
+
+
+class _Registry:
+    def __init__(self, nodes):
+        self.nodes = nodes
+
+    def get_all_nodes(self):
+        return self.nodes
+
+
+class _Proxy:
+    def __init__(self, served):
+        self.served = served  # node_id -> list of names, or None (unreachable)
+        self.calls = 0
+
+    async def query_node_models(self, node_id):
+        self.calls += 1
+        names = self.served.get(node_id)
+        return None if names is None else [{"name": n} for n in names]
+
+
+@pytest.fixture
+def verifier_state():
+    from fleet_manager.server import backend_verifier
+
+    backend_verifier._checks.clear()
+    yield backend_verifier
+    backend_verifier._checks.clear()
+
+
+def _verifier(nodes, served, **kw):
+    from fleet_manager.server.backend_verifier import BackendVerifier
+
+    proxy = _Proxy(served)
+    return BackendVerifier(_Registry(nodes), proxy, **kw), proxy
+
+
+def _mismatch(nodes):
+    from fleet_manager.server.health_engine import HealthEngine
+
+    return HealthEngine()._check_backend_mismatch(nodes)
+
+
+class TestBackendVerifier:
+    @pytest.mark.asyncio
+    async def test_agreeing_backend_is_silent(self, verifier_state):
+        nodes = [_Node(models=[MODEL, "mlx:some/model"])]
+        v, _ = _verifier(nodes, {"n": [MODEL]})
+        await v.tick()
+        assert verifier_state.get_backend_checks()["n"].missing == frozenset()
+        assert _mismatch(nodes) == []
+
+    @pytest.mark.asyncio
+    async def test_a_different_ollama_is_named(self, verifier_state):
+        """The gap-2 shape: herd's URL is the router's own Ollama."""
+        nodes = [_Node(url="http://localhost:11434", models=[MODEL, "llama3.2:3b"])]
+        v, _ = _verifier(nodes, {"n": ["gpt-oss:120b"]})
+        await v.tick()
+        recs = _mismatch(nodes)
+        assert len(recs) == 1
+        r = recs[0]
+        assert r.check_id == "backend_mismatch" and r.severity.value == "warning"
+        assert r.data["missing"] == sorted([MODEL, "llama3.2:3b"])
+        assert r.data["extra"] == ["gpt-oss:120b"]
+        assert "http://localhost:11434" in r.description
+        assert "different Ollama" in r.description
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_backend_is_not_a_finding(self, verifier_state):
+        nodes = [_Node(models=[MODEL])]
+        v, _ = _verifier(nodes, {"n": None})
+        await v.tick()
+        assert verifier_state.get_backend_checks() == {}
+        assert _mismatch(nodes) == []
+
+    @pytest.mark.asyncio
+    async def test_a_model_deleted_since_the_probe_drops_out(self, verifier_state):
+        node = _Node(models=[MODEL])
+        v, _ = _verifier([node], {"n": []})
+        await v.tick()
+        assert _mismatch([node])
+        node.ollama.models_available = []  # the next heartbeat no longer lists it
+        assert _mismatch([node]) == []
+
+    @pytest.mark.asyncio
+    async def test_probes_on_url_change_and_on_interval_only(self, verifier_state):
+        import time
+
+        node = _Node(models=[MODEL])
+        v, proxy = _verifier([node], {"n": [MODEL]}, interval_s=300)
+        now = time.time()
+        await v.tick(now)
+        await v.tick(now + 10)
+        assert proxy.calls == 1
+        node.ollama_base_url = "http://10.0.0.2:11434"
+        await v.tick(now + 20)
+        assert proxy.calls == 2
+        await v.tick(time.time() + 301)
+        assert proxy.calls == 3
+
+    @pytest.mark.asyncio
+    async def test_offline_nodes_are_forgotten(self, verifier_state):
+        node = _Node(models=[MODEL])
+        v, _ = _verifier([node], {"n": []})
+        await v.tick()
+        node.status.value = "offline"
+        await v.tick()
+        assert verifier_state.get_backend_checks() == {}
+
+
+# ---------------------------------------------------------------------------
+# Step 5: an mlx: model on the Ollama-native routes
+# ---------------------------------------------------------------------------
+
+
+class TestMlxOnTheNativeApi:
+    @pytest.mark.parametrize("path", ["/api/chat", "/api/generate"])
+    def test_rejected_with_the_reason_and_where_to_send_it(self, one_node, path):
+        body = {"model": "mlx:some/model", "messages": MESSAGES, "prompt": "hi", "stream": False}
+        resp = one_node.post(path, json=body)
+        assert resp.status_code == 400
+        err = resp.json()["error"]
+        assert "mlx_lm.server" in err and "/v1/chat/completions" in err

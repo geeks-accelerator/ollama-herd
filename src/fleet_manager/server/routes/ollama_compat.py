@@ -997,6 +997,24 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         inference_req.client_ip = request.client.host if request.client else ""
     logger.info(f"Ollama request: model={model} stream={inference_req.stream}")
 
+    # An `mlx:` model lives behind mlx_lm.server, which speaks the OpenAI API
+    # only; this surface dispatches to Ollama, which answered the name with a
+    # bare 400 "invalid model name" -- while /api/tags lists the model.  Say why.
+    if model.startswith("mlx:"):
+        reason = (
+            f"'{model}' is served by mlx_lm.server, which the Ollama API "
+            f"(/api/chat, /api/generate) cannot reach. Send it to "
+            f"/v1/chat/completions or /v1/messages instead."
+        )
+        await record_routing_rejection(
+            getattr(request.app.state, "trace_store", None),
+            inference_req,
+            reason=reason,
+            original_format="ollama",
+            client_ip=inference_req.client_ip,
+        )
+        return JSONResponse(status_code=400, content={"error": reason})
+
     # Score with fallback support + auto-pull (per-request strict-mode override)
     allow_fallback = parse_allow_fallback(inference_req.raw_body, request.headers)
     results, actual_model = await score_with_fallbacks(

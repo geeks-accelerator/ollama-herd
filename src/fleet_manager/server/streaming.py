@@ -1369,8 +1369,14 @@ class StreamingProxy:
             resp.raise_for_status()
             return resp.content
 
-    async def query_node_models(self, node_id: str) -> list[dict]:
-        """Query a node's Ollama /api/tags for model details including disk size."""
+    async def query_node_models(self, node_id: str) -> list[dict] | None:
+        """Query a node's Ollama /api/tags for model details including disk size.
+
+        Asks the URL herd dispatches to (``_get_client``), which is what makes it
+        the right probe for ``backend_verifier``.  ``None`` means "could not
+        ask" and ``[]`` means "asked, and it has nothing" -- the verifier must
+        never read an unreachable backend as one that lost every model.
+        """
         try:
             client = self._get_client(node_id)
             resp = await client.get("/api/tags", timeout=10.0)
@@ -1391,7 +1397,7 @@ class StreamingProxy:
             return result
         except Exception as e:
             logger.warning(f"Query models on {node_id} error: {type(e).__name__}: {e}")
-            return []
+            return None
 
     def _get_loaded_context(self, model: str, node_id: str) -> int:
         """Context ``model`` is resident at on ``node_id``, or 0 if unknowable.

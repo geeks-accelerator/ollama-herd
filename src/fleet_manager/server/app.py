@@ -211,6 +211,11 @@ async def lifespan(app: FastAPI):
     fleet_history = FleetHistory(registry, queue_mgr)
     app.state.fleet_history = fleet_history
     history_task = asyncio.create_task(fleet_history.run())
+    # Ask each node's backend, at the URL herd dispatches to, whether it has the
+    # models the node reports (the backend_mismatch check).
+    from fleet_manager.server.backend_verifier import BackendVerifier
+
+    verifier_task = asyncio.create_task(BackendVerifier(registry, streaming_proxy).run())
     rebalancer_task = asyncio.create_task(rebalancer.run())
     optimizer_task = asyncio.create_task(context_optimizer.run())
     queue_mgr.start_reaper()
@@ -297,10 +302,13 @@ async def lifespan(app: FastAPI):
     checkpoint_task.cancel()
     advertiser_task.cancel()
     history_task.cancel()
+    verifier_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await advertiser_task
     with contextlib.suppress(asyncio.CancelledError):
         await history_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await verifier_task
     with contextlib.suppress(asyncio.CancelledError):
         await monitor_task
     with contextlib.suppress(asyncio.CancelledError):

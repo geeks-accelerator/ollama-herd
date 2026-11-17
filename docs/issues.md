@@ -36,7 +36,7 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
-### A backend 404 is never retried, and the router can send remote nodes to its own Ollama `OPEN` (2026-11-17; 1-4 FIXED on `main`, unreleased; plan steps 3-5 open)
+### A backend 404 is never retried, and the router can send remote nodes to its own Ollama `FIXED` (2026-11-17, unreleased)
 
 **Seen in community telemetry, not on this fleet.** `model_not_found` is 58% of all
 reported errors over 30 days (1,515 of 2,594), and 95% of it is one install on one day:
@@ -73,7 +73,8 @@ the native surface answers in-protocol; a truncated native answer is a 502; clie
 errors carry no backend URL. Also fixed, found while testing: with no other node left the
 retry loop raised `RuntimeError("No available nodes ...")`, losing the backend's error and
 leaving no terminal trace. **2 (the loopback shortcut) fixed the same day**: a loopback heartbeat is local only
-when the node's `lan_ip` is the router's own. **Still OPEN:** the plan's checks (steps 3-5).
+when the node's `lan_ip` is the router's own. **The plan's checks shipped the same day too:** `backend_mismatch` (the router asks
+`/api/tags` at its own URL for each node) and `backend_model_missing` (from traces).
 
 **Proposed fix and full evidence:**
 [`docs/plans/backend-model-not-found.md`](plans/backend-model-not-found.md).
