@@ -36,6 +36,28 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### Auto-routing sends Claude Code and Codex to models that cannot take tools `OPEN` (2026-11-17)
+
+`anthropic_autoroute.resolve_model` filters out embedding, decision and (for images)
+non-vision models, but never checks `tools`. Reproduced: with `gemma3:27b` (reports
+`completion, vision`) loaded and `qwen3-coder:30b` (`completion, tools`) on disk, a
+`claude-*` request resolves to `gemma3:27b`, and every tool-bearing turn fails 400
+`does not support tools`. Both `/v1/messages` and `/v1/responses` use it. Community
+telemetry shows the pattern on three installs (`gemma3:27b`, `codestral:22b`).
+**Severity: medium** (only with auto-routing on, which is the default). Plan:
+[`docs/plans/telemetry-errors-2026-11.md`](plans/telemetry-errors-2026-11.md), item 3.
+
+### Traces record httpx's text, not the backend's reason `OPEN` (2026-11-17)
+
+On the main dispatch path a failed trace says `Client error '400 Bad Request' for url
+'...'` while the client receives Ollama's actual reason. So "does not support tools",
+"invalid model name", an MLX context overflow and the rest all categorise as
+`bad_request`: 821 opaque errors across 17 installs in 30 days of community telemetry,
+and the same blindness in this fleet's own dashboard. An in-stream `{"error": ...}` line
+is traced `incomplete` with no reason at all. **Severity: medium** (diagnosability).
+Plan: [`docs/plans/telemetry-errors-2026-11.md`](plans/telemetry-errors-2026-11.md),
+item 1.
+
 ### A backend 404 is never retried, and the router can send remote nodes to its own Ollama `FIXED` (2026-11-17, unreleased)
 
 **Seen in community telemetry, not on this fleet.** `model_not_found` is 58% of all
