@@ -147,7 +147,7 @@ curl -s http://localhost:11435/dashboard/api/apps | python3 -m json.tool
 
 ## Local LLM Dashboard
 
-Web dashboard at `http://localhost:11435/dashboard` with five tabs: Local LLM Overview (live sparklines, activity chart, per-node CPU/memory/tokens), Models, Usage (per-app analytics), Local LLM Health (52 checks plus model recommendations), Settings; plus a Benchmarks page.
+Web dashboard at `http://localhost:11435/dashboard` with five tabs: Local LLM Overview (live sparklines, activity chart, per-node CPU/memory/tokens), Models, Usage (per-app analytics), Local LLM Health (54 checks plus model recommendations), Settings; plus a Benchmarks page.
 
 ## Optimizing Local LLM Latency
 
