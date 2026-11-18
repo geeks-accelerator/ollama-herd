@@ -462,31 +462,41 @@ def direct_proxy_tracer(
     client_ip: str,
     original_format: str,
     tags: list[str],
+    request_id: str | None = None,
+    original_model: str | None = None,
+    score: float | None = None,
+    scores_breakdown: dict | None = None,
 ):
-    """Return ``trace(status, *, error=None, prompt_tokens=None)`` for one request.
+    """Return ``trace(status, *, error=None, prompt_tokens=None, retry_count=0)``.
 
-    For routes that pick a node and POST to a sidecar server directly, bypassing
-    the queue and ``StreamingProxy`` (native text embedding, rerank, vision
-    embedding).  Those never reach ``StreamingProxy``'s trace recording, so each
-    one recorded nothing until it carried its own copy of this closure — and the
-    vision path never got one, leaving its traffic, latency and failures out of
-    every dashboard and health check.  Latency is measured from this call.
+    For routes that POST to a backend directly, bypassing the queue and
+    ``StreamingProxy`` (native text embedding, rerank, vision embedding, and
+    the Ollama embed path).  Those never reach ``StreamingProxy``'s trace
+    recording, so each one recorded nothing until it carried its own copy of
+    this closure — and the vision path never got one, leaving its traffic,
+    latency and failures out of every dashboard and health check.  The Ollama
+    embed path is scored, so it passes its own ``request_id``, ``score`` and
+    breakdown.  Latency is measured from this call.
     """
-    request_id = str(uuid.uuid4())
+    request_id = request_id or str(uuid.uuid4())
     start_ms = time.time() * 1000
 
-    def trace(status: str, *, error: str | None = None, prompt_tokens=None) -> None:
+    def trace(
+        status: str, *, error: str | None = None, prompt_tokens=None, retry_count: int = 0
+    ) -> None:
         if trace_store:
             asyncio.ensure_future(
                 trace_store.record_trace(
                     request_id=request_id,
                     model=model,
-                    original_model=model,
+                    original_model=original_model or model,
                     node_id=node_id,
-                    score=None,
+                    score=score,
+                    scores_breakdown=scores_breakdown,
                     status=status,
                     latency_ms=time.time() * 1000 - start_ms,
                     prompt_tokens=prompt_tokens,
+                    retry_count=retry_count,
                     client_ip=client_ip,
                     original_format=original_format,
                     error_message=error,
@@ -495,6 +505,35 @@ def direct_proxy_tracer(
             )
 
     return trace
+
+
+EMBEDDING_COUNT_MISMATCH = "backend returned the wrong number of embeddings"
+"""Trace text for a mismatch.  Digit-free on purpose: ``categorize_error``
+matches status-like numbers anywhere in a message without an HTTP prefix,
+so "500 inputs" would be filed as ``server_error``.  Counts go to the log and
+to the client."""
+
+
+def embedding_count_mismatch(body: dict, result) -> tuple[int, int] | None:
+    """``(expected, got)`` when a backend did not return one vector per input.
+
+    The check every embed path makes before recording ``completed``.  Without
+    it, Ollama's ``/api/embed`` answering a legacy ``prompt`` body with
+    ``{"embeddings": []}`` was traced as a success, and so was fastembed
+    dropping an empty string, which shifts every later vector by one.
+    ``None`` when the counts agree, or when there is no text ``input`` to
+    count (an image request, an unrecognised shape).
+    """
+    texts = body.get("input")
+    if isinstance(texts, str):
+        expected = 1
+    elif isinstance(texts, list):
+        expected = len(texts)
+    else:
+        return None
+    vectors = result.get("embeddings") if isinstance(result, dict) else None
+    got = len(vectors) if isinstance(vectors, list) else 0
+    return None if got == expected else (expected, got)
 
 
 def _try_vram_fallback(
@@ -833,17 +872,23 @@ def get_all_fleet_models(registry) -> set[str]:
 
 
 def get_fleet_loaded_and_ondisk(registry) -> tuple[set[str], set[str]]:
-    """Split ONLINE-node models into (currently loaded, available on disk).
+    """Split ONLINE-node models into (currently loaded, available on disk)."""
+    return fleet_loaded_and_ondisk(registry.get_online_nodes())
+
+
+def fleet_loaded_and_ondisk(online_nodes) -> tuple[set[str], set[str]]:
+    """``get_fleet_loaded_and_ondisk`` over a list of online nodes.
 
     Used by Anthropic auto-routing to prefer a resident model (no cold load)
-    over one that would have to be pulled into memory.  Healthy MLX servers are
-    counted as loaded (they're always-resident subprocesses) and carry the
-    ``mlx:`` prefix under which they're routed.  Offline nodes are excluded —
-    we can't route to them.
+    over one that would have to be pulled into memory, and by the health
+    checks that must agree with it (they hold a node list, not the registry).
+    Healthy MLX servers are counted as loaded (they're always-resident
+    subprocesses) and carry the ``mlx:`` prefix under which they're routed.
+    Callers pass online nodes only — we can't route to the others.
     """
     loaded: set[str] = set()
     ondisk: set[str] = set()
-    for n in registry.get_online_nodes():
+    for n in online_nodes:
         if n.ollama:
             loaded.update(m.name for m in n.ollama.models_loaded)
             ondisk.update(n.ollama.models_available)
@@ -858,16 +903,22 @@ def get_fleet_loaded_and_ondisk(registry) -> tuple[set[str], set[str]]:
 
 
 def get_fleet_capabilities(registry) -> dict[str, set[str]]:
-    """Ollama-reported capabilities per model, unioned across ONLINE nodes.
+    """Ollama-reported capabilities per model, unioned across ONLINE nodes."""
+    return fleet_capabilities(registry.get_online_nodes())
+
+
+def fleet_capabilities(online_nodes) -> dict[str, set[str]]:
+    """``get_fleet_capabilities`` over a list of online nodes.
 
     The fleet-level view of ``model_has_capability``, for decisions made across
-    nodes (auto-routing, ``/v1/models``).  Presence-only like that helper: a
-    model missing here, or missing a capability, means "unknown" — callers OR
-    this with their name heuristics, so it can only widen what they detect.
+    nodes (auto-routing, ``/v1/models``, the health checks that must agree with
+    them).  Presence-only like that helper: a model missing here, or missing a
+    capability, means "unknown" — callers OR this with their name heuristics,
+    so it can only widen what they detect.
     """
     caps: dict[str, set[str]] = {}
-    for n in registry.get_online_nodes():
-        meta = (n.ollama.models_available_meta if n.ollama else None) or {}
+    for n in online_nodes:
+        meta = getattr(n.ollama, "models_available_meta", None) or {}
         for name, m in meta.items():
             if m is not None and m.capabilities:
                 caps.setdefault(name, set()).update(m.capabilities)

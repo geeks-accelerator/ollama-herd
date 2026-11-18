@@ -34,7 +34,7 @@ uv run ruff format src/          # format
 **Pre-publish (locally):**
 1. Bump version in `pyproject.toml`
 2. Update `CHANGELOG.md` (Keep a Changelog format) — rename `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, leave a fresh empty `[Unreleased]` stub above it
-3. `uv run pytest` — 0 failures
+3. `uv run pytest` — 0 failures, then `FLEET_TEST_REMOTE_CONTRACT=1 uv run pytest tests/test_node/test_telemetry_openapi_contract.py` — the telemetry payload against ollamaherd.com's live schema, which otherwise *skips* when unreachable. A herd that sends a field the service does not accept loses every install's daily send (`extra="forbid"` 422s the whole payload), so this must pass, not skip
 4. `uv run ruff check src/` — clean, then `./scripts/health.sh` — its dependency CVE audit (pip-audit over the locked set, all extras) must pass
 5. Commit + push the version bump
 6. Deploy locally — restart `herd` + `herd-node`, verify: `/fleet/status`, `/api/embed`, `/dashboard/api/health`, `/fleet/queue`
@@ -221,7 +221,7 @@ and `herd.jsonl` gets `No nodes for model=... fallbacks=[]` for whatever request
 arrives before the node re-registers. Both are self-explaining and clear within
 seconds. **This matters because soak notes claim "zero warnings"**, so a check run
 too soon after a deploy will find two and look like a regression; count from after
-the restart settles, or kickstart the node first so its drain reaches a live router.
+the restart settles, or kickstart the node first so its drain reaches a live router. **Node first trades one pattern for another** (measured 2026-11-18): the old router then logs `All 1 nodes eliminated for model ...` for every request in the few seconds before it restarts, because it has marked the drained node away, and the new router still logs the `No nodes` pair before the node re-registers. Same rule either way: count warnings from after the node re-registers.
 
 ### Local deployment
 

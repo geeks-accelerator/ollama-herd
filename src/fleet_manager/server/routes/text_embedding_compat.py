@@ -30,7 +30,12 @@ from fastapi.responses import JSONResponse
 from fleet_manager.models.node import NodeStatus
 from fleet_manager.node.text_embedding_models import get_model_spec, is_text_embedding_model
 from fleet_manager.server.fleet_headers import fleet_headers
-from fleet_manager.server.routes.routing import direct_proxy_tracer, record_routing_rejection
+from fleet_manager.server.routes.routing import (
+    EMBEDDING_COUNT_MISMATCH,
+    direct_proxy_tracer,
+    embedding_count_mismatch,
+    record_routing_rejection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +75,8 @@ class _NativeKind:
     serves: Callable  # node -> bool: can this node answer?
     count_tokens: Callable  # backend result -> int | None
     node_in_body: bool  # add "node" to the JSON body?
+    # body, result -> (expected, got) when the result is unusable, else None
+    count_mismatch: Callable | None = None
 
 
 def _int_or_none(value) -> int | None:
@@ -93,6 +100,8 @@ EMBED = _NativeKind(
     # batch size was the reason.
     count_tokens=lambda result: _int_or_none(result.get("prompt_eval_count")),
     node_in_body=True,
+    # fastembed drops empty strings, which would shift every later vector.
+    count_mismatch=embedding_count_mismatch,
 )
 
 RERANK = _NativeKind(
@@ -261,6 +270,21 @@ async def proxy_to_native_text_server(
         return JSONResponse(status_code=resp.status_code, content=downstream_body)
 
     result = resp.json()
+    mismatch = kind.count_mismatch(body, result) if kind.count_mismatch else None
+    if mismatch:
+        expected, got = mismatch
+        logger.error(
+            f"{kind.label.capitalize()} on {best.node_id}: backend returned {got} "
+            f"embedding(s) for {expected} input(s) (model={model})"
+        )
+        trace("failed", error=EMBEDDING_COUNT_MISMATCH)
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": f"backend returned {got} embedding(s) for {expected} input(s)",
+                "node": best.node_id,
+            },
+        )
     trace("completed", prompt_tokens=kind.count_tokens(result))
     if kind.node_in_body:
         result["node"] = best.node_id

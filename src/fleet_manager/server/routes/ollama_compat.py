@@ -13,7 +13,12 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from fleet_manager.common.errors import UPSTREAM_INCOMPLETE_MESSAGE, client_error_message
+from fleet_manager.common.errors import (
+    UPSTREAM_INCOMPLETE_MESSAGE,
+    client_error_message,
+    describe_exception,
+    ollama_stream_error,
+)
 from fleet_manager.models.node import ModelTagMeta, NodeStatus
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
@@ -21,11 +26,14 @@ from fleet_manager.server.model_knowledge import is_image_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.routing import (
     CLIENT_GONE_STATUS,
+    EMBEDDING_COUNT_MISMATCH,
     _pick_pull_node,
     _pulls_in_flight,
     check_context_overflow,
     client_concurrency_response,
+    direct_proxy_tracer,
     dispatched_stream,
+    embedding_count_mismatch,
     extract_tags,
     get_all_fleet_models,
     parse_allow_fallback,
@@ -702,7 +710,6 @@ async def ollama_pull(request: Request):
 
 
 @router.post("/api/embed")
-@router.post("/api/embeddings")
 async def ollama_embed(request: Request):
     """Ollama-compatible embeddings endpoint. Routes to best node with the model.
 
@@ -714,6 +721,61 @@ async def ollama_embed(request: Request):
     """
     body = await request.json()
     return await dispatch_embed(request, body)
+
+
+@router.post("/api/embeddings")
+async def ollama_embeddings_legacy(request: Request):
+    """Ollama's legacy embeddings endpoint: ``prompt`` in, ``embedding`` out.
+
+    A thin translation over ``dispatch_embed``, like ``/v1/embeddings``.  It
+    used to share ``/api/embed``'s handler, which forwarded ``prompt`` to a
+    backend that only reads ``input``: Ollama answered ``{"embeddings": []}``
+    with a 200, the trace said ``completed``, and a legacy client (older
+    ``ollama-python`` ``embeddings()``, LangChain's legacy ``OllamaEmbeddings``)
+    indexed nothing.  See docs/plans/silent-failures-2026-11.md, issue 1.
+    """
+    body = await request.json()
+    if not isinstance(body, dict):
+        return JSONResponse(
+            status_code=400, content={"error": "request body must be a JSON object"}
+        )
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt:
+        return JSONResponse(
+            status_code=400, content={"error": "prompt is required and must be a non-empty string"}
+        )
+    embed_body = {k: v for k, v in body.items() if k != "prompt"}
+    embed_body["input"] = prompt
+
+    resp = await dispatch_embed(request, embed_body)
+    status, data, headers = embed_result(resp)
+    if status >= 400:
+        return resp
+    vectors = data.get("embeddings")
+    if not isinstance(vectors, list) or len(vectors) != 1:
+        # dispatch_embed checks the count for text backends; this is the
+        # guard for a path that does not (an image model given a prompt).
+        return JSONResponse(
+            status_code=502, content={"error": "backend returned no embedding for the prompt"}
+        )
+    return JSONResponse(content={"embedding": vectors[0]}, headers=headers)
+
+
+def embed_result(resp) -> tuple[int, dict, dict]:
+    """``(status, body, headers)`` of a ``dispatch_embed`` response.
+
+    For the routes that translate it into another shape (``/v1/embeddings``,
+    the legacy ``/api/embeddings``).  Keeps the ``X-Fleet-*`` headers and drops
+    the two Starlette recomputes for the new body.
+    """
+    headers = {
+        k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")
+    }
+    try:
+        data = json.loads(bytes(resp.body))
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        data = {}
+    return resp.status_code, data if isinstance(data, dict) else {}, headers
 
 
 async def dispatch_embed(
@@ -818,8 +880,19 @@ async def dispatch_embed(
     if not node:
         return JSONResponse(status_code=503, content={"error": "Selected node unavailable"})
 
-    trace_store = request.app.state.trace_store
     client_ip = request.client.host if request.client else ""
+    trace = direct_proxy_tracer(
+        request.app.state.trace_store,
+        model=actual_model,
+        original_model=model,
+        node_id=winner.node_id,
+        client_ip=client_ip,
+        original_format=original_format.value,
+        tags=["embed"] + (tags or []),
+        request_id=inference_req.request_id,
+        score=winner.score,
+        scores_breakdown=getattr(winner, "scores_breakdown", None),
+    )
 
     # Proxy directly to Ollama's /api/embed endpoint using the proxy's
     # managed HTTP client (handles LAN IP rewriting, connection pooling).
@@ -848,31 +921,26 @@ async def dispatch_embed(
             elapsed_ms = (time.time() - start) * 1000
 
             result = resp.json()
+            mismatch = embedding_count_mismatch(embed_body, result)
+            if mismatch:
+                expected, got = mismatch
+                logger.error(
+                    f"Embed {inference_req.request_id[:8]} on {winner.node_id}: backend "
+                    f"returned {got} embedding(s) for {expected} input(s) model={actual_model}"
+                )
+                trace("failed", error=EMBEDDING_COUNT_MISMATCH, retry_count=retry_count)
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "error": f"backend returned {got} embedding(s) for {expected} input(s)"
+                    },
+                )
             logger.info(
                 f"Embed {inference_req.request_id[:8]} completed on {winner.node_id} "
                 f"in {elapsed_ms:.0f}ms model={actual_model}"
                 + (f" (retry #{retry_count})" if retry_count else "")
             )
-
-            if trace_store:
-                asyncio.ensure_future(
-                    trace_store.record_trace(
-                        request_id=inference_req.request_id,
-                        model=actual_model,
-                        original_model=model,
-                        node_id=winner.node_id,
-                        score=winner.score,
-                        scores_breakdown=(
-                            winner.scores_breakdown if hasattr(winner, "scores_breakdown") else None
-                        ),
-                        status="completed",
-                        latency_ms=elapsed_ms,
-                        retry_count=retry_count,
-                        client_ip=client_ip,
-                        original_format=original_format.value,
-                        tags=["embed"] + (tags or []),
-                    )
-                )
+            trace("completed", retry_count=retry_count)
 
             return JSONResponse(
                 content=result,
@@ -887,29 +955,12 @@ async def dispatch_embed(
             )
 
         except httpx.HTTPStatusError as e:
-            elapsed_ms = (time.time() - start) * 1000
-            err_msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+            err_msg = describe_exception(e)
             logger.error(f"Embed failed on {winner.node_id}: {err_msg}")
-            if trace_store:
-                asyncio.ensure_future(
-                    trace_store.record_trace(
-                        request_id=inference_req.request_id,
-                        model=actual_model,
-                        original_model=model,
-                        node_id=winner.node_id,
-                        score=winner.score,
-                        status="failed",
-                        latency_ms=elapsed_ms,
-                        retry_count=retry_count,
-                        client_ip=client_ip,
-                        original_format=original_format.value,
-                        error_message=err_msg,
-                        tags=["embed"] + (tags or []),
-                    )
-                )
+            trace("failed", error=err_msg, retry_count=retry_count)
             return JSONResponse(
                 status_code=e.response.status_code,
-                content={"error": f"Ollama returned {err_msg}"},
+                content={"error": client_error_message(e)},
             )
 
         except httpx.ReadTimeout as e:
@@ -924,26 +975,9 @@ async def dispatch_embed(
             await asyncio.sleep(backoff)
 
         except Exception as e:
-            elapsed_ms = (time.time() - start) * 1000
             error_detail = str(e) or repr(e)
             logger.error(f"Embed failed on {winner.node_id}: {type(e).__name__}: {error_detail}")
-            if trace_store:
-                asyncio.ensure_future(
-                    trace_store.record_trace(
-                        request_id=inference_req.request_id,
-                        model=actual_model,
-                        original_model=model,
-                        node_id=winner.node_id,
-                        score=winner.score,
-                        status="failed",
-                        latency_ms=elapsed_ms,
-                        retry_count=retry_count,
-                        client_ip=client_ip,
-                        original_format=original_format.value,
-                        error_message=f"{type(e).__name__}: {error_detail}",
-                        tags=["embed"] + (tags or []),
-                    )
-                )
+            trace("failed", error=f"{type(e).__name__}: {error_detail}", retry_count=retry_count)
             return JSONResponse(
                 status_code=502,
                 content={
@@ -959,23 +993,11 @@ async def dispatch_embed(
         f"Embed ReadTimeout on {winner.node_id} after {retry_count} attempt(s) "
         f"({elapsed_ms:.0f}ms total) — Ollama queue saturated"
     )
-    if trace_store:
-        asyncio.ensure_future(
-            trace_store.record_trace(
-                request_id=inference_req.request_id,
-                model=actual_model,
-                original_model=model,
-                node_id=winner.node_id,
-                score=winner.score,
-                status="failed",
-                latency_ms=elapsed_ms,
-                retry_count=retry_count,
-                client_ip=client_ip,
-                original_format=original_format.value,
-                error_message=f"ReadTimeout after {retry_count} attempt(s): {error_detail}",
-                tags=["embed"] + (tags or []),
-            )
-        )
+    trace(
+        "failed",
+        error=f"ReadTimeout after {retry_count} attempt(s): {error_detail}",
+        retry_count=retry_count,
+    )
     return JSONResponse(
         status_code=504,
         content={
@@ -1128,12 +1150,14 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         # Non-streaming: accumulate full response, consume entire stream
         full_response = ""
         final_data = None
+        backend_error: str | None = None
         try:
             async for chunk in stream:
                 chunk = chunk.strip()
                 if chunk:
                     try:
                         data = json.loads(chunk)
+                        backend_error = ollama_stream_error(data) or backend_error
                         full_response += data.get("message", {}).get("content", "")
                         full_response += data.get("response", "")
                         if data.get("done"):
@@ -1208,6 +1232,6 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         # fixed the same failure on every other surface with a 502.
         return JSONResponse(
             status_code=502,
-            content={"error": UPSTREAM_INCOMPLETE_MESSAGE},
+            content={"error": backend_error or UPSTREAM_INCOMPLETE_MESSAGE},
             headers=headers,
         )

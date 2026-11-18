@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
 from fleet_manager.common.errors import (
+    UPSTREAM_INCOMPLETE_MESSAGE,
     UpstreamIncomplete,
     client_error_message,
     describe_exception,
@@ -762,6 +763,7 @@ async def messages(
         ondisk_names,
         auto_route=auto_route,
         has_images=has_images,
+        has_tools=bool(body.tools),
         capabilities=get_fleet_capabilities(request.app.state.registry),
     )
     if not local_model:
@@ -1153,7 +1155,7 @@ async def messages(
                 # stop_reason for a failure; the honest terminal is an error.
                 if not state.finished:
                     state.failed = True
-                    yield anthropic_stream_error()
+                    yield anthropic_stream_error(state.backend_error or UPSTREAM_INCOMPLETE_MESSAGE)
             except Exception as exc:  # noqa: BLE001 — reported in-stream, not re-raised
                 error = exc
                 state.failed = True
@@ -1221,12 +1223,12 @@ async def messages(
             model=body.model,
             stop_sequences=body.stop_sequences,
         )
-    except UpstreamIncomplete:
+    except UpstreamIncomplete as exc:
         logger.warning(
             f"Anthropic[{rid}] non-streaming: backend ended before done:true on "
             f"node={winner.node_id} — answering 502, not a truncated 200"
         )
-        return upstream_failure_response(anthropic=True)
+        return upstream_failure_response(str(exc), anthropic=True)
     elapsed_ms = (time.time() - t_start) * 1000
     blocks = response.get("content") or []
     block_types = [b.get("type") for b in blocks]

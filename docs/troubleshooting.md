@@ -48,6 +48,44 @@ You should see at least one node in the `nodes` array with `"status": "online"`.
 
 ---
 
+## "does not support tools" from Claude Code, Codex or another agent
+
+**Symptom:** every turn of an agent session fails with `400 ... does not support
+tools`, while plain chat to the same model works. Agent clients send tools on
+every request, so a model without them refuses each one.
+
+Two health checks name it: **`mapped_model_no_tools`** (no traffic needed:
+`FLEET_ANTHROPIC_MODEL_MAP` points a `claude-*` id at a model Ollama reports
+without the `tools` capability) and **`tools_unsupported_requests`** (from traces:
+which models refused tools in the last 24 hours, and how often).
+
+**Fix:** point the client at a tool-capable model. `ollama show <model>` lists
+`tools` under Capabilities when it has them (`qwen3-coder:30b` and `gpt-oss:20b`
+do; `gemma3:27b` does not). For Claude Code and Codex, removing the map entry is
+usually enough: since 0.12.6 auto-routing skips models that report no `tools`
+when a request carries them, and prefers a tool-capable model on disk over one
+without tools that is already loaded, accepting one cold load instead of a
+failure every turn. If no model on the fleet reports `tools` (Ollama before
+0.34.1 under-reports), auto-routing behaves as before.
+
+---
+
+## Legacy `/api/embeddings` returns an empty or unreadable vector
+
+**Symptom (before 0.12.6):** a client using Ollama's older embeddings call
+(`prompt` in, `embedding` out: older `ollama-python` `embeddings()`, LangChain's
+legacy `OllamaEmbeddings`) gets `{"embeddings": []}` with a 200, or vectors
+under a key it does not read, and indexes nothing. Nothing in herd flagged it:
+the trace said `completed`.
+
+**Fix:** upgrade. `/api/embeddings` now translates both ways, and no embedding
+path records `completed` unless the backend returned one vector per input. A
+wrong count is now a **502** traced `failed` with "backend returned the wrong
+number of embeddings", so it shows in the error rates and telemetry instead of
+passing as a success.
+
+---
+
 ## "model 'x' not found" from a node that lists the model
 
 **Symptom:** the node card lists the model, but requests fail with the backend's

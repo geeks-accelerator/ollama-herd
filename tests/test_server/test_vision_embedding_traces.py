@@ -15,6 +15,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from fleet_manager.common.errors import categorize_error
 from fleet_manager.models.node import VisionEmbeddingMetrics, VisionEmbeddingModel
 from tests.conftest import make_heartbeat
 from tests.test_server.test_routes import create_test_app
@@ -120,7 +121,10 @@ class TestVisionEmbeddingTraces:
         assert resp.json() == {"error": "Failed to decode image 0: bad", "node": "mini"}
         t = _trace(app_client)
         assert (t["status"], t["node_id"]) == ("failed", "mini")
-        assert t["error_message"].startswith("HTTP 400")
+        # Status first (what categorize_error keys on), then the node's reason.
+        assert "'400 Bad Request'" in t["error_message"]
+        assert t["error_message"].endswith("Failed to decode image 0: bad")
+        assert categorize_error(t["error_message"]) == "bad_request"
 
     def test_transport_timeout_is_502_and_records_a_cause(self, app_client, vision_backend):
         """httpx timeouts stringify to "" — the trace must still say what happened."""

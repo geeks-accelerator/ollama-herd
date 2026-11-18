@@ -55,6 +55,7 @@ from fleet_manager.common.errors import (
     UPSTREAM_INCOMPLETE_MESSAGE,
     UpstreamIncomplete,
     error_body,
+    ollama_stream_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -345,6 +346,9 @@ class AnthropicSSEState:
     finished: bool = False
     # The turn ended as a failure (an error event was sent), not a stop.
     failed: bool = False
+    # The message of the {"error": ...} line Ollama ended the stream with:
+    # what the error event tells the client instead of "retry".
+    backend_error: str | None = None
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -383,6 +387,12 @@ def ollama_chunk_to_anthropic_events(
         chunk = json.loads(line)
     except json.JSONDecodeError:
         logger.warning(f"Anthropic translator: malformed Ollama JSON: {line[:200]}")
+        return
+
+    backend_error = ollama_stream_error(chunk)
+    if backend_error:
+        # Not content: the route ends the turn with an error event carrying it.
+        state.backend_error = backend_error
         return
 
     msg = chunk.get("message") or {}
@@ -550,6 +560,7 @@ def accumulate_anthropic_response(
     completion_tok = 0
     done_reason = ""
     saw_done = False
+    backend_error: str | None = None
 
     for line in chunks:
         line = line.strip()
@@ -559,6 +570,7 @@ def accumulate_anthropic_response(
             data = json.loads(line)
         except json.JSONDecodeError:
             continue
+        backend_error = ollama_stream_error(data) or backend_error
         msg = data.get("message") or {}
         if msg.get("content"):
             text_parts.append(msg["content"])
@@ -587,9 +599,10 @@ def accumulate_anthropic_response(
             saw_done = True
 
     # No done line: the backend ended before completing.  There is no honest
-    # response to build from partial content -- the route answers 502.
+    # response to build from partial content -- the route answers 502, with the
+    # backend's own reason when it gave one.
     if not saw_done:
-        raise UpstreamIncomplete(UPSTREAM_INCOMPLETE_MESSAGE)
+        raise UpstreamIncomplete(backend_error or UPSTREAM_INCOMPLETE_MESSAGE)
 
     content_blocks: list[dict[str, Any]] = []
     full_text = "".join(text_parts)

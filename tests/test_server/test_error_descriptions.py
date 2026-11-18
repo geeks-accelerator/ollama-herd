@@ -163,6 +163,21 @@ class TestCallSitesUseTheHelper:
         assert "error_message=str(e) or repr(e)" not in src
         assert "describe_exception" in src
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "src/fleet_manager/server/routes/ollama_compat.py",
+            "src/fleet_manager/server/routes/embedding_compat.py",
+        ],
+    )
+    def test_no_hand_built_status_text_from_an_exception(self, path):
+        """``HTTP {status}: {text}`` built from an exception drops nothing httpx
+        knows and gains nothing ``describe_exception`` lacks; two copies of it
+        are how the trace and the categoriser drifted apart."""
+        src = pathlib.Path(path).read_text()
+        assert "e.response.text[:200]" not in src
+        assert "exc.response.text[:200]" not in src
+
 
 # ---------------------------------------------------------------------------
 # categorize_error -- the published error histogram's categories

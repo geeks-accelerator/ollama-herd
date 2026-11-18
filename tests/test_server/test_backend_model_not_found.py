@@ -415,7 +415,7 @@ class TestBackendNotFoundQuery:
         await _trace(store, "broken", MODEL, "retried", NOT_FOUND_TRACE)
         await _trace(store, "broken", MODEL, "retried", NOT_FOUND_TRACE)
         await _trace(store, "broken", MODEL, "failed", NOT_FOUND_TRACE)
-        rows = await store.get_backend_not_found()
+        rows = (await store.get_backend_failures())["model_not_found"]
         assert rows[("broken", MODEL)]["retried"] == 2
         assert rows[("broken", MODEL)]["failed"] == 1
 
@@ -427,14 +427,14 @@ class TestBackendNotFoundQuery:
         await _trace(store, "broken", MODEL, "failed", "Client error '400 Bad Request'")
         await _trace(store, "broken", MODEL, "completed", None)
         await _trace(store, "", MODEL, "rejected", "none of ['x'] exist; 404 not found")
-        assert await store.get_backend_not_found() == {}
+        assert (await store.get_backend_failures())["model_not_found"] == {}
 
     @pytest.mark.asyncio
     async def test_window(self, store):
         import time
 
         await _trace(store, "broken", MODEL, "failed", NOT_FOUND_TRACE, ts=time.time() - 2 * 86400)
-        assert await store.get_backend_not_found() == {}
+        assert (await store.get_backend_failures())["model_not_found"] == {}
 
 
 class TestBackendModelMissingCheck:

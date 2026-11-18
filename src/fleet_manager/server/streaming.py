@@ -14,9 +14,11 @@ import httpx
 from fleet_manager.common.errors import (
     UPSTREAM_INCOMPLETE_MESSAGE,
     backend_error_detail,
+    describe_backend_stream_error,
     describe_exception,
     describe_upstream_incomplete,
     error_body,
+    ollama_stream_error,
 )
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server import debug_log
@@ -194,6 +196,12 @@ class StreamingProxy:
         # _request_done_reason.  Estimates, so they reach the log, never a
         # measured trace column.
         self._request_partial: dict[str, tuple[int, int]] = {}
+        # The message of the {"error": ...} line Ollama ended a stream with.
+        # Written by stream_from_node, popped by _record_incomplete (trace
+        # path only, like _request_partial): the stream is traced ``failed``
+        # with the backend's reason.  Routes read the same line from their own
+        # translator state, so nothing here races them.
+        self._request_backend_error: dict[str, str] = {}
         # Models we've already warned about an inert num_ctx override for.
         self._inert_override_logged: set[tuple[str, int]] = set()
         # Models the backend has told us cannot serve /api/generate at all —
@@ -609,7 +617,7 @@ class StreamingProxy:
                     else:
                         logger.error(
                             f"Non-retryable error for {entry.request.request_id[:8]}: "
-                            f"{type(e).__name__}: {e}"
+                            f"{type(e).__name__}: {describe_exception(e)}"
                         )
                     raise
 
@@ -833,8 +841,23 @@ class StreamingProxy:
         """
         request_id = entry.request.request_id
         chunks, est_tokens = self._request_partial.pop(request_id, (0, 0))
+        backend_error = self._request_backend_error.pop(request_id, None)
         queue_manager.mark_failed(queue_key, entry)
         elapsed_ms = (time.time() - start_time) * 1000
+        if backend_error:
+            # The backend said why it stopped (already logged by
+            # _recover_backend_errors), so this is a failure with a reason,
+            # not a truncation.
+            self._record_trace(
+                entry,
+                node_id,
+                start_time,
+                first_token_time,
+                "failed",
+                error_message=describe_backend_stream_error("Ollama", backend_error),
+                response_chunks=capture_chunks,
+            )
+            return
         logger.warning(
             f"Incomplete stream for {request_id[:8]} on {node_id} — no done:true "
             f"after {elapsed_ms / 1000:.1f}s; client received {chunks} output "
@@ -869,6 +892,9 @@ class StreamingProxy:
         output_chunks = 0
         saw_done = False
         saw_tool_calls = False
+        # The message of an {"error": ...} line, which ends a stream instead of
+        # done:true.  The OpenAI terminal below tells the client this, not "retry".
+        stream_error: str | None = None
 
         async with client.stream("POST", endpoint, json=ollama_body) as response:
             if response.status_code >= 400:
@@ -886,6 +912,10 @@ class StreamingProxy:
                 # Extract token counts and thinking/output breakdown
                 try:
                     parsed = json.loads(line)
+                    line_error = ollama_stream_error(parsed)
+                    if line_error:
+                        stream_error = line_error
+                        self._request_backend_error[request.request_id] = line_error
                     # Count thinking vs output tokens from streaming chunks.
                     # Ollama sends thinking content in message.thinking and
                     # regular content in message.content.
@@ -951,7 +981,9 @@ class StreamingProxy:
             self._request_partial[request.request_id] = (output_chunks, output_token_count)
         if request.original_format == RequestFormat.OPENAI:
             yield (
-                "data: [DONE]\n\n" if saw_done else openai_stream_error(UPSTREAM_INCOMPLETE_MESSAGE)
+                "data: [DONE]\n\n"
+                if saw_done
+                else openai_stream_error(stream_error or UPSTREAM_INCOMPLETE_MESSAGE)
             )
 
     @staticmethod

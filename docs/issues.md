@@ -36,7 +36,47 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
-### Auto-routing sends Claude Code and Codex to models that cannot take tools `OPEN` (2026-11-17)
+### Legacy `/api/embeddings` answers 200 with an empty or wrongly-keyed vector `FIXED` (2026-11-18, unreleased)
+
+**Fixed:** `/api/embeddings` has its own handler translating `prompt` → `input` and `embeddings[0]` → `embedding`, and every embed path checks one vector per input before recording `completed` (`routing.embedding_count_mismatch`), so a wrong count is a 502 traced `failed`. Verified live: `bge-m3` and `mxbai-embed-large` match Ollama's own legacy answer (cosine 1.0).
+
+`/api/embeddings` is registered on the same handler as `/api/embed` and forwarded
+unchanged, but the two speak different shapes: the legacy endpoint takes `prompt`
+and answers `{"embedding": [...]}`, the current one takes `input` and answers
+`{"embeddings": [[...]]}`. Reproduced on 0.12.5 against this fleet:
+`bge-m3:latest` and `mxbai-embed-large:latest` come back
+**`{"embeddings": []}` with HTTP 200 and a `completed` trace** (Ollama's
+`/api/embed` ignores `prompt`), while Ollama itself answers
+`{"embedding": [...]}`; `nomic-embed-text` (native server) returns vectors
+under the plural key, which a legacy client does not read. **Invisible to every
+signal herd has** — the trace is `completed`, so telemetry and health checks see
+success while a RAG pipeline indexes nothing. Clients still on the legacy call
+include older `ollama-python` `embeddings()` and LangChain's legacy
+`OllamaEmbeddings`. **Severity: high** (silent wrong answer). Fix: translate in
+the handler (`prompt` → `input`, `embeddings[0]` → `embedding`) when the path is
+the legacy one, with a test per backend (Ollama, native text, vision). Plan:
+[`docs/plans/silent-failures-2026-11.md`](plans/silent-failures-2026-11.md), issue 1.
+
+### Telemetry cannot see a request that was neither completed nor failed `FIXED` (2026-11-18, unreleased)
+
+**Fixed:** the service accepts four outcome counts since 2026-11-18 (`ollama-herd-private` `d828f36`); the rollup maps every status through `OUTCOME_FIELDS`, excludes `retried` from `requests`, and a test asserts every status in `trace_store.TRACE_STATUSES` is counted or excluded. `record_trace` logs an ERROR for any status outside that list.
+
+`anonymous_rollup` counts `completed` as success and `failed` as error; `rejected`,
+`incomplete`, `no_output`, `client_disconnected` and `retried` count only toward
+`requests`. Over 30 days that remainder was **2,678 requests against 2,530
+errors** — larger than every error category together, and on some models most of
+the traffic: `granite4.2:8b` 275 of 283 (p50 423 s), `qwen3:0.6b` 127 of 175,
+`qwen3.5:27b` 66 of 83, `llama3.3:70b-frame` 48 of 48 with no latency recorded
+(which reads as rejected). Retries inflate it harmlessly, but a truncated stream
+or a rejection is a failed request from the client's side and telemetry cannot
+tell which it was. Fix needs the service first (the payload is `extra="forbid"`):
+publish per-status counts, then decide whether `incomplete`/`rejected` belong in
+`error_count`. **Severity: medium** (observability; hides real failures). Plan:
+[`docs/plans/silent-failures-2026-11.md`](plans/silent-failures-2026-11.md), issue 4.
+
+### Auto-routing sends Claude Code and Codex to models that cannot take tools `FIXED` (2026-11-18, unreleased)
+
+**Fixed:** `resolve_model(has_tools=...)` skips models reported without `tools` when some model reports them; the health check resolves with the same capabilities and `has_tools=True`; `mapped_model_no_tools` and `tools_unsupported_requests` name the remaining cases.
 
 `anthropic_autoroute.resolve_model` filters out embedding, decision and (for images)
 non-vision models, but never checks `tools`. Reproduced: with `gemma3:27b` (reports
@@ -47,7 +87,9 @@ telemetry shows the pattern on three installs (`gemma3:27b`, `codestral:22b`).
 **Severity: medium** (only with auto-routing on, which is the default). Plan:
 [`docs/plans/telemetry-errors-2026-11.md`](plans/telemetry-errors-2026-11.md), item 3.
 
-### Traces record httpx's text, not the backend's reason `OPEN` (2026-11-17)
+### Traces record httpx's text, not the backend's reason `FIXED` (2026-11-18, unreleased)
+
+**Fixed:** `describe_exception` appends the backend's message; `categorize_error` reads stated reasons, then the status, and uses bare digits only when no status is stated; an Ollama in-stream error is traced `failed` with its text and reaches every client surface. Verified live: the gemma3 + tools trace reads `... does not support tools`.
 
 On the main dispatch path a failed trace says `Client error '400 Bad Request' for url
 '...'` while the client receives Ollama's actual reason. So "does not support tools",
@@ -58,7 +100,7 @@ is traced `incomplete` with no reason at all. **Severity: medium** (diagnosabili
 Plan: [`docs/plans/telemetry-errors-2026-11.md`](plans/telemetry-errors-2026-11.md),
 item 1.
 
-### A backend 404 is never retried, and the router can send remote nodes to its own Ollama `FIXED` (2026-11-17, unreleased)
+### A backend 404 is never retried, and the router can send remote nodes to its own Ollama `FIXED` (2026-11-17, 0.12.5)
 
 **Seen in community telemetry, not on this fleet.** `model_not_found` is 58% of all
 reported errors over 30 days (1,515 of 2,594), and 95% of it is one install on one day:

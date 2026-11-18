@@ -214,7 +214,7 @@ async def embed_image(request: Request):
             downstream_body.setdefault("node", best.node_id)
         # Same recording as native text embedding: the node answered with an
         # error, so it is a failed request on that node, 4xx included.
-        trace("failed", error=f"HTTP {downstream_status}: {exc.response.text[:200]}")
+        trace("failed", error=describe_exception(exc))
         return JSONResponse(status_code=downstream_status, content=downstream_body)
     except Exception as exc:
         # Transport error (timeout, connection refused, etc) — genuinely a

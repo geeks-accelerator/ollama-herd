@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Telemetry counts how every request ended, not only successes and errors.** Each model entry now carries `rejected_count`, `incomplete_count`, `no_output_count` and `disconnected_count`. Before, a request no machine could take, an answer that was cut off, a model that produced nothing and a client that gave up all counted toward `requests` and nothing else: over 30 days of community telemetry, 2,678 requests had no recorded outcome, more than every error category together. `requests` now counts each request once, so a request retried on another machine is no longer counted per attempt. ollamaherd.com accepts the fields since 2026-11-18, and [/telemetry](https://ollamaherd.com/telemetry) lists them. No new identifiers or free text.
+- **`mapped_model_no_tools` health check.** Warns when `FLEET_ANTHROPIC_MODEL_MAP` points a `claude-*` id at a model Ollama reports without the `tools` capability. Claude Code and Codex send tools on every turn, so every request mapped there would fail. Needs no traffic.
+- **`tools_unsupported_requests` health check.** Names the models that refused tools in the last 24 hours, from traces, with how often. Catches clients that name such a model themselves on any API.
+
+### Fixed
+
+- **The legacy `/api/embeddings` endpoint returned an empty or unreadable vector.** It shared `/api/embed`'s handler, so a legacy body (`prompt`) reached Ollama with no `input`: Ollama answered `{"embeddings": []}`, herd returned it with a 200, and the trace said `completed`. A client on the older call (older `ollama-python` `embeddings()`, LangChain's legacy `OllamaEmbeddings`) indexed nothing while every signal herd has reported success. It now takes `prompt` and returns `{"embedding": [...]}`, as Ollama does, for Ollama-served models and herd's native `nomic-embed-text` alike.
+- **No embedding request is recorded as completed unless the backend returned one vector per input.** A wrong count is now a 502, traced `failed`, on `/api/embed`, `/api/embeddings` and `/v1/embeddings`, and for herd's native embedding server too (which drops empty strings, shifting every later vector). `/v1/embeddings` already answered 502 here, but only after the trace had said `completed`.
+- **Auto-routing no longer sends Claude Code and Codex to models that cannot take tools.** With a no-tools model loaded (such as `gemma3:27b`) and a tool-capable one on disk, every agent turn went to the loaded one and failed with `does not support tools`. When a request carries tools and some model on the fleet reports them, models reported without tools are skipped, and a tool-capable model on disk beats a loaded one without them. A fleet where no model reports `tools` routes as before. The `anthropic_no_chat_model` check now resolves exactly as the route does, with the reported capabilities and tools.
+- **Traces record the backend's reason, not just httpx's text.** A failed request was traced as `Client error '400 Bad Request' for url ...`, so "does not support tools", "invalid model name" and an MLX context overflow all reached the telemetry histogram as one `bad_request`. Traces and logs now append the backend's own message. Categories read a stated reason first and the HTTP status second, so a number in the backend's text ("5000 tokens" on a 429) can no longer file it as `server_error`. Clients still never see a backend URL.
+- **A stream Ollama ends with an error is a failure with its reason, not "retry".** When Ollama ended a stream with `{"error": ...}` instead of finishing (for example a prompt over the model's context limit), the trace said `incomplete` with a generic message, and the OpenAI, Anthropic and Responses APIs told the client the stream ended early and to retry, which fails the same way again. The trace is now `failed` with the backend's message, and every API, streaming or not, including Ollama's own non-streaming answer, passes that message to the client. A stream that simply stops is still `incomplete`.
+
 ## [0.12.5] - 2026-11-17
 
 ### Added

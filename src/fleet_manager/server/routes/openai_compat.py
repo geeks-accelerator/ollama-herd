@@ -534,6 +534,7 @@ async def chat_completions(request: Request):
         # "stop", so a truncated answer came back as a successful 200.
         finish_reason: str | None = None
         upstream_failed = False
+        upstream_message: str | None = None
         try:
             async for chunk in stream:
                 # One yielded string can hold several SSE events -- the done line
@@ -547,6 +548,10 @@ async def chat_completions(request: Request):
                         data = json.loads(event[6:])
                         if data.get("error"):
                             upstream_failed = True
+                            err = data["error"]
+                            upstream_message = (
+                                err.get("message") if isinstance(err, dict) else str(err)
+                            ) or upstream_message
                             continue
                         finish_reason = (
                             data.get("choices", [{}])[0].get("finish_reason") or finish_reason
@@ -579,7 +584,7 @@ async def chat_completions(request: Request):
                 f"OpenAI non-streaming {inference_req.request_id[:8]}: backend ended "
                 f"before done:true — answering 502, not a truncated 200"
             )
-            return upstream_failure_response()
+            return upstream_failure_response(upstream_message or UPSTREAM_INCOMPLETE_MESSAGE)
 
         # Retrieve real token counts extracted from Ollama response
         tokens = proxy.pop_token_counts(inference_req.request_id)
@@ -816,23 +821,13 @@ async def openai_embeddings(request: Request):
     if dimensions is not None:
         embed_body["dimensions"] = dimensions
 
-    from fleet_manager.server.routes.ollama_compat import dispatch_embed
+    from fleet_manager.server.routes.ollama_compat import dispatch_embed, embed_result
 
     resp = await dispatch_embed(request, embed_body, original_format=RequestFormat.OPENAI)
-
-    # Keep the X-Fleet-* headers the embed path set; drop the ones Starlette
-    # recomputes for the new body.
-    passthrough_headers = {
-        k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")
-    }
-
-    try:
-        data = json.loads(bytes(resp.body))
-    except (json.JSONDecodeError, ValueError, AttributeError):
-        data = {}
+    _, data, passthrough_headers = embed_result(resp)
 
     if resp.status_code >= 400:
-        err = data.get("error") if isinstance(data, dict) else None
+        err = data.get("error")
         message = str(err) if err else f"embedding failed with HTTP {resp.status_code}"
         if resp.status_code == 404:
             return _openai_error(404, message, "invalid_request_error", "model_not_found")
@@ -850,18 +845,12 @@ async def openai_embeddings(request: Request):
             )
         return _openai_error(resp.status_code, message, "api_error")
 
-    embeddings = data.get("embeddings") if isinstance(data, dict) else None
+    # dispatch_embed checks one vector per text input before recording
+    # ``completed`` and answers 502 (translated above) otherwise, so this guard
+    # only catches a path it does not check, such as an image model.
+    embeddings = data.get("embeddings")
     if not isinstance(embeddings, list) or len(embeddings) != len(texts):
-        got = len(embeddings) if isinstance(embeddings, list) else "no"
-        logger.error(
-            f"/v1/embeddings: backend returned {got} embedding(s) for "
-            f"{len(texts)} input(s) (model={model})"
-        )
-        return _openai_error(
-            502,
-            f"backend returned {got} embedding(s) for {len(texts)} input(s)",
-            "api_error",
-        )
+        return _openai_error(502, "backend returned no usable embeddings", "api_error")
     if dimensions is not None and any(len(e) != dimensions for e in embeddings):
         return _openai_error(
             400,

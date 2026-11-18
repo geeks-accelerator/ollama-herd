@@ -40,6 +40,7 @@ from fleet_manager.common.errors import (
     UPSTREAM_INCOMPLETE,
     UPSTREAM_INCOMPLETE_MESSAGE,
     UpstreamIncomplete,
+    ollama_stream_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -1052,10 +1053,12 @@ def accumulate_responses_object(
     input_tokens = output_tokens = 0
     done_reason = ""
     saw_done = False
+    backend_error: str | None = None
     for line in chunks:
         chunk = _parse_ollama_chunk(line)
         if chunk is None:
             continue
+        backend_error = ollama_stream_error(chunk) or backend_error
         text, tcs, done = _chunk_parts(chunk)
         if text:
             text_parts.append(text)
@@ -1067,9 +1070,10 @@ def accumulate_responses_object(
             done_reason = chunk.get("done_reason", "") or ""
             saw_done = True
     # No done line: the backend ended before completing.  There is no honest
-    # response to build from partial content -- the route answers 502.
+    # response to build from partial content -- the route answers 502, with the
+    # backend's own reason when it gave one.
     if not saw_done:
-        raise UpstreamIncomplete(UPSTREAM_INCOMPLETE_MESSAGE)
+        raise UpstreamIncomplete(backend_error or UPSTREAM_INCOMPLETE_MESSAGE)
     return build_responses_object(
         model=model,
         text="".join(text_parts),
@@ -1182,6 +1186,12 @@ def ollama_chunk_to_responses_events(line: str, state: ResponsesSSEState) -> Ite
     """Translate one Ollama NDJSON line into zero-or-more Responses SSE events."""
     chunk = _parse_ollama_chunk(line)
     if chunk is None:
+        return
+    backend_error = ollama_stream_error(chunk)
+    if backend_error:
+        # Not content: the route ends the turn with response.failed, whose
+        # message is this instead of "retry".
+        state.error_message = backend_error
         return
     text, tool_calls, done = _chunk_parts(chunk)
 

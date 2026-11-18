@@ -90,6 +90,29 @@ def fleet_status(recommendations: list[Recommendation]) -> str:
 _OVERSIZE_HEADROOM_GB = 40.0
 
 
+def _anthropic_model_map() -> dict:
+    """``FLEET_ANTHROPIC_MODEL_MAP`` as a dict, ``{}`` when unset or malformed.
+
+    Read from the environment because ``HealthEngine`` is not handed settings.
+    One parser for every check that reads the map; there were two copies.
+    """
+    import json
+    import os
+
+    raw = os.environ.get("FLEET_ANTHROPIC_MODEL_MAP", "")
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _online(nodes) -> list:
+    return [n for n in nodes if n.status.value == "online"]
+
+
 def _free_memory_gb(nodes) -> float:
     """Most free memory reported by any node, or inf when unknown.
 
@@ -204,8 +227,13 @@ class HealthEngine:
             )
             recommendations.extend(self._check_error_rates(error_rates, recent_errors))
             recommendations.extend(self._check_retry_rates(retry_stats))
-            not_found = await trace_store.get_backend_not_found()
-            recommendations.extend(self._check_backend_model_missing(not_found, nodes))
+            backend_failures = await trace_store.get_backend_failures()
+            recommendations.extend(
+                self._check_backend_model_missing(backend_failures["model_not_found"], nodes)
+            )
+            recommendations.extend(
+                self._check_tools_unsupported(backend_failures["tools_unsupported"])
+            )
 
             # Context waste analysis
             mlx_counts = await trace_store.get_request_count_by_model(seconds=86400)
@@ -2133,7 +2161,7 @@ class HealthEngine:
     def _check_backend_model_missing(self, not_found, nodes) -> list[Recommendation]:
         """A node's backend answered 404 "model not found" for a model it lists.
 
-        From traces (``get_backend_not_found``), so it needs no state of its
+        From traces (``get_backend_failures``), so it needs no state of its
         own.  ``retried`` rows were served by a peer -- the client is fine and
         the node is still wrong; ``failed`` rows reached the client.  Before
         the retry existed, one install failed 1,440 requests in a row this way
@@ -2182,6 +2210,52 @@ class HealthEngine:
                 )
             )
         return recs
+
+    def _check_tools_unsupported(self, failures) -> list[Recommendation]:
+        """Requests with tools went to a model that does not support them.
+
+        Claude Code and Codex send tools on every turn.  Auto-routing now
+        skips models that report no ``tools`` (and ``mapped_model_no_tools``
+        covers the explicit map), so this catches what those cannot: a client
+        naming such a model itself on any surface, or a model whose
+        capabilities were never reported.  Community telemetry showed it on
+        three installs (gemma3:27b, codestral:22b) before the reason was even
+        in the traces.  Per model, since the model lacks tools on every node.
+
+        What does it fire on when everything is working? Nothing: a model that
+        supports tools never answers ``does not support tools``.
+        """
+        if not failures:
+            return []
+        by_model: dict[str, dict] = {}
+        for (_node, model), row in failures.items():
+            agg = by_model.setdefault(model, {"failed": 0, "last_ts": 0.0})
+            agg["failed"] += row["failed"] + row["retried"]
+            agg["last_ts"] = max(agg["last_ts"], row["last_ts"])
+        recent_cutoff = time.time() - self.RECENT_WINDOW_S
+        active = any(a["last_ts"] >= recent_cutoff for a in by_model.values())
+        lines = ", ".join(f"{m} ({a['failed']}x)" for m, a in sorted(by_model.items()))
+        total = sum(a["failed"] for a in by_model.values())
+        return [
+            Recommendation(
+                check_id="tools_unsupported_requests",
+                severity=Severity.WARNING if active else Severity.INFO,
+                title=f"{total} request(s) sent tools to a model without tool support",
+                description=(
+                    f"In the last 24h: {lines}. Each was refused with 'does not "
+                    f"support tools'. Agent clients such as Claude Code and Codex "
+                    f"send tools on every turn, so with one of these models every "
+                    f"turn fails." + ("" if active else " None in the last hour.")
+                ),
+                fix=(
+                    "Point the client at a tool-capable model (`ollama show <name>` "
+                    "lists `tools` under Capabilities), or, for Claude Code and "
+                    "Codex, remove the FLEET_ANTHROPIC_MODEL_MAP entry naming it so "
+                    "auto-routing picks one."
+                ),
+                data={"models": by_model},
+            )
+        ]
 
     def _check_mlx_requests_unservable(
         self, nodes, mlx_request_counts: dict[str, int] | None = None
@@ -2935,42 +3009,18 @@ class HealthEngine:
         both ``models_loaded`` (ideal — hot) and ``models_available``
         (good enough — on disk).
         """
-        import os
+        from fleet_manager.server.routes.routing import (
+            fleet_capabilities,
+            fleet_loaded_and_ondisk,
+        )
 
-        # Read the map from env (we don't have direct access to settings here,
-        # but all the mapped values that matter to this check are the values)
-        raw_map = os.environ.get("FLEET_ANTHROPIC_MODEL_MAP", "")
-        if not raw_map:
-            return []
-        try:
-            import json as _json
-
-            model_map = _json.loads(raw_map)
-        except (_json.JSONDecodeError, ValueError, TypeError):
-            return []
-        if not isinstance(model_map, dict):
-            return []
-
+        model_map = _anthropic_model_map()
         mapped_targets = {v for v in model_map.values() if isinstance(v, str) and v}
         if not mapped_targets:
             return []
 
-        # Collect all model names across the online fleet
-        all_available: set[str] = set()
-        all_loaded: set[str] = set()
-        for node in nodes:
-            if node.status.value != "online":
-                continue
-            ollama = getattr(node, "ollama", None)
-            if ollama is None:
-                continue
-            for m in ollama.models_available or []:
-                if isinstance(m, str):
-                    all_available.add(m)
-            for m in ollama.models_loaded or []:
-                name = getattr(m, "name", None)
-                if isinstance(name, str):
-                    all_loaded.add(name)
+        online = _online(nodes)
+        all_loaded, all_available = fleet_loaded_and_ondisk(online)
 
         missing_entirely: list[str] = []
         not_hot: list[str] = []
@@ -3027,6 +3077,37 @@ class HealthEngine:
                     data={"not_hot": sorted(not_hot)},
                 )
             )
+
+        # Claude Code and Codex send tools on every turn.  A target its nodes
+        # report capabilities for, without "tools", answers each turn 400.
+        # Presence-only: a model with no reported capabilities is skipped.
+        caps = fleet_capabilities(online)
+        no_tools = sorted(
+            t
+            for t in mapped_targets
+            if not t.startswith("mlx:") and caps.get(t) and "tools" not in caps[t]
+        )
+        if no_tools:
+            recs.append(
+                Recommendation(
+                    check_id="mapped_model_no_tools",
+                    severity=Severity.WARNING,
+                    title="Mapped model cannot use tools",
+                    description=(
+                        f"FLEET_ANTHROPIC_MODEL_MAP points at {', '.join(no_tools)}, "
+                        f"which Ollama reports without the tools capability. Claude "
+                        f"Code and Codex send tools on every turn, so each request "
+                        f"mapped there fails with 'does not support tools'."
+                    ),
+                    fix=(
+                        "Map those ids to a tool-capable model (`ollama show <name>` "
+                        "lists `tools` under Capabilities), e.g. qwen3-coder:30b or "
+                        "gpt-oss:20b. Or remove the entry and let auto-routing pick "
+                        "one: it skips models without tools when a request has them."
+                    ),
+                    data={"no_tools": no_tools},
+                )
+            )
         return recs
 
     def _check_anthropic_no_chat_model(self, nodes) -> list[Recommendation]:
@@ -3045,23 +3126,18 @@ class HealthEngine:
         an embeddings-only deployment is correctly flagged (it can't serve
         Claude Code) — the WARNING says to ignore it if that's intentional.
         """
-        import json as _json
         import os
 
         from fleet_manager.server.anthropic_autoroute import (
             rank_candidates,
             resolve_model,
         )
+        from fleet_manager.server.routes.routing import (
+            fleet_capabilities,
+            fleet_loaded_and_ondisk,
+        )
 
-        model_map: dict = {}
-        raw_map = os.environ.get("FLEET_ANTHROPIC_MODEL_MAP", "")
-        if raw_map:
-            try:
-                parsed = _json.loads(raw_map)
-                if isinstance(parsed, dict):
-                    model_map = parsed
-            except (ValueError, TypeError):
-                model_map = {}
+        model_map = _anthropic_model_map()
         auto_route = os.environ.get("FLEET_ANTHROPIC_AUTO_ROUTE", "true").strip().lower() not in (
             "false",
             "0",
@@ -3069,35 +3145,23 @@ class HealthEngine:
             "off",
         )
 
-        loaded: set[str] = set()
-        ondisk: set[str] = set()
-        any_online = False
-        for node in nodes:
-            if node.status.value != "online":
-                continue
-            any_online = True
-            ollama = getattr(node, "ollama", None)
-            if ollama is not None:
-                for m in ollama.models_loaded or []:
-                    name = getattr(m, "name", None)
-                    if isinstance(name, str):
-                        loaded.add(name)
-                for m in ollama.models_available or []:
-                    if isinstance(m, str):
-                        ondisk.add(m)
-            for s in getattr(node, "mlx_servers", None) or []:
-                if getattr(s, "status", None) == "healthy" and getattr(s, "model", None):
-                    nm = f"mlx:{s.model}"
-                    loaded.add(nm)
-                    ondisk.add(nm)
-        ondisk |= loaded
-
+        online = _online(nodes)
         # No online node → offline-fleet checks own that; nothing to say here.
-        if not any_online:
+        if not online:
             return []
+        loaded, ondisk = fleet_loaded_and_ondisk(online)
 
+        # Exactly what the route passes, so this check cannot disagree with
+        # it: the reported capabilities, and tools, which Claude Code always
+        # sends.  It used to omit both.
         model, _reason = resolve_model(
-            "claude-sonnet-4-5", model_map, loaded, ondisk, auto_route=auto_route
+            "claude-sonnet-4-5",
+            model_map,
+            loaded,
+            ondisk,
+            auto_route=auto_route,
+            has_tools=True,
+            capabilities=fleet_capabilities(online),
         )
         if model:
             return []  # a claude-* request would resolve fine

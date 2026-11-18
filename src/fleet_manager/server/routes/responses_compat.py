@@ -123,6 +123,7 @@ async def responses(request: Request):
         ondisk_names,
         auto_route=auto_route,
         has_images=has_images,
+        has_tools=bool(body.get("tools")),
         capabilities=get_fleet_capabilities(registry),
     )
     if not local_model:
@@ -359,12 +360,12 @@ async def responses(request: Request):
         response = accumulate_responses_object(
             chunks, model=actual_model, custom_names=custom_tool_names, known_names=known_tool_names
         )
-    except UpstreamIncomplete:
+    except UpstreamIncomplete as exc:
         logger.warning(
             f"Responses[{rid}] non-streaming: backend ended before done:true on "
             f"node={winner.node_id} — answering 502, not a truncated 200"
         )
-        return upstream_failure_response()
+        return upstream_failure_response(str(exc))
     _text = "".join(
         c.get("text", "")
         for o in (response.get("output") or [])

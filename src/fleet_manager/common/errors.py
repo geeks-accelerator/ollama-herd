@@ -13,15 +13,21 @@ first real community telemetry payload arrived carrying ``errors:
 message, so a missing message at the source looked like a categorisation gap
 in the histogram (``docs/issues.md`` — MLX empty ``error_message``).
 
-``describe_exception`` is deliberately a no-op when the exception already has
-a message, so paths that previously recorded ``str(exc)`` keep recording the
-exact same bytes.  It only changes the empty case, where it substitutes the
-class name — which is both the most useful thing available and, not by
-accident, categorisable: ``ReadTimeout`` contains "timeout", and
-``categorize_error`` grew matching rules for the rest.
+``describe_exception`` substitutes the class name when ``str(exc)`` is empty
+— which is both the most useful thing available and, not by accident,
+categorisable: ``ReadTimeout`` contains "timeout", and ``categorize_error``
+grew matching rules for the rest.  For an HTTP status error it also appends
+the backend's own message, because httpx's text names only the status and
+the URL: ``does not support tools``, ``invalid model name`` and an MLX
+context overflow all reached traces (and the telemetry histogram) as one
+indistinguishable ``bad_request`` (docs/plans/telemetry-errors-2026-11.md).
+``categorize_error`` reads the status first, so the backend's words can only
+move a category toward the reason the backend gave.
 """
 
 from __future__ import annotations
+
+import re
 
 __all__ = [
     "UPSTREAM_INCOMPLETE",
@@ -31,24 +37,35 @@ __all__ = [
     "categorize_error",
     "client_error_message",
     "describe_exception",
+    "describe_backend_stream_error",
     "describe_upstream_incomplete",
     "error_body",
+    "ollama_stream_error",
 ]
 
 
 def describe_exception(exc: BaseException | None) -> str | None:
     """Render ``exc`` as a non-empty description, or ``None`` if there is no error.
 
-    Returns ``str(exc)`` **unchanged** whenever that is non-empty.  That is the
-    point: this drops into an existing ``error_message=str(exc)`` without
-    shifting a single message that already worked, so no already-correct
-    category in the published telemetry histogram can move.  Only the empty
-    case changes, where the class name (``"ReadTimeout"``) replaces ``""``.
+    For traces and logs only: an HTTP error's text carries the backend URL, so
+    a client is told ``client_error_message`` instead.
+
+    * ``str(exc)`` when it is non-empty, else the class name
+      (``"ReadTimeout"``), so a failure never records an empty cause.
+    * For an HTTP status error whose body says why, httpx's first line plus
+      ``": "`` plus the backend's message.  The status prefix stays first,
+      which is what ``categorize_error`` keys on; httpx's second line (a
+      generic MDN link) is dropped.
     """
     if exc is None:
         return None
-    detail = str(exc).strip()
-    return detail or type(exc).__name__
+    text = str(exc).strip()
+    reason = backend_error_detail(exc)
+    if text and reason:
+        first_line = text.splitlines()[0].rstrip()
+        if reason not in first_line:
+            return f"{first_line}: {reason}"
+    return text or type(exc).__name__
 
 
 def backend_error_detail(exc: BaseException | None) -> str | None:
@@ -146,21 +163,39 @@ def categorize_error(error_message: str | None) -> str:
         return "unknown"
     msg = error_message.lower()
 
-    # HTTP-layer errors (what we see most from Ollama)
-    if "404" in msg and "not found" in msg:
-        return "model_not_found"
-    if "400" in msg and ("context" in msg or "num_ctx" in msg):
-        return "context_too_long"
-    if "400" in msg:
-        return "bad_request"
-    if "500" in msg or "502" in msg or "503" in msg or "504" in msg:
-        return "server_error"
-
-    # Resource errors
+    # A stated reason beats any number.  Backend text carries digits ("input
+    # length (5000 tokens) exceeds the model's maximum context length"), which
+    # the bare-status rules further down would file as server_error.
     if "out of memory" in msg or "vram" in msg or "cuda oom" in msg:
         return "vram_exceeded"
     if "context" in msg and ("too long" in msg or "exceeds" in msg):
         return "context_too_long"
+
+    # Then the status, when the message says which: httpx's "Client error '400
+    # ...'" or herd's own "HTTP 400: ...", categorised by itself rather than by
+    # whatever numbers the backend's text happens to contain.
+    status = _http_status(msg)
+    if status is not None:
+        if status == 404 and "not found" in msg:
+            return "model_not_found"
+        if status == 400:
+            return "context_too_long" if ("context" in msg or "num_ctx" in msg) else "bad_request"
+        if status in (500, 502, 503, 504):
+            return "server_error"
+
+    else:
+        # No stated status: a bare number anywhere is the best evidence left.
+        # Only here -- with a known status, the backend's own digits ("limit
+        # 500 per minute" on a 429) must not decide the category.
+        if "404" in msg and "not found" in msg:
+            return "model_not_found"
+        if "400" in msg and ("context" in msg or "num_ctx" in msg):
+            return "context_too_long"
+        if "400" in msg:
+            return "bad_request"
+        if "500" in msg or "502" in msg or "503" in msg or "504" in msg:
+            return "server_error"
+
     if "permission" in msg:
         return "permission_error"
 
@@ -193,6 +228,15 @@ def categorize_error(error_message: str | None) -> str:
     return "other"
 
 
+_HTTP_STATUS = re.compile(r"(?:client|server) error '(\d{3})|^http (\d{3}):")
+
+
+def _http_status(lowered: str) -> int | None:
+    """The HTTP status a lowered error message states, or ``None``."""
+    m = _HTTP_STATUS.search(lowered)
+    return int(m.group(1) or m.group(2)) if m else None
+
+
 UPSTREAM_INCOMPLETE = "upstream_incomplete"
 """The ``done_reason`` meaning *the backend stream ended before completing*."""
 
@@ -208,6 +252,36 @@ class UpstreamIncomplete(Exception):  # noqa: N818 -- named for the condition, l
     """Raised when a whole non-streaming response is built from a stream that
     never completed.  There is no honest response object to return, so the
     route answers 502 instead of a 200 carrying partial content."""
+
+
+def ollama_stream_error(chunk) -> str | None:
+    """The message of Ollama's ``{"error": ...}`` line, or ``None``.
+
+    Ollama ends a stream it cannot finish with that line instead of
+    ``done:true`` -- ``input length (N tokens) exceeds the model's maximum
+    context length``, a load failure, an unparseable tool call.  One
+    definition for every place that reads a stream: the proxy (trace and the
+    OpenAI terminal) and each route's translator (Anthropic, Responses,
+    native), so the client is told why instead of "retry".
+    """
+    if not isinstance(chunk, dict) or chunk.get("done"):
+        return None
+    err = chunk.get("error")
+    if isinstance(err, dict):
+        err = err.get("message")
+    text = str(err or "").strip()
+    return text or None
+
+
+def describe_backend_stream_error(backend: str, error: str) -> str:
+    """The trace ``error_message`` for a stream the backend ended with an error.
+
+    Traced ``failed``, not ``incomplete``: the backend said why it stopped,
+    and ``incomplete`` keeps meaning it stopped without saying (decided
+    2026-11-17).  The backend's words are kept, bounded, because they are the
+    reason; ``categorize_error`` reads stated reasons before any digits.
+    """
+    return f"{backend} ended the stream with an error: {error[:500]}"
 
 
 def describe_upstream_incomplete(backend: str, *, produced_output: bool) -> str:

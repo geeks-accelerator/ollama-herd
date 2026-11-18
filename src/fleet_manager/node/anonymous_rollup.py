@@ -39,6 +39,10 @@ ALLOWED_ENTRY_KEYS = frozenset(
         "requests",
         "success_count",
         "error_count",
+        "rejected_count",
+        "incomplete_count",
+        "no_output_count",
+        "disconnected_count",
         "prompt_tokens",
         "completion_tokens",
         "p50_latency_ms",
@@ -63,6 +67,21 @@ ALLOWED_PAYLOAD_KEYS = frozenset(
         "devices",
     }
 )
+
+# How each trace status reaches a model entry.  ``requests`` counts client
+# requests: the sum of these outcomes.  A ``retried`` row is one attempt of a
+# request that has another row, so it is excluded rather than counted twice.
+# A test asserts mapped | excluded == TRACE_STATUSES, so a new status cannot
+# fall into the gap that hid 2,678 requests in 30 days.
+OUTCOME_FIELDS = {
+    "completed": "success_count",
+    "failed": "error_count",
+    "rejected": "rejected_count",
+    "incomplete": "incomplete_count",
+    "no_output": "no_output_count",
+    "client_disconnected": "disconnected_count",
+}
+EXCLUDED_STATUSES = frozenset({"retried"})
 
 # Server-side bounds.  Mirrored here so we fail locally and skip a doomed POST
 # rather than eating a 422 that nobody reads.
@@ -166,17 +185,15 @@ async def build_anonymous_rollup(
             (start_ts, end_ts),
         )
         for model, status, err_msg in await cursor.fetchall():
-            if not model:
-                continue
+            field = OUTCOME_FIELDS.get(status)
+            if not model or field is None:
+                continue  # retried (an attempt), or a status record_trace flagged
             entry = totals.setdefault(model, {})
             entry["requests"] = entry.get("requests", 0) + 1
-            if status == "completed":
-                entry["success_count"] = entry.get("success_count", 0) + 1
-            elif status == "failed":
-                entry["error_count"] = entry.get("error_count", 0) + 1
+            entry[field] = entry.get(field, 0) + 1
+            if status == "failed":
                 category = categorize_error(err_msg)
                 errors[category] = errors.get(category, 0) + 1
-            # "retried" is an intermediate state: neither success nor error.
     finally:
         await trace_store.close()
 
@@ -194,6 +211,10 @@ async def build_anonymous_rollup(
                 "requests": agg.get("requests", 0),
                 "success_count": agg.get("success_count", 0),
                 "error_count": agg.get("error_count", 0),
+                "rejected_count": agg.get("rejected_count", 0),
+                "incomplete_count": agg.get("incomplete_count", 0),
+                "no_output_count": agg.get("no_output_count", 0),
+                "disconnected_count": agg.get("disconnected_count", 0),
                 "prompt_tokens": agg.get("prompt_tokens", 0),
                 "completion_tokens": agg.get("completion_tokens", 0),
                 "p50_latency_ms": int(p50) if p50 is not None else None,

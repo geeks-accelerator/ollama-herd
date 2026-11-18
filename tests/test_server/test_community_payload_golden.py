@@ -94,6 +94,12 @@ async def _seed(data_dir: str) -> None:
         for msg in FAILED_MESSAGES:
             rows.append(("gpt-oss:120b", "bb", "failed", msg))
         rows.append(("nomic-embed-text", "bb", "completed", None))
+        # One row per outcome that is neither a success nor an error
+        # (2026-11-18), so each new count is pinned at a non-zero value.
+        rows.append(("gemma3:27b", "", "rejected", "none of ['gemma3:27b'] exist on any node"))
+        rows.append(("gemma3:27b", "mini", "incomplete", "Stream ended without completing"))
+        rows.append(("gemma3:27b", "mini", "no_output", None))
+        rows.append(("gpt-oss:120b", "bb", "client_disconnected", "Client disconnected"))
         for i, (model, node, status, msg) in enumerate(rows):
             await traces._db.execute(
                 "INSERT INTO request_traces (request_id, model, original_model, node_id, "
@@ -130,21 +136,24 @@ def _registry() -> SimpleNamespace:
 
 
 EXPECTED = (
-    '{"agent_version": "0.11.4", "day": "2026-10-20", "devices": [{"agent_version": "0.11'
-    '.4", "chip": "Apple M3 Ultra", "cores": 32, "device_id": "30b7012add886bcc", "memory'
-    '_gb": 512, "mlx_version": "0.32.4", "ollama_version": "0.40.2", "requests": 21}, {"a'
-    'gent_version": "0.11.4", "chip": "Apple M4 Pro", "cores": 14, "device_id": "a7e2d329'
-    '30d91807", "memory_gb": 48, "mlx_version": "", "ollama_version": "0.40.2", "requests'
-    '": 3}], "entries": [{"completion_tokens": 189, "error_count": 0, "model": "gemma3:27'
-    'b", "p50_latency_ms": 2175, "p95_latency_ms": 2574, "prompt_tokens": 2721, "requests'
-    '": 3, "success_count": 2}, {"completion_tokens": 483, "error_count": 11, "model": "g'
-    'pt-oss:120b", "p50_latency_ms": 977, "p95_latency_ms": 1997, "prompt_tokens": 6447, '
-    '"requests": 20, "success_count": 9}, {"completion_tokens": 60, "error_count": 0, "mo'
-    'del": "nomic-embed-text", "p50_latency_ms": 41, "p95_latency_ms": 41, "prompt_tokens'
-    '": 900, "requests": 1, "success_count": 1}], "errors": {"bad_request": 1, "connectio'
-    'n_error": 1, "context_too_long": 2, "model_not_found": 1, "other": 1, "permission_er'
-    'ror": 1, "server_error": 1, "timeout": 1, "unknown": 1, "vram_exceeded": 1}, "instal'
-    'l_id": "22222222-2222-2222-2222-222222222222", "nickname": "NeonHerd"}'
+    '{"agent_version": "0.11.4", "day": "2026-10-20", "devices": [{"agent_version": "0.11.'
+    '4", "chip": "Apple M3 Ultra", "cores": 32, "device_id": "30b7012add886bcc", "memory_g'
+    'b": 512, "mlx_version": "0.32.4", "ollama_version": "0.40.2", "requests": 22}, {"agen'
+    't_version": "0.11.4", "chip": "Apple M4 Pro", "cores": 14, "device_id": "a7e2d32930d9'
+    '1807", "memory_gb": 48, "mlx_version": "", "ollama_version": "0.40.2", "requests": 5}'
+    '], "entries": [{"completion_tokens": 189, "disconnected_count": 0, "error_count": 0, '
+    '"incomplete_count": 1, "model": "gemma3:27b", "no_output_count": 1, "p50_latency_ms":'
+    ' 2175, "p95_latency_ms": 2574, "prompt_tokens": 2721, "rejected_count": 1, "requests"'
+    ': 5, "success_count": 2}, {"completion_tokens": 483, "disconnected_count": 1, "error_'
+    'count": 11, "incomplete_count": 0, "model": "gpt-oss:120b", "no_output_count": 0, "p5'
+    '0_latency_ms": 977, "p95_latency_ms": 1997, "prompt_tokens": 6447, "rejected_count": '
+    '0, "requests": 21, "success_count": 9}, {"completion_tokens": 60, "disconnected_count'
+    '": 0, "error_count": 0, "incomplete_count": 0, "model": "nomic-embed-text", "no_outpu'
+    't_count": 0, "p50_latency_ms": 41, "p95_latency_ms": 41, "prompt_tokens": 900, "rejec'
+    'ted_count": 0, "requests": 1, "success_count": 1}], "errors": {"bad_request": 1, "con'
+    'nection_error": 1, "context_too_long": 2, "model_not_found": 1, "other": 1, "permissi'
+    'on_error": 1, "server_error": 1, "timeout": 1, "unknown": 1, "vram_exceeded": 1}, "in'
+    'stall_id": "22222222-2222-2222-2222-222222222222", "nickname": "NeonHerd"}'
 )
 
 

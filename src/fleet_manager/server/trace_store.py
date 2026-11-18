@@ -13,6 +13,42 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
+
+# Every status a trace row can carry.  Bare strings at ~50 call sites, so this
+# is the one list: ``record_trace`` logs an ERROR for anything else (and still
+# records the row), and the telemetry rollup must count or explicitly exclude
+# each one -- it once missed five, which hid 2,678 requests in 30 days.
+TRACE_STATUSES = frozenset(
+    {
+        "completed",
+        "failed",
+        "retried",  # one attempt, followed by another row for the same request
+        "rejected",  # routing refused it before any node was chosen
+        "incomplete",  # the backend stopped without saying why
+        "no_output",  # the model generated nothing
+        "client_disconnected",
+    }
+)
+
+
+def _is_model_not_found(message: str) -> bool:
+    from fleet_manager.common.errors import categorize_error
+
+    return categorize_error(message) == "model_not_found"
+
+
+# Kinds of backend failure the health checks read from traces, each a SQL
+# ``LIKE`` that narrows the rows and a predicate that decides.  The tools text
+# is Ollama's own ("<model> does not support tools"), present in traces since
+# describe_exception appends the backend's reason (2026-11-18).
+BACKEND_FAILURE_KINDS: dict[str, tuple[str, object]] = {
+    "model_not_found": ("%404%", _is_model_not_found),
+    "tools_unsupported": (
+        "%does not support tools%",
+        lambda message: "does not support tools" in message.lower(),
+    ),
+}
+
 # Retry policy for "database is locked" — three attempts with exponential
 # backoff covers the typical case (a long-running query holding the write
 # lock during WAL checkpoint) without blocking the caller for more than ~3s.
@@ -271,6 +307,12 @@ class TraceStore:
         so the ``trace_store_write_failures`` health check can surface them
         without operators having to grep the log.
         """
+        if status not in TRACE_STATUSES:
+            # Recorded anyway: a typo must surface here, never as a lost trace.
+            logger.error(
+                f"Trace {request_id[:8]} has unknown status {status!r}; add it to "
+                f"TRACE_STATUSES and to the telemetry rollup"
+            )
         if not self._db:
             return
         params = (
@@ -1157,38 +1199,44 @@ class TraceStore:
         total = sum(by_node.values())
         return {"total_count": total, "by_node": by_node, "by_model": by_model}
 
-    async def get_backend_not_found(self, lookback_s: int = 86400) -> dict[tuple[str, str], dict]:
-        """Backend "model not found" answers by ``(node_id, model)``.
+    async def get_backend_failures(
+        self, lookback_s: int = 86400
+    ) -> dict[str, dict[tuple[str, str], dict]]:
+        """Backend failures by kind, then ``(node_id, model)``.
 
-        ``retried`` rows were served by a peer afterwards; ``failed`` rows reached
-        the client.  Both mean the node advertised a model its backend did not
-        have.  Categorised with ``categorize_error`` -- the definition the
-        community telemetry publishes -- so this check and the published
-        ``model_not_found`` count can never disagree; the ``LIKE`` only narrows
-        the rows read, and every category that matters here contains "404".
+        The kinds are ``BACKEND_FAILURE_KINDS``: a backend 404 "model not
+        found" for a model the node lists (``backend_model_missing``), and a
+        model refusing tools (``tools_unsupported_requests``).  One query for
+        both checks.  ``retried`` rows were served by a peer afterwards;
+        ``failed`` rows reached the client.  Each kind's ``LIKE`` only narrows
+        the rows read; its predicate decides, and ``model_not_found`` uses
+        ``categorize_error`` -- the definition the community telemetry
+        publishes -- so the check and the published count cannot disagree.
         """
+        out: dict[str, dict[tuple[str, str], dict]] = {k: {} for k in BACKEND_FAILURE_KINDS}
         if not self._db:
-            return {}
-        from fleet_manager.common.errors import categorize_error
-
+            return out
+        likes = " OR ".join("error_message LIKE ?" for _ in BACKEND_FAILURE_KINDS)
         cursor = await self._read_db.execute(
-            """
+            f"""
             SELECT node_id, model, status, error_message, timestamp
             FROM request_traces
             WHERE timestamp >= ?
               AND status IN ('retried', 'failed')
               AND node_id != ''
-              AND error_message LIKE '%404%'
+              AND ({likes})
             """,
-            (time.time() - lookback_s,),
+            (time.time() - lookback_s, *(like for like, _ in BACKEND_FAILURE_KINDS.values())),
         )
-        out: dict[tuple[str, str], dict] = {}
         for node_id, model, status, message, ts in await cursor.fetchall():
-            if categorize_error(message) != "model_not_found":
-                continue
-            row = out.setdefault((node_id, model), {"retried": 0, "failed": 0, "last_ts": 0.0})
-            row[status] += 1
-            row["last_ts"] = max(row["last_ts"], ts)
+            for kind, (_like, matches) in BACKEND_FAILURE_KINDS.items():
+                if not matches(message or ""):
+                    continue
+                row = out[kind].setdefault(
+                    (node_id, model), {"retried": 0, "failed": 0, "last_ts": 0.0}
+                )
+                row[status] += 1
+                row["last_ts"] = max(row["last_ts"], ts)
         return out
 
     # -- Benchmark runs --

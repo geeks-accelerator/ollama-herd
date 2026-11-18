@@ -126,11 +126,15 @@ def _is_on_fleet(model: str, ondisk_names) -> bool:
     return model in names or normalize_model_name(model) in names
 
 
-def _candidate_score(name: str, tier: str, *, want_vision: bool, capabilities=None) -> float | None:
+def _candidate_score(
+    name: str, tier: str, *, want_vision: bool, capabilities=None, want_tools: bool = False
+) -> float | None:
     """Rank score for loading ``name`` to serve ``tier``; None if unusable.
 
-    Higher is better.  Unusable = an embedding/image model, or (for an image
-    request) a model that can't see images.
+    Higher is better.  Unusable = an embedding/image model, (for an image
+    request) a model that can't see images, or (when ``want_tools``) a model
+    whose reported capabilities lack ``tools``.  A model that reports nothing
+    stays usable: presence-only, like every other capability here.
 
     ``capabilities`` maps model name → what Ollama reports for it (see
     ``get_fleet_capabilities``).  It is ORed with the name heuristics, so it
@@ -158,6 +162,8 @@ def _candidate_score(name: str, tier: str, *, want_vision: bool, capabilities=No
         return None
     if want_vision and not ("vision" in reported or is_vision_model(name)):
         return None
+    if want_tools and reported and "tools" not in reported:
+        return None
 
     if spec and spec.benchmarks.quality_score > 0:
         quality = spec.benchmarks.quality_score
@@ -177,7 +183,12 @@ def _candidate_score(name: str, tier: str, *, want_vision: bool, capabilities=No
 
 
 def rank_candidates(
-    names, claude_model: str, *, want_vision: bool = False, capabilities=None
+    names,
+    claude_model: str,
+    *,
+    want_vision: bool = False,
+    capabilities=None,
+    want_tools: bool = False,
 ) -> list[str]:
     """Return ``names`` that can serve ``claude_model``, best first.
 
@@ -191,7 +202,13 @@ def rank_candidates(
         if not name or name in seen:
             continue
         seen.add(name)
-        score = _candidate_score(name, tier, want_vision=want_vision, capabilities=capabilities)
+        score = _candidate_score(
+            name,
+            tier,
+            want_vision=want_vision,
+            capabilities=capabilities,
+            want_tools=want_tools,
+        )
         if score is None:
             continue
         scored.append((score, name))
@@ -208,6 +225,7 @@ def resolve_model(
     *,
     auto_route: bool,
     has_images: bool = False,
+    has_tools: bool = False,
     capabilities=None,
 ) -> tuple[str | None, str]:
     """Resolve a Claude model id to a local model name.
@@ -225,6 +243,13 @@ def resolve_model(
     4. best on-disk model for the tier → ``auto-ondisk`` (auto_route only)
     5. ``model_map["default"]`` → ``default``
     6. nothing → ``(None, "unresolved")``
+
+    ``has_tools``: Claude Code and Codex send tools on essentially every
+    turn, and a model without them answers each one with a 400.  When some
+    candidate reports ``tools``, the ones that report capabilities without it
+    are skipped, so a tool-capable model on disk beats a no-tools model that
+    is loaded: one cold load instead of a failure every turn.  When nothing
+    reports ``tools`` (older Ollama under-reports), routing is unchanged.
     """
     model_map = model_map or {}
 
@@ -238,15 +263,24 @@ def resolve_model(
         return model, "passthrough"
 
     if auto_route:
+        want_tools = has_tools and any("tools" in caps for caps in (capabilities or {}).values())
         # 3. Best model already resident anywhere on the fleet — no cold load.
         ranked = rank_candidates(
-            loaded_names, model, want_vision=has_images, capabilities=capabilities
+            loaded_names,
+            model,
+            want_vision=has_images,
+            capabilities=capabilities,
+            want_tools=want_tools,
         )
         if ranked:
             return ranked[0], "auto-loaded"
         # 4. Nothing suitable loaded — best on-disk, accepting a cold load.
         ranked = rank_candidates(
-            ondisk_names, model, want_vision=has_images, capabilities=capabilities
+            ondisk_names,
+            model,
+            want_vision=has_images,
+            capabilities=capabilities,
+            want_tools=want_tools,
         )
         if ranked:
             return ranked[0], "auto-ondisk"
