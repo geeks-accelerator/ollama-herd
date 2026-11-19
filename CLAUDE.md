@@ -32,7 +32,7 @@ uv run ruff format src/          # format
 ### Release checklist
 
 **Pre-publish (locally):**
-1. Bump version in `pyproject.toml`
+1. Bump version in `pyproject.toml`, then `uv lock` and commit both. `uv.lock` is committed (since 2026-11-19) and records the project's own version, so a stale one fails `uv sync --locked` and the Docker build
 2. Update `CHANGELOG.md` (Keep a Changelog format) — rename `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, leave a fresh empty `[Unreleased]` stub above it
 3. `uv run pytest` — 0 failures, then `FLEET_TEST_REMOTE_CONTRACT=1 uv run pytest tests/test_node/test_telemetry_openapi_contract.py` — the telemetry payload against ollamaherd.com's live schema, which otherwise *skips* when unreachable. A herd that sends a field the service does not accept loses every install's daily send (`extra="forbid"` 422s the whole payload), so this must pass, not skip
 4. `uv run ruff check src/` — clean, then `./scripts/health.sh` — its dependency CVE audit (pip-audit over the locked set, all extras) must pass
@@ -450,7 +450,7 @@ Silent failures are dishonest. Fail fast, fail loud.
   **Soaked 3.2 h on the shipping dependency set before publishing, and the
   qualifier is the point.** The 24 h of clean data that preceded it ran on
   **Starlette 0.x** — 1.9 only reached this venv at 08:32 that morning, because
-  `uv.lock` is gitignored so another machine's `uv lock --upgrade` never crosses.
+  `uv.lock` was gitignored then, so another machine's `uv lock --upgrade` never crossed (it has been committed since 2026-11-19, which closes this gap).
   A soak predating the dependency change measures the old configuration, and
   nothing in the process would have caught it: the fleet looked perfect either
   way. **Check the installed version of whatever a release changes before

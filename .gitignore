@@ -25,7 +25,6 @@ env/
 .pytest_cache/
 htmlcov/
 .coverage
-uv.lock
 
 # Claude Code artifacts (worktrees, plan mode scratch)
 .claude/
