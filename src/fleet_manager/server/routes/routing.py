@@ -799,7 +799,7 @@ def _pick_pull_node(registry, model: str, scorer) -> str | None:
         if est > 0:
             model_size = est
 
-        available = node.memory.available_gb
+        available = node.model_memory_available_gb()
         if node.capacity and node.capacity.ceiling_gb > 0:
             available = min(available, node.capacity.ceiling_gb)
 

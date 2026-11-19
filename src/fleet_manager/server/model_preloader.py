@@ -499,7 +499,7 @@ async def _load_model_on_best_node(
     if best is None:
         best = max(
             available_nodes,
-            key=lambda n: n.memory.available_gb if n.memory else 0,
+            key=lambda n: n.model_memory_available_gb(),
         )
     # What this model will actually COST resident — weights + KV cache for the
     # context we're about to request — not just its on-disk weights.  Sizing by
@@ -509,7 +509,7 @@ async def _load_model_on_best_node(
     send_ctx = _num_ctx_override(model, settings)  # what we'll ask Ollama for
     num_ctx = _expected_num_ctx(model, settings)  # what it'll actually run at
     resident_gb = estimate_resident_gb(model, best, num_ctx)
-    available = best.memory.available_gb if best.memory else 0
+    available = best.model_memory_available_gb()
     # Skip the memory gate when the model is ALREADY resident on this node — it
     # is in memory by definition, so there is nothing left to "fit".  Without
     # this, warming a hot model can fail *because it's hot*: its own footprint

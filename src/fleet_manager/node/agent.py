@@ -261,6 +261,7 @@ class NodeAgent:
                     # proxies to our Ollama over the LAN and is the one remote
                     # peer that must never be reported as a bypasser.
                     router_url=self.router_url or "",
+                    gpu_memory_gb=self.settings.gpu_memory_gb,
                 )
                 if self._image_port:
                     payload.image_port = self._image_port

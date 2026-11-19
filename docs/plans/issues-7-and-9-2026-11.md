@@ -1,6 +1,6 @@
 # Issues #7 (Homebrew on macOS 27) and #9 (GPU memory on AMD APUs)
 
-**Created:** 2026-11-19 · **Status:** 📋 investigated, nothing built. Both replies posted 2026-11-19 with the maintainer's approval ([#9](https://github.com/geeks-accelerator/ollama-herd/issues/9#issuecomment-7013240786), [#7](https://github.com/geeks-accelerator/ollama-herd/issues/7#issuecomment-7013241316)).
+**Created:** 2026-11-19 · **Status:** 🚧 #9 override (`FLEET_NODE_GPU_MEMORY_GB`) built; detection not started. Both replies posted 2026-11-19 with the maintainer's approval ([#9](https://github.com/geeks-accelerator/ollama-herd/issues/9#issuecomment-7013240786), [#7](https://github.com/geeks-accelerator/ollama-herd/issues/7#issuecomment-7013241316)).
 **Issues:** [#7](https://github.com/geeks-accelerator/ollama-herd/issues/7) (open since 2026-10-05,
 waiting on the reporter since 2026-10-26) · [#9](https://github.com/geeks-accelerator/ollama-herd/issues/9)
 (opened 2026-11-19, no reply yet).

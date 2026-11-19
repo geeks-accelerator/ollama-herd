@@ -117,6 +117,46 @@ the node reports but that URL does not have). Both together mean cause 1 below;
 
 ---
 
+## A node is refused models that Ollama runs fine on it
+
+The router eliminates a node for a model that is not loaded when the model does not fit in the
+node's free memory, and by default it reads only the memory the OS reports as RAM. GPU memory the
+OS does not count is invisible to it. The common case is an AMD Ryzen AI Max APU (GMKtec EVO-X2 or
+EVO-X5 Pro, Framework Desktop) with a large BIOS "UMA frame buffer": 160 GB given to the GPU leaves
+Linux about 30 GB, and herd refuses anything bigger although Ollama runs it.
+
+Check what the GPU holds, on the node:
+
+```bash
+free -g
+grep . /sys/class/drm/card*/device/mem_info_vram_total   # bytes; the carve-out or VRAM
+```
+
+Then tell the node about it, in GB, and restart `herd-node`:
+
+```bash
+FLEET_NODE_GPU_MEMORY_GB=160 herd-node
+```
+
+The router subtracts what loaded models already hold in GPU memory, so it still refuses a model
+that would not fit next to them. Do not set it on Apple Silicon or anywhere GPU memory is already
+part of RAM (AMD GTT, NVIDIA DGX Spark): it would be counted twice.
+
+## Homebrew refuses to build after a macOS upgrade
+
+`brew install ollama-herd` (or `brew upgrade`) stops with **`Error: Your Command Line Tools are too
+outdated.`** Homebrew builds herd and its dependencies from source, and after a major macOS upgrade
+it needs Command Line Tools for that macOS. `xcode-select --install` only answers that they are
+already installed; the update is in Software Update:
+
+```bash
+softwareupdate --list                     # look for "Command Line Tools for Xcode NN"
+sudo softwareupdate --install "Command Line Tools for Xcode 27.2-27.2"   # use the label it lists
+```
+
+Or install it from System Settings → General → Software Update. No restart is needed. `pip`,
+`pipx` and `uv tool install` do not compile anything and are unaffected.
+
 ## LAN Connectivity Issues
 
 ### Timeout (no connection)

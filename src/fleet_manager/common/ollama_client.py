@@ -58,6 +58,7 @@ class OllamaClient:
                         # each matters; this is the only place either is read.
                         runner=m.get("runner", ""),
                         digest=m.get("digest", ""),
+                        size_vram_gb=round(m.get("size_vram", 0) / (1024**3), 2),
                     )
                 )
             return models

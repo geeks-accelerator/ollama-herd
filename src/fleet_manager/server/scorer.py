@@ -261,8 +261,9 @@ class ScoringEngine:
             # Check memory can fit if model needs loading
             if model not in loaded_names:
                 model_size = self._model_fit_cost_gb(model, node)
-                # Use capacity ceiling if available, otherwise raw available memory
-                available = node.memory.available_gb if node.memory else 0
+                # Use capacity ceiling if available, otherwise raw available memory.
+                # Counts GPU memory the OS does not report as RAM (issue #9).
+                available = node.model_memory_available_gb()
                 if node.capacity and node.capacity.ceiling_gb > 0:
                     available = min(available, node.capacity.ceiling_gb)
                 if available < model_size:
@@ -309,7 +310,7 @@ class ScoringEngine:
             return 0.0
 
         # Use capacity ceiling if the node has adaptive capacity enabled
-        available = node.memory.available_gb
+        available = node.model_memory_available_gb()
         if node.capacity and node.capacity.ceiling_gb > 0:
             available = min(available, node.capacity.ceiling_gb)
 

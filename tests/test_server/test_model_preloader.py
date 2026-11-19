@@ -68,6 +68,8 @@ def _node(
     n.ollama.models_available = list(disk_models)
     n.memory = MagicMock()
     n.memory.available_gb = mem_gb
+    # What the fit decisions read (no GPU memory in these tests).
+    n.model_memory_available_gb.return_value = mem_gb
     # Default to an empty list (not a MagicMock) so the MLX branch can iterate.
     n.mlx_servers = [
         SimpleNamespace(model=model, status=status)
@@ -570,6 +572,7 @@ async def test_memory_gate_now_refuses_the_oversized_model():
     node.ollama.models_available = ["qwen3-coder:480b-a35b-q4_K_M"]
     node.memory = MagicMock()
     node.memory.available_gb = 100.0  # old math: 12GB needed → LOADS. new: 348 → refuses
+    node.model_memory_available_gb.return_value = 100.0
     node.mlx_servers = []
     proxy = MagicMock()
     proxy.pre_warm = AsyncMock()
@@ -591,6 +594,7 @@ async def test_memory_gate_still_loads_when_it_genuinely_fits():
     node.ollama.models_available = ["gpt-oss:120b"]
     node.memory = MagicMock()
     node.memory.available_gb = 300.0  # 65.4*1.2 = 78GB needed → fits easily
+    node.model_memory_available_gb.return_value = 300.0
     node.mlx_servers = []
     proxy = MagicMock()
     proxy.pre_warm = AsyncMock()
@@ -645,6 +649,7 @@ def _kv_node(name: str = "studio", *, loaded=(), disk_sizes=None, mem_gb=500.0):
     n.memory = MagicMock()
     n.memory.available_gb = mem_gb
     n.memory.total_gb = 512.0
+    n.model_memory_available_gb.return_value = mem_gb
     n.mlx_servers = []
     return n
 

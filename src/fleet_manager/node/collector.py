@@ -578,6 +578,7 @@ async def collect_heartbeat(
     mlx_supervisor_set=None,  # type: ignore[no-untyped-def]
     mlx_bind_host: str = "127.0.0.1",
     router_url: str = "",
+    gpu_memory_gb: float = 0.0,
 ) -> HeartbeatPayload:
     """Assemble a complete heartbeat payload from local system state.
 
@@ -589,6 +590,7 @@ async def collect_heartbeat(
     """
     cpu = get_cpu_metrics()
     memory = get_memory_metrics()
+    memory.gpu_total_gb = gpu_memory_gb
     thermal = get_thermal_metrics()
     disk = get_disk_metrics()
 

@@ -58,6 +58,12 @@ class MemoryMetrics(BaseModel):
     compressed_gb: float = 0.0
     swap_used_gb: float = 0.0
     swap_total_gb: float = 0.0
+    # GPU memory models can load into that the OS does NOT count as RAM: an AMD
+    # APU's BIOS carve-out, a discrete card's VRAM.  Set by hand on the node
+    # (FLEET_NODE_GPU_MEMORY_GB) until detection exists; 0 = none reported.
+    # Never memory already in total_gb (unified RAM on Apple Silicon, AMD GTT),
+    # or it would be counted twice.  See NodeState.model_memory_available_gb.
+    gpu_total_gb: float = 0.0
 
 
 class ThermalMetrics(BaseModel):
@@ -105,6 +111,10 @@ class LoadedModel(BaseModel):
     # resident context for model M" ambiguous and the num_ctx pin a guess.
     # "" = not reported (older node agent).
     digest: str = ""
+    # How much of this model Ollama placed in GPU memory (/api/ps size_vram).
+    # What the model takes out of NodeState's GPU pool; the rest of its size is
+    # in RAM and already shows in the OS's available memory.  0 = not reported.
+    size_vram_gb: float = 0.0
 
 
 class ModelTagMeta(BaseModel):
@@ -501,3 +511,24 @@ class NodeState(BaseModel):
     # without MLX configured (or older agents that predate this field).
     mlx_servers: list[MlxServerInfo] = Field(default_factory=list)
     mlx_bind_host: str = "127.0.0.1"
+
+    def model_memory_available_gb(self) -> float:
+        """Memory a model can still be loaded into on this node, in GB.
+
+        The OS's available RAM plus the GPU memory it does not count
+        (``memory.gpu_total_gb``) less what loaded models already hold there
+        (each one's ``size_vram_gb``).  Only "will a model fit" decisions use
+        this; everything that describes RAM keeps reading ``memory``.
+
+        Without the GPU term an AMD APU with a large BIOS carve-out (160 GB of
+        an EVO-X5 Pro's 192 GB) was judged on the ~30 GB Linux reports, and
+        every model larger than that was refused although Ollama runs it
+        (issue #9).
+        """
+        if not self.memory:
+            return 0.0
+        gpu_free = 0.0
+        if self.memory.gpu_total_gb > 0:
+            in_gpu = sum(m.size_vram_gb for m in self.ollama.models_loaded) if self.ollama else 0.0
+            gpu_free = max(0.0, self.memory.gpu_total_gb - in_gpu)
+        return self.memory.available_gb + gpu_free

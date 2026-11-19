@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`FLEET_NODE_GPU_MEMORY_GB`: GPU memory the OS does not report as RAM.** Before loading a model the router checks it fits in the node's free memory, and it read only RAM. On an AMD APU with a large BIOS carve-out (an EVO-X5 Pro with 160 GB of its 192 GB given to the GPU shows Linux about 30 GB) every model larger than that was refused although Ollama runs it on the GPU ([#9](https://github.com/geeks-accelerator/ollama-herd/issues/9)). Set on the node, the value is added to its free RAM, less what loaded models already hold in GPU memory (now read from Ollama's `size_vram`), in the routing, preloading and fallback fit decisions. RAM figures, the dashboard and usage stats are unchanged. Detecting the amount automatically is planned (`docs/plans/issues-7-and-9-2026-11.md`).
+- **Troubleshooting:** "A node is refused models that Ollama runs fine on it", and "Homebrew refuses to build after a macOS upgrade" (`Your Command Line Tools are too outdated`; the fix is in Software Update, not `xcode-select --install`).
+
 ## [0.12.7] - 2026-11-19
 
 ### Added
