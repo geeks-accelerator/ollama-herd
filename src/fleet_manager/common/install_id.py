@@ -32,6 +32,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_INSTALL_ID_FILE = Path.home() / ".fleet-manager" / "install_id"
 
+# Files a container runtime creates in the root of every container: Docker's
+# and Podman's.  Presence is all that matters.
+CONTAINER_MARKERS = (Path("/.dockerenv"), Path("/run/.containerenv"))
+
+
+def _in_container() -> bool:
+    return any(marker.exists() for marker in CONTAINER_MARKERS)
+
 
 def _read(path: Path) -> str | None:
     """Return a valid stored id, or None if absent/unreadable/corrupt.
@@ -93,5 +101,16 @@ def get_install_id(path: Path | None = None) -> str:
         logger.warning(
             "install_id is not persistent this run; telemetry will count this "
             "as a new install each restart"
+        )
+    elif _in_container():
+        # Normal on a container's first start, and the only sign of a missing
+        # volume: without one, every recreated container is a new herd on
+        # ollamaherd.com/stats, and nothing else would ever say so.
+        logger.warning(
+            "Created a new install_id at %s inside a container. If this "
+            "container is recreated without a volume mounted at %s, it will be "
+            "counted as a new install each time; mount a named volume there.",
+            target,
+            target.parent,
         )
     return new_id

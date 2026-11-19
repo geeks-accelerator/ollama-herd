@@ -62,6 +62,8 @@ EOF
     ```
     Without this step, GitHub shows the previous release as latest and the repo looks abandoned to anyone discovering it.
 
+    **Publishing the release also publishes the container image**: `.github/workflows/image.yml` runs on `release: published`, tests the image on amd64 and arm64 (`scripts/docker-smoke.sh`: a router and a node container route a real chat request), then pushes `ghcr.io/geeks-accelerator/ollama-herd:X.Y.Z`, `X.Y` and `latest`. Watch it: `gh run watch $(gh run list --workflow image.yml --limit 1 --json databaseId --jq '.[0].databaseId')`. Its last step fetches the manifest anonymously and fails if the package is not public. If it fails, the PyPI release is unaffected; fix and re-run it with `gh workflow run image.yml -f ref=vX.Y.Z -f version=X.Y.Z -f push=true`.
+
 **Bump Homebrew tap (separate repo):**
 
 12. Edit `geeks-accelerator/homebrew-ollama-herd/Formula/ollama-herd.rb`:
@@ -105,6 +107,8 @@ EOF
     # PyPI download + version sanity
     curl -s https://pypistats.org/api/packages/ollama-herd/recent | python3 -m json.tool
     curl -s https://pypi.org/pypi/ollama-herd/json | python3 -c "import json,sys; print('latest:', json.load(sys.stdin)['info']['version'])"
+    # The image runs and reports the release (no login needed)
+    docker run --rm ghcr.io/geeks-accelerator/ollama-herd:X.Y.Z herd --version
     # No new GitHub issues from real users?
     gh issue list --repo geeks-accelerator/ollama-herd --state open --limit 20
     # Local fleet still healthy?  (space after the colon matters — see the JSONL gotcha)

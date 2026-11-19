@@ -97,3 +97,36 @@ class TestResilience:
         # which get_install_id must swallow.
         value = get_install_id(blocker / "install_id")
         assert uuid.UUID(value)
+
+
+class TestContainerWarning:
+    """A container without a volume makes a new herd on every recreate; the
+    warning on a freshly created id is the only place that ever says so."""
+
+    def _markers(self, monkeypatch, tmp_path, present):
+        from fleet_manager.common import install_id as mod
+
+        marker = tmp_path / ".dockerenv"
+        if present:
+            marker.touch()
+        monkeypatch.setattr(mod, "CONTAINER_MARKERS", (marker,))
+
+    def test_new_id_in_a_container_warns_with_the_directory(self, tmp_path, monkeypatch, caplog):
+        self._markers(monkeypatch, tmp_path, present=True)
+        path = _id_file(tmp_path)
+        get_install_id(path)
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("inside a container" in m and str(path.parent) in m for m in warnings)
+
+    def test_existing_id_in_a_container_is_silent(self, tmp_path, monkeypatch, caplog):
+        self._markers(monkeypatch, tmp_path, present=True)
+        path = _id_file(tmp_path)
+        get_install_id(path)
+        caplog.clear()
+        get_install_id(path)
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+    def test_new_id_outside_a_container_is_silent(self, tmp_path, monkeypatch, caplog):
+        self._markers(monkeypatch, tmp_path, present=False)
+        get_install_id(_id_file(tmp_path))
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]

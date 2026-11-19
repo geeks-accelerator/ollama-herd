@@ -1,0 +1,183 @@
+# Builds the container image and publishes it to ghcr.io/geeks-accelerator/ollama-herd.
+#
+# On a published release vX.Y.Z: tests the image on amd64 and arm64 (each on a
+# native runner), then pushes X.Y.Z, X.Y and latest (a prerelease gets X.Y.Z
+# only). By hand (workflow_dispatch): builds and tests any ref, and pushes only
+# when asked to, so the build can be checked without publishing anything.
+#
+# Where the image fits, and why a Mac or Windows node must never run in it:
+# docs/guides/docker.md.
+name: Image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build
+        default: main
+      version:
+        description: Version for labels and tags (X.Y.Z), or "dev"
+        default: dev
+      push:
+        description: Push to ghcr.io
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  SMOKE_MODEL: qwen2.5:0.5b
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.p.outputs.ref }}
+      version: ${{ steps.p.outputs.version }}
+      push: ${{ steps.p.outputs.push }}
+      tags: ${{ steps.p.outputs.tags }}
+    steps:
+      - id: p
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          IN_REF: ${{ inputs.ref }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_PUSH: ${{ inputs.push }}
+        run: |
+          if [ "$EVENT" = release ]; then
+            case "$RELEASE_TAG" in v[0-9]*) ;; *) echo "release tag $RELEASE_TAG is not vX.Y.Z" >&2; exit 1 ;; esac
+            ref=$RELEASE_TAG; version=${RELEASE_TAG#v}; push=true; prerelease=$RELEASE_IS_PRERELEASE
+          else
+            ref=$IN_REF; version=$IN_VERSION; push=$IN_PUSH; prerelease=false
+          fi
+          tags="$IMAGE:$version"
+          if [ "$prerelease" != true ] && [ "$version" != dev ]; then
+            tags="$tags $IMAGE:${version%.*} $IMAGE:latest"
+          fi
+          { echo "ref=$ref"; echo "version=$version"; echo "push=$push"; echo "tags=$tags"; } >> "$GITHUB_OUTPUT"
+          echo "ref=$ref version=$version push=$push tags=$tags"
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write # pushes this architecture's image by digest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build for this runner's architecture
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: VERSION=${{ needs.plan.outputs.version }}
+          load: true
+          tags: herd:smoke
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      - name: Install Ollama and a small model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:11434/api/version && break; sleep 1; done \
+            || { nohup ollama serve >/tmp/ollama.log 2>&1 & sleep 5; }
+          ollama pull "$SMOKE_MODEL"
+
+      - name: End-to-end test
+        run: scripts/docker-smoke.sh herd:smoke "$SMOKE_MODEL" "${{ needs.plan.outputs.version != 'dev' && needs.plan.outputs.version || '' }}"
+
+      - name: Log in to ghcr.io
+        if: needs.plan.outputs.push == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push by digest
+        id: push
+        if: needs.plan.outputs.push == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: VERSION=${{ needs.plan.outputs.version }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=max
+          cache-from: type=gha,scope=${{ matrix.arch }}
+
+      - name: Record the digest
+        if: needs.plan.outputs.push == 'true'
+        run: |
+          mkdir -p /tmp/digests
+          echo "${{ steps.push.outputs.digest }}" > "/tmp/digests/${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v7
+        if: needs.plan.outputs.push == 'true'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/${{ matrix.arch }}
+          retention-days: 1
+
+  publish:
+    needs: [plan, build]
+    if: needs.plan.outputs.push == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write # writes the multi-architecture tags
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: digest-*
+          path: /tmp/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag both architectures as one image
+        env:
+          TAGS: ${{ needs.plan.outputs.tags }}
+        run: |
+          args=()
+          for t in $TAGS; do args+=(-t "$t"); done
+          for f in /tmp/digests/*; do args+=("$IMAGE@$(cat "$f")"); done
+          docker buildx imagetools create "${args[@]}"
+          docker buildx imagetools inspect "$IMAGE:${{ needs.plan.outputs.version }}"
+
+      - name: Pullable without logging in
+        # service= and the OCI Accept headers matter: without them ghcr.io
+        # answers 403 even for a public image. A 401/403 here means the
+        # package is still private: change its visibility once in Package
+        # settings (it cannot be set through the API).
+        run: |
+          repo=${IMAGE#ghcr.io/}
+          token=$(curl -fsS "https://ghcr.io/token?service=ghcr.io&scope=repository:$repo:pull" | jq -r .token)
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            "https://ghcr.io/v2/$repo/manifests/${{ needs.plan.outputs.version }}")
+          echo "anonymous manifest fetch: HTTP $code"
+          [ "$code" = 200 ] || { echo "::warning::The image is not publicly pullable yet (HTTP $code). Make the package public in its settings."; exit 1; }

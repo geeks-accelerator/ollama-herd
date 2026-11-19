@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A container image, `ghcr.io/geeks-accelerator/ollama-herd`**, for the router and for nodes on Linux (`--network host`), on `linux/amd64` and `linux/arm64`. Built from the committed `uv.lock` and published by `.github/workflows/image.yml` when a release is published, after `scripts/docker-smoke.sh` has a router container and a node container find each other and route a real chat request on each architecture. Never for Mac or Windows nodes: Docker there is a Linux VM, and a node would report the VM's hardware (tested: 7.65 GB on a 128 GB Mac, and nothing routed to it). Guide: `docs/guides/docker.md`.
+- **A warning when a new install id is created inside a container.** Without a volume on `~/.fleet-manager`, every recreated container is a new install for usage stats and loses its history; the warning is the only sign of that.
+
 ### Fixed
 
 - **`FLEET_NODE_OLLAMA_HOST` now works when `herd-node` is started without `--ollama-host`.** The flag defaulted to `http://localhost:11434` and was always passed into the node's settings, and an explicit value beats the environment variable, so the variable never took effect from the command line (the same trap `node_id` and `router_url` were fixed for). A node whose Ollama is not on its own localhost, such as a node in a container, looked in the wrong place and exited. Found while building a container image.

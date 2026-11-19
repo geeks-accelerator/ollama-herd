@@ -18,7 +18,7 @@ Ollama Herd is an open-source smart AI router that turns the machines you alread
 - **Every machine you own, one endpoint**: Macs, Linux servers, and Windows PCs pooled into one fleet
 - **Agents stop queuing behind one Ollama**: each request goes to the best machine for that model right now
 - **Claude Code and Codex on your own hardware**: model ids auto-route to the best model you have loaded, no model map needed
-- **No config files, no Docker, no Kubernetes**: two commands, mDNS auto-discovery
+- **No config files, no Docker required, no Kubernetes**: two commands, mDNS auto-discovery ([a container image](docs/guides/docker.md) is there for Linux servers)
 - **Not just LLMs**: embeddings, image generation, and speech-to-text route too (image generation and speech-to-text extras on Apple Silicon)
 - **Start on one machine**: run both commands on it, and add machines when you have them
 
@@ -276,6 +276,7 @@ Two CLI entry points, one Python package:
 | [Image Generation](docs/guides/image-generation.md) | mflux, DiffusionKit, Ollama native setup |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues, LAN debugging, operational gotchas |
 | [Autostart (launchd)](docs/examples/launchd/README.md) | Keep `herd` running across reboots and crashes on macOS |
+| [Docker](docs/guides/docker.md) | The container image: the router anywhere, nodes on Linux, never Mac or Windows nodes |
 | [Changelog](CHANGELOG.md) | What's new in each release |
 
 ## Optimize Ollama for Your Hardware

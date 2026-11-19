@@ -25,7 +25,7 @@ updates:
       default-days: 5
       semver-major-days: 30
 
-  # No workflows today; watched so any that are added are.
+  # The image workflow (.github/workflows/image.yml).
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -34,6 +34,17 @@ updates:
       prefix: "ci"
     # Wait before taking a release, so a compromised one is pulled before it
     # reaches us. Security updates skip it.
+    cooldown:
+      default-days: 5
+      semver-major-days: 30
+
+  # The Dockerfile's base images: python:<version>-slim and the pinned uv.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "docker"
     cooldown:
       default-days: 5
       semver-major-days: 30
