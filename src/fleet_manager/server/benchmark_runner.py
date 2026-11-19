@@ -380,7 +380,8 @@ class BenchmarkRunner:
                     continue
                 node_id = node["node_id"]
                 mem = node.get("memory", {})
-                available_gb = mem.get("available_gb", 0)
+                # What a model can load into: RAM plus GPU memory the OS doesn't count.
+                available_gb = node.get("model_memory_available_gb", mem.get("available_gb", 0))
                 ollama = node.get("ollama") or {}
                 loaded_names = {m["name"] for m in ollama.get("models_loaded", [])}
                 on_disk_names = set(ollama.get("models_available", []))

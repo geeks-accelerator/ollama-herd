@@ -124,7 +124,7 @@ class ModelRecommender:
         # Sort nodes by RAM descending — assign best models to biggest nodes first
         sorted_nodes = sorted(
             online_nodes,
-            key=lambda n: n.memory.total_gb if n.memory else 0,
+            key=lambda n: (n.memory.total_gb + n.memory.gpu_total_gb) if n.memory else 0,
             reverse=True,
         )
 
@@ -232,7 +232,8 @@ class ModelRecommender:
         usage: UsageInsight,
     ) -> NodePlan:
         """Build model recommendations for a single node."""
-        total_ram = node.memory.total_gb if node.memory else 0
+        # Models can also load into GPU memory the OS doesn't count as RAM.
+        total_ram = (node.memory.total_gb + node.memory.gpu_total_gb) if node.memory else 0
         usable_ram = max(0, total_ram - OS_OVERHEAD_GB)
 
         # Disk space tracking

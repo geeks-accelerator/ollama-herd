@@ -91,8 +91,10 @@ either open it or use the router URL. Rootless Docker needs Engine 29.5 or later
 `--network host` to use the real host network; rootless Podman's `--network host` does.
 
 **NVIDIA GPUs:** add `--gpus all` (with the NVIDIA Container Toolkit installed) so the node can run
-`nvidia-smi` and the dashboard shows the GPU's name next to the CPU. That is a label only: routing
-uses memory, load and latency, not GPU data, with or without it.
+`nvidia-smi`. The dashboard then shows the GPU's name, and from the release after 0.12.8 the node
+counts the card's free memory when the router checks whether a model fits; without it the card's
+memory is invisible to herd. AMD GPU memory needs nothing extra, since it is read from `/sys`. Either
+way herd reads memory only: it does not read GPU load or route by it.
 
 ### What a containerised node cannot do
 

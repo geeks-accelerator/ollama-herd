@@ -120,19 +120,21 @@ the node reports but that URL does not have). Both together mean cause 1 below;
 ## A node is refused models that Ollama runs fine on it
 
 The router eliminates a node for a model that is not loaded when the model does not fit in the
-node's free memory, and by default it reads only the memory the OS reports as RAM. GPU memory the
-OS does not count is invisible to it. The common case is an AMD Ryzen AI Max APU (GMKtec EVO-X2 or
-EVO-X5 Pro, Framework Desktop) with a large BIOS "UMA frame buffer": 160 GB given to the GPU leaves
-Linux about 30 GB, and herd refuses anything bigger although Ollama runs it.
+node's free memory. The common case is an AMD Ryzen AI Max APU (GMKtec EVO-X2 or EVO-X5 Pro,
+Framework Desktop) with a large BIOS "UMA frame buffer": 160 GB given to the GPU leaves Linux about
+30 GB. Up to 0.12.8 herd counted only RAM and refused anything bigger although Ollama runs it.
 
-Check what the GPU holds, on the node:
+**From the next release, a Linux node finds this memory itself** (AMD from the amdgpu driver,
+NVIDIA from `nvidia-smi`), and its dashboard card shows "GPU … free of …". If the card shows no
+GPU line, or a wrong figure, check what the GPU holds:
 
 ```bash
 free -g
 grep . /sys/class/drm/card*/device/mem_info_vram_total   # bytes; the carve-out or VRAM
 ```
 
-Then tell the node about it, in GB, and restart `herd-node`:
+and tell the node about it, in GB, then restart `herd-node` (this is also the way on 0.12.8, and on
+Windows, where nothing is detected):
 
 ```bash
 FLEET_NODE_GPU_MEMORY_GB=160 herd-node
@@ -140,7 +142,8 @@ FLEET_NODE_GPU_MEMORY_GB=160 herd-node
 
 The router subtracts what loaded models already hold in GPU memory, so it still refuses a model
 that would not fit next to them. Do not set it on Apple Silicon or anywhere GPU memory is already
-part of RAM (AMD GTT, NVIDIA DGX Spark): it would be counted twice.
+part of RAM (AMD GTT, NVIDIA DGX Spark): it would be counted twice. `FLEET_NODE_GPU_MEMORY_GB=0`
+turns detection off.
 
 ## Homebrew refuses to build after a macOS upgrade
 

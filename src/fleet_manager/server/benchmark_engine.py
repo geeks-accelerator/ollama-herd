@@ -117,7 +117,8 @@ async def discover_fleet(
         cpu = node.get("cpu", {})
 
         loaded = ollama.get("models_loaded", [])
-        available_gb = mem.get("available_gb", 0)
+        # What a model can load into: RAM plus GPU memory the OS doesn't count.
+        available_gb = node.get("model_memory_available_gb", mem.get("available_gb", 0))
 
         model_sizes = {}
         for m in loaded:

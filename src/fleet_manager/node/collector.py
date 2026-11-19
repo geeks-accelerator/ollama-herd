@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from fleet_manager import __version__
 from fleet_manager.common.binaries import which_extended
+from fleet_manager.common.gpu_memory import detect_gpu_memory
 from fleet_manager.common.ollama_client import OllamaClient
 from fleet_manager.common.process_memory import probe_process_memory
 from fleet_manager.common.system_metrics import (
@@ -570,6 +571,20 @@ def _meta_to_send(meta: dict | None) -> dict | None:
     return meta
 
 
+def _add_gpu_memory(memory, gpu_memory_gb: float | None) -> None:
+    """FLEET_NODE_GPU_MEMORY_GB when set (0 = none), otherwise what's detected."""
+    if gpu_memory_gb is not None:
+        memory.gpu_total_gb = gpu_memory_gb
+        memory.gpu_source = "override" if gpu_memory_gb > 0 else ""
+        return
+    devices = detect_gpu_memory()
+    if devices:
+        memory.gpu_devices = devices
+        memory.gpu_total_gb = round(sum(d.total_gb for d in devices), 2)
+        memory.gpu_used_gb = round(sum(d.used_gb for d in devices), 2)
+        memory.gpu_source = "detected"
+
+
 async def collect_heartbeat(
     node_id: str,
     ollama: OllamaClient,
@@ -578,7 +593,7 @@ async def collect_heartbeat(
     mlx_supervisor_set=None,  # type: ignore[no-untyped-def]
     mlx_bind_host: str = "127.0.0.1",
     router_url: str = "",
-    gpu_memory_gb: float = 0.0,
+    gpu_memory_gb: float | None = None,
 ) -> HeartbeatPayload:
     """Assemble a complete heartbeat payload from local system state.
 
@@ -590,7 +605,7 @@ async def collect_heartbeat(
     """
     cpu = get_cpu_metrics()
     memory = get_memory_metrics()
-    memory.gpu_total_gb = gpu_memory_gb
+    _add_gpu_memory(memory, gpu_memory_gb)
     thermal = get_thermal_metrics()
     disk = get_disk_metrics()
 

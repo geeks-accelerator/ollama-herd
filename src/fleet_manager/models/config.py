@@ -398,10 +398,11 @@ class NodeSettings(BaseSettings):
     data_dir: str = "~/.fleet-manager"
     # GPU memory, in GB, that models can load into and the OS does not report
     # as RAM: an AMD APU's BIOS "UMA frame buffer" carve-out or a discrete
-    # card's VRAM.  The router adds it (less what loaded models already hold
-    # there) to the node's free RAM when deciding whether a model fits.  Leave
-    # 0 on Apple Silicon and anywhere GPU memory is already part of RAM.
-    gpu_memory_gb: float = Field(default=0.0, ge=0.0)
+    # card's VRAM.  The router adds what is free of it to the node's free RAM
+    # when deciding whether a model fits.  Unset: detected on Linux
+    # (common/gpu_memory.py).  A number: used instead of detection.  0: none,
+    # which also turns detection off.
+    gpu_memory_gb: float | None = Field(default=None, ge=0.0)
 
     # ── Anonymous community telemetry ────────────────────────────────────
     # herd's only telemetry.  No account, no token, no auth: the router POSTs a

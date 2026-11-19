@@ -163,6 +163,9 @@ def serialize_node(node) -> dict:
         data["cpu"] = node.cpu.model_dump()
     if node.memory:
         data["memory"] = node.memory.model_dump()
+        # RAM plus free GPU memory the OS doesn't count: what a model can still
+        # load into, for clients that size work from the status (benchmarks).
+        data["model_memory_available_gb"] = round(node.model_memory_available_gb(), 2)
     # herd's own process memory, distinct from `memory` above (system-wide).
     # Exposed unconditionally rather than only when the health check fires at
     # 8 GB: the point of this telemetry is the *trend*, and a number you can

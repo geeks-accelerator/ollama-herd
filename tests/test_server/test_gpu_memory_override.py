@@ -104,8 +104,12 @@ class TestSetting:
         monkeypatch.setenv("FLEET_NODE_GPU_MEMORY_GB", "160")
         assert NodeSettings().gpu_memory_gb == 160.0
 
-    def test_defaults_to_none_declared(self, monkeypatch):
+    def test_unset_means_detect(self, monkeypatch):
         monkeypatch.delenv("FLEET_NODE_GPU_MEMORY_GB", raising=False)
+        assert NodeSettings().gpu_memory_gb is None
+
+    def test_zero_is_kept_as_none_declared(self, monkeypatch):
+        monkeypatch.setenv("FLEET_NODE_GPU_MEMORY_GB", "0")
         assert NodeSettings().gpu_memory_gb == 0.0
 
     def test_negative_is_rejected(self, monkeypatch):
@@ -140,3 +144,84 @@ async def test_the_node_puts_the_setting_in_its_heartbeat():
     payload = await collect_heartbeat("evo-x5", ollama, gpu_memory_gb=160.0)
     assert payload.memory.gpu_total_gb == 160.0
     assert (await collect_heartbeat("plain", ollama)).memory.gpu_total_gb == 0.0
+
+
+class TestDetectedVersusDeclared:
+    def test_detected_uses_the_devices_measured_use(self):
+        """Detected memory knows everything on the GPU, not only Ollama's models."""
+        node = make_node(memory_total=32.0, memory_used=2.0, loaded_models=[("a", 20.0)])
+        node.ollama.models_loaded[0].size_vram_gb = 20.0
+        node.memory.gpu_total_gb = 160.0
+        node.memory.gpu_used_gb = 50.0
+        node.memory.gpu_source = "detected"
+        assert node.model_memory_available_gb() == pytest.approx(30.0 + 110.0)
+
+    def test_declared_uses_what_ollama_holds(self):
+        node = make_node(memory_total=32.0, memory_used=2.0, loaded_models=[("a", 20.0)])
+        node.ollama.models_loaded[0].size_vram_gb = 20.0
+        node.memory.gpu_total_gb = 160.0
+        node.memory.gpu_used_gb = 50.0  # ignored: not measured
+        node.memory.gpu_source = "override"
+        assert node.model_memory_available_gb() == pytest.approx(30.0 + 140.0)
+
+
+@pytest.mark.asyncio
+class TestCollector:
+    @pytest.fixture
+    def ollama(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        o = MagicMock()
+        o.get_running_models = AsyncMock(return_value=[])
+        o.get_available_models = AsyncMock(return_value=[])
+        o.get_version = AsyncMock(return_value="0.40.16")
+        o.get_available_model_sizes = AsyncMock(return_value={})
+        o.get_available_model_meta = AsyncMock(return_value={})
+        return o
+
+    @pytest.fixture
+    def detected(self, monkeypatch):
+        from fleet_manager.models.node import GpuDevice
+        from fleet_manager.node import collector
+
+        devices = [
+            GpuDevice(
+                name="AMD GPU (card1)",
+                kind="integrated",
+                total_gb=160.0,
+                used_gb=12.0,
+                source="amdgpu",
+            )
+        ]
+        monkeypatch.setattr(collector, "detect_gpu_memory", lambda: devices)
+        return devices
+
+    async def test_unset_reports_what_is_detected(self, ollama, detected):
+        from fleet_manager.node.collector import collect_heartbeat
+
+        m = (await collect_heartbeat("evo-x5", ollama)).memory
+        assert (m.gpu_total_gb, m.gpu_used_gb, m.gpu_source) == (160.0, 12.0, "detected")
+        assert m.gpu_devices == detected
+
+    async def test_a_number_replaces_detection(self, ollama, detected):
+        from fleet_manager.node.collector import collect_heartbeat
+
+        m = (await collect_heartbeat("evo-x5", ollama, gpu_memory_gb=96.0)).memory
+        assert (m.gpu_total_gb, m.gpu_source, m.gpu_devices) == (96.0, "override", [])
+
+    async def test_zero_turns_detection_off(self, ollama, detected):
+        from fleet_manager.node.collector import collect_heartbeat
+
+        m = (await collect_heartbeat("evo-x5", ollama, gpu_memory_gb=0.0)).memory
+        assert (m.gpu_total_gb, m.gpu_source) == (0.0, "")
+
+
+def test_status_carries_the_fit_figure():
+    from fleet_manager.server.serializers import serialize_node
+
+    node = make_node(memory_total=32.0, memory_used=2.0)
+    node.memory.gpu_total_gb = 160.0
+    node.memory.gpu_source = "detected"
+    data = serialize_node(node)
+    assert data["model_memory_available_gb"] == pytest.approx(190.0)
+    assert data["memory"]["gpu_source"] == "detected"

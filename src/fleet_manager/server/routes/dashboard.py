@@ -204,6 +204,11 @@ async def dashboard_events(request: Request):
                         "compressed_gb": round(node.memory.compressed_gb, 1),
                         "swap_used_gb": round(node.memory.swap_used_gb, 1),
                         "swap_total_gb": round(node.memory.swap_total_gb, 1),
+                        # GPU memory the OS doesn't count (AMD carve-out, VRAM):
+                        # shown so the operator sees what the fit check counts.
+                        "gpu_total_gb": round(node.memory.gpu_total_gb, 1),
+                        "gpu_free_gb": round(node.gpu_memory_free_gb(), 1),
+                        "gpu_source": node.memory.gpu_source,
                     }
                 if node.thermal:
                     node_data["thermal"] = {
@@ -2934,6 +2939,7 @@ function memExtras(m) {
   var parts = [];
   if (m.swap_used_gb > 0) parts.push('swap ' + formatGB(m.swap_used_gb));
   if (m.compressed_gb > 0) parts.push('compressed ' + formatGB(m.compressed_gb));
+  if (m.gpu_total_gb > 0) parts.push('GPU ' + formatGB(m.gpu_free_gb) + ' free of ' + formatGB(m.gpu_total_gb) + (m.gpu_source === 'override' ? ' (set)' : ''));
   return parts.join(' \\u00b7 ');
 }
 function thermalHot(node, cpu) {

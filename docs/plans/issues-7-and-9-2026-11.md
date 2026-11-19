@@ -1,6 +1,6 @@
 # Issues #7 (Homebrew on macOS 27) and #9 (GPU memory on AMD APUs)
 
-**Created:** 2026-11-19 · **Status:** 🚧 #9 override **released in 0.12.8** (`FLEET_NODE_GPU_MEMORY_GB`); detection (steps 1, 3-9 below) waits for the reporter's numbers. #7: replied, troubleshooting entry shipped in 0.12.8, close if no reply by 2026-12-03. Both replies posted 2026-11-19 ([#9](https://github.com/geeks-accelerator/ollama-herd/issues/9#issuecomment-7013240786), [#7](https://github.com/geeks-accelerator/ollama-herd/issues/7#issuecomment-7013241316)).
+**Created:** 2026-11-19 · **Status:** #9: override released in 0.12.8; **detection built on `main`, unreleased** (steps 1-8 done, 2253 tests), held until the reporter's `mem_info_*` and `inference compute` output confirm the reading matches what Ollama uses. Step 9 (site) ships with that release. #7: replied 2026-11-19, troubleshooting entry shipped in 0.12.8, close if no reply by 2026-12-03. Replies: [#9](https://github.com/geeks-accelerator/ollama-herd/issues/9#issuecomment-7013240786), [#9 follow-up](https://github.com/geeks-accelerator/ollama-herd/issues/9#issuecomment-7014640317), [#7](https://github.com/geeks-accelerator/ollama-herd/issues/7#issuecomment-7013241316).
 **Issues:** [#7](https://github.com/geeks-accelerator/ollama-herd/issues/7) (open since 2026-10-05,
 waiting on the reporter since 2026-10-26) · [#9](https://github.com/geeks-accelerator/ollama-herd/issues/9)
 (opened 2026-11-19, no reply yet).
@@ -107,6 +107,20 @@ This is correct for all three shapes:
    VRAM" to "memory fit counts dedicated GPU memory (NVIDIA VRAM, AMD carve-out)". The honesty rule
    still holds for everything else: herd does not read GPU *utilisation* and does not route by GPU
    load. `stale_audit.py` should learn the new phrasing.
+
+### Built (2026-11-19, unreleased)
+
+- `common/gpu_memory.py`: amdgpu sysfs (`mem_info_vram_*`, connectors and non-amdgpu cards skipped,
+  GTT never counted) and `nvidia-smi` (`[N/A]` skipped, any failure = no GPU). Linux only.
+- The setting is now `float | None`: unset = detect, a number = override, `0` = off (a change from
+  0.12.8, where unset and 0 both meant none; in the changelog).
+- `MemoryMetrics` carries `gpu_used_gb`, `gpu_source` (`detected` | `override` | ""), `gpu_devices`.
+  `NodeState.gpu_memory_free_gb()`: detected uses measured use; override subtracts `size_vram`.
+- Fit decisions now also cover `model_recommender` (sort and usable RAM) and the benchmark engine and
+  runner (via `/fleet/status`'s new `model_memory_available_gb`); the report fields stay RAM.
+- Dashboard node card: "GPU X free of Y", "(set)" for an override. Checked in a browser.
+- Docs: configuration reference, troubleshooting, Docker guide (NVIDIA memory needs `--gpus`).
+- Not done on purpose: memory pressure stays RAM-only (step 5); telemetry unchanged (step 7).
 
 ### Unknowns to settle with the reporter before relying on the numbers
 

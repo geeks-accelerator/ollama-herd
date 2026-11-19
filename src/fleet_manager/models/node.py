@@ -46,6 +46,16 @@ class CpuMetrics(BaseModel):
     utilization_pct: float
 
 
+class GpuDevice(BaseModel):
+    """One GPU whose memory the OS does not count as RAM (common/gpu_memory.py)."""
+
+    name: str = ""
+    kind: str = ""  # "discrete" | "integrated" (a label only; decides nothing)
+    total_gb: float = 0.0
+    used_gb: float = 0.0
+    source: str = ""  # "amdgpu" | "nvidia-smi"
+
+
 class MemoryMetrics(BaseModel):
     total_gb: float
     used_gb: float
@@ -59,11 +69,17 @@ class MemoryMetrics(BaseModel):
     swap_used_gb: float = 0.0
     swap_total_gb: float = 0.0
     # GPU memory models can load into that the OS does NOT count as RAM: an AMD
-    # APU's BIOS carve-out, a discrete card's VRAM.  Set by hand on the node
-    # (FLEET_NODE_GPU_MEMORY_GB) until detection exists; 0 = none reported.
-    # Never memory already in total_gb (unified RAM on Apple Silicon, AMD GTT),
-    # or it would be counted twice.  See NodeState.model_memory_available_gb.
+    # APU's BIOS carve-out, a discrete card's VRAM.  Never memory already in
+    # total_gb (unified RAM on Apple Silicon, AMD GTT), or it would be counted
+    # twice.  See NodeState.model_memory_available_gb.  All default to "none"
+    # so heartbeats from older nodes still validate.
     gpu_total_gb: float = 0.0
+    # Measured use, from the same source; meaningful only when detected.
+    gpu_used_gb: float = 0.0
+    # "detected" (gpu_devices measured it), "override" (FLEET_NODE_GPU_MEMORY_GB),
+    # or "" (none).
+    gpu_source: str = ""
+    gpu_devices: list[GpuDevice] = Field(default_factory=list)
 
 
 class ThermalMetrics(BaseModel):
@@ -527,8 +543,17 @@ class NodeState(BaseModel):
         """
         if not self.memory:
             return 0.0
-        gpu_free = 0.0
-        if self.memory.gpu_total_gb > 0:
-            in_gpu = sum(m.size_vram_gb for m in self.ollama.models_loaded) if self.ollama else 0.0
-            gpu_free = max(0.0, self.memory.gpu_total_gb - in_gpu)
-        return self.memory.available_gb + gpu_free
+        return self.memory.available_gb + self.gpu_memory_free_gb()
+
+    def gpu_memory_free_gb(self) -> float:
+        """Free GPU memory outside RAM.  Detected: the devices' own measured
+        use, which also counts other programs on the GPU.  Declared by hand:
+        what Ollama's loaded models hold there (``size_vram``), the only use
+        herd can see."""
+        if not self.memory or self.memory.gpu_total_gb <= 0:
+            return 0.0
+        if self.memory.gpu_source == "detected":
+            used = self.memory.gpu_used_gb
+        else:
+            used = sum(m.size_vram_gb for m in self.ollama.models_loaded) if self.ollama else 0.0
+        return max(0.0, self.memory.gpu_total_gb - used)
