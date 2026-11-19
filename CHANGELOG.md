@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`FLEET_NODE_OLLAMA_HOST` now works when `herd-node` is started without `--ollama-host`.** The flag defaulted to `http://localhost:11434` and was always passed into the node's settings, and an explicit value beats the environment variable, so the variable never took effect from the command line (the same trap `node_id` and `router_url` were fixed for). A node whose Ollama is not on its own localhost, such as a node in a container, looked in the wrong place and exited. Found while building a container image.
+
 ## [0.12.6] - 2026-11-18
 
 ### Added

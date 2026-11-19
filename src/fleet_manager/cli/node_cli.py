@@ -27,7 +27,9 @@ app = typer.Typer(
 @app.callback(invoke_without_command=True)
 def start(
     node_id: str = typer.Option("", help="Node identifier (default: hostname)"),
-    ollama_host: str = typer.Option("http://localhost:11434", help="Local Ollama URL"),
+    ollama_host: str = typer.Option(
+        "", help="Local Ollama URL [default: FLEET_NODE_OLLAMA_HOST, else http://localhost:11434]"
+    ),
     router_url: str = typer.Option("", help="Router URL (auto-discovered via mDNS if empty)"),
     learn_capacity: bool = typer.Option(
         False, "--learn-capacity", help="Enable adaptive capacity learning (for work machines)"
@@ -88,10 +90,9 @@ def start(
     setup_logging(log_name="herd-node")
 
     settings_kwargs = {
-        "ollama_host": ollama_host,
         "enable_capacity_learning": learn_capacity,
     }
-    # `node_id` and `router_url` default to "" on the CLI, meaning "not given —
+    # `node_id`, `router_url` and `ollama_host` default to "" on the CLI, meaning "not given —
     # use the env var / auto-discovery". Passing that "" *explicitly* into
     # NodeSettings shadows the env var, because an explicit kwarg always beats
     # BaseSettings' env lookup. So only include them when the user actually set
@@ -104,12 +105,17 @@ def start(
         settings_kwargs["node_id"] = node_id
     if router_url:
         settings_kwargs["router_url"] = router_url
+    # ollama_host had the same trap with a non-empty default: it was always
+    # passed, so FLEET_NODE_OLLAMA_HOST never took effect from the CLI. That is
+    # how a container is configured, so the Docker image found it.
+    if ollama_host:
+        settings_kwargs["ollama_host"] = ollama_host
     settings = NodeSettings(**settings_kwargs)
     agent = NodeAgent(settings)
 
     typer.echo("Herd Node Agent")
     typer.echo(f"  Node ID:  {agent.node_id}")
-    typer.echo(f"  Ollama:   {ollama_host}")
+    typer.echo(f"  Ollama:   {settings.ollama_host}")
     if router_url:
         typer.echo(f"  Router:   {router_url}")
     else:
