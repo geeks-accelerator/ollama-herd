@@ -232,9 +232,20 @@ Timeout usually means a network-level problem (wrong network, firewall, routing)
    herd-node --router-url http://router-ip:11435
    ```
 
-2. **Firewall blocking mDNS** — mDNS uses UDP port 5353. Ensure it's not blocked.
+2. **Firewall blocking mDNS** — mDNS uses UDP port 5353. Ensure it's not blocked. Ubuntu's `ufw`
+   accepts mDNS multicast in its built-in rules, so a `ufw deny` does not block it; firewalld zones
+   without the `mdns` service do (`firewall-cmd --add-service=mdns --permanent`, then reload). When
+   discovery times out, `herd-node` exits with *"Could not discover Fleet Manager router via mDNS
+   within 30.0s. Use --router-url to specify manually."*
 
 3. **Different subnets** — mDNS only works within the same broadcast domain (subnet). Machines on different VLANs won't discover each other.
+
+4. **The router logs `mDNS: could not use every interface … Using every interface except loopback.`**
+   Another program holds UDP 5353 on one address without sharing it; Lima's host agent (and so
+   Colima) holds `127.0.0.1:5353`. Harmless: the router still advertises on every LAN and VM network.
+   Before the release after 0.12.8 this stopped the router from starting at all. If it says *"mDNS is
+   unavailable on this machine"*, the router runs but cannot be discovered: start nodes with
+   `--router-url`.
 
 ---
 

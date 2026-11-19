@@ -402,3 +402,56 @@ def test_get_local_ip_can_stay_quiet(monkeypatch, caplog):
         assert not caplog.records
         assert system_metrics.get_local_ip() == "127.0.0.1"
         assert caplog.records, "the default still warns"
+
+
+class TestInterfaceFallback:
+    """Lima's host agent (so also Colima) holds 127.0.0.1:5353 without
+    SO_REUSEPORT. zeroconf's InterfaceChoice.All then raised EADDRINUSE and the
+    router failed to start at all (2026-11-19). It now falls back, and without
+    any mDNS it still starts."""
+
+    @pytest.fixture
+    def attempts(self, monkeypatch):
+        tried = []
+
+        def install(fails):
+            def _factory(*a, interfaces=None, **k):
+                tried.append(interfaces)
+                if fails(interfaces):
+                    raise OSError(48, "Address already in use")
+                m = MagicMock()
+                m.async_register_service = AsyncMock(return_value=None)
+                m.async_close = AsyncMock(return_value=None)
+                m.zeroconf = MagicMock()
+                return m
+
+            monkeypatch.setattr(discovery, "AsyncZeroconf", _factory)
+            monkeypatch.setattr(discovery, "AsyncServiceInfo", lambda *a, **k: MagicMock())
+            monkeypatch.setattr(discovery, "get_local_ip", lambda: "192.168.1.59")
+            return tried
+
+        return install
+
+    def test_loopback_held_elsewhere_drops_loopback(self, attempts):
+        tried = attempts(lambda i: i == discovery.InterfaceChoice.All)
+        discovery.open_zeroconf()
+        assert tried[0] == discovery.InterfaceChoice.All
+        assert isinstance(tried[1], list) and not any(a.startswith("127.") for a in tried[1])
+
+    def test_nothing_works_raises_oserror(self, attempts):
+        attempts(lambda i: True)
+        with pytest.raises(OSError, match="mDNS is unavailable"):
+            discovery.open_zeroconf()
+
+    async def test_the_router_still_starts_without_mdns(self, attempts, caplog):
+        attempts(lambda i: True)
+        a = FleetServiceAdvertiser(port=11435)
+        await a.start()  # must not raise: routing does not need mDNS
+        assert "--router-url" in caplog.text
+        assert await a.refresh_address() is False
+        await a.stop()
+
+    async def test_the_node_is_told_to_use_the_router_url(self, attempts):
+        attempts(lambda i: True)
+        with pytest.raises(OSError, match="--router-url"):
+            await discovery.FleetServiceDiscoverer().discover(timeout=0.1)

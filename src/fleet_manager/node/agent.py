@@ -198,7 +198,15 @@ class NodeAgent:
         if not self.router_url:
             logger.info("Discovering Fleet Manager router via mDNS...")
             discoverer = FleetServiceDiscoverer(self.settings.mdns_service_type)
-            ip, port = await discoverer.discover()
+            try:
+                ip, port = await discoverer.discover()
+            except (TimeoutError, OSError) as exc:
+                # Its message already says what to do (--router-url).  Raised,
+                # it reached the user as three nested tracebacks with that line
+                # at the bottom (a container behind a firewall that drops UDP
+                # 5353, 2026-11-19).  Exit non-zero so a restart policy retries.
+                logger.error(f"{exc} Exiting.")
+                raise SystemExit(1) from None
             self.router_url = f"http://{ip}:{port}"
             logger.info(f"Found router at {self.router_url}")
         else:

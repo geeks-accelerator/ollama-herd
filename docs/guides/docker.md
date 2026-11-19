@@ -86,9 +86,16 @@ docker run -d --name herd-node --network host --restart unless-stopped \
 
 Nodes contact the router, never the other way round, so the router needs no list of node addresses.
 
-Discovery uses multicast DNS on UDP port 5353. If a firewall blocks it (firewalld often does),
-either open it or use the router URL. Rootless Docker needs Engine 29.5 or later for
-`--network host` to use the real host network; rootless Podman's `--network host` does.
+Discovery uses multicast DNS on UDP port 5353. If a firewall blocks it (firewalld zones without
+the `mdns` service do; Ubuntu's `ufw` lets it through by default), either open it or use the router
+URL. Rootless Docker needs Engine 29.5 or later for `--network host` to use the real host network;
+rootless Podman's `--network host` does. A host's own `avahi-daemon` can keep running: they share
+the port.
+
+Tested 2026-11-19 on Ubuntu 26.04 (a Lima VM, with the router on another machine): the node
+container discovered the router over the network and served requests under rootful Docker 29.10,
+rootless Docker 29.10 and rootless Podman 5.7, with `avahi-daemon` running, and it reported the
+right address on a host with several interfaces.
 
 **NVIDIA GPUs:** add `--gpus all` (with the NVIDIA Container Toolkit installed) so the node can run
 `nvidia-smi`. The dashboard then shows the GPU's name, and from the release after 0.12.8 the node

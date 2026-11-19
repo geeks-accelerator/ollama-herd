@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **GPU memory the OS does not report is detected on Linux.** Building on 0.12.8's `FLEET_NODE_GPU_MEMORY_GB`, a node now finds it itself when the setting is unset: AMD from the amdgpu driver's `mem_info_vram_*` files (an APU's BIOS carve-out or a card's VRAM; no extra tools, works in a container) and NVIDIA from `nvidia-smi`. AMD's GTT pool is never counted (it is already RAM), nor unified-memory parts. Detected memory uses the devices' measured use, so other programs on the GPU count. A number still replaces detection; **`0` now turns it off** (in 0.12.8, unset and `0` both meant none). The router's fit decisions also cover the model recommender and benchmark sizing now, `/fleet/status` carries `model_memory_available_gb`, and the dashboard's node card shows "GPU … free of …" ([#9](https://github.com/geeks-accelerator/ollama-herd/issues/9)).
 
+### Fixed
+
+- **The router no longer fails to start when another program holds UDP 5353 on one address.** zeroconf binds a socket on every interface, and one it could not share raised and took `herd` down at startup. Lima's host agent, and so Colima (common Docker Desktop alternatives on Macs), holds `127.0.0.1:5353` that way. It now falls back to every interface except loopback, then the default interface, and if mDNS is unavailable altogether the router still starts and says to give nodes `--router-url`. Found testing the container image against a Lima VM.
+- **A node that cannot discover the router exits with one clear line,** the existing "Use --router-url" message, and exit code 1, instead of three nested tracebacks with that line at the bottom.
+
 ## [0.12.8] - 2026-11-19
 
 ### Added

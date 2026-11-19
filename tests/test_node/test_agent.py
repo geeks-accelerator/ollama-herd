@@ -255,3 +255,27 @@ async def test_unguarded_add_signal_handler_would_have_broken_start(agent):
     with patch("fleet_manager.node.agent.sys.platform", "win32"), \
          patch.object(loop, "add_signal_handler", side_effect=unsupported):
         agent._install_drain_handlers()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_failed_discovery_ends_with_one_clear_line(caplog):
+    """Behind a firewall that drops UDP 5353 the node used to exit through three
+    nested tracebacks with the useful line at the bottom (2026-11-19, a node
+    container in a Linux VM). It now logs that line and exits non-zero."""
+    agent = NodeAgent(NodeSettings(node_id="lan-node", telemetry=False))
+    discoverer = MagicMock()
+    discoverer.discover = AsyncMock(
+        side_effect=TimeoutError(
+            "Could not discover Fleet Manager router via mDNS within 30.0s. "
+            "Use --router-url to specify manually."
+        )
+    )
+    with (
+        patch.object(agent, "_ensure_ollama", AsyncMock(return_value=True)),
+        patch("fleet_manager.node.agent.FleetServiceDiscoverer", return_value=discoverer),
+        caplog.at_level(logging.ERROR),
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        await agent.start()
+    assert exit_info.value.code == 1
+    assert "--router-url" in caplog.text

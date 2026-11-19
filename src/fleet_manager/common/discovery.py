@@ -6,7 +6,13 @@ import asyncio
 import logging
 import socket
 
-from zeroconf import BadTypeInNameException, NamePartTooLongException, ServiceStateChange
+import psutil
+from zeroconf import (
+    BadTypeInNameException,
+    InterfaceChoice,
+    NamePartTooLongException,
+    ServiceStateChange,
+)
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
 from fleet_manager.common.system_metrics import get_local_ip
@@ -20,6 +26,47 @@ one LAN without their nodes crossing over.  Both settings were documented and
 read into settings, but until 2026-10-22 neither was passed here, so every herd
 advertised and browsed this constant regardless.  Found when an isolated test
 router on the same machine advertised itself beside the live one."""
+
+
+def _interface_choices():
+    """zeroconf interface choices, most to least inclusive."""
+    yield "every interface", InterfaceChoice.All
+    non_loopback = sorted(
+        {
+            a.address
+            for addrs in psutil.net_if_addrs().values()
+            for a in addrs
+            if a.family == socket.AF_INET and not a.address.startswith("127.")
+        }
+    )
+    if non_loopback:
+        yield "every interface except loopback", non_loopback
+    yield "the default interface", InterfaceChoice.Default
+
+
+def open_zeroconf() -> AsyncZeroconf:
+    """An AsyncZeroconf on as many interfaces as this machine allows.
+
+    ``InterfaceChoice.All`` binds a socket to port 5353 on every interface's
+    address, and fails outright if any one of them is held by a program that
+    did not set SO_REUSEPORT.  Lima's host agent (and so Colima, a common
+    Docker Desktop alternative on Macs) holds ``127.0.0.1:5353`` that way, and
+    the router then failed to start at all (found 2026-11-19 testing the
+    container image against a Lima VM).  Dropping loopback still reaches every
+    LAN and VM bridge; the default interface is the last resort.  Raises
+    OSError only when nothing works.
+    """
+    errors: list[str] = []
+    for label, choice in _interface_choices():
+        try:
+            azc = AsyncZeroconf(interfaces=choice)
+        except OSError as exc:
+            errors.append(f"{label}: {exc}")
+            continue
+        if errors:
+            logger.warning(f"mDNS: could not use {'; '.join(errors)}. Using {label}.")
+        return azc
+    raise OSError(f"mDNS is unavailable on this machine ({'; '.join(errors)})")
 
 
 class FleetServiceAdvertiser:
@@ -49,7 +96,17 @@ class FleetServiceAdvertiser:
 
     async def start(self):
         ip = get_local_ip()
-        self._azc = AsyncZeroconf()
+        try:
+            self._azc = open_zeroconf()
+        except OSError as exc:
+            # Routing does not need mDNS: nodes started with the router's URL
+            # work without it.  Failing startup over it took the router down.
+            logger.warning(
+                f"{exc}. The router runs, but nodes cannot discover it: start them "
+                f"with --router-url http://<this machine>:{self._port} "
+                f"(or FLEET_NODE_ROUTER_URL)."
+            )
+            return
         self._info = info = AsyncServiceInfo(
             self._service_type,
             f"{self._service_name}.{self._service_type}",
@@ -74,7 +131,7 @@ class FleetServiceAdvertiser:
             # Stale mDNS registration from a previous crash — close and re-create
             logger.warning("mDNS: stale service found, re-registering")
             await self._azc.async_close()
-            self._azc = AsyncZeroconf()
+            self._azc = open_zeroconf()
             await self._azc.async_register_service(info, allow_name_change=True)
         self._ip = ip
         if ip == "127.0.0.1":
@@ -144,7 +201,10 @@ class FleetServiceDiscoverer:
                     self._resolve_service(zeroconf, service_type, name, result, found)
                 )
 
-        self._azc = AsyncZeroconf()
+        try:
+            self._azc = open_zeroconf()
+        except OSError as exc:
+            raise OSError(f"{exc}. Use --router-url to specify the router manually.") from exc
         self._browser = AsyncServiceBrowser(
             self._azc.zeroconf, self._service_type, handlers=[on_state_change]
         )
