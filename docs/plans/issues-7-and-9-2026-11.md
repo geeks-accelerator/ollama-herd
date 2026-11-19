@@ -1,6 +1,6 @@
 # Issues #7 (Homebrew on macOS 27) and #9 (GPU memory on AMD APUs)
 
-**Created:** 2026-11-19 · **Status:** #9: override released in 0.12.8; **detection built on `main`, unreleased** (steps 1-8 done, 2253 tests), held until the reporter's `mem_info_*` and `inference compute` output confirm the reading matches what Ollama uses. Step 9 (site) ships with that release. #7: replied 2026-11-19, troubleshooting entry shipped in 0.12.8, close if no reply by 2026-12-03. Replies: [#9](https://github.com/geeks-accelerator/ollama-herd/issues/9#issuecomment-7013240786), [#9 follow-up](https://github.com/geeks-accelerator/ollama-herd/issues/9#issuecomment-7014640317), [#7](https://github.com/geeks-accelerator/ollama-herd/issues/7#issuecomment-7013241316).
+**Created:** 2026-11-19 · **Status:** #9: override released in 0.12.8; **detection built on `main`, unreleased** (steps 1-8 done, 2253 tests), **verified on real NVIDIA hardware 2026-11-19** (below); the AMD half held until the reporter's `mem_info_*` and `inference compute` output confirm the reading matches what Ollama uses. Step 9 (site) ships with that release. #7: replied 2026-11-19, troubleshooting entry shipped in 0.12.8, close if no reply by 2026-12-03. Replies: [#9](https://github.com/geeks-accelerator/ollama-herd/issues/9#issuecomment-7013240786), [#9 follow-up](https://github.com/geeks-accelerator/ollama-herd/issues/9#issuecomment-7014640317), [#7](https://github.com/geeks-accelerator/ollama-herd/issues/7#issuecomment-7013241316).
 **Issues:** [#7](https://github.com/geeks-accelerator/ollama-herd/issues/7) (open since 2026-10-05,
 waiting on the reporter since 2026-10-26) · [#9](https://github.com/geeks-accelerator/ollama-herd/issues/9)
 (opened 2026-11-19, no reply yet).
@@ -121,6 +121,24 @@ This is correct for all three shapes:
 - Dashboard node card: "GPU X free of Y", "(set)" for an override. Checked in a browser.
 - Docs: configuration reference, troubleshooting, Docker guide (NVIDIA memory needs `--gpus`).
 - Not done on purpose: memory pressure stays RAM-only (step 5); telemetry unchanged (step 7).
+
+### Tested on real NVIDIA hardware (2026-11-19)
+
+A Lambda Cloud `gpu_1x_rtx6000` (Quadro RTX 6000, 22.5 GiB; 54 GB RAM, 52.8 GB available; Ubuntu
+22.04; driver 580; Docker 29.9 with the NVIDIA Container Toolkit; Ollama installed by its script).
+Router and node on that machine, telemetry off. The test model, `llama3.3:70b-instruct-q6_K`
+(57 GB), is bigger than free RAM and smaller than RAM plus the GPU.
+
+| Test | Result |
+|---|---|
+| A. Released 0.12.8, no setting | **The bug, on NVIDIA:** node eliminated for "insufficient memory", `503` after the 30 s hold, GPU idle (1 MiB used) |
+| B. `main` (`81a220f`), no setting | `nvidia-smi` detected: 22.5 GB, 0.16 used; fit figure **74.89 GB**; `200` from `gpu-node` in 163 s (loading 59 GB); Ollama ran it **63%/37% CPU/GPU** |
+| B, after the load | detected use 20.77 GB = `nvidia-smi` 21,270 MiB; Ollama's `size_vram` 20.58 GB (the 0.2 GB gap is the CUDA context, which detection rightly counts); fit figure fell to 53.0 GB |
+| C. Container with `--gpus all` | chip "AMD EPYC-Rome Processor + Quadro RTX 6000", detection inside the container (`nvidia-smi`), `200` from `gpu-container` |
+| D. Container without `--gpus` | no `nvidia-smi`, so no GPU reported (`gpu_source` ""), chip shows the CPU only: absent, not a wrong figure |
+
+So the NVIDIA half of detection is verified end to end. The AMD half rests on the kernel's
+documented sysfs files and unit tests until the reporter's output arrives.
 
 ### Unknowns to settle with the reporter before relying on the numbers
 
