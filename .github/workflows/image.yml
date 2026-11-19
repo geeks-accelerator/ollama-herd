@@ -99,8 +99,16 @@ jobs:
       - name: Install Ollama and a small model
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
-          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:11434/api/version && break; sleep 1; done \
-            || { nohup ollama serve >/tmp/ollama.log 2>&1 & sleep 5; }
+          # The installer starts a systemd service, but some runners have no
+          # systemd ("WARNING: systemd is not running"): start it ourselves.
+          # Checked explicitly, because a for loop's status is its last sleep's.
+          up() { curl -sf http://127.0.0.1:11434/api/version >/dev/null; }
+          for _ in $(seq 1 15); do up && break; sleep 1; done
+          if ! up; then
+            nohup ollama serve >/tmp/ollama.log 2>&1 &
+            for _ in $(seq 1 30); do up && break; sleep 1; done
+          fi
+          up || { cat /tmp/ollama.log; exit 1; }
           ollama pull "$SMOKE_MODEL"
 
       - name: End-to-end test
