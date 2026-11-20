@@ -34,6 +34,22 @@ class JSONLFormatter(logging.Formatter):
         return json.dumps(entry, default=str)
 
 
+def configure_console_logging(level: str) -> None:
+    """Plain one-line console logging for ``herd`` and ``herd-node``.
+
+    Not Rich's handler: it lays out a table for every record, and with a few
+    INFO lines per request that was most of the router's CPU (3.5 of 4.7 ms per
+    request on an M-series Mac; on slower server cores it capped the router
+    near 80 requests/s, fleet benchmark 2026-11-20).  The JSONL file log
+    (``setup_logging``) is unchanged.
+    """
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%H:%M:%S")
+    )
+    logging.basicConfig(level=getattr(logging, level.upper(), logging.INFO), handlers=[handler])
+
+
 def setup_logging(
     data_dir: str = "~/.fleet-manager",
     log_level: str | None = None,

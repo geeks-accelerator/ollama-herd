@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 
 import typer
-from rich.logging import RichHandler
 
 # Called inside the ``start()`` callback below, NOT at module scope: it mutates
 # ``os.environ``, so at module scope merely *importing* this module injected the
@@ -74,11 +72,9 @@ def start(
 ):
     """Start the Herd Node agent on this device."""
     load_env_file()
-    logging.basicConfig(
-        level=getattr(logging, log_level.upper(), logging.INFO),
-        format="%(message)s",
-        handlers=[RichHandler(rich_tracebacks=True, show_time=True)],
-    )
+    from fleet_manager.common.logging_config import configure_console_logging
+
+    configure_console_logging(log_level)
 
     from fleet_manager.common.logging_config import setup_logging
     from fleet_manager.models.config import NodeSettings

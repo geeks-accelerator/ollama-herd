@@ -341,3 +341,43 @@ async def test_checkpoint_passive_swallows_errors(store: TraceStore, monkeypatch
     monkeypatch.setattr(store._db, "execute", boom)
     # Should return None, not raise.
     assert await store.checkpoint_passive() is None
+
+
+# -- Group commit and the write lock (fleet benchmark run 2, 2026-11-20) --
+
+
+@pytest.mark.asyncio
+async def test_concurrent_traces_share_commits(store: TraceStore, monkeypatch):
+    """A commit per request was a large share of the router's cost under load."""
+    real_commit = store._db.commit
+    commits = {"n": 0}
+
+    async def counting_commit():
+        commits["n"] += 1
+        return await real_commit()
+
+    monkeypatch.setattr(store._db, "commit", counting_commit)
+    await asyncio.gather(
+        *(
+            store.record_trace(request_id=f"r{i}", model="m", original_model="m", node_id="n")
+            for i in range(50)
+        )
+    )
+    traces = await store.get_recent_traces(limit=100)
+    assert len(traces) == 50
+    assert commits["n"] < 10
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_alongside_writes_loses_nothing(store: TraceStore):
+    """The checkpoint left a statement open on the writer connection, and a
+    commit landing then failed: 'cannot commit transaction - SQL statements in
+    progress' (10 traces lost under load)."""
+    writes = [
+        store.record_trace(request_id=f"c{i}", model="m", original_model="m", node_id="n")
+        for i in range(40)
+    ]
+    checkpoints = [store.checkpoint_passive() for _ in range(10)]
+    await asyncio.gather(*writes, *checkpoints)
+    assert len(await store.get_recent_traces(limit=100)) == 40
+    assert store.get_write_failure_count() == 0

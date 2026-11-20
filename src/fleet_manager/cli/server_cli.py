@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import logging
-
 import typer
 import uvicorn
-from rich.logging import RichHandler
 
 # ``load_env_file()`` is called inside the ``start()`` callback below, NOT here at
 # module scope.  It mutates ``os.environ``, and at module scope that meant merely
@@ -75,11 +72,9 @@ def start(
     # main server-start logic — let the subcommand handler run instead.
     if ctx.invoked_subcommand is not None:
         return
-    logging.basicConfig(
-        level=getattr(logging, log_level.upper(), logging.INFO),
-        format="%(message)s",
-        handlers=[RichHandler(rich_tracebacks=True, show_time=True)],
-    )
+    from fleet_manager.common.logging_config import configure_console_logging
+
+    configure_console_logging(log_level)
 
     from fleet_manager.models.config import ServerSettings
     from fleet_manager.server.app import create_app

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -86,6 +87,16 @@ class TraceStore:
         # health check.  Bounded deque keeps memory flat; the health engine
         # filters by age.
         self._write_failure_times: deque[float] = deque(maxlen=1000)
+        # Every write on the writer connection holds this lock, so a commit can
+        # never land while another statement is still open on it ("cannot
+        # commit transaction - SQL statements in progress": the WAL checkpoint
+        # left one open between execute and fetch, and 10 traces were lost under
+        # load in the 2026-11-20 benchmark).
+        self._write_lock = asyncio.Lock()
+        # Trace rows waiting for the next group commit, each with the future its
+        # record_trace call awaits.
+        self._pending: list[tuple[tuple, asyncio.Future]] = []
+        self._flusher: asyncio.Task | None = None
 
     async def initialize(self):
         """Create connection and request_traces table if it doesn't exist."""
@@ -276,9 +287,10 @@ class TraceStore:
         if self._db is None:
             return None
         try:
-            cursor = await self._db.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            row = await cursor.fetchone()
-            await cursor.close()
+            async with self._write_lock:
+                cursor = await self._db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                row = await cursor.fetchone()
+                await cursor.close()
             if row is None:
                 return None
             return (int(row[0]), int(row[1]), int(row[2]))
@@ -359,19 +371,53 @@ class TraceStore:
             "error_message, tags, timestamp, finish_reason, estimated_tokens, timings) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
-        # Retry-on-locked: the busy_timeout PRAGMA above absorbs short
-        # contention, but a stuck-reader scenario can still expire it.
-        # We try up to ``len(_RETRY_BACKOFFS_S) + 1`` times total before
-        # incrementing the failure counter and re-raising — the caller's
-        # _create_logged_task done-callback will then log it once.
+        # Group commit: rows recorded while a commit is in progress go out
+        # together in the next one.  A commit per request was a large share of
+        # the router's per-request cost under load; each caller still waits for
+        # its own row to be committed (or to fail), as before.
+        done = asyncio.get_running_loop().create_future()
+        self._pending.append((params, done))
+        if self._flusher is None or self._flusher.done():
+            self._flusher = asyncio.create_task(self._flush_pending(sql))
+        await done
+
+    async def _flush_pending(self, sql: str) -> None:
+        """Commit pending trace rows in groups until none are left."""
+        async with self._write_lock:
+            while self._pending:
+                batch, self._pending = self._pending, []
+                try:
+                    await self._write_batch(sql, [params for params, _ in batch])
+                except Exception as exc:  # noqa: BLE001 -- every waiter gets it
+                    for _, done in batch:
+                        if not done.done():
+                            done.set_exception(exc)
+                else:
+                    for _, done in batch:
+                        if not done.done():
+                            done.set_result(None)
+
+    async def _write_batch(self, sql: str, rows: list[tuple]) -> None:
+        """Insert ``rows`` in one transaction, retrying the whole batch on a lock.
+
+        The busy_timeout PRAGMA absorbs short contention, but a stuck reader
+        can still expire it.  Up to ``len(_RETRY_BACKOFFS_S) + 1`` attempts, then
+        the failure is counted (one per row, for the trace_store_write_failures
+        health check) and raised to every waiting caller.  A failed attempt is
+        rolled back first, so a retried batch never inserts a row twice.
+        """
         for backoff in (*_RETRY_BACKOFFS_S, None):
             try:
-                await self._db.execute(sql, params)
+                for params in rows:
+                    await self._db.execute(sql, params)
                 await self._db.commit()
                 return
             except aiosqlite.OperationalError as exc:
+                with contextlib.suppress(Exception):
+                    await self._db.rollback()
                 if "locked" not in str(exc).lower() or backoff is None:
-                    self._write_failure_times.append(time.time())
+                    now = time.time()
+                    self._write_failure_times.extend([now] * len(rows))
                     raise
                 await asyncio.sleep(backoff)
 
@@ -1304,39 +1350,44 @@ class TraceStore:
         """Insert a benchmark run record."""
         if not self._db:
             return
-        await self._db.execute(
-            "INSERT OR REPLACE INTO benchmark_runs "
-            "(run_id, timestamp, duration_s, total_requests, total_failures, "
-            "total_prompt_tokens, total_completion_tokens, requests_per_sec, "
-            "tokens_per_sec, latency_p50_ms, latency_p95_ms, latency_p99_ms, "
-            "ttft_p50_ms, ttft_p95_ms, ttft_p99_ms, fleet_snapshot, "
-            "per_model_results, per_node_results, peak_utilization) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                data["run_id"],
-                data.get("timestamp", time.time()),
-                data["duration_s"],
-                data["total_requests"],
-                data["total_failures"],
-                data["total_prompt_tokens"],
-                data["total_completion_tokens"],
-                data.get("requests_per_sec"),
-                data.get("tokens_per_sec"),
-                data.get("latency_p50_ms"),
-                data.get("latency_p95_ms"),
-                data.get("latency_p99_ms"),
-                data.get("ttft_p50_ms"),
-                data.get("ttft_p95_ms"),
-                data.get("ttft_p99_ms"),
-                json.dumps(data.get("fleet_snapshot")) if data.get("fleet_snapshot") else None,
-                json.dumps(data.get("per_model_results"))
-                if data.get("per_model_results")
-                else None,
-                json.dumps(data.get("per_node_results")) if data.get("per_node_results") else None,
-                json.dumps(data.get("peak_utilization")) if data.get("peak_utilization") else None,
-            ),
-        )
-        await self._db.commit()
+        async with self._write_lock:
+            await self._db.execute(
+                "INSERT OR REPLACE INTO benchmark_runs "
+                "(run_id, timestamp, duration_s, total_requests, total_failures, "
+                "total_prompt_tokens, total_completion_tokens, requests_per_sec, "
+                "tokens_per_sec, latency_p50_ms, latency_p95_ms, latency_p99_ms, "
+                "ttft_p50_ms, ttft_p95_ms, ttft_p99_ms, fleet_snapshot, "
+                "per_model_results, per_node_results, peak_utilization) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    data["run_id"],
+                    data.get("timestamp", time.time()),
+                    data["duration_s"],
+                    data["total_requests"],
+                    data["total_failures"],
+                    data["total_prompt_tokens"],
+                    data["total_completion_tokens"],
+                    data.get("requests_per_sec"),
+                    data.get("tokens_per_sec"),
+                    data.get("latency_p50_ms"),
+                    data.get("latency_p95_ms"),
+                    data.get("latency_p99_ms"),
+                    data.get("ttft_p50_ms"),
+                    data.get("ttft_p95_ms"),
+                    data.get("ttft_p99_ms"),
+                    json.dumps(data.get("fleet_snapshot")) if data.get("fleet_snapshot") else None,
+                    json.dumps(data.get("per_model_results"))
+                    if data.get("per_model_results")
+                    else None,
+                    json.dumps(data.get("per_node_results"))
+                    if data.get("per_node_results")
+                    else None,
+                    json.dumps(data.get("peak_utilization"))
+                    if data.get("peak_utilization")
+                    else None,
+                ),
+            )
+            await self._db.commit()
 
     # -- Context usage analysis --
 
@@ -1433,12 +1484,13 @@ class TraceStore:
         """Persist a fleet intelligence briefing to SQLite."""
         if not self._db:
             return
-        await self._db.execute(
-            "INSERT INTO fleet_briefings (timestamp, briefing, model, fleet_data) "
-            "VALUES (?, ?, ?, ?)",
-            (time.time(), briefing, model, fleet_data),
-        )
-        await self._db.commit()
+        async with self._write_lock:
+            await self._db.execute(
+                "INSERT INTO fleet_briefings (timestamp, briefing, model, fleet_data) "
+                "VALUES (?, ?, ?, ?)",
+                (time.time(), briefing, model, fleet_data),
+            )
+            await self._db.commit()
 
     async def get_briefings(self, limit: int = 20) -> list[dict]:
         """Return recent fleet briefings, newest first."""
