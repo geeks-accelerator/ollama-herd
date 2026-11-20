@@ -171,11 +171,22 @@ def _create_logged_task(coro, *, name: str = "background"):
 PRE_WARM_TIMEOUT_S = 900.0
 
 
+def _backend_url(node, port: int) -> str:
+    """URL of a native backend on ``node``'s host (its Ollama URL's host)."""
+    from urllib.parse import urlparse
+
+    host = urlparse(node.ollama_base_url).hostname or "localhost"
+    return f"http://{host}:{port}"
+
+
 class StreamingProxy:
     def __init__(self, registry: NodeRegistry, latency_store=None, trace_store=None, settings=None):
         self._registry = registry
-        self._clients: dict[str, httpx.AsyncClient] = {}
-        self._client_urls: dict[str, str] = {}  # Track URL used to create each client
+        # One pooled client per (node, backend port); port None is the node's
+        # Ollama.  Native backends (embeddings, speech, images) share the pool
+        # instead of opening a connection per request.
+        self._clients: dict[tuple[str, int | None], httpx.AsyncClient] = {}
+        self._client_urls: dict[tuple[str, int | None], str] = {}  # URL each was built for
         self._latency_store = latency_store
         self._trace_store = trace_store
         self._settings = settings
@@ -222,45 +233,53 @@ class StreamingProxy:
         """Remove and return extended request metadata for a request."""
         return self._request_meta.pop(request_id, None)
 
-    def _get_client(self, node_id: str) -> httpx.AsyncClient:
+    def _get_client(self, node_id: str, port: int | None = None) -> httpx.AsyncClient:
+        """The pooled client for a node's Ollama, or for its backend on ``port``.
+
+        Native backends live on the node's host at their own port; ``port`` names
+        one.  Requests pass their own ``timeout=`` where it differs from the
+        default here.
+        """
         node = self._registry.get_node(node_id)
         if not node:
             raise ValueError(f"Node {node_id} not found in registry")
 
+        key = (node_id, port)
+        current_url = node.ollama_base_url if port is None else _backend_url(node, port)
         # Recreate client if URL changed (e.g., node got a new LAN IP)
-        current_url = node.ollama_base_url
-        if node_id in self._clients and self._client_urls.get(node_id) != current_url:
+        if key in self._clients and self._client_urls.get(key) != current_url:
             logger.info(
-                f"Node {node_id} URL changed from {self._client_urls[node_id]} "
+                f"Node {node_id} URL changed from {self._client_urls[key]} "
                 f"to {current_url}, recreating HTTP client"
             )
             _create_logged_task(
-                self._clients[node_id].aclose(),
+                self._clients[key].aclose(),
                 name=f"close-stale-client-{node_id}",
             )
-            del self._clients[node_id]
+            del self._clients[key]
 
-        if node_id not in self._clients:
-            self._clients[node_id] = httpx.AsyncClient(
+        if key not in self._clients:
+            self._clients[key] = httpx.AsyncClient(
                 base_url=current_url,
                 timeout=httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0),
             )
-            self._client_urls[node_id] = current_url
-        return self._clients[node_id]
+            self._client_urls[key] = current_url
+        return self._clients[key]
 
     def _invalidate_client(self, node_id: str):
-        """Discard a cached HTTP client so the next request creates a fresh one.
+        """Discard a node's cached HTTP clients so the next request creates fresh ones.
 
         Called after connection errors to recover from stale connection pools.
         """
-        if node_id in self._clients:
+        stale = [key for key in self._clients if key[0] == node_id]
+        if stale:
             logger.info(f"Invalidating HTTP client for {node_id} after connection error")
+        for key in stale:
             _create_logged_task(
-                self._clients[node_id].aclose(),
+                self._clients.pop(key).aclose(),
                 name=f"close-failed-client-{node_id}",
             )
-            del self._clients[node_id]
-            self._client_urls.pop(node_id, None)
+            self._client_urls.pop(key, None)
 
     def make_process_fn(self, queue_key: str, queue_manager, scorer=None, settings=None):
         """Create a process function for the queue worker.
@@ -1272,21 +1291,14 @@ class StreamingProxy:
         node = self._registry.get_node(node_id)
         if not node:
             raise ValueError(f"Node {node_id} not found")
-
-        from urllib.parse import urlparse
-
-        parsed = urlparse(node.ollama_base_url)
-        host = parsed.hostname or "localhost"
-        embed_port = node.vision_embedding_port or 11438
-        embed_url = f"http://{host}:{embed_port}"
-
-        async with httpx.AsyncClient(
-            base_url=embed_url,
+        client = self._get_client(node_id, port=node.vision_embedding_port or 11438)
+        resp = await client.post(
+            "/embed",
+            json=body,
             timeout=httpx.Timeout(connect=10.0, read=timeout, write=10.0, pool=10.0),
-        ) as client:
-            resp = await client.post("/embed", json=body)
-            resp.raise_for_status()
-            return resp.json()
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     async def transcribe_on_node(
         self, node_id: str, audio_bytes: bytes, filename: str, timeout: float = 300.0
@@ -1296,49 +1308,39 @@ class StreamingProxy:
         The mlx-qwen3-asr server uses an async job API: submit → poll.
         This method handles both steps and returns the final result.
         """
-        import asyncio
-
         node = self._registry.get_node(node_id)
         if not node:
             raise ValueError(f"Node {node_id} not found")
-
-        from urllib.parse import urlparse
-
-        parsed = urlparse(node.ollama_base_url)
-        host = parsed.hostname or "localhost"
-        stt_port = node.transcription_port or 11437
-        stt_url = f"http://{host}:{stt_port}"
+        client = self._get_client(node_id, port=node.transcription_port or 11437)
+        request_timeout = httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
         auth = {"Authorization": "Bearer herd-internal"}
 
-        async with httpx.AsyncClient(
-            base_url=stt_url,
-            timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0),
-        ) as client:
-            # Submit job
-            resp = await client.post(
-                "/transcribe",
-                files={"audio": (filename, audio_bytes)},
-                headers=auth,
-            )
+        # Submit job
+        resp = await client.post(
+            "/transcribe",
+            files={"audio": (filename, audio_bytes)},
+            headers=auth,
+            timeout=request_timeout,
+        )
+        resp.raise_for_status()
+        job = resp.json()
+        job_id = job["job_id"]
+
+        # Poll for completion
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            resp = await client.get(f"/jobs/{job_id}", headers=auth, timeout=request_timeout)
             resp.raise_for_status()
-            job = resp.json()
-            job_id = job["job_id"]
+            status = resp.json()
+            if status["status"] == "completed":
+                return status.get("result", status)
+            if status["status"] == "failed":
+                raise RuntimeError(
+                    f"Transcription job {job_id} failed: {status.get('error', 'unknown')}"
+                )
+            await asyncio.sleep(0.5)
 
-            # Poll for completion
-            deadline = time.time() + timeout
-            while time.time() < deadline:
-                resp = await client.get(f"/jobs/{job_id}", headers=auth)
-                resp.raise_for_status()
-                status = resp.json()
-                if status["status"] == "completed":
-                    return status.get("result", status)
-                if status["status"] == "failed":
-                    raise RuntimeError(
-                        f"Transcription job {job_id} failed: {status.get('error', 'unknown')}"
-                    )
-                await asyncio.sleep(0.5)
-
-            raise TimeoutError(f"Transcription job {job_id} timed out")
+        raise TimeoutError(f"Transcription job {job_id} timed out")
 
     def make_transcription_process_fn(self, queue_key: str, queue_manager, timeout: float = 300.0):
         """Create a process function for transcription queue entries."""
@@ -1384,22 +1386,14 @@ class StreamingProxy:
         node = self._registry.get_node(node_id)
         if not node:
             raise ValueError(f"Node {node_id} not found")
-
-        # Build the image server URL from the node's Ollama URL + image port
-        from urllib.parse import urlparse
-
-        parsed = urlparse(node.ollama_base_url)
-        host = parsed.hostname or "localhost"
-        image_port = node.image_port or 11436
-        image_url = f"http://{host}:{image_port}"
-
-        async with httpx.AsyncClient(
-            base_url=image_url,
+        client = self._get_client(node_id, port=node.image_port or 11436)
+        resp = await client.post(
+            "/api/generate-image",
+            json=body,
             timeout=httpx.Timeout(connect=10.0, read=timeout, write=10.0, pool=10.0),
-        ) as client:
-            resp = await client.post("/api/generate-image", json=body)
-            resp.raise_for_status()
-            return resp.content
+        )
+        resp.raise_for_status()
+        return resp.content
 
     async def query_node_models(self, node_id: str) -> list[dict] | None:
         """Query a node's Ollama /api/tags for model details including disk size.

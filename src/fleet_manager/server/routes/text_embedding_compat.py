@@ -21,7 +21,6 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
-from urllib.parse import urlparse
 
 import httpx
 from fastapi import Request
@@ -220,12 +219,10 @@ async def proxy_to_native_text_server(
 
     best = _score_text_embedding_candidates(candidates)
 
-    parsed = urlparse(best.ollama_base_url)
-    host = parsed.hostname or "localhost"
-    te_port = best.text_embedding_port or 11439
-    te_url = f"http://{host}:{te_port}"
-
-    logger.info(f"{kind.label.capitalize()}: model={model} → {best.node_id} ({te_url})")
+    client = request.app.state.streaming_proxy._get_client(
+        best.node_id, port=best.text_embedding_port or 11439
+    )
+    logger.info(f"{kind.label.capitalize()}: model={model} → {best.node_id} ({client.base_url})")
 
     trace = direct_proxy_tracer(
         trace_store,
@@ -239,38 +236,37 @@ async def proxy_to_native_text_server(
     size = _size_mb(model)
     # Forward the request body as-is to the node's native server
     timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
-    async with httpx.AsyncClient(base_url=te_url, timeout=timeout) as client:
-        try:
-            resp = await client.post(kind.path, json=body)
-        except httpx.ReadTimeout:
-            err_msg = "ReadTimeout — model may still be downloading" + (
-                f" ({size} MB on first request)" if size else " on first request"
-            )
-            logger.error(f"{kind.label.capitalize()} timeout on {best.node_id} — {err_msg}")
-            trace("failed", error=err_msg)
-            return JSONResponse(
-                status_code=504,
-                content={
-                    "error": (
-                        f"{kind.label.capitalize()} timed out on {best.node_id}. "
-                        "If this is the first request, the model"
-                        + (f" ({size} MB)" if size else "")
-                        + " may still be "
-                        "downloading — retry in 30 seconds."
-                    ),
-                    "node": best.node_id,
-                },
-            )
-        except Exception as exc:
-            logger.error(f"{kind.label.capitalize()} transport error on {best.node_id}: {exc}")
-            trace("failed", error=f"{type(exc).__name__}: {exc}")
-            return JSONResponse(
-                status_code=502,
-                content={
-                    "error": f"{kind.label.capitalize()} failed: {exc}",
-                    "node": best.node_id,
-                },
-            )
+    try:
+        resp = await client.post(kind.path, json=body, timeout=timeout)
+    except httpx.ReadTimeout:
+        err_msg = "ReadTimeout — model may still be downloading" + (
+            f" ({size} MB on first request)" if size else " on first request"
+        )
+        logger.error(f"{kind.label.capitalize()} timeout on {best.node_id} — {err_msg}")
+        trace("failed", error=err_msg)
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": (
+                    f"{kind.label.capitalize()} timed out on {best.node_id}. "
+                    "If this is the first request, the model"
+                    + (f" ({size} MB)" if size else "")
+                    + " may still be "
+                    "downloading — retry in 30 seconds."
+                ),
+                "node": best.node_id,
+            },
+        )
+    except Exception as exc:
+        logger.error(f"{kind.label.capitalize()} transport error on {best.node_id}: {exc}")
+        trace("failed", error=f"{type(exc).__name__}: {exc}")
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": f"{kind.label.capitalize()} failed: {exc}",
+                "node": best.node_id,
+            },
+        )
 
     if not resp.is_success:
         try:

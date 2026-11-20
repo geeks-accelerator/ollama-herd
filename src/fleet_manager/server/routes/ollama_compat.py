@@ -184,19 +184,17 @@ async def ollama_version(request: Request):
     """
     from importlib.metadata import version as pkg_version
 
-    # Get Ollama version from the first online node
-    registry = request.app.state.registry
-    ollama_version = None
-    for node in registry.get_online_nodes():
-        if node.ollama_base_url:
-            try:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    resp = await client.get(f"{node.ollama_base_url}/api/version")
-                    if resp.status_code == 200:
-                        ollama_version = resp.json().get("version")
-                        break
-            except Exception:
-                pass
+    # Ollama's version as the first online node reported it in its heartbeat.
+    # Clients poll this as a health check, so it must not cost a request to a
+    # node (it opened a new connection to one on every call).
+    ollama_version = next(
+        (
+            n.ollama.version
+            for n in request.app.state.registry.get_online_nodes()
+            if n.ollama and n.ollama.version
+        ),
+        None,
+    )
 
     result = {"version": ollama_version or "unknown"}
     result["herd_version"] = pkg_version("ollama-herd")

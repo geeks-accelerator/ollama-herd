@@ -74,14 +74,17 @@ def app_client(tmp_path):
         yield c
 
 
-def _install_mock_ollama(client: TestClient, node_id: str, handler) -> None:
-    """Point the router's per-node httpx client at a MockTransport."""
+def _install_mock_ollama(client: TestClient, node_id: str, handler, port: int | None = None) -> None:
+    """Point the router's pooled client for a node at a MockTransport.
+
+    ``port`` names a native backend on the node (text embeddings, images...);
+    ``None`` is the node's Ollama.
+    """
     proxy = client.app.state.streaming_proxy
-    node = client.app.state.registry.get_node(node_id)
-    proxy._clients[node_id] = httpx.AsyncClient(
-        base_url=node.ollama_base_url, transport=httpx.MockTransport(handler),
+    real = proxy._get_client(node_id, port=port)
+    proxy._clients[(node_id, port)] = httpx.AsyncClient(
+        base_url=real.base_url, transport=httpx.MockTransport(handler),
     )
-    proxy._client_urls[node_id] = node.ollama_base_url
 
 
 # ---------------------------------------------------------------------------
