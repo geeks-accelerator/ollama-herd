@@ -10,6 +10,9 @@ reporting that delay as ``total_duration`` like Ollama does.
 
     python scripts/mock_ollama.py --port 11500 --delay-ms 20
     FLEET_NODE_OLLAMA_HOST=http://127.0.0.1:11500 herd-node   # registers "mock:latest"
+
+One process tops out around 200 requests/s, below what the router it measures
+can take; ``--workers`` runs several, so the stand-in is never the bottleneck.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import time
 
 import uvicorn
@@ -79,10 +83,28 @@ def build_app(delay_ms: float) -> FastAPI:
     return app
 
 
+def app_from_env() -> FastAPI:
+    """For ``--workers``: each worker process builds the app from the environment."""
+    return build_app(float(os.environ.get("MOCK_OLLAMA_DELAY_MS", "20")))
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=11500)
     p.add_argument("--delay-ms", type=float, default=20.0)
+    p.add_argument("--workers", type=int, default=1, help="Server processes (default 1)")
     args = p.parse_args()
-    uvicorn.run(build_app(args.delay_ms), host=args.host, port=args.port, log_level="warning")
+    if args.workers > 1:
+        os.environ["MOCK_OLLAMA_DELAY_MS"] = str(args.delay_ms)
+        uvicorn.run(
+            "mock_ollama:app_from_env",
+            factory=True,
+            app_dir=os.path.dirname(os.path.abspath(__file__)),
+            workers=args.workers,
+            host=args.host,
+            port=args.port,
+            log_level="warning",
+        )
+    else:
+        uvicorn.run(build_app(args.delay_ms), host=args.host, port=args.port, log_level="warning")
