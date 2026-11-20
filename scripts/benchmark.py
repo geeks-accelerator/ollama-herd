@@ -34,6 +34,8 @@ import httpx
 from fleet_manager.server.benchmark_engine import (
     build_report,
     discover_fleet,
+    embed_worker,
+    is_embed_model,
     percentile,
     poll_fleet_status,
     warmup,
@@ -61,10 +63,7 @@ def print_report(report, targets, nodes_info):
     total_conc = sum(t.concurrency for t in targets)
     print(f"\n  Workers: {total_conc} total across {len(targets)} models")
     for t in targets:
-        print(
-            f"    {t.name:<35} {t.concurrency} workers"
-            f"  ({t.size_gb:.0f} GB)"
-        )
+        print(f"    {t.name:<35} {t.concurrency} workers  ({t.size_gb:.0f} GB)")
 
     peak_util = report.get("peak_utilization", [])
     if peak_util:
@@ -83,7 +82,9 @@ def print_report(report, targets, nodes_info):
     print("  THROUGHPUT")
     print("  " + "\u2500" * 66)
     print(f"  Duration:       {report['duration_s']:.1f}s")
-    print(f"  Requests:       {report['total_requests']} completed, {report['total_failures']} failed")
+    print(
+        f"  Requests:       {report['total_requests']} completed, {report['total_failures']} failed"
+    )
     total_tok = report["total_prompt_tokens"] + report["total_completion_tokens"]
     print(
         f"  Tokens:         {total_tok:,} "
@@ -100,7 +101,7 @@ def print_report(report, targets, nodes_info):
         print("  LATENCY")
         print("  " + "\u2500" * 66)
         print(f"  {'Metric':<16} {'p50':>8} {'p95':>8} {'p99':>8}")
-        print(f"  {'\u2500'*16} {'\u2500'*8} {'\u2500'*8} {'\u2500'*8}")
+        print(f"  {'\u2500' * 16} {'\u2500' * 8} {'\u2500' * 8} {'\u2500' * 8}")
         print(
             f"  {'Total (ms)':<16} "
             f"{report['latency_p50_ms']:>8,.0f} "
@@ -152,6 +153,8 @@ async def run_benchmark(
     concurrency_override: int | None,
     skip_warmup: bool = False,
     no_save: bool = False,
+    prompt_tokens: int | None = None,
+    max_tokens: int | None = None,
 ):
     async with httpx.AsyncClient(base_url=url) as client:
         # Discover fleet
@@ -198,15 +201,13 @@ async def run_benchmark(
                 f" \u2014 {t.concurrency} workers"
                 f" \u2014 {', '.join(t.nodes)}"
             )
-        print(
-            f"\n  Total workers: {total_conc} across "
-            f"{len(targets)} models\n"
-        )
+        print(f"\n  Total workers: {total_conc} across {len(targets)} models\n")
 
         # Warmup
         if not skip_warmup:
             targets = await warmup(
-                client, targets,
+                client,
+                targets,
                 log_fn=lambda msg: print(f"  {msg}"),
             )
             if not targets:
@@ -215,10 +216,7 @@ async def run_benchmark(
             total_conc = sum(t.concurrency for t in targets)
             print()
 
-        print(
-            f"Starting {duration:.0f}s benchmark with "
-            f"{total_conc} concurrent workers...\n"
-        )
+        print(f"Starting {duration:.0f}s benchmark with {total_conc} concurrent workers...\n")
 
         # Run benchmark
         results = []
@@ -227,18 +225,24 @@ async def run_benchmark(
 
         # Create worker tasks
         tasks = []
+        # Embedding models get embedding requests: a chat request to one fails.
         for target in targets:
             for _ in range(target.concurrency):
-                tasks.append(
-                    asyncio.create_task(
-                        worker(client, target.name, results, stop_event)
+                if is_embed_model(target.name):
+                    coro = embed_worker(client, target.name, results, stop_event)
+                else:
+                    coro = worker(
+                        client,
+                        target.name,
+                        results,
+                        stop_event,
+                        prompt_tokens=prompt_tokens,
+                        max_tokens=max_tokens,
                     )
-                )
+                tasks.append(asyncio.create_task(coro))
 
         # Fleet status poller
-        poller_task = asyncio.create_task(
-            poll_fleet_status(client, stop_event, fleet_snapshots)
-        )
+        poller_task = asyncio.create_task(poll_fleet_status(client, stop_event, fleet_snapshots))
 
         # Progress ticker
         start_time = time.monotonic()
@@ -268,10 +272,7 @@ async def run_benchmark(
         stop_event.set()
 
         # Wait for in-flight to finish
-        print(
-            f"\r  Stopping... waiting for in-flight requests."
-            f"                                  "
-        )
+        print(f"\r  Stopping... waiting for in-flight requests.                                  ")
         done, pending = await asyncio.wait(tasks, timeout=30)
         for t in pending:
             t.cancel()
@@ -290,9 +291,9 @@ async def run_benchmark(
         # Build and print report
         actual_duration = time.monotonic() - start_time
         report_duration = min(actual_duration, duration * 2)
-        report = build_report(
-            results, report_duration, targets, nodes_info, fleet_snapshots
-        )
+        report = build_report(results, report_duration, targets, nodes_info, fleet_snapshots)
+        # Saved with the run, so a result always says what load produced it.
+        report["workload"] = {"prompt_tokens": prompt_tokens, "max_tokens": max_tokens}
         print_report(report, targets, nodes_info)
 
         # Save results to the router
@@ -357,6 +358,21 @@ Examples:
         action="store_true",
         help="Don't save results to the router (skip POST to /dashboard/api/benchmarks)",
     )
+    parser.add_argument(
+        "--prompt-tokens",
+        type=int,
+        default=None,
+        help="Pad each chat prompt to about this many tokens, with different text every request "
+        "so no cached prefix helps (default: a ~10-token question). Real requests average "
+        "~1,250 (ollamaherd.com/stats)",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="Cap each reply at this many tokens (Ollama num_predict; default: no cap). "
+        "Real replies average ~200",
+    )
     args = parser.parse_args()
 
     asyncio.run(
@@ -367,6 +383,8 @@ Examples:
             args.concurrency,
             args.skip_warmup,
             args.no_save,
+            prompt_tokens=args.prompt_tokens,
+            max_tokens=args.max_tokens,
         )
     )
 

@@ -41,6 +41,73 @@ PROMPTS = [
 ]
 
 
+# Words for padding prompts to a target length.  Common English words are
+# about one token each in most tokenizers, so a count of words is close to a
+# count of tokens; make_prompt() measures with tiktoken to be sure.
+_FILLER_TEXT = (
+    "the router sends each request to a machine that has the model ready and memory to "
+    "spare while the queue on every node is watched so that no single box falls behind "
+    "a coding agent reads files runs tests and asks for changes many times an hour and "
+    "each turn carries the history of the session along with the tools it may call "
+    "embeddings turn documents into vectors so that search can find the right passage "
+    "small models answer quick questions while large ones handle the hard reasoning work"
+)
+_FILLER_WORDS = _FILLER_TEXT.split()
+
+EMBED_PATTERNS = ("embed", "nomic", "bge", "e5-")
+
+
+def is_embed_model(name: str) -> bool:
+    """True for embedding models, judged by name as discover_embed_models does."""
+    return any(p in name.lower() for p in EMBED_PATTERNS)
+
+
+# Topics for the padded workload.  PROMPTS ask for one sentence, which a model
+# obeys over any instruction to write more, so they cannot drive long replies.
+LONG_TOPICS = [
+    "how a load balancer decides where to send each request",
+    "what limits token generation speed on a GPU",
+    "how a KV cache works and what it costs in memory",
+    "trade-offs of quantizing a language model",
+    "how service discovery works on a local network",
+    "ways to make a small cluster of machines fault tolerant",
+    "how tensor parallelism and pipeline parallelism differ",
+    "what to monitor on a machine serving language models",
+]
+
+
+def make_prompt(prompt_tokens: int | None = None, rng: random.Random | None = None) -> str:
+    """A chat prompt: one of PROMPTS, or about ``prompt_tokens`` long.
+
+    The short PROMPTS are ~10 tokens, while real requests average ~1,245 prompt
+    tokens (ollamaherd.com/stats, 30 days to 2026-11-20), so a benchmark with
+    them measures almost no prefill.  With ``prompt_tokens`` the prompt is
+    padded with words in a random order, different on every call, so no two
+    requests share a prefix Ollama's cache could skip.  It asks for a long answer
+    so that ``max_tokens`` (not the model's brevity) decides the reply length:
+    asked for "about 150 words" or "at least 400 words", qwen2.5-coder:7b still
+    stopped near 40-60 tokens; a list of 40 points on an open topic runs to the cap.
+    """
+    rng = rng or random
+    if not prompt_tokens:
+        return rng.choice(PROMPTS)
+    topic = rng.choice(LONG_TOPICS)
+    import tiktoken
+
+    enc = tiktoken.get_encoding("cl100k_base")
+    tail = (
+        f"\n\nUsing the notes above where relevant, explain {topic} as a numbered list "
+        f"of at least 40 points, each a full sentence."
+    )
+    budget = max(0, prompt_tokens - len(enc.encode(tail)))
+    words: list[str] = []
+    while len(enc.encode(" ".join(words))) < budget:
+        words.extend(rng.sample(_FILLER_WORDS, k=min(40, len(_FILLER_WORDS))))
+    text = " ".join(words)
+    tokens = enc.encode(text)[:budget]
+    return "Notes: " + enc.decode(tokens) + tail
+
+
 EMBED_PROMPTS = [
     "The quick brown fox jumps over the lazy dog.",
     "Distributed computing enables horizontal scaling across machines.",
@@ -174,14 +241,13 @@ async def discover_embed_models(
     data = resp.json()
 
     targets = []
-    embed_patterns = ("embed", "nomic", "bge", "e5-")
     for node in data.get("nodes", []):
         if node.get("status") != "online":
             continue
         ollama = node.get("ollama") or {}
         for m in ollama.get("models_loaded", []):
             name = m["name"]
-            is_embed = any(p in name.lower() for p in embed_patterns)
+            is_embed = is_embed_model(name)
             already_found = any(t.name == name for t in targets)
             if is_embed and not already_found:
                 targets.append(
@@ -372,14 +438,23 @@ async def send_request(
     client: httpx.AsyncClient,
     model: str,
     timeout: float = 300.0,
+    prompt_tokens: int | None = None,
+    max_tokens: int | None = None,
 ) -> RequestResult:
-    """Send a streaming request via Ollama format to get token counts."""
+    """Send a streaming request via Ollama format to get token counts.
+
+    ``prompt_tokens`` pads the prompt to about that length (``make_prompt``);
+    ``max_tokens`` caps the reply (Ollama's ``num_predict``).  Both default to
+    the original short prompt with no cap.
+    """
     body = {
         "model": model,
-        "messages": [{"role": "user", "content": random.choice(PROMPTS)}],
+        "messages": [{"role": "user", "content": make_prompt(prompt_tokens)}],
         "stream": True,
         "metadata": {"tags": ["benchmark"]},
     }
+    if max_tokens:
+        body["options"] = {"num_predict": max_tokens}
 
     start = time.monotonic()
     ttft = 0.0
@@ -420,7 +495,10 @@ async def send_request(
                     continue
 
                 msg = chunk.get("message", {})
-                if first_content and msg.get("content"):
+                # A thinking model streams its reasoning in "thinking" before any
+                # "content"; its first token is the first of either, or TTFT reads
+                # 0 for every request that is still reasoning at the cap.
+                if first_content and (msg.get("content") or msg.get("thinking")):
                     ttft = (time.monotonic() - start) * 1000
                     first_content = False
 
@@ -458,10 +536,14 @@ async def worker(
     results: list[RequestResult],
     stop_event: asyncio.Event,
     error_backoff: float = 1.0,
+    prompt_tokens: int | None = None,
+    max_tokens: int | None = None,
 ):
     """Continuously send requests until stop_event is set, with error backoff."""
     while not stop_event.is_set():
-        result = await send_request(client, model)
+        result = await send_request(
+            client, model, prompt_tokens=prompt_tokens, max_tokens=max_tokens
+        )
         results.append(result)
         if not result.success:
             try:
