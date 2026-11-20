@@ -510,9 +510,12 @@ async def _load_model_on_best_node(
                 f"on disk; falling back to best-mem node ({why})"
             )
     if best is None:
+        # The node with the most memory free without evicting a resident model:
+        # on GPU nodes free RAM made every node look roomy, so warming chose
+        # by RAM and evicted what was on the card.
         best = max(
             available_nodes,
-            key=lambda n: n.model_memory_available_gb(),
+            key=lambda n: n.memory_free_without_evicting_gb(),
         )
     # What this model will actually COST resident — weights + KV cache for the
     # context we're about to request — not just its on-disk weights.  Sizing by

@@ -545,6 +545,33 @@ class NodeState(BaseModel):
             return 0.0
         return self.memory.available_gb + self.gpu_memory_free_gb()
 
+    def memory_for_load_gb(self) -> float:
+        """What a model load may use here: ``model_memory_available_gb``,
+        capped by the learned capacity ceiling when there is one."""
+        available = self.model_memory_available_gb()
+        if self.capacity and self.capacity.ceiling_gb > 0:
+            available = min(available, self.capacity.ceiling_gb)
+        return available
+
+    def memory_free_without_evicting_gb(self) -> float:
+        """What a load can use before Ollama evicts a resident model.
+
+        On a node with GPU memory that is the free GPU memory: Ollama evicts a
+        resident model rather than spill one that would fit after the eviction
+        into RAM ("model predicted to exceed available memory, evicting", seen
+        on 24 GB cards with 52 GB of free RAM in the 2026-11-20 fleet
+        benchmark).  On unified memory it is available RAM.  Capped by the
+        capacity ceiling like ``memory_for_load_gb``.
+        """
+        if not self.memory:
+            return 0.0
+        free = (
+            self.gpu_memory_free_gb() if self.memory.gpu_total_gb > 0 else self.memory.available_gb
+        )
+        if self.capacity and self.capacity.ceiling_gb > 0:
+            free = min(free, self.capacity.ceiling_gb)
+        return free
+
     def gpu_memory_free_gb(self) -> float:
         """Free GPU memory outside RAM.  Detected: the devices' own measured
         use, which also counts other programs on the GPU.  Declared by hand:

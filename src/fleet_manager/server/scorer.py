@@ -10,7 +10,11 @@ from fleet_manager.models.node import MemoryPressure, NodeState, NodeStatus
 from fleet_manager.models.request import RoutingResult
 from fleet_manager.server.model_knowledge import classify_model, lookup_model
 from fleet_manager.server.registry import NodeRegistry
-from fleet_manager.server.serializers import model_resident_on_node
+from fleet_manager.server.serializers import (
+    distinct_resident_models,
+    hot_model_cap_for,
+    model_resident_on_node,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +57,13 @@ class ScoringEngine:
         for node in candidates:
             breakdown = {}
 
-            s1 = self._score_thermal(node, model)
+            # What loading the model here would push out of memory, if anything.
+            # Thermal and memory fit both depend on it: a "warm" model that only
+            # fits by evicting another is a cold load with an eviction.
+            s0 = self._score_eviction(node, model, queue_depths)
+            breakdown["eviction"] = s0
+
+            s1 = self._score_thermal(node, model, evicts=s0 < 0)
             breakdown["thermal"] = s1
 
             s2 = self._score_memory_fit(node, model)
@@ -83,7 +93,7 @@ class ScoringEngine:
             s8p = 0.0 if s8 else self._score_prefix_affinity(node, prefix_key, depth)
             breakdown["prefix_affinity"] = s8p
 
-            total = s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s8p
+            total = s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s8p
             breakdown["total"] = total
 
             results.append(
@@ -109,6 +119,11 @@ class ScoringEngine:
                 f"affinity={winner.scores_breakdown.get('role_affinity', 0):.0f}, "
                 f"avail={winner.scores_breakdown.get('availability_trend', 0):.0f}, "
                 f"ctx={winner.scores_breakdown.get('context_fit', 0):.0f}"
+                + (
+                    f", evict={winner.scores_breakdown['eviction']:.0f}"
+                    if winner.scores_breakdown.get("eviction", 0)
+                    else ""
+                )
                 # Only shown when non-zero — most requests have no session, and
                 # a permanent "session=0" would be noise. But it must appear
                 # whenever it fires, or the printed signals won't sum to the
@@ -261,11 +276,11 @@ class ScoringEngine:
             # Check memory can fit if model needs loading
             if model not in loaded_names:
                 model_size = self._model_fit_cost_gb(model, node)
-                # Use capacity ceiling if available, otherwise raw available memory.
-                # Counts GPU memory the OS does not report as RAM (issue #9).
-                available = node.model_memory_available_gb()
-                if node.capacity and node.capacity.ceiling_gb > 0:
-                    available = min(available, node.capacity.ceiling_gb)
+                # The hard "can it run here at all" gate: RAM plus GPU memory
+                # the OS does not report as RAM (issue #9), capped by the
+                # capacity ceiling.  Whether it fits *without evicting* is
+                # scored, not gated (_score_eviction).
+                available = node.memory_for_load_gb()
                 if available < model_size:
                     logger.debug(
                         f"Eliminated {node.node_id}: insufficient memory "
@@ -280,15 +295,21 @@ class ScoringEngine:
 
         return survivors
 
-    def _score_thermal(self, node: NodeState, model: str) -> float:
-        """Signal 1: hot (+50), warm/recently unloaded (+30), cold on disk (+10)."""
+    def _score_thermal(self, node: NodeState, model: str, evicts: bool = False) -> float:
+        """Signal 1: hot (+50), warm/recently unloaded (+30), cold on disk (+10).
+
+        Warm only when loading it back evicts nothing.  Otherwise the node that
+        just evicted a model scores best for it, evicts the other one to load
+        it, and the two swap on every request: 20 of 20 alternating requests
+        did exactly that on one node while a second sat empty (2026-11-20).
+        """
         loaded = [m.name for m in node.ollama.models_loaded]
         if model in loaded:
             return self._s.score_model_hot  # +50
 
         # Warm tier: model was loaded within the last 30 minutes (OS page cache likely hot)
         unloaded_at = node.model_unloaded_at.get(model)
-        if unloaded_at and (time.time() - unloaded_at) < WARM_WINDOW_SECONDS:
+        if not evicts and unloaded_at and (time.time() - unloaded_at) < WARM_WINDOW_SECONDS:
             return self._s.score_model_warm  # +30
 
         if model in node.ollama.models_available:
@@ -309,12 +330,10 @@ class ScoringEngine:
         if model_size <= 0 or not node.memory:
             return 0.0
 
-        # Use capacity ceiling if the node has adaptive capacity enabled
-        available = node.model_memory_available_gb()
-        if node.capacity and node.capacity.ceiling_gb > 0:
-            available = min(available, node.capacity.ceiling_gb)
-
-        fit_ratio = available / model_size
+        # Against what the load can use without evicting anything: on a GPU
+        # node, free RAM said every model fits on every node, so this signal
+        # could not tell an empty card from a full one.
+        fit_ratio = node.memory_free_without_evicting_gb() / model_size
         if fit_ratio > 2.0:
             return 20.0
         elif fit_ratio > 1.5:
@@ -324,6 +343,53 @@ class ScoringEngine:
         elif fit_ratio >= 1.0:
             return 3.0
         return 0.0
+
+    def _score_eviction(self, node: NodeState, model: str, queue_depths: dict[str, int]) -> float:
+        """Signal 0: what loading ``model`` here would push out of memory (<= 0).
+
+        Nothing when it is resident or fits in the memory free without
+        evicting (``NodeState.memory_free_without_evicting_gb``) and a model
+        slot is free.  Otherwise Ollama evicts resident models until it fits;
+        assume the cheapest go first and charge each by how much it is in use,
+        in units of the thermal weights, so a node with room always beats one
+        that must evict a busy model by more than the warm-to-cold gap:
+
+        - in use now (queued or in flight): hot - cold
+        - used recently (preloader usage priority): warm - cold
+        - idle: half of warm - cold
+
+        capped at the hot score.
+        """
+        loaded = distinct_resident_models(node)
+        if any(m.name == model for m in loaded):
+            return 0.0
+        cost = self._model_fit_cost_gb(model, node)
+        free = node.memory_free_without_evicting_gb()
+        slots_full = len(loaded) >= hot_model_cap_for(node)
+        if free >= cost and not slots_full:
+            return 0.0
+
+        from fleet_manager.server import model_preloader
+
+        s = self._s
+        on_gpu = bool(node.memory and node.memory.gpu_total_gb > 0)
+
+        def charge(m) -> float:
+            if queue_depths.get(f"{node.node_id}:{m.name}", 0) > 0:
+                return s.score_model_hot - s.score_model_cold
+            if model_preloader.get_model_priority(m.name, model_preloader._priority_cache) > 0:
+                return s.score_model_warm - s.score_model_cold
+            return (s.score_model_warm - s.score_model_cold) / 2
+
+        penalty = 0.0
+        need = cost - free
+        for m in sorted(loaded, key=charge):
+            if need <= 0 and not slots_full:
+                break
+            penalty += charge(m)
+            need -= (m.size_vram_gb or m.size_gb) if on_gpu else m.size_gb
+            slots_full = False  # one eviction frees one slot
+        return -min(penalty, s.score_model_hot)
 
     def _score_queue_depth(
         self,

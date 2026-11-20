@@ -775,10 +775,10 @@ async def _try_auto_pull(
 
 
 def _pick_pull_node(registry, model: str, scorer) -> str | None:
-    """Pick the online node with the most available memory that can fit the model."""
+    """Pick the node to pull ``model`` onto: one it can run on at all, preferring
+    the most memory free without evicting a resident model."""
     best_node = None
-    best_available = 0.0
-    model_size = 10.0  # default estimate
+    best_free = -1.0
 
     for node in registry.get_all_nodes():
         if node.status == NodeStatus.OFFLINE:
@@ -794,17 +794,14 @@ def _pick_pull_node(registry, model: str, scorer) -> str | None:
         if node.capacity and node.capacity.mode == "paused":
             continue
 
-        # Estimate model size from this node's perspective
-        est = scorer._estimate_model_size(model, node)
-        if est > 0:
-            model_size = est
-
-        available = node.model_memory_available_gb()
-        if node.capacity and node.capacity.ceiling_gb > 0:
-            available = min(available, node.capacity.ceiling_gb)
-
-        if available >= model_size and available > best_available:
-            best_available = available
+        # What it costs on this node: weights plus KV at the context it would
+        # run with, as the scorer sizes every cold load.
+        model_size = scorer._model_fit_cost_gb(model, node)
+        if node.memory_for_load_gb() < model_size:
+            continue
+        free = node.memory_free_without_evicting_gb()
+        if free > best_free:
+            best_free = free
             best_node = node.node_id
 
     return best_node

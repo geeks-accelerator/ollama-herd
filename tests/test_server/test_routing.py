@@ -191,7 +191,7 @@ class TestAutoPull:
 
         scorer = MagicMock()
         scorer.score_request.side_effect = score_fn
-        scorer._estimate_model_size.return_value = 5.0
+        scorer._model_fit_cost_gb.return_value = 5.0
         queue_mgr = _mock_queue_mgr()
         # Node with plenty of memory but no models
         node = make_node(
@@ -247,7 +247,7 @@ class TestAutoPull:
         """When no node has enough memory, skip pull."""
         scorer = MagicMock()
         scorer.score_request.side_effect = lambda m, d, e=0, **kw: []
-        scorer._estimate_model_size.return_value = 40.0  # needs 40GB
+        scorer._model_fit_cost_gb.return_value = 40.0  # needs 40GB
         queue_mgr = _mock_queue_mgr()
         # Node with only 5GB free
         node = make_node(
@@ -275,7 +275,7 @@ class TestAutoPull:
         """When pull fails, return empty results."""
         scorer = MagicMock()
         scorer.score_request.side_effect = lambda m, d, e=0, **kw: []
-        scorer._estimate_model_size.return_value = 5.0
+        scorer._model_fit_cost_gb.return_value = 5.0
         queue_mgr = _mock_queue_mgr()
         node = make_node(
             node_id="studio", memory_total=128.0, memory_used=20.0

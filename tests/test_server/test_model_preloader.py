@@ -70,6 +70,7 @@ def _node(
     n.memory.available_gb = mem_gb
     # What the fit decisions read (no GPU memory in these tests).
     n.model_memory_available_gb.return_value = mem_gb
+    n.memory_free_without_evicting_gb.return_value = mem_gb
     # Default to an empty list (not a MagicMock) so the MLX branch can iterate.
     n.mlx_servers = [
         SimpleNamespace(model=model, status=status)
@@ -650,6 +651,7 @@ def _kv_node(name: str = "studio", *, loaded=(), disk_sizes=None, mem_gb=500.0):
     n.memory.available_gb = mem_gb
     n.memory.total_gb = 512.0
     n.model_memory_available_gb.return_value = mem_gb
+    n.memory_free_without_evicting_gb.return_value = mem_gb
     n.mlx_servers = []
     return n
 
