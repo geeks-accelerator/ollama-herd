@@ -80,6 +80,28 @@ class TestDiscovery:
         assert by_name["qwen3.5:9b"].nodes == ["a"]
         assert by_name["qwen3.5:9b"].size_gb == 9.0
 
+    @pytest.mark.asyncio
+    async def test_a_model_loaded_somewhere_is_not_also_listed_where_it_is_on_disk(
+        self, httpx_mock
+    ):
+        """Listing it there made the warm-up load it there and evict what the
+        node held, before the router decided anything."""
+        httpx_mock.add_response(
+            url=f"{ROUTER}/fleet/status",
+            json=_status(
+                [
+                    _node("a", loaded=["qwen3-coder:30b"], on_disk=["qwen3.5:9b"]),
+                    _node("b", loaded=["qwen3.5:9b"], on_disk=["qwen3-coder:30b"]),
+                ]
+            ),
+        )
+        async with httpx.AsyncClient(base_url=ROUTER) as c:
+            targets, _ = await discover_fleet(c, include_on_disk=["qwen3-coder:30b", "qwen3.5:9b"])
+        assert {t.name: t.nodes for t in targets} == {
+            "qwen3-coder:30b": ["a"],
+            "qwen3.5:9b": ["b"],
+        }
+
 
 def _ndjson(lines):
     return "".join(json.dumps(x) + "\n" for x in lines)

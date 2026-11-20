@@ -198,6 +198,7 @@ async def discover_fleet(
 
     nodes_info: list[NodeInfo] = []
     model_map: dict[str, ModelTarget] = {}
+    on_disk_by_node: dict[str, tuple[set[str], dict]] = {}
 
     def target(name: str, size_gb: float, concurrency: int) -> ModelTarget:
         if name not in model_map:
@@ -248,11 +249,21 @@ async def discover_fleet(
             for m in loaded:
                 target(m["name"], m.get("size_gb", 0), per_model_conc).nodes.append(node_id)
 
-        loaded_names = {m["name"] for m in loaded}
-        on_disk = set(ollama.get("models_available", []))
-        sizes = ollama.get("models_available_sizes", {}) or {}
-        for name in include_on_disk:
-            if name in on_disk and name not in loaded_names:
+        on_disk_by_node[node_id] = (
+            set(ollama.get("models_available", [])),
+            ollama.get("models_available_sizes", {}) or {},
+        )
+
+    # A requested model that is loaded nowhere: every node with it on disk is a
+    # candidate (its first request includes the load).  A model loaded somewhere
+    # keeps only the nodes it is loaded on: listing the others too made the
+    # warm-up load it on them directly, evicting their resident models before
+    # the router decided anything (fleet benchmark run 2, 2026-11-20).
+    for name in include_on_disk:
+        if name in model_map:
+            continue
+        for node_id, (on_disk, sizes) in on_disk_by_node.items():
+            if name in on_disk:
                 target(name, sizes.get(name, 0.0), MIN_CONCURRENCY).nodes.append(node_id)
 
     return list(model_map.values()), nodes_info
