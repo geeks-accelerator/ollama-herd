@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`X-Request-Id` on every routed response**, streaming or not, on all four API surfaces and the embedding, image and transcription endpoints. It is the trace's own `request_id`, so a client can say exactly which request it means; error responses carry it too once the request has an id (a rejection, a failed attempt). Exposed to browser clients under CORS.
 - **`/dashboard/api/traces` filters**: `request_id` (the header above; one row per attempt), `tag` and `since` (unix seconds), alongside `limit`. Rows now include `finish_reason`, `estimated_tokens` and `timings`.
 
+### Changed
+
+- **One percentile definition in the router.** The p75 latency the scorer's wait-time estimate and `/fleet/queue` read, and the p99 and median time per output token behind `decode_degraded`, now use the same linear interpolation as the benchmark report and the community payload. The old indexing picked an observed sample at or above the rank, which on small samples is the maximum (two latencies of 100 and 1,000 ms gave a p75 of 1,000; it is now 775), so these figures read slightly lower on little data and are unchanged in kind on a lot. The cache loaded at startup uses the same function, so a restart no longer changes the value. `scripts/benchmark-performance.py` switched from nearest rank to the same function too.
+
 ## [0.12.10] - 2026-11-20
 
 Most of this release comes from two benchmark runs on rented NVIDIA machines (2026-11-20). The first found most of what is listed here; the second, on stock settings, confirmed the fixes and found three more. With them, `qwen3-coder:30b` scales from 112 tok/s on one machine to 223 on two and 437 on four, and two models that cannot share one 24 GB card settle one per machine: 60-90 ms to the first token instead of an 8 s swap on every request.

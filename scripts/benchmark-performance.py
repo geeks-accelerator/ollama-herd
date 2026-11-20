@@ -18,14 +18,14 @@ How it works:
 
 Usage:
     # Baseline run (current config) — save results
-    python3 scripts/benchmark-performance.py \\
+    uv run python3 scripts/benchmark-performance.py \\
         --data-dir ~/.fleet-manager \\
         --target http://localhost:11435 \\
         --sample 20 \\
         --output /tmp/bench-before.json
 
     # After flipping a knob + restarting router, compare
-    python3 scripts/benchmark-performance.py \\
+    uv run python3 scripts/benchmark-performance.py \\
         --data-dir ~/.fleet-manager \\
         --target http://localhost:11435 \\
         --sample 20 \\
@@ -54,6 +54,7 @@ from pathlib import Path
 
 import httpx
 
+from fleet_manager.common.stats import percentile as _percentile
 
 # ---------------------------------------------------------------------------
 # Capture loading
@@ -64,8 +65,10 @@ def _iter_captures(data_dir: Path):
     """Yield JSON records from all debug capture files, newest first."""
     debug = data_dir / "debug"
     if not debug.exists():
-        print(f"No debug directory at {debug} — did you enable "
-              f"FLEET_DEBUG_REQUEST_BODIES=true?", file=sys.stderr)
+        print(
+            f"No debug directory at {debug} — did you enable FLEET_DEBUG_REQUEST_BODIES=true?",
+            file=sys.stderr,
+        )
         return
     files = sorted(debug.glob("requests.*.jsonl"), reverse=True)
     for f in files:
@@ -129,15 +132,17 @@ def pick_sample(
         if rid in seen_ids:
             continue
         seen_ids.add(rid)
-        picked.append({
-            "request_id": rid,
-            "model": model,
-            "body": body,
-            "original_prompt_tokens": prompt_tok,
-            "original_latency_ms": rec.get("latency_ms"),
-            "original_ttft_ms": rec.get("ttft_ms"),
-            "original_completion_tokens": rec.get("completion_tokens"),
-        })
+        picked.append(
+            {
+                "request_id": rid,
+                "model": model,
+                "body": body,
+                "original_prompt_tokens": prompt_tok,
+                "original_latency_ms": rec.get("latency_ms"),
+                "original_ttft_ms": rec.get("ttft_ms"),
+                "original_completion_tokens": rec.get("completion_tokens"),
+            }
+        )
     return picked
 
 
@@ -188,7 +193,7 @@ def replay_once(target: str, body: dict, timeout_s: float = 600.0) -> dict:
                         if '"output_tokens"' in line:
                             try:
                                 payload = json.loads(line[5:].strip())
-                                usage = (payload.get("usage") or {})
+                                usage = payload.get("usage") or {}
                                 if usage.get("output_tokens") is not None:
                                     completion_estimate = usage["output_tokens"]
                                 if usage.get("input_tokens") is not None:
@@ -231,18 +236,16 @@ def replay_once(target: str, body: dict, timeout_s: float = 600.0) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _percentile(values: list[float], p: float) -> float | None:
-    if not values:
-        return None
-    s = sorted(values)
-    k = min(int(round((p / 100) * (len(s) - 1))), len(s) - 1)
-    return s[k]
-
-
 def summarise(results: list[dict]) -> dict:
     """Build a stats summary from a list of replay_once outputs."""
-    ok = [r for r in results if r.get("status_code") and r["status_code"] < 400 and r.get("latency_ms")]
-    failed = [r for r in results if r.get("error") or (r.get("status_code") and r["status_code"] >= 400)]
+    ok = [
+        r
+        for r in results
+        if r.get("status_code") and r["status_code"] < 400 and r.get("latency_ms")
+    ]
+    failed = [
+        r for r in results if r.get("error") or (r.get("status_code") and r["status_code"] >= 400)
+    ]
     lats = [r["latency_ms"] for r in ok]
     ttfts = [r["ttft_ms"] for r in ok if r.get("ttft_ms")]
     completions = [r["completion_tokens"] for r in ok if r.get("completion_tokens")]
@@ -296,8 +299,11 @@ def print_summary(label: str, s: dict) -> None:
     print(f"\n=== {label} ===")
     print(f"  Requests: {s['n_ok']}/{s['n_requests']} ok ({s['n_failed']} failed)")
     lat = s["latency_ms"]
-    print(f"  latency_ms   p50={lat['p50']:.0f}  p95={lat['p95']:.0f}  mean={lat['mean']:.0f}"
-          if lat["p50"] is not None else "  latency_ms   (no data)")
+    print(
+        f"  latency_ms   p50={lat['p50']:.0f}  p95={lat['p95']:.0f}  mean={lat['mean']:.0f}"
+        if lat["p50"] is not None
+        else "  latency_ms   (no data)"
+    )
     ttft = s["ttft_ms"]
     if ttft["p50"] is not None:
         print(f"  ttft_ms      p50={ttft['p50']:.0f}  p95={ttft['p95']:.0f}")
@@ -314,11 +320,13 @@ def print_summary(label: str, s: dict) -> None:
 
 def print_delta(before: dict, after: dict) -> None:
     print("\n=== DELTA (after vs before) ===")
+
     def _pct(a, b):
         if a is None or b is None or a == 0:
             return "n/a"
         d = (b - a) / a * 100
         return f"{d:+.1f}%"
+
     for name, key in [
         ("latency_ms.p50", ("latency_ms", "p50")),
         ("latency_ms.p95", ("latency_ms", "p95")),
@@ -341,40 +349,52 @@ def print_delta(before: dict, after: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", default="~/.fleet-manager",
-                    help="Router data dir containing debug/requests.*.jsonl")
-    ap.add_argument("--target", default="http://localhost:11435",
-                    help="Router URL to benchmark against")
-    ap.add_argument("--sample", type=int, default=10,
-                    help="How many captured requests to replay")
-    ap.add_argument("--filter-model", default=None,
-                    help="Only replay requests for this model (e.g. "
-                         "claude-sonnet-4-6, claude-haiku-4-5)")
+    ap.add_argument(
+        "--data-dir",
+        default="~/.fleet-manager",
+        help="Router data dir containing debug/requests.*.jsonl",
+    )
+    ap.add_argument(
+        "--target", default="http://localhost:11435", help="Router URL to benchmark against"
+    )
+    ap.add_argument("--sample", type=int, default=10, help="How many captured requests to replay")
+    ap.add_argument(
+        "--filter-model",
+        default=None,
+        help="Only replay requests for this model (e.g. claude-sonnet-4-6, claude-haiku-4-5)",
+    )
     ap.add_argument("--min-prompt-tokens", type=int, default=1000)
-    ap.add_argument("--output", default=None,
-                    help="Save JSON summary to this path")
-    ap.add_argument("--compare", default=None,
-                    help="Load a prior --output JSON and print before/after delta")
+    ap.add_argument("--output", default=None, help="Save JSON summary to this path")
+    ap.add_argument(
+        "--compare", default=None, help="Load a prior --output JSON and print before/after delta"
+    )
     ap.add_argument("--timeout-s", type=float, default=600.0)
-    ap.add_argument("--label", default="current",
-                    help="Run label (e.g. 'draft-off', 'draft-4tokens')")
+    ap.add_argument(
+        "--label", default="current", help="Run label (e.g. 'draft-off', 'draft-4tokens')"
+    )
     args = ap.parse_args()
 
     data_dir = Path(args.data_dir).expanduser()
     sample = pick_sample(
-        data_dir, args.sample,
+        data_dir,
+        args.sample,
         model_filter=args.filter_model,
         min_prompt_tokens=args.min_prompt_tokens,
     )
     if not sample:
         print("No matching captured requests found.", file=sys.stderr)
         return 1
-    print(f"Replaying {len(sample)} requests against {args.target} "
-          f"(label={args.label}, filter={args.filter_model or '(any claude-*)'})...")
+    print(
+        f"Replaying {len(sample)} requests against {args.target} "
+        f"(label={args.label}, filter={args.filter_model or '(any claude-*)'})..."
+    )
     results = []
     for i, s in enumerate(sample, 1):
-        print(f"  [{i}/{len(sample)}] {s['request_id'][:8]} "
-              f"model={s['model']} orig_prompt_tok={s['original_prompt_tokens']}", end=" ")
+        print(
+            f"  [{i}/{len(sample)}] {s['request_id'][:8]} "
+            f"model={s['model']} orig_prompt_tok={s['original_prompt_tokens']}",
+            end=" ",
+        )
         sys.stdout.flush()
         r = replay_once(args.target, s["body"], timeout_s=args.timeout_s)
         r["original"] = {
@@ -414,7 +434,7 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"Could not load --compare file: {exc}", file=sys.stderr)
             return 2
-        print_summary(f"before ({before.get('label','unknown')})", before["summary"])
+        print_summary(f"before ({before.get('label', 'unknown')})", before["summary"])
         print_summary(f"after ({args.label})", summary)
         print_delta(before, out_payload)
 

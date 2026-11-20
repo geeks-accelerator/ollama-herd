@@ -13,6 +13,8 @@ from pathlib import Path
 
 import aiosqlite
 
+from fleet_manager.common.stats import percentile
+
 logger = logging.getLogger(__name__)
 
 
@@ -885,10 +887,9 @@ class TraceStore:
                 if tpot and tpot > 0:
                     buckets.setdefault((node_id, model), []).append(tpot)
             for k, vals in buckets.items():
-                vals.sort()
                 entry = out.setdefault(k, {"node_id": k[0], "model": k[1]})
-                entry[f"{key}_p99"] = vals[min(int(len(vals) * 0.99), len(vals) - 1)]
-                entry[f"{key}_median"] = vals[len(vals) // 2]
+                entry[f"{key}_p99"] = percentile(vals, 99)
+                entry[f"{key}_median"] = percentile(vals, 50)
                 entry[f"{key}_n"] = len(vals)
         return list(out.values())
 
@@ -963,8 +964,6 @@ class TraceStore:
         requests here either.  Token series are keyed ``node:model`` like the
         queue keys the page already renders, plus per-model and per-node sums.
         """
-        from fleet_manager.common.stats import percentile
-
         step_s = max(10, int(step_s))
         now = time.time() if now is None else now
         last = int(now // step_s) * step_s
