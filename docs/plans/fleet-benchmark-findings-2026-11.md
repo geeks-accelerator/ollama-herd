@@ -249,6 +249,24 @@ From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-h
     scale (a mock showed phi4 idle with a coder load stuck behind it; 20/27, 19/23, 16/23
     answered). Open: confirm on the Lambda fleet with run 4's command.
 
+29. **Open: a node swaps two models per request instead of batching** (run 4, router `1e7cdb2`,
+    0.5 req/s seed 7: 76/90 answered, m1 swapped coder <-> phi4 every 6-15 s). `_must_wait`
+    measures the 30 s bound from each request's arrival, so requests held during a load are
+    already past it when the new model answers and evict it at once; the node's next heartbeat
+    still lists the evicted model, so new requests for it are routed there as if resident. A
+    "switch turn" (bound counted from the later of arrival and the node's last switch; only the
+    switched-to model counts as resident until a newer heartbeat) cut loads 26 -> 18 and small-model
+    p95 from 86-130 s to 34-53 s at 0.5 req/s on the local mock, but doubled p95 at 0.25 req/s (a
+    lone waiting request sits out a full turn). Needs a backlog condition (waiting model's held
+    count against the resident model's arrivals) and repeat runs before it ships. Patch and local
+    runs: run-4 scratch `batch/switch-turn.patch` (copy into this repo's experiments if pursued).
+30. **Open: `joins_load` cancels the eviction charge for any queued depth, not only a load under
+    way.** On run 4 that kept phi4 on m1 (score 0 + 10 cold, minus queue penalties) while evicting
+    qwen2.5:14b on m2 cost 40 whenever one of its requests was in flight, so the churn never spread
+    to the second card. Apply `joins_load` only while that model's load is at the node without
+    output; the scorer needs a "load under way" input from the queue manager (it only sees
+    combined depths today).
+
 ## Rules for this work
 
 herd is greenfield, so:
