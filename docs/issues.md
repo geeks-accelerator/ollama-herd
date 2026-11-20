@@ -36,7 +36,32 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
-### Legacy `/api/embeddings` answers 200 with an empty or wrongly-keyed vector `FIXED` (2026-11-18, unreleased)
+### Installing the embedding extra silently switched an index's `nomic-embed-text` backend `FIXED` (2026-11-19, unreleased)
+
+**Symptom (none visible, which is the bug).** fastembed and Ollama produce different
+vectors for the same model name: cosine about **0.95** for one text, measured on this
+box on 2026-11-18. The 0.12.9-era rule that let a herd without the `embedding` extra use
+Ollama (`native_text_embeddings_in_use`) protected one direction only: once a herd had
+served natively it stayed native. A herd that had been embedding through Ollama (any
+container, any plain `pip install`) switched to fastembed the moment one node started the
+native server, which is exactly what `text_embedding_backend_missing` tells operators to
+do. Every later vector then came from the other backend, retrieval degraded, and nothing
+said so.
+
+**Fix.** `text_embedding_compat.text_embedding_backend` answers from the most recent
+completed request (`TraceStore.last_served_format`, one indexed lookup per name, so it
+survives a router restart): never served → native when a node runs it, else Ollama;
+native stays native; Ollama stays Ollama. Removing the model from Ollama
+(`ollama rm nomic-embed-text`) is the deliberate switch, and `text_embedding_backend_held`
+(INFO) says so. `dispatch_embed` and the health engine share that one answer, so
+`nomic_loaded_in_ollama` no longer claims native handles every request while the herd is
+held on Ollama. Commit `8376043`.
+
+**Generalized:** a stickiness rule needs both directions. "Once X, stay X" quietly
+assumes nobody starts from Y, and here the new Ollama path made starting from Y the
+default for every container.
+
+### Legacy `/api/embeddings` answers 200 with an empty or wrongly-keyed vector `FIXED` (2026-11-18, 0.12.6)
 
 **Fixed:** `/api/embeddings` has its own handler translating `prompt` → `input` and `embeddings[0]` → `embedding`, and every embed path checks one vector per input before recording `completed` (`routing.embedding_count_mismatch`), so a wrong count is a 502 traced `failed`. Verified live: `bge-m3` and `mxbai-embed-large` match Ollama's own legacy answer (cosine 1.0).
 
@@ -57,7 +82,7 @@ the handler (`prompt` → `input`, `embeddings[0]` → `embedding`) when the pat
 the legacy one, with a test per backend (Ollama, native text, vision). Plan:
 [`docs/plans/silent-failures-2026-11.md`](plans/silent-failures-2026-11.md), issue 1.
 
-### Telemetry cannot see a request that was neither completed nor failed `FIXED` (2026-11-18, unreleased)
+### Telemetry cannot see a request that was neither completed nor failed `FIXED` (2026-11-18, 0.12.6)
 
 **Fixed:** the service accepts four outcome counts since 2026-11-18 (`ollama-herd-private` `d828f36`); the rollup maps every status through `OUTCOME_FIELDS`, excludes `retried` from `requests`, and a test asserts every status in `trace_store.TRACE_STATUSES` is counted or excluded. `record_trace` logs an ERROR for any status outside that list.
 
@@ -74,7 +99,7 @@ publish per-status counts, then decide whether `incomplete`/`rejected` belong in
 `error_count`. **Severity: medium** (observability; hides real failures). Plan:
 [`docs/plans/silent-failures-2026-11.md`](plans/silent-failures-2026-11.md), issue 4.
 
-### Auto-routing sends Claude Code and Codex to models that cannot take tools `FIXED` (2026-11-18, unreleased)
+### Auto-routing sends Claude Code and Codex to models that cannot take tools `FIXED` (2026-11-18, 0.12.6)
 
 **Fixed:** `resolve_model(has_tools=...)` skips models reported without `tools` when some model reports them; the health check resolves with the same capabilities and `has_tools=True`; `mapped_model_no_tools` and `tools_unsupported_requests` name the remaining cases.
 
@@ -87,7 +112,7 @@ telemetry shows the pattern on three installs (`gemma3:27b`, `codestral:22b`).
 **Severity: medium** (only with auto-routing on, which is the default). Plan:
 [`docs/plans/telemetry-errors-2026-11.md`](plans/telemetry-errors-2026-11.md), item 3.
 
-### Traces record httpx's text, not the backend's reason `FIXED` (2026-11-18, unreleased)
+### Traces record httpx's text, not the backend's reason `FIXED` (2026-11-18, 0.12.6)
 
 **Fixed:** `describe_exception` appends the backend's message; `categorize_error` reads stated reasons, then the status, and uses bare digits only when no status is stated; an Ollama in-stream error is traced `failed` with its text and reaches every client surface. Verified live: the gemma3 + tools trace reads `... does not support tools`.
 
@@ -2844,6 +2869,33 @@ The dashboard is a large amount of inline HTML/CSS/JS in Python strings across 5
 ---
 
 ## Test Coverage Gaps
+
+### Count quotes drift because `health.sh` checks two of them `OPEN` (2026-11-19)
+
+**Severity:** low (documentation accuracy), but recurring.
+
+**Evidence.** After the 0.12.7–0.12.9 releases on 2026-11-19, the suite ran **2350** (2353 an hour later, after another session pushed three commits)
+tests and the engine had **56** checks, while the repo quoted: CLAUDE.md and README
+2258 tests (refreshed by 0.12.9), AGENTS.md and the skills 2216 tests (last refreshed by
+0.12.6), and every check count 54 (in 23 files). `scripts/health.sh` then failed only on the two
+test counts it reads (`run all N tests` in CLAUDE.md and README.md). So a release that
+updates those two lines passes the gate and leaves AGENTS.md, all 37 skills and every
+check count stale. That is how three releases shipped with them stale, and how the skills
+were a release behind in October too (see CLAUDE.md § Skills). Refreshed by hand on
+2026-11-19 to 2353 / 56.
+
+**Proposed fix.** Make `health.sh` check every quote, by shape, in all four locations:
+- test counts: `[0-9]{3,4} tests` in CLAUDE.md, README.md, AGENTS.md and `skills/`
+  against the real count;
+- check counts: `[0-9]{2} (automated |health |distinct )?checks` and `Health \([0-9]{2}`
+  against `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`;
+- skip CLAUDE.md's release-history bullets (`- **Version:` / `- **Prior release`), whose
+  numbers are records of what each release had and must not be rewritten.
+
+The release checklist step 4 already requires `health.sh` to pass, so this closes the gap
+without a new step. Keep the release-history exemption explicit in the script: a refresh
+that rewrites history is the failure CLAUDE.md § Skills warns about.
+
 
 ### `/api/embed-text` is an endpoint that cannot be reached `FIXED` (2026-10-27)
 

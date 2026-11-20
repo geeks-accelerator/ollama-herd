@@ -42,7 +42,7 @@ load_balanced_response = load_balancer_client.chat.completions.create(
 
 ## Load Balancer Health Monitoring
 
-### Fleet-wide load balancer health check (54 automated checks)
+### Fleet-wide load balancer health check (56 automated checks)
 ```bash
 curl -s http://localhost:11435/dashboard/api/health | python3 -m json.tool
 ```
@@ -139,7 +139,7 @@ curl -s http://localhost:11435/dashboard/api/apps | python3 -m json.tool
 
 ## Load Balancer Dashboard
 
-Web dashboard at `http://localhost:11435/dashboard` with five tabs: Overview (live sparklines, activity chart, per-node CPU/memory/tokens), Models, Usage (per-app analytics), Health (54 checks plus model recommendations), Settings; plus a Benchmarks page. All load balancer data updates in real-time via Server-Sent Events.
+Web dashboard at `http://localhost:11435/dashboard` with five tabs: Overview (live sparklines, activity chart, per-node CPU/memory/tokens), Models, Usage (per-app analytics), Health (56 checks plus model recommendations), Settings; plus a Benchmarks page. All load balancer data updates in real-time via Server-Sent Events.
 
 ## Load Balancer Operational Queries
 
