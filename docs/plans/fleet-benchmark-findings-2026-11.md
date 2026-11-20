@@ -259,7 +259,7 @@ From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-h
     p95 from 86-130 s to 34-53 s at 0.5 req/s on the local mock, but doubled p95 at 0.25 req/s (a
     lone waiting request sits out a full turn). Needs a backlog condition (waiting model's held
     count against the resident model's arrivals) and repeat runs before it ships. Patch and local
-    runs: run-4 scratch `batch/switch-turn.patch` (copy into this repo's experiments if pursued).
+    runs: ollama-herd-private `.bench-lambda-2026-11-20-run4/switch-turn.patch` (applies to `1e7cdb2`).
 30. **Open: `joins_load` cancels the eviction charge for any queued depth, not only a load under
     way.** On run 4 that kept phi4 on m1 (score 0 + 10 cold, minus queue penalties) while evicting
     qwen2.5:14b on m2 cost 40 whenever one of its requests was in flight, so the churn never spread
