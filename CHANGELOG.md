@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A VPN no longer makes the router advertise an address nobody can reach.** The advertised (router) and reported (node) address came from the OS's route to `10.255.255.255`, and a VPN that owns `10/8` or the default route answers with its tunnel address: on 2026-11-19 a macOS VPN on `utun8` made the router advertise `10.12.128.118`, and its node's heartbeats all timed out. When the routed address is on a tunnel interface (`utun`, `tun`, `tap`, `wg`, `ppp`, `ipsec`, ZeroTier, Tailscale) and a private address on a real LAN interface exists, that is used instead, logged once. A machine reachable only over Tailscale keeps its Tailscale address.
+- **A router bound to one address advertises that address.** With `FLEET_HOST` set (the Tailscale guide binds a Tailnet-only router to its `100.x` address) the router still advertised its LAN address, where it was not listening. It now advertises the bound address, which also makes `FLEET_HOST` the way to choose it.
+
 ## [0.12.9] - 2026-11-19
 
 ### Added

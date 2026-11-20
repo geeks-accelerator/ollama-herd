@@ -240,6 +240,16 @@ Timeout usually means a network-level problem (wrong network, firewall, routing)
 
 3. **Different subnets** — mDNS only works within the same broadcast domain (subnet). Machines on different VLANs won't discover each other.
 
+4. **A VPN on the router's machine** — the router advertises the address the OS would route to, and
+   a VPN that owns `10.0.0.0/8` or the default route makes that the tunnel's address (`utun*` on
+   macOS, `tun*`/`wg*`/`ppp*` elsewhere), which nothing on the LAN can reach. Nodes then find the
+   router and every heartbeat times out (*"Connection to router timed out at http://10.x.x.x:11435"*).
+   From the release after 0.12.9 herd uses a private LAN address instead when one exists, and logs
+   *"Using LAN address … rather than … on tunnel interface …"*. Before that, start nodes with
+   `--router-url http://<the router's LAN address>:11435`. A machine reachable only over Tailscale
+   keeps its Tailscale address. To choose the address yourself, bind the router to it with
+   `FLEET_HOST`: it is then also the address it advertises.
+
 4. **The router logs `mDNS: could not use every interface … Using every interface except loopback.`**
    Another program holds UDP 5353 on one address without sharing it; Lima's host agent (and so
    Colima) holds `127.0.0.1:5353`. Harmless: the router still advertises on every LAN and VM network.
