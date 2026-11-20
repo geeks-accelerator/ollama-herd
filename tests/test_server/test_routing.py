@@ -325,17 +325,24 @@ def _hot_result(node_id: str, model: str, score: float = 85.0) -> RoutingResult:
     )
 
 
-def _cold_result(node_id: str, model: str, score: float = 45.0) -> RoutingResult:
-    """Create a RoutingResult with COLD thermal score."""
+def _cold_result(
+    node_id: str, model: str, score: float = 45.0, *, evicts: bool = True
+) -> RoutingResult:
+    """Create a RoutingResult with COLD thermal score; ``evicts`` says whether
+    loading it there would push a resident model out."""
     return RoutingResult(
         node_id=node_id,
         queue_key=f"{node_id}:{model}",
         score=score,
-        scores_breakdown={"thermal": 10.0, "total": score},
+        scores_breakdown={"thermal": 10.0, "eviction": -20.0 if evicts else 0.0, "total": score},
     )
 
 
 class TestVramFallback:
+    """Substitution only when every load would evict, and only within a
+    category.  With defaults on 2026-11-20 every request for qwen2.5 was
+    answered by phi4 while an empty node could have loaded qwen2.5."""
+
     @pytest.fixture(autouse=True)
     def clear_events(self):
         """Clear fallback events between tests."""
@@ -343,113 +350,76 @@ class TestVramFallback:
         yield
         _vram_fallback_events.clear()
 
-    @pytest.mark.asyncio
-    async def test_no_fallback_when_hot(self):
-        """When requested model is HOT, no VRAM fallback triggered."""
-        result = _hot_result("studio", "qwen2.5-coder:32b")
-        scorer = _mock_scorer({"qwen2.5-coder:32b": [result]})
-        queue_mgr = _mock_queue_mgr()
-        registry = _mock_registry_with_models(["qwen2.5-coder:32b"])
-        settings = ServerSettings(vram_fallback=True)
-
-        req = make_inference_request(model="qwen2.5-coder:32b")
-        results, actual_model = await score_with_fallbacks(
-            req, scorer, queue_mgr, registry, settings=settings,
+    async def _route(self, scorer, models, *, allow_fallback=None, model="qwen3-coder:latest"):
+        return await score_with_fallbacks(
+            make_inference_request(model=model),
+            scorer,
+            _mock_queue_mgr(),
+            _mock_registry_with_models(models),
+            settings=ServerSettings(),
+            allow_fallback=allow_fallback,
         )
 
+    @pytest.mark.asyncio
+    async def test_no_fallback_when_hot(self):
+        result = _hot_result("studio", "qwen2.5-coder:32b")
+        scorer = _mock_scorer({"qwen2.5-coder:32b": [result]})
+        _, actual_model = await self._route(scorer, ["qwen2.5-coder:32b"], model="qwen2.5-coder:32b")
         assert actual_model == "qwen2.5-coder:32b"
         assert len(_vram_fallback_events) == 0
 
     @pytest.mark.asyncio
-    async def test_vram_fallback_same_category(self):
-        """Request cold coding model → fallback to loaded coding model."""
-        # Primary model scores COLD
+    async def test_a_node_with_room_loads_the_requested_model(self):
+        cold = _cold_result("empty", "qwen3-coder:latest", evicts=False)
+        scorer = _mock_scorer({"qwen3-coder:latest": [cold]})
+        scorer.score_loaded_models = MagicMock()
+        results, actual_model = await self._route(scorer, ["qwen3-coder:latest"])
+        assert (actual_model, results[0].node_id) == ("qwen3-coder:latest", "empty")
+        scorer.score_loaded_models.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_same_category_when_every_load_evicts(self):
         cold = _cold_result("studio", "qwen3-coder:latest")
         scorer = _mock_scorer({"qwen3-coder:latest": [cold]})
-        # Add score_loaded_models to return a loaded coding model
         loaded_result = _hot_result("studio", "qwen2.5-coder:32b", score=90.0)
-        scorer.score_loaded_models = MagicMock(
-            return_value=[(loaded_result, "qwen2.5-coder:32b")]
-        )
-        queue_mgr = _mock_queue_mgr()
-        registry = _mock_registry_with_models(
-            ["qwen3-coder:latest", "qwen2.5-coder:32b"]
-        )
-        settings = ServerSettings(vram_fallback=True)
-
-        req = make_inference_request(model="qwen3-coder:latest")
-        results, actual_model = await score_with_fallbacks(
-            req, scorer, queue_mgr, registry, settings=settings,
-        )
-
+        scorer.score_loaded_models = MagicMock(return_value=[(loaded_result, "qwen2.5-coder:32b")])
+        _, actual_model = await self._route(scorer, ["qwen3-coder:latest", "qwen2.5-coder:32b"])
         assert actual_model == "qwen2.5-coder:32b"
         assert len(_vram_fallback_events) == 1
         assert _vram_fallback_events[0]["requested_model"] == "qwen3-coder:latest"
         assert _vram_fallback_events[0]["actual_model"] == "qwen2.5-coder:32b"
 
     @pytest.mark.asyncio
-    async def test_vram_fallback_cross_category(self):
-        """No same-category model loaded → falls back to any loaded model."""
+    async def test_never_another_category(self):
+        """No coding model loaded: load the requested one, never a general model."""
         cold = _cold_result("studio", "qwen3-coder:latest")
         scorer = _mock_scorer({"qwen3-coder:latest": [cold]})
-        # First call (same category) returns empty, second (any) returns result
-        general_result = _hot_result("studio", "llama3.3:70b", score=80.0)
+        general = _hot_result("studio", "llama3.3:70b", score=80.0)
         scorer.score_loaded_models = MagicMock(
-            side_effect=[
-                [],  # No coding models loaded
-                [(general_result, "llama3.3:70b")],  # General model loaded
-            ]
+            side_effect=lambda cat, *a, **k: [] if cat else [(general, "llama3.3:70b")]
         )
-        queue_mgr = _mock_queue_mgr()
-        registry = _mock_registry_with_models(
-            ["qwen3-coder:latest", "llama3.3:70b"]
-        )
-        settings = ServerSettings(vram_fallback=True)
-
-        req = make_inference_request(model="qwen3-coder:latest")
-        results, actual_model = await score_with_fallbacks(
-            req, scorer, queue_mgr, registry, settings=settings,
-        )
-
-        assert actual_model == "llama3.3:70b"
-        assert len(_vram_fallback_events) == 1
+        _, actual_model = await self._route(scorer, ["qwen3-coder:latest", "llama3.3:70b"])
+        assert actual_model == "qwen3-coder:latest"
+        assert len(_vram_fallback_events) == 0
 
     @pytest.mark.asyncio
-    async def test_vram_fallback_disabled(self):
-        """When vram_fallback=False, cold results are returned directly."""
+    async def test_strict_mode_never_substitutes(self):
         cold = _cold_result("studio", "qwen3-coder:latest")
         scorer = _mock_scorer({"qwen3-coder:latest": [cold]})
         scorer.score_loaded_models = MagicMock()
-        queue_mgr = _mock_queue_mgr()
-        registry = _mock_registry_with_models(["qwen3-coder:latest"])
-        settings = ServerSettings(vram_fallback=False)
-
-        req = make_inference_request(model="qwen3-coder:latest")
-        results, actual_model = await score_with_fallbacks(
-            req, scorer, queue_mgr, registry, settings=settings,
+        results, actual_model = await self._route(
+            scorer, ["qwen3-coder:latest"], allow_fallback=False
         )
-
-        # Should return the cold result, not trigger VRAM fallback
         assert actual_model == "qwen3-coder:latest"
         assert results[0].scores_breakdown["thermal"] == 10.0
         scorer.score_loaded_models.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_vram_fallback_no_loaded_models(self):
-        """When no models loaded at all, falls through to cold results."""
+    async def test_no_loaded_models_falls_through_to_the_cold_load(self):
         cold = _cold_result("studio", "qwen3-coder:latest")
         scorer = _mock_scorer({"qwen3-coder:latest": [cold]})
         scorer.score_loaded_models = MagicMock(return_value=[])
-        queue_mgr = _mock_queue_mgr()
-        registry = _mock_registry_with_models(["qwen3-coder:latest"])
-        settings = ServerSettings(vram_fallback=True)
-
-        req = make_inference_request(model="qwen3-coder:latest")
-        results, actual_model = await score_with_fallbacks(
-            req, scorer, queue_mgr, registry, settings=settings,
-        )
-
-        # Falls through to cold results
+        results, actual_model = await self._route(scorer, ["qwen3-coder:latest"])
         assert actual_model == "qwen3-coder:latest"
         assert results[0].scores_breakdown["thermal"] == 10.0
 
@@ -546,12 +516,19 @@ class TestImageFallbackGuard:
         )
         assert out is None, "a blind model must never answer an image request"
 
-    def test_textonly_vision_model_request_may_still_fall_back(self, monkeypatch):
-        """No images in the payload → the swap is survivable; don't over-block."""
+    @staticmethod
+    def _scorer_in_category(model: str):
+        """`model` is what the category search returns."""
+        scorer = MagicMock()
+        scorer.score_loaded_models.return_value = [
+            (RoutingResult(node_id="bb", queue_key=f"bb:{model}", score=90.0), model)
+        ]
+        return scorer
+
+    def test_same_category_is_still_checked_for_images(self, monkeypatch):
+        """Category matching alone does not prove the substitute can see."""
         monkeypatch.setattr(model_preloader, "_priority_cache", [], raising=False)
-        out = _try_vram_fallback(
-            self._req("gemma3:4b", images=False),
-            self._scorer_with_only("gpt-oss:120b"), {}, 10, [],
-        )
-        assert out is not None, "blocking text-only requests would over-correct"
-        assert out[1] == "gpt-oss:120b"
+        blind = self._scorer_in_category("gpt-oss:120b")
+        assert _try_vram_fallback(self._req("gemma3:4b", images=True), blind, {}, 10, []) is None
+        out = _try_vram_fallback(self._req("gemma3:4b", images=False), blind, {}, 10, [])
+        assert out is not None and out[1] == "gpt-oss:120b"

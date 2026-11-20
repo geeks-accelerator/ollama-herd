@@ -154,26 +154,19 @@ def client_concurrency_response(e: ClientConcurrencyExceeded) -> JSONResponse:
 
 
 def parse_allow_fallback(body: dict, headers=None) -> bool | None:
-    """Per-request override of the global ``vram_fallback`` setting.
+    """Strict mode for one request: ``False`` when the client asked to be
+    served only the exact model, ``None`` otherwise.
 
-    Sources (header wins over body):
-      - ``X-Fleet-No-Fallback: true``  → strict mode (return ``False``)
-      - ``X-Fleet-No-Fallback: false`` → force fallback (return ``True``)
-      - body ``{"fallback": <bool>}``  → that value
-
-    Returns ``None`` when the client expressed no preference, so
-    :func:`score_with_fallbacks` inherits the global setting.  Lets a
-    benchmark demand the exact model per-request without touching global config.
+    Sources: ``X-Fleet-No-Fallback: true`` (header) or ``{"fallback": false}``
+    (body).  Substitution is otherwise decided by the router
+    (``score_with_fallbacks``); there is no switch to force it.
     """
     if headers:
         raw = (headers.get("x-fleet-no-fallback") or "").strip().lower()
         if raw in ("1", "true", "yes", "on"):
             return False
-        if raw in ("0", "false", "no", "off"):
-            return True
-    val = body.get("fallback") if isinstance(body, dict) else None
-    if isinstance(val, bool):
-        return val
+    if isinstance(body, dict) and body.get("fallback") is False:
+        return False
     return None
 
 
@@ -207,16 +200,16 @@ async def score_with_fallbacks(
     """
     Try scoring the primary model, then each fallback in order.
 
-    When vram_fallback is enabled: if the best score only has a COLD thermal
-    signal (model not loaded), route to the best loaded model in the same
-    category instead of triggering a slow cold load.
+    When the requested model is not loaded anywhere, it is loaded on the best
+    node, unless every node would have to evict a resident model to load it
+    (the winner's ``eviction`` signal is negative).  Only then is it served by
+    the best *loaded* model of the same category instead of a slow cold load
+    (``_try_vram_fallback``).  Never by a model of another category.
 
-    ``allow_fallback`` is the **per-request** override of the global
-    ``vram_fallback`` setting: pass ``False`` for strict mode (serve the exact
-    requested model or return no result → the route surfaces an explicit
-    error), ``True`` to force substitution, or ``None`` (default) to inherit
-    the global setting.  This is what lets one benchmark demand determinism
-    without flipping the global flag for every other client.
+    ``allow_fallback=False`` is strict mode, per request
+    (``X-Fleet-No-Fallback: true`` or ``"fallback": false``): serve the exact
+    requested model or return no result, and the route surfaces an explicit
+    error.
 
     If no model exists on any node and auto-pull is enabled, pulls the primary
     model onto the best available node and retries.
@@ -232,10 +225,7 @@ async def score_with_fallbacks(
     # (routing, compaction triggers, the client-facing count_tokens endpoint),
     # and adding one is the debt this project keeps removing.
     inference_req.estimated_tokens = estimated_tokens
-    if allow_fallback is not None:
-        vram_fallback_enabled = allow_fallback
-    else:
-        vram_fallback_enabled = settings and getattr(settings, "vram_fallback", False)
+    substitution_allowed = allow_fallback is not False
 
     # --- First pass: try all models, check if any are HOT ---
     cold_results: tuple[list[RoutingResult], str] | None = None
@@ -267,8 +257,16 @@ async def score_with_fallbacks(
             if cold_results is None:
                 cold_results = (results, model)
 
-    # --- VRAM-aware fallback: route to a loaded model instead of cold-loading ---
-    if vram_fallback_enabled and cold_results is not None:
+    # --- A node can load it without evicting anything: load it there ---
+    # Results are sorted, so the winner is such a node whenever one exists.
+    # Substituting here answered every request for qwen2.5 with phi4 while an
+    # empty node could have loaded qwen2.5 (fleet benchmark 2026-11-20).
+    if cold_results is not None and cold_results[0][0].scores_breakdown.get("eviction", 0) >= 0:
+        _remember_session_node(scorer, session_key, cold_results[0], prefix_key)
+        return cold_results
+
+    # --- Every load would evict: serve a loaded model of the same category ---
+    if substitution_allowed and cold_results is not None:
         fallback_result = _try_vram_fallback(
             inference_req,
             scorer,
@@ -543,154 +541,70 @@ def _try_vram_fallback(
     estimated_tokens: int,
     exclude_models: list[str],
 ) -> tuple[list[RoutingResult], str] | None:
-    """Try routing to a loaded model in the same category, then any loaded model.
+    """Serve a loaded model of the requested model's category instead.
 
-    Respects model priority: if the requested model has significantly
-    higher usage-based priority than the fallback candidate, skip the
-    fallback and let the request cold-load or queue instead.
+    Reached only when loading the requested model would evict a resident one
+    on every node.  Never another category: answering a coding request with a
+    reasoning model, or images with a text model (the 2026-04-23 incident: 20
+    gemma3:27b vision requests answered by gpt-oss:120b with the images
+    dropped), is a wrong answer, not a slower one.  Also declined when the
+    requested model has much higher usage priority than the candidate: it
+    should load instead.
     """
     from fleet_manager.server import model_preloader
     from fleet_manager.server.model_preloader import get_model_priority
 
     category = classify_model(inference_req.model)
-
-    # Try same category first
     loaded_options = scorer.score_loaded_models(
         category.value,
         queue_depths,
         estimated_tokens,
         exclude_models=exclude_models,
     )
-    if loaded_options:
-        best_result, best_model = loaded_options[0]
+    if not loaded_options:
+        return None
+    best_result, best_model = loaded_options[0]
 
-        # Priority check: don't route a high-priority model to a
-        # low-priority one.  The requested model should cold-load instead.
-        # Read current cache via module attribute (rebinds are module-local).
-        priority_cache = model_preloader._priority_cache
-        req_priority = get_model_priority(inference_req.model, priority_cache)
-        fallback_priority = get_model_priority(best_model, priority_cache)
-        if req_priority > 0 and req_priority > fallback_priority * 2:
-            logger.info(
-                f"VRAM fallback blocked: '{inference_req.model}' "
-                f"(priority={req_priority:.0f}) outranks "
-                f"'{best_model}' (priority={fallback_priority:.0f}) — "
-                f"will cold-load instead"
-            )
-            return None
-
-        logger.info(
-            f"VRAM fallback: '{inference_req.model}' ({category.value}) not loaded, "
-            f"routing to loaded '{best_model}' instead"
-        )
-        _record_vram_fallback(
-            inference_req.model,
-            best_model,
-            category.value,
-            cross_category=False,
-            fallback_category=category.value,
-        )
-        return [best_result], best_model
-
-    # No loaded model in same category — try ANY loaded model (with priority check)
-    all_loaded = scorer.score_loaded_models(
-        None,
-        queue_depths,
-        estimated_tokens,
-        exclude_models=exclude_models,
-    )
-    if all_loaded:
-        best_result, best_model = all_loaded[0]
-
-        priority_cache = model_preloader._priority_cache
-        req_priority = get_model_priority(inference_req.model, priority_cache)
-        fallback_priority = get_model_priority(best_model, priority_cache)
-        if req_priority > 0 and req_priority > fallback_priority * 2:
-            logger.info(
-                f"VRAM fallback (cross-category) blocked: '{inference_req.model}' "
-                f"(priority={req_priority:.0f}) outranks "
-                f"'{best_model}' (priority={fallback_priority:.0f})"
-            )
-            return None
-
-        fallback_cat = classify_model(best_model).value
-
-        # HARD BLOCK: never substitute a non-vision model for a request that
-        # actually carries images.  A text model cannot see them — it answers
-        # confidently about content it was never shown, which is worse than an
-        # error because nothing downstream can detect it.  This is the
-        # 2026-04-23 incident (20 gemma3:27b vision requests silently answered
-        # by gpt-oss:120b with the images dropped); the risk was documented and
-        # logged for months while `InferenceRequest.has_images` — computed on
-        # every single request — went unread by this decision.
-        #
-        # Note the distinction from the category check below: a *vision-model*
-        # request without images (someone routed a text question to gemma3) is
-        # harmless to substitute. It's the actual image payload that can't
-        # survive the swap.
-        if inference_req.has_images and fallback_cat != "vision":
-            logger.error(
-                f"VRAM fallback BLOCKED: request carries images and the only "
-                f"loaded model '{best_model}' ({fallback_cat}) cannot see them. "
-                f"Requested '{inference_req.model}' ({category.value}). Failing "
-                f"loudly instead of answering about images the model never saw — "
-                f"load a vision model or retry once one is warm."
-            )
-            return None
-
-        # Cross-category fallback is a QUALITY RISK — the client asked for a
-        # model in one category and we're giving them a different one.
-        # Escalate to ERROR so it shows up in log scans; the caller still gets
-        # ``X-Fleet-Fallback`` in the response headers to detect this
-        # programmatically.
-        risk_note = ""
-        if category.value == "vision" and fallback_cat != "vision":
-            risk_note = (
-                " — QUALITY RISK: non-vision model answering a vision-model "
-                "request (no images in this payload, so the swap is survivable; "
-                "an image-bearing request would have been blocked)"
-            )
+    # A text model cannot see images: it would answer confidently about content
+    # it was never shown.  Category matching alone does not rule that out.
+    if inference_req.has_images and classify_model(best_model).value != "vision":
         logger.error(
-            f"VRAM fallback (cross-category): '{inference_req.model}' "
-            f"({category.value}) not loaded, no {category.value} model "
-            f"available, using '{best_model}' ({fallback_cat}){risk_note}"
+            f"VRAM fallback BLOCKED: request carries images and the loaded "
+            f"'{best_model}' cannot see them (requested '{inference_req.model}')."
         )
-        _record_vram_fallback(
-            inference_req.model,
-            best_model,
-            category.value,
-            cross_category=True,
-            fallback_category=fallback_cat,
+        return None
+
+    # Priority check: don't route a high-priority model to a
+    # low-priority one.  The requested model should cold-load instead.
+    # Read current cache via module attribute (rebinds are module-local).
+    priority_cache = model_preloader._priority_cache
+    req_priority = get_model_priority(inference_req.model, priority_cache)
+    fallback_priority = get_model_priority(best_model, priority_cache)
+    if req_priority > 0 and req_priority > fallback_priority * 2:
+        logger.info(
+            f"VRAM fallback blocked: '{inference_req.model}' "
+            f"(priority={req_priority:.0f}) outranks "
+            f"'{best_model}' (priority={fallback_priority:.0f}) — "
+            f"will cold-load instead"
         )
-        return [best_result], best_model
+        return None
 
-    return None
+    logger.info(
+        f"VRAM fallback: '{inference_req.model}' ({category.value}) would evict "
+        f"on every node, routing to loaded '{best_model}' instead"
+    )
+    _record_vram_fallback(inference_req.model, best_model, category.value)
+    return [best_result], best_model
 
 
-def _record_vram_fallback(
-    requested: str,
-    actual: str,
-    category: str,
-    *,
-    cross_category: bool = False,
-    fallback_category: str | None = None,
-) -> None:
-    """Record a VRAM fallback event for health visibility.
-
-    ``cross_category=True`` means the served model is in a DIFFERENT
-    category from the requested one (e.g. reasoning answering a vision
-    request).  The dashboard health page filters on this because
-    cross-category substitutions are a quality risk, not just a
-    latency/memory optimization.
-    """
+def _record_vram_fallback(requested: str, actual: str, category: str) -> None:
+    """Record a VRAM fallback event for health visibility."""
     _vram_fallback_events.append(
         {
             "timestamp": time.time(),
             "requested_model": requested,
             "actual_model": actual,
             "category": category,
-            "cross_category": cross_category,
-            "fallback_category": fallback_category or category,
         }
     )
     # Keep last 100 events

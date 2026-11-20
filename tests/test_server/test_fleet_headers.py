@@ -63,13 +63,13 @@ def test_parse_allow_fallback_none_when_unspecified():
 def test_parse_allow_fallback_header_strict():
     assert parse_allow_fallback({}, {"x-fleet-no-fallback": "true"}) is False
     assert parse_allow_fallback({}, {"x-fleet-no-fallback": "1"}) is False
-    # explicitly requesting fallback back on
-    assert parse_allow_fallback({}, {"x-fleet-no-fallback": "false"}) is True
+    # Only strict mode exists: there is no switch to force substitution.
+    assert parse_allow_fallback({}, {"x-fleet-no-fallback": "false"}) is None
 
 
 def test_parse_allow_fallback_body_field():
     assert parse_allow_fallback({"fallback": False}, {}) is False
-    assert parse_allow_fallback({"fallback": True}, {}) is True
+    assert parse_allow_fallback({"fallback": True}, {}) is None
 
 
 def test_parse_allow_fallback_header_wins_over_body():

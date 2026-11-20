@@ -401,8 +401,8 @@ async def chat_completions(request: Request):
     settings = request.app.state.settings
 
     # Score with fallback support + auto-pull.  A per-request strict-mode
-    # signal (X-Fleet-No-Fallback header / "fallback" body field) overrides
-    # the global vram_fallback setting for this call only.
+    # signal (X-Fleet-No-Fallback header / "fallback": false) turns off
+    # substitution for this call.
     allow_fallback = parse_allow_fallback(body, request.headers)
     results, actual_model = await score_with_fallbacks(
         inference_req,

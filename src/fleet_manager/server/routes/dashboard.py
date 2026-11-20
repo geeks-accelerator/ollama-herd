@@ -1291,7 +1291,6 @@ async def dashboard_settings_data(request: Request):
         "telemetry": telemetry_state,
         "toggles": {
             "auto_pull": settings.auto_pull,
-            "vram_fallback": settings.vram_fallback,
             "image_generation": settings.image_generation,
             "transcription": settings.transcription,
             "dynamic_num_ctx": settings.dynamic_num_ctx,
@@ -1401,7 +1400,6 @@ async def dashboard_settings_update(request: Request):
 
     mutable_fields = {
         "auto_pull",
-        "vram_fallback",
         "image_generation",
         "transcription",
         "dynamic_num_ctx",
@@ -4966,7 +4964,6 @@ _SETTINGS_BODY = """
 <script>
 var TOGGLE_META = {
   auto_pull: {label:'Auto-Pull Models', desc:'Automatically download models to nodes when requested but not available'},
-  vram_fallback: {label:'VRAM-Aware Fallback', desc:'Route to a loaded model in the same category instead of cold-loading the requested model'},
   image_generation: {label:'Image Generation', desc:'Route mflux image generation requests to nodes with image models available'},
   transcription: {label:'Transcription (STT)', desc:'Route speech-to-text requests to nodes with mlx-qwen3-asr available'},
   dynamic_num_ctx: {label:'Dynamic Context Size', desc:'Inject optimized num_ctx on cold loads to reduce KV cache waste'},

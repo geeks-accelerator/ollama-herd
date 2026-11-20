@@ -574,7 +574,8 @@ class TestDashboardAPI:
         assert "nodes" in data
         assert "toggles" in data["config"]
         assert data["config"]["toggles"]["auto_pull"] is True
-        assert data["config"]["toggles"]["vram_fallback"] is True
+        # Removed 2026-11: substitution is the router's call, strict mode per request.
+        assert "vram_fallback" not in data["config"]["toggles"]
 
     def test_settings_api_toggle_auto_pull(self, client):
         resp = client.get("/dashboard/api/settings")
@@ -588,13 +589,10 @@ class TestDashboardAPI:
         resp = client.get("/dashboard/api/settings")
         assert resp.json()["config"]["toggles"]["auto_pull"] is False
 
-    def test_settings_api_toggle_vram_fallback(self, client):
+    def test_settings_api_no_longer_accepts_vram_fallback(self, client):
         resp = client.post("/dashboard/api/settings", json={"vram_fallback": False})
         assert resp.status_code == 200
-        assert resp.json()["updated"]["vram_fallback"] is False
-
-        resp = client.get("/dashboard/api/settings")
-        assert resp.json()["config"]["toggles"]["vram_fallback"] is False
+        assert resp.json()["status"] == "no_change"
 
     def test_settings_api_rejects_non_mutable(self, client):
         resp = client.post("/dashboard/api/settings", json={"score_model_hot": 999.0})
