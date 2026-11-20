@@ -389,6 +389,13 @@ class ScoringEngine:
             penalty += charge(m)
             need -= (m.size_vram_gb or m.size_gb) if on_gpu else m.size_gb
             slots_full = False  # one eviction frees one slot
+        if need > 0:
+            # Memory in use that no resident model accounts for: a model Ollama
+            # is loading right now (it is missing from /api/ps until loaded) or
+            # another program.  Either is about to be used, so charge it as busy.
+            # Mid-swap heartbeats listed nothing while nvidia-smi showed 17 GB
+            # in use, and this branch charged 0 (2026-11-20 benchmark, run 2).
+            penalty += s.score_model_hot - s.score_model_cold
         return -min(penalty, s.score_model_hot)
 
     def _score_queue_depth(

@@ -118,3 +118,19 @@ class TestUnchanged:
         hb.ollama.models_available_sizes = dict(SIZES)
         await registry.update_from_heartbeat(hb)
         assert scorer.score_request(A, {})[0].scores_breakdown["eviction"] == 0
+
+
+@pytest.mark.asyncio
+async def test_memory_held_by_a_model_still_loading_counts(scorer, registry):
+    """Mid-swap, /api/ps lists nothing while the card is full: that is a load
+    in progress, not free room, and must not earn the warm bonus."""
+    await registry.update_from_heartbeat(_gpu_heartbeat("n1", loaded=[A]))
+    hb = _gpu_heartbeat("n1")  # A unloaded, B loading: nothing listed
+    hb.memory.gpu_source = "detected"
+    hb.memory.gpu_used_gb = 17.5
+    await registry.update_from_heartbeat(hb)
+    await registry.update_from_heartbeat(_gpu_heartbeat("n2", loaded=["qwen3-coder:30b"]))
+    by_node = {r.node_id: r.scores_breakdown for r in scorer.score_request(A, {})}
+    s = ServerSettings()
+    assert by_node["n1"]["eviction"] == -(s.score_model_hot - s.score_model_cold)
+    assert by_node["n1"]["thermal"] == s.score_model_cold  # not warm
