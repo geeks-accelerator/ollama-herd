@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`X-Request-Id` on every routed response**, streaming or not, on all four API surfaces and the embedding, image and transcription endpoints. It is the trace's own `request_id`, so a client can say exactly which request it means; error responses carry it too once the request has an id (a rejection, a failed attempt). Exposed to browser clients under CORS.
+- **`/dashboard/api/traces` filters**: `request_id` (the header above; one row per attempt), `tag` and `since` (unix seconds), alongside `limit`. Rows now include `finish_reason`, `estimated_tokens` and `timings`.
+
 ## [0.12.10] - 2026-11-20
 
 Most of this release comes from two benchmark runs on rented NVIDIA machines (2026-11-20). The first found most of what is listed here; the second, on stock settings, confirmed the fixes and found three more. With them, `qwen3-coder:30b` scales from 112 tok/s on one machine to 223 on two and 437 on four, and two models that cannot share one 24 GB card settle one per machine: 60-90 ms to the first token instead of an 8 s swap on every request.

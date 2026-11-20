@@ -21,7 +21,11 @@ from fleet_manager.common.errors import (
 )
 from fleet_manager.models.node import ModelTagMeta, NodeStatus
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
-from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
+from fleet_manager.server.fleet_headers import (
+    affinity_from_breakdown,
+    bind_request_id,
+    fleet_headers,
+)
 from fleet_manager.server.model_knowledge import is_image_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.routing import (
@@ -842,6 +846,7 @@ async def dispatch_embed(
         tags=tags,
         request_type="embed",
     )
+    bind_request_id(request, inference_req.request_id)
 
     scorer = request.app.state.scorer
     queue_mgr = request.app.state.queue_mgr
@@ -1029,6 +1034,7 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
     registry = request.app.state.registry
     settings = request.app.state.settings
     model = inference_req.original_model or inference_req.model
+    bind_request_id(request, inference_req.request_id)
     if not inference_req.client_ip:
         inference_req.client_ip = request.client.host if request.client else ""
     logger.info(f"Ollama request: model={model} stream={inference_req.stream}")

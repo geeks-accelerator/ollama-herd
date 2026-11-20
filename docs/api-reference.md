@@ -90,6 +90,7 @@ data: [DONE]\n\n
 
 | Header | Always? | Description |
 |--------|---------|-------------|
+| `X-Request-Id` | ✅ | The router's id for this request, the same value stored as the trace's `request_id`. Also on error responses once the router has given the request an id (a rejection, a failed attempt); a request refused before that, such as one with no `model`, has none. Pass it to [`GET /dashboard/api/traces?request_id=`](#get-dashboardapitraces) for the router's side of the request: node, retries, fallback, queue and route time. Image generation and transcription return it too, but write no trace when they complete |
 | `X-Fleet-Node` | ✅ | Node ID that served the request |
 | `X-Fleet-Served-Model` | ✅ | The model that **actually ran** (differs from requested on a fallback) |
 | `X-Fleet-Requested-Model` | ✅ | What the client asked for |
@@ -848,6 +849,7 @@ Friendly probe endpoint — Claude Code may GET this during connection setup.
 
 ### Response headers (all `/v1/messages` calls)
 
+- `X-Request-Id` — the router's id for this request (the trace's `request_id`)
 - `X-Fleet-Node` — node id that served the request
 - `X-Fleet-Score` — routing score (higher = better fit)
 - `X-Fleet-Fallback` — present when a fallback model was used
@@ -1132,6 +1134,7 @@ Generate an image on the best available node with mflux. Requires `FLEET_IMAGE_G
 
 | Header | Description |
 |--------|-------------|
+| `X-Request-Id` | The router's id for this request (in its log; no trace is written for a completed image) |
 | `X-Fleet-Node` | Node that generated the image |
 | `X-Fleet-Served-Model` | Image model used (with the rest of the canonical `X-Fleet-*` set) |
 | `X-Generation-Time` | Generation time in ms |
@@ -1176,6 +1179,7 @@ curl http://localhost:11435/api/transcribe -F "audio=@recording.wav"
 
 | Header | Description |
 |--------|-------------|
+| `X-Request-Id` | The router's id for this request (in its log; no trace is written for a completed transcription) |
 | `X-Fleet-Node` | Node that transcribed the audio |
 | `X-Fleet-Served-Model` | Transcription model used (with the rest of the canonical `X-Fleet-*` set) |
 | `X-Transcription-Time` | Processing time in ms |
@@ -1398,11 +1402,16 @@ Per-node, per-model, per-day usage stats from request traces.
 
 #### `GET /dashboard/api/traces`
 
-Recent request traces for debugging and observability.
+Request traces, newest first, for debugging and observability. Filters combine with AND.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `limit` | integer | `50` | Maximum number of traces to return |
+| `request_id` | string | | Only this request: the `X-Request-Id` response header. A retried request has one row per attempt |
+| `tag` | string | | Only requests carrying this tag (one whole entry of `tags`, not a substring) |
+| `since` | number | | Only traces at or after this unix timestamp, in seconds |
+
+A trace is written as the request finishes (for a stream, after its last chunk), so a lookup made the instant a response ends can come back empty; retry after a few milliseconds.
 
 **Response:**
 
@@ -1434,7 +1443,16 @@ Recent request traces for debugging and observability.
       "original_format": "openai",
       "error_message": null,
       "timestamp": 1710000000.0,
-      "tags": ["my-app", "production"]
+      "tags": ["my-app", "production"],
+      "timings": {
+        "route_ms": 1.2,
+        "queue_ms": 0.0,
+        "upstream_ms": 4180.3,
+        "backend_ms": 4172.0,
+        "overhead_ms": 8.9
+      },
+      "finish_reason": "stop",
+      "estimated_tokens": 118
     }
   ]
 }

@@ -29,7 +29,11 @@ from fleet_manager.common.errors import (
 )
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.anthropic_autoroute import resolve_model
-from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
+from fleet_manager.server.fleet_headers import (
+    affinity_from_breakdown,
+    bind_request_id,
+    fleet_headers,
+)
 from fleet_manager.server.mlx_proxy import is_mlx_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.responses_translator import (
@@ -164,7 +168,7 @@ async def responses(request: Request):
         tags=tags,
         client_ip=client_host,
     )
-    rid = inference_req.request_id[:8]
+    rid = bind_request_id(request, inference_req.request_id)[:8]
 
     logger.info(
         f"Responses[{rid}] request: model={requested_model} → {local_model} "

@@ -536,12 +536,25 @@ async def dashboard_usage_data(request: Request, days: int = 7):
 
 
 @router.get("/dashboard/api/traces")
-async def dashboard_traces(request: Request, limit: int = 50):
-    """Recent request traces for debugging and observability."""
+async def dashboard_traces(
+    request: Request,
+    limit: int = 50,
+    request_id: str | None = None,
+    tag: str | None = None,
+    since: float | None = None,
+):
+    """Request traces, newest first, for debugging and observability.
+
+    ``request_id`` is the router's ``X-Request-Id`` response header (one row
+    per attempt when the request was retried), ``tag`` one of the request's
+    tags, ``since`` a unix timestamp in seconds.  Filters combine with AND.
+    """
     trace_store = getattr(request.app.state, "trace_store", None)
     if not trace_store:
         return {"traces": []}
-    traces = await trace_store.get_recent_traces(limit=limit)
+    traces = await trace_store.get_recent_traces(
+        limit=limit, request_id=request_id, tag=tag, since=since
+    )
     return {"traces": traces}
 
 

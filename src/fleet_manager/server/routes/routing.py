@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
 
 import httpx
 from fastapi.responses import JSONResponse
@@ -460,7 +459,7 @@ def direct_proxy_tracer(
     client_ip: str,
     original_format: str,
     tags: list[str],
-    request_id: str | None = None,
+    request_id: str,
     original_model: str | None = None,
     score: float | None = None,
     scores_breakdown: dict | None = None,
@@ -472,11 +471,11 @@ def direct_proxy_tracer(
     the Ollama embed path).  Those never reach ``StreamingProxy``'s trace
     recording, so each one recorded nothing until it carried its own copy of
     this closure — and the vision path never got one, leaving its traffic,
-    latency and failures out of every dashboard and health check.  The Ollama
-    embed path is scored, so it passes its own ``request_id``, ``score`` and
-    breakdown.  Latency is measured from this call.
+    latency and failures out of every dashboard and health check.
+    ``request_id`` is the one the route bound for ``X-Request-Id``.  The Ollama
+    embed path is scored, so it also passes ``score`` and the breakdown.
+    Latency is measured from this call.
     """
-    request_id = request_id or str(uuid.uuid4())
     start_ms = time.time() * 1000
 
     def trace(

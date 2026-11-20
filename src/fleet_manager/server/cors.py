@@ -28,6 +28,7 @@ from starlette.middleware.cors import CORSMiddleware
 # non-safelisted header by default, which would make Herd's routing metadata
 # invisible to exactly the clients this exists for.
 EXPOSED_HEADERS = [
+    "X-Request-Id",
     "X-Fleet-Node",
     "X-Fleet-Served-Model",
     "X-Fleet-Requested-Model",

@@ -144,6 +144,10 @@ def create_test_app(tmp_path=None) -> FastAPI:
     app.include_router(fleet.router)
     app.include_router(dashboard.router)
 
+    from fleet_manager.server.fleet_headers import RequestIdMiddleware
+
+    app.add_middleware(RequestIdMiddleware)
+
     @app.get("/")
     async def root():
         return {"name": "Ollama Herd", "version": "0.1.0"}

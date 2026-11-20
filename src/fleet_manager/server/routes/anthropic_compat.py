@@ -47,7 +47,11 @@ from fleet_manager.server.anthropic_translator import (
     flatten_text_for_count,
     ollama_chunk_to_anthropic_events,
 )
-from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
+from fleet_manager.server.fleet_headers import (
+    affinity_from_breakdown,
+    bind_request_id,
+    fleet_headers,
+)
 from fleet_manager.server.mlx_proxy import (
     MlxModelMissingError,
     MlxQueueFullError,
@@ -937,7 +941,7 @@ async def messages(
         raw_body=ollama_body,
         tags=tags,
     )
-    rid = inference_req.request_id[:8]
+    rid = bind_request_id(request, inference_req.request_id)[:8]
 
     # Log context-management outcomes for observability
     if clearing_report and clearing_report.triggered:

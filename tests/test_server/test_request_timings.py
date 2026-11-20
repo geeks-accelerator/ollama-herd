@@ -115,7 +115,7 @@ async def test_timings_round_trip_through_the_trace_store(tmp_path):
         latency_ms=40.1,
         timings=timings,
     )
-    [trace] = await store.get_trace_by_request_id("r1")
+    [trace] = await store.get_recent_traces(request_id="r1")
     assert trace["timings"] == timings
     await store.close()
 

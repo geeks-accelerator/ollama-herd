@@ -159,7 +159,7 @@ class TestRecordTrace:
         )
 
     @pytest.mark.asyncio
-    async def test_get_trace_by_request_id(self, store):
+    async def test_filter_by_request_id(self, store):
         await store.record_trace(
             request_id="lookup-me", model="phi4:14b", original_model="phi4:14b",
             node_id="node-a", status="retried", latency_ms=100.0,
@@ -173,10 +173,44 @@ class TestRecordTrace:
             request_id="other-req", model="phi4:14b", original_model="phi4:14b",
             node_id="node-a", status="completed", latency_ms=800.0,
         )
-        traces = await store.get_trace_by_request_id("lookup-me")
-        assert len(traces) == 2
-        assert traces[0]["status"] == "retried"
-        assert traces[1]["status"] == "completed"
+        traces = await store.get_recent_traces(request_id="lookup-me")
+        # One row per attempt, newest first.
+        assert [t["status"] for t in traces] == ["completed", "retried"]
+        assert [t["node_id"] for t in traces] == ["node-b", "node-a"]
+
+    @pytest.mark.asyncio
+    async def test_filter_by_tag_and_since(self, store):
+        rows = (("old", ["bench"], 1000.0), ("other", ["chat"], 2000.0), ("new", ["bench", "x"], 3000.0))
+        for rid, tags, ts in rows:
+            await store.record_trace(
+                request_id=rid, model="m", original_model="m", node_id="n", tags=tags,
+            )
+            await store._db.execute(
+                "UPDATE request_traces SET timestamp = ? WHERE request_id = ?", (ts, rid)
+            )
+        await store._db.commit()
+
+        by_tag = await store.get_recent_traces(tag="bench")
+        assert [t["request_id"] for t in by_tag] == ["new", "old"]
+        # A tag matches one whole entry, never a substring of the JSON text.
+        assert await store.get_recent_traces(tag="ben") == []
+        since = await store.get_recent_traces(since=2000.0)
+        assert [t["request_id"] for t in since] == ["new", "other"]
+        both = await store.get_recent_traces(tag="bench", since=1500.0)
+        assert [t["request_id"] for t in both] == ["new"]
+        assert await store.get_recent_traces(tag="bench", request_id="other") == []
+
+    @pytest.mark.asyncio
+    async def test_rows_carry_finish_reason_estimate_and_timings(self, store):
+        await store.record_trace(
+            request_id="full", model="m", original_model="m", node_id="n",
+            finish_reason="length", estimated_tokens=1234,
+            timings={"route_ms": 1.0, "queue_ms": 2.0},
+        )
+        [t] = await store.get_recent_traces(request_id="full")
+        assert t["finish_reason"] == "length"
+        assert t["estimated_tokens"] == 1234
+        assert t["timings"] == {"route_ms": 1.0, "queue_ms": 2.0}
 
     @pytest.mark.asyncio
     async def test_recent_traces_ordering(self, store):

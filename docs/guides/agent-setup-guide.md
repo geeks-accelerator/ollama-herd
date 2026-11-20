@@ -137,6 +137,7 @@ Every response includes fleet metadata:
 
 | Header | Example | Description |
 |--------|---------|-------------|
+| `X-Request-Id` | `3f2b9c1e-...` | The router's id for the request; look it up with `/dashboard/api/traces?request_id=` |
 | `X-Fleet-Node` | `Neons-Mac-Studio` | Which device handled the request |
 | `X-Fleet-Score` | `85` | Routing score (higher = better fit) |
 

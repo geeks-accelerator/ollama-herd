@@ -60,6 +60,14 @@ BACKEND_FAILURE_KINDS: dict[str, tuple[str, object]] = {
 # patience before we declare the trace lost.
 _RETRY_BACKOFFS_S = (0.2, 0.8, 2.0)
 
+# The columns every per-request read returns, in ``_row_to_dict``'s order.
+_TRACE_COLUMNS = (
+    "request_id, model, original_model, node_id, score, scores_breakdown, status, "
+    "latency_ms, time_to_first_token_ms, prompt_tokens, completion_tokens, retry_count, "
+    "fallback_used, excluded_nodes, client_ip, original_format, error_message, timestamp, "
+    "tags, timings, finish_reason, estimated_tokens"
+)
+
 
 class TraceStore:
     """Records and queries per-request trace data in the same SQLite DB as LatencyStore."""
@@ -434,35 +442,39 @@ class TraceStore:
             self._write_failure_times.popleft()
         return len(self._write_failure_times)
 
-    async def get_recent_traces(self, limit: int = 100) -> list[dict]:
-        """Return the most recent traces, newest first."""
-        if not self._db:
-            return []
-        cursor = await self._read_db.execute(
-            "SELECT request_id, model, original_model, node_id, score, "
-            "scores_breakdown, status, latency_ms, time_to_first_token_ms, "
-            "prompt_tokens, completion_tokens, retry_count, fallback_used, "
-            "excluded_nodes, client_ip, original_format, error_message, timestamp, tags, "
-            "timings "
-            "FROM request_traces ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_dict(row) for row in rows]
+    async def get_recent_traces(
+        self,
+        limit: int = 100,
+        *,
+        request_id: str | None = None,
+        tag: str | None = None,
+        since: float | None = None,
+    ) -> list[dict]:
+        """Return traces newest first, optionally filtered.
 
-    async def get_trace_by_request_id(self, request_id: str) -> list[dict]:
-        """Look up all trace entries for a given request (may have retries)."""
+        ``request_id`` is the value the router returns as ``X-Request-Id``; a
+        request that was retried has one row per attempt.  ``tag`` matches one
+        entry of the request's tags, ``since`` is a unix timestamp (inclusive).
+        Filters combine with AND.
+        """
         if not self._db:
             return []
-        cursor = await self._read_db.execute(
-            "SELECT request_id, model, original_model, node_id, score, "
-            "scores_breakdown, status, latency_ms, time_to_first_token_ms, "
-            "prompt_tokens, completion_tokens, retry_count, fallback_used, "
-            "excluded_nodes, client_ip, original_format, error_message, timestamp, tags, "
-            "timings "
-            "FROM request_traces WHERE request_id = ? ORDER BY timestamp",
-            (request_id,),
-        )
+        where: list[str] = []
+        params: list = []
+        if request_id:
+            where.append("request_id = ?")
+            params.append(request_id)
+        if tag:
+            where.append("EXISTS (SELECT 1 FROM json_each(request_traces.tags) WHERE value = ?)")
+            params.append(tag)
+        if since is not None:
+            where.append("timestamp >= ?")
+            params.append(since)
+        sql = f"SELECT {_TRACE_COLUMNS} FROM request_traces"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY timestamp DESC, id DESC LIMIT ?"
+        cursor = await self._read_db.execute(sql, (*params, limit))
         rows = await cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
 
@@ -1582,41 +1594,24 @@ class TraceStore:
         }
 
     def _row_to_dict(self, row) -> dict:
-        """Convert a SELECT row into a dict with JSON parsing."""
-        breakdown = None
-        if row[5]:
+        """Convert a ``_TRACE_COLUMNS`` row into a dict, parsing the JSON columns."""
+
+        def parse(value, column: str, keep_raw: bool = True):
+            if not value:
+                return None
             try:
-                breakdown = json.loads(row[5])
+                return json.loads(value)
             except json.JSONDecodeError:
-                logger.debug(f"Corrupt scores_breakdown JSON in trace {row[0]}")
-                breakdown = row[5]
-        excluded = None
-        if row[13]:
-            try:
-                excluded = json.loads(row[13])
-            except json.JSONDecodeError:
-                logger.debug(f"Corrupt excluded_nodes JSON in trace {row[0]}")
-                excluded = row[13]
-        tags = None
-        if len(row) > 18 and row[18]:
-            try:
-                tags = json.loads(row[18])
-            except json.JSONDecodeError:
-                logger.debug(f"Corrupt tags JSON in trace {row[0]}")
-                tags = row[18]
-        timings = None
-        if len(row) > 19 and row[19]:
-            try:
-                timings = json.loads(row[19])
-            except json.JSONDecodeError:
-                logger.debug(f"Corrupt timings JSON in trace {row[0]}")
+                logger.debug(f"Corrupt {column} JSON in trace {row[0]}")
+                return value if keep_raw else None
+
         return {
             "request_id": row[0],
             "model": row[1],
             "original_model": row[2],
             "node_id": row[3],
             "score": row[4],
-            "scores_breakdown": breakdown,
+            "scores_breakdown": parse(row[5], "scores_breakdown"),
             "status": row[6],
             "latency_ms": row[7],
             "time_to_first_token_ms": row[8],
@@ -1624,13 +1619,15 @@ class TraceStore:
             "completion_tokens": row[10],
             "retry_count": row[11],
             "fallback_used": bool(row[12]),
-            "excluded_nodes": excluded,
+            "excluded_nodes": parse(row[13], "excluded_nodes"),
             "client_ip": row[14],
             "original_format": row[15],
             "error_message": row[16],
             "timestamp": row[17],
-            "tags": tags,
-            "timings": timings,
+            "tags": parse(row[18], "tags"),
+            "timings": parse(row[19], "timings", keep_raw=False),
+            "finish_reason": row[20],
+            "estimated_tokens": row[21],
         }
 
     async def close(self):

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
-from fleet_manager.server.fleet_headers import fleet_headers
+from fleet_manager.server.fleet_headers import bind_request_id, fleet_headers
 from fleet_manager.server.routes.routing import CLIENT_GONE_STATUS, dispatched_stream, extract_tags
 
 logger = logging.getLogger(__name__)
@@ -122,6 +122,7 @@ async def transcribe_audio(request: Request, audio: UploadFile):
         tags=tags,
         request_type="stt",
     )
+    bind_request_id(request, inference_req.request_id)
 
     queue_key = f"{best.node_id}:{inference_req.model}"
     entry = QueueEntry(

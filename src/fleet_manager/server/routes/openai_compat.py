@@ -24,6 +24,7 @@ from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFo
 from fleet_manager.node.text_embedding_models import DEFAULT_RERANK_MODEL
 from fleet_manager.server.fleet_headers import (
     affinity_from_breakdown,
+    bind_request_id,
     fleet_headers,
     usage_with_cached_tokens,
 )
@@ -350,6 +351,7 @@ async def chat_completions(request: Request):
         tags=tags,
         client_ip=request.client.host if request.client else "",
     )
+    bind_request_id(request, inference_req.request_id)
 
     # MLX backend fast-path — mirrors the Anthropic route (anthropic_compat.py).
     # `mlx:`-prefixed models live in an mlx_lm.server subprocess, not Ollama, so
@@ -931,6 +933,7 @@ async def systemone(request: Request):
     trace_store = getattr(request.app.state, "trace_store", None)
     tags = ["decision"] + extract_tags(body, request.headers)
     client_ip = request.client.host if request.client else ""
+    request_id = bind_request_id(request)
     candidates = [
         (node, resolved)
         for node, resolved in _nodes_with_model(registry.get_online_nodes(), model)
@@ -943,7 +946,7 @@ async def systemone(request: Request):
         )
         await record_routing_rejection(
             trace_store,
-            InferenceRequest(model=model, tags=tags),
+            InferenceRequest(model=model, tags=tags, request_id=request_id),
             reason=reason,
             original_format="systemone",
             client_ip=client_ip,
@@ -963,7 +966,7 @@ async def systemone(request: Request):
         usage = json.loads(resp.body).get("usage", {}) if ok else {}
         asyncio.ensure_future(
             trace_store.record_trace(
-                request_id=str(uuid.uuid4()),
+                request_id=request_id,
                 model=model,
                 original_model=model,
                 node_id=resp.headers.get("X-Fleet-Node", ""),

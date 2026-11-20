@@ -11,9 +11,21 @@ This module defines the single canonical set every proxied inference response
 emits, so a caller reads the same three headers — ``X-Fleet-Served-Model``,
 ``X-Fleet-Requested-Model``, ``X-Fleet-Fallback`` — on *any* endpoint and knows
 exactly what ran.  See ``docs/plans/client-ergonomics-from-agent-feedback.md``.
+
+``X-Request-Id`` is set separately, by ``RequestIdMiddleware``, because it
+belongs on error responses too: a route binds the id it traces under with
+``bind_request_id`` and every response that request gets carries it.
 """
 
 from __future__ import annotations
+
+import uuid
+
+from starlette.datastructures import MutableHeaders
+from starlette.requests import Request
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+REQUEST_ID_HEADER = "X-Request-Id"
 
 
 def fleet_headers(
@@ -119,3 +131,50 @@ def usage_with_cached_tokens(usage: dict, cached_tokens: int | None) -> dict:
     usage = dict(usage)
     usage["prompt_tokens_details"] = {"cached_tokens": int(cached_tokens)}
     return usage
+
+
+def bind_request_id(request: Request, request_id: str | None = None) -> str:
+    """Make ``request_id`` the id this request's response reports.
+
+    Call it where the route creates the id it records in ``request_traces``
+    (an ``InferenceRequest``'s, or a fresh one for the direct-proxy paths), so
+    ``X-Request-Id`` and ``request_traces.request_id`` are the same value and
+    ``/dashboard/api/traces?request_id=`` finds the row.  Returns the id, a new
+    uuid4 when none is given.  A route that delegates to another (``/api/embed``
+    to the native or vision server) leaves the binding to the route that traces.
+    """
+    rid = request_id or str(uuid.uuid4())
+    request.state.request_id = rid
+    return rid
+
+
+class RequestIdMiddleware:
+    """Add ``X-Request-Id`` to any response whose route bound one.
+
+    Pure ASGI rather than ``BaseHTTPMiddleware`` so streaming responses pass
+    through untouched: the header goes on ``http.response.start``, which a
+    ``StreamingResponse`` sends after the route has returned and so after the
+    id is bound.  Responses that never bound an id (dashboard, fleet API, model
+    management) are left alone: an id nothing records would point nowhere.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        # Created here so the route's ``request.state`` writes into this dict
+        # even if a later layer copies the scope.
+        state = scope.setdefault("state", {})
+
+        async def send_with_request_id(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                rid = state.get("request_id")
+                if rid:
+                    message.setdefault("headers", [])
+                    MutableHeaders(scope=message)[REQUEST_ID_HEADER] = rid
+            await send(message)
+
+        await self.app(scope, receive, send_with_request_id)

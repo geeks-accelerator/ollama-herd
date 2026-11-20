@@ -8,7 +8,6 @@ embedding model name (e.g., "dinov2-vit-s14").
 from __future__ import annotations
 
 import logging
-import uuid
 from types import SimpleNamespace
 
 import httpx
@@ -16,7 +15,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from fleet_manager.common.errors import describe_exception
-from fleet_manager.server.fleet_headers import fleet_headers
+from fleet_manager.server.fleet_headers import bind_request_id, fleet_headers
 from fleet_manager.server.routes.routing import direct_proxy_tracer, record_routing_rejection
 
 logger = logging.getLogger(__name__)
@@ -77,6 +76,7 @@ async def embed_image(request: Request):
     settings = request.app.state.settings
     trace_store = request.app.state.trace_store
     client_ip = request.client.host if request.client else ""
+    request_id = bind_request_id(request)
 
     # Use cached body from /api/embed redirect, or parse fresh
     body = getattr(request.state, "_parsed_body", None)
@@ -97,7 +97,7 @@ async def embed_image(request: Request):
         logger.warning(f"Vision embedding for '{model}' rejected ({status_code}): {reason}")
         await record_routing_rejection(
             trace_store,
-            SimpleNamespace(model=model, request_id=str(uuid.uuid4())),
+            SimpleNamespace(model=model, request_id=request_id),
             reason=reason,
             original_format=_ORIGINAL_FORMAT,
             client_ip=client_ip,
@@ -168,6 +168,7 @@ async def embed_image(request: Request):
         client_ip=client_ip,
         original_format=_ORIGINAL_FORMAT,
         tags=list(_TAGS),
+        request_id=request_id,
     )
     try:
         result = await proxy.embed_image_on_node(

@@ -17,7 +17,6 @@ The public API surface is:
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -34,7 +33,7 @@ from fleet_manager.node.text_embedding_models import (
     get_model_spec,
     is_text_embedding_model,
 )
-from fleet_manager.server.fleet_headers import fleet_headers
+from fleet_manager.server.fleet_headers import bind_request_id, fleet_headers
 from fleet_manager.server.routes.routing import (
     EMBEDDING_COUNT_MISMATCH,
     direct_proxy_tracer,
@@ -199,6 +198,7 @@ async def proxy_to_native_text_server(
     registry = request.app.state.registry
     trace_store = request.app.state.trace_store
     client_ip = request.client.host if request.client else ""
+    request_id = bind_request_id(request)
     candidates = [n for n in registry.get_online_nodes() if kind.serves(n)]
     if not candidates:
         # Logged and traced like any other rejection: this path used to return
@@ -207,7 +207,7 @@ async def proxy_to_native_text_server(
         logger.warning(f"{kind.label.capitalize()} for '{model}' rejected (503): {reason}")
         await record_routing_rejection(
             trace_store,
-            SimpleNamespace(model=model, request_id=str(uuid.uuid4())),
+            SimpleNamespace(model=model, request_id=request_id),
             reason=reason,
             original_format=kind.original_format,
             client_ip=client_ip,
@@ -233,6 +233,7 @@ async def proxy_to_native_text_server(
         client_ip=client_ip,
         original_format=kind.original_format,
         tags=list(kind.tags),
+        request_id=request_id,
     )
 
     size = _size_mb(model)
