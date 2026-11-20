@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 import subprocess
 
 import psutil
@@ -286,11 +287,35 @@ def _get_thermal_windows() -> ThermalMetrics:
     return ThermalMetrics(state=state, temperature_c=round(peak_c, 1), source=peak_source)
 
 
+# Tunnel interfaces: a VPN (utun on macOS, tun/wg/ppp/ipsec elsewhere),
+# Tailscale, ZeroTier.  Their address is what the OS routes to when a VPN owns
+# 10/8 or the default route, and it is no use to a machine on the LAN.
+_TUNNEL_IF = re.compile(r"^(utun|tun|tap|wg|ppp|ipsec|gif|stf|zt|tailscale)", re.I)
+# Interfaces that are never the LAN: loopback, container and VM bridges, Apple's
+# peer-to-peer links.  (A plain Linux "br0" can be the real LAN, so only
+# Docker's "br-<id>" networks are listed.)
+_VIRTUAL_IF = re.compile(
+    r"^(lo|docker|br-|veth|virbr|vmnet|bridge|lima|cni|flannel|cali|podman|awdl|llw|anpi)", re.I
+)
+_PHYSICAL_IF = re.compile(r"^(en|eth|wl)", re.I)
+_logged_preference: set[tuple[str, str]] = set()
+
+
 def get_local_ip(*, warn: bool = True) -> str:
     """Get the LAN IP address of this machine.
 
     ``warn=False`` is for callers that poll and report a change themselves, so a
     network that is down for minutes does not log the same warning every tick.
+
+    The routed answer is right almost always.  The exception is a VPN that owns
+    10/8 or the default route: the probe below then returns the tunnel's own
+    address, which nothing on the LAN can reach -- observed 2026-11-19 with a
+    macOS VPN on utun8, when the router advertised 10.12.128.118 and its own
+    node's heartbeats timed out.  So when the routed address sits on a tunnel
+    interface and a private address on a real LAN interface exists, that one is
+    returned instead.  A machine reachable only over Tailscale keeps its
+    Tailscale address, and an explicit choice still wins (``FLEET_HOST`` for
+    the router, ``FLEET_NODE_OLLAMA_HOST`` and ``--router-url`` for nodes).
     """
     import socket
 
@@ -299,8 +324,56 @@ def get_local_ip(*, warn: bool = True) -> str:
         s.connect(("10.255.255.255", 1))
         ip = s.getsockname()[0]
         s.close()
-        return ip
     except Exception as e:
         if warn:
             logger.warning(f"Could not determine LAN IP (defaulting to 127.0.0.1): {e}")
         return "127.0.0.1"
+    return _prefer_lan_over_tunnel(ip)
+
+
+def _prefer_lan_over_tunnel(routed: str) -> str:
+    import ipaddress
+    import socket
+
+    try:
+        addrs = psutil.net_if_addrs()
+        stats = psutil.net_if_stats()
+    except Exception:  # noqa: BLE001 -- the routed answer is still an answer
+        return routed
+    owner = next(
+        (
+            name
+            for name, entries in addrs.items()
+            for a in entries
+            if a.family == socket.AF_INET and a.address == routed
+        ),
+        None,
+    )
+    if owner is None or not _TUNNEL_IF.match(owner):
+        return routed
+    candidates = []
+    for name, entries in addrs.items():
+        if _TUNNEL_IF.match(name) or _VIRTUAL_IF.match(name):
+            continue
+        if not (stats.get(name) and stats[name].isup):
+            continue
+        for a in entries:
+            if a.family != socket.AF_INET:
+                continue
+            try:
+                addr = ipaddress.ip_address(a.address)
+            except ValueError:
+                continue
+            if addr.is_private and not addr.is_loopback and not addr.is_link_local:
+                candidates.append((name, a.address))
+    if not candidates:
+        return routed
+    candidates.sort(key=lambda c: (not _PHYSICAL_IF.match(c[0]), c[0]))
+    name, chosen = candidates[0]
+    if (routed, chosen) not in _logged_preference:
+        _logged_preference.add((routed, chosen))
+        logger.info(
+            f"Using LAN address {chosen} ({name}) rather than {routed} on tunnel "
+            f"interface {owner}: machines on the LAN cannot reach a tunnel address"
+        )
+    return chosen

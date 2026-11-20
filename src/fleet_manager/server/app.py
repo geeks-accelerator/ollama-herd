@@ -198,7 +198,7 @@ async def lifespan(app: FastAPI):
 
     # Start mDNS advertisement
     advertiser = FleetServiceAdvertiser(
-        settings.port, settings.mdns_service_name, settings.mdns_service_type
+        settings.port, settings.mdns_service_name, settings.mdns_service_type, host=settings.host
     )
     await advertiser.start()
     advertiser_task = asyncio.create_task(advertiser.watch_address())

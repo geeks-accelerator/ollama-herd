@@ -86,16 +86,26 @@ class FleetServiceAdvertiser:
         port: int,
         service_name: str = "Fleet Manager Router",
         service_type: str = SERVICE_TYPE,
+        host: str = "",
     ):
         self._port = port
+        # A router bound to one address (FLEET_HOST, e.g. its Tailscale IP)
+        # listens only there, so that is the address to advertise; it used to
+        # advertise the LAN address, where nothing was listening.
+        self._bound = host if host not in ("", "0.0.0.0", "::") else ""
         self._service_name = service_name
         self._service_type = service_type
         self._azc: AsyncZeroconf | None = None
         self._info: AsyncServiceInfo | None = None
         self._ip: str | None = None
 
+    def _address(self, *, warn: bool = True) -> str:
+        if self._bound:
+            return self._bound
+        return get_local_ip() if warn else get_local_ip(warn=False)
+
     async def start(self):
-        ip = get_local_ip()
+        ip = self._address()
         try:
             self._azc = open_zeroconf()
         except OSError as exc:
@@ -147,7 +157,7 @@ class FleetServiceAdvertiser:
         """Re-advertise if the LAN address changed.  Returns True when it did."""
         if self._azc is None or self._info is None:
             return False
-        ip = get_local_ip(warn=False)
+        ip = self._address(warn=False)
         if ip == self._ip:
             return False
         # The same info object, so a name zeroconf changed at registration
