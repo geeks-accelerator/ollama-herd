@@ -243,3 +243,43 @@ async def test_dashboard_run_without_chat_models_does_not_crash(monkeypatch):
     await runner._run("default", 0.1, ["embed"], None, None, None, None)
     assert runner._status == "complete", runner._error
     assert runner._report["fleet_snapshot"]["run"] == {"mode": "default"}
+
+
+class TestSessions:
+    """Multi-turn sessions over one shared system prompt, what coding agents
+    send; the workload where a router's affinity can matter."""
+
+    @pytest.mark.asyncio
+    async def test_each_turn_resends_the_history_and_is_tagged(self, monkeypatch):
+        sent = []
+        stop = asyncio.Event()
+
+        async def fake_send(client, model, **kw):
+            sent.append(kw)
+            if len(sent) == 3:
+                stop.set()
+            return RequestResult(
+                model, kw["node_label"] or "a", 10, 5, 1, 1, True, reply=f"r{len(sent)}"
+            )
+
+        monkeypatch.setattr(engine, "send_request", fake_send)
+        results: list = []
+        await engine.session_worker(
+            lambda: (None, ""), "m", results, stop, system_prompt="SYS", turns=3, user_tokens=20
+        )
+        assert [len(k["messages"]) for k in sent] == [2, 4, 6]
+        assert sent[2]["messages"][0] == {"role": "system", "content": "SYS"}
+        assert sent[2]["messages"][2] == {"role": "assistant", "content": "r1"}
+        assert len({k["tags"][0] for k in sent}) == 1 and sent[0]["tags"][0].startswith("session:")
+        assert [r.turn for r in results] == [0, 1, 2]
+
+    def test_shared_system_prompt_is_the_same_every_time(self):
+        assert engine.session_system_prompt(500) == engine.session_system_prompt(500)
+
+    def test_report_has_ttft_by_turn(self):
+        rs = [
+            RequestResult("m", "a", 10, 900, 1, 1, True, turn=0),
+            RequestResult("m", "a", 10, 300, 1, 1, True, turn=1),
+        ]
+        report = build_report(rs, 10.0, [ModelTarget("m", 1.0, 1)], [], [])
+        assert report["per_model_results"][0]["ttft_p50_by_turn"] == {"0": 900.0, "1": 300.0}

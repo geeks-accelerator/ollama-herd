@@ -26,6 +26,7 @@ Usage:
 
 import argparse
 import asyncio
+import contextlib
 import sys
 
 import httpx
@@ -34,6 +35,7 @@ from fleet_manager.server.benchmark_engine import (
     build_report,
     discover_fleet,
     run_load,
+    session_system_prompt,
     warmup,
 )
 
@@ -158,8 +160,13 @@ async def run_benchmark(
     prompt_tokens: int | None = None,
     max_tokens: int | None = None,
     think: bool | None = None,
+    session_turns: int = 0,
+    system_tokens: int = 2400,
+    user_tokens: int = 250,
+    round_robin: bool = False,
 ):
-    async with httpx.AsyncClient(base_url=url) as client:
+    async with contextlib.AsyncExitStack() as stack:
+        client = await stack.enter_async_context(httpx.AsyncClient(base_url=url, timeout=300))
         # Discover fleet
         print(f"\nDiscovering fleet at {url}...")
         try:
@@ -212,6 +219,30 @@ async def run_benchmark(
 
         results: list = []
 
+        # Multi-turn sessions over one shared system prompt; either through the
+        # router (sessions tagged) or round-robin straight to each node's Ollama.
+        sessions = None
+        if session_turns:
+            clients = [(client, "")]
+            if round_robin:
+                urls = sorted({ni.ollama_url for ni in nodes_info if ni.ollama_url})
+                clients = [
+                    (
+                        await stack.enter_async_context(httpx.AsyncClient(base_url=u, timeout=300)),
+                        u.split("//")[-1].split(":")[0],
+                    )
+                    for u in urls
+                ]
+                print(f"  Round-robin across {len(clients)} nodes' Ollama, bypassing the router\n")
+            sessions = {
+                "clients": clients,
+                "system_prompt": session_system_prompt(system_tokens),
+                "turns": session_turns,
+                "user_tokens": user_tokens,
+                "max_tokens": max_tokens or 150,
+                "tag_sessions": not round_robin,
+            }
+
         def progress(elapsed: float) -> None:
             ok = sum(1 for r in results if r.success)
             fail = len(results) - ok
@@ -234,6 +265,7 @@ async def run_benchmark(
             max_tokens=max_tokens,
             think=think,
             on_tick=progress,
+            sessions=sessions,
         )
         print("\r  Done.                                                                         ")
 
@@ -249,6 +281,16 @@ async def run_benchmark(
                     "prompt_tokens": prompt_tokens,
                     "max_tokens": max_tokens,
                     "think": think,
+                    **(
+                        {
+                            "session_turns": session_turns,
+                            "system_tokens": system_tokens,
+                            "user_tokens": user_tokens,
+                            "target": "round-robin" if round_robin else "router",
+                        }
+                        if session_turns
+                        else {}
+                    ),
                 }
             },
         )
@@ -337,6 +379,21 @@ Examples:
         help='Send "think": false, so a thinking model answers without reasoning and the '
         "router does not raise --max-tokens to its thinking minimum (1,024)",
     )
+    parser.add_argument(
+        "--session-turns",
+        type=int,
+        default=0,
+        help="Multi-turn sessions of this many turns over one shared system prompt "
+        "(what coding agents send) instead of one-shot requests; --concurrency sessions at once",
+    )
+    parser.add_argument("--system-tokens", type=int, default=2400, help="Shared system prompt size")
+    parser.add_argument("--user-tokens", type=int, default=250, help="Each user turn's size")
+    parser.add_argument(
+        "--round-robin",
+        action="store_true",
+        help="Baseline: send each session request straight to the next node's Ollama in turn, "
+        "bypassing the router (needs the nodes' Ollama reachable from here)",
+    )
     args = parser.parse_args()
 
     asyncio.run(
@@ -350,6 +407,10 @@ Examples:
             prompt_tokens=args.prompt_tokens,
             max_tokens=args.max_tokens,
             think=False if args.no_think else None,
+            session_turns=args.session_turns,
+            system_tokens=args.system_tokens,
+            user_tokens=args.user_tokens,
+            round_robin=args.round_robin,
         )
     )
 

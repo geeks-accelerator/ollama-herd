@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import json
 import logging
 import random
@@ -109,6 +110,19 @@ def make_prompt(prompt_tokens: int | None = None, rng: random.Random | None = No
     return "Notes: " + enc.decode(tokens) + tail
 
 
+def session_system_prompt(tokens: int) -> str:
+    """One long system prompt every session shares, like an agent's tool prompt.
+
+    Deterministic, so every session (and every node) sees the same head: what a
+    backend's prefix cache, and herd's prefix affinity, can reuse.
+    """
+    rng = random.Random(0)
+    return (
+        "You are a coding agent working in a large repository. Reference notes "
+        "follow; use them when relevant.\n" + make_prompt(tokens, rng)
+    )
+
+
 EMBED_PROMPTS = [
     "The quick brown fox jumps over the lazy dog.",
     "Distributed computing enables horizontal scaling across machines.",
@@ -138,6 +152,8 @@ class RequestResult:
     error: str | None = None
     model_type: str = "llm"  # llm, embed, image, stt
     served_model: str = ""  # X-Fleet-Served-Model: what actually answered
+    turn: int = -1  # turn within a multi-turn session (session workload), else -1
+    reply: str = ""  # the reply text, kept only where a session needs its history
 
 
 @dataclass
@@ -438,6 +454,9 @@ async def send_request(
     prompt_tokens: int | None = None,
     max_tokens: int | None = None,
     think: bool | None = None,
+    messages: list[dict] | None = None,
+    tags: list[str] | None = None,
+    node_label: str = "",
 ) -> RequestResult:
     """Send a streaming request via Ollama format to get token counts.
 
@@ -450,9 +469,9 @@ async def send_request(
     """
     body = {
         "model": model,
-        "messages": [{"role": "user", "content": make_prompt(prompt_tokens)}],
+        "messages": messages or [{"role": "user", "content": make_prompt(prompt_tokens)}],
         "stream": True,
-        "metadata": {"tags": ["benchmark"]},
+        "metadata": {"tags": ["benchmark", *(tags or [])]},
     }
     if max_tokens:
         body["options"] = {"num_predict": max_tokens}
@@ -463,8 +482,9 @@ async def send_request(
     ttft = 0.0
     prompt_tokens = 0
     completion_tokens = 0
-    node_id = ""
+    node_id = node_label
     first_content = True
+    reply_parts: list[str] = []
 
     try:
         async with client.stream(
@@ -474,7 +494,7 @@ async def send_request(
             timeout=timeout,
             headers=EXACT_MODEL_HEADERS,
         ) as resp:
-            node_id = resp.headers.get("x-fleet-node", "unknown")
+            node_id = resp.headers.get("x-fleet-node", node_label or "unknown")
             served = resp.headers.get("x-fleet-served-model", "")
             mismatch = served_mismatch(model, resp)
 
@@ -508,6 +528,8 @@ async def send_request(
                 if first_content and (msg.get("content") or msg.get("thinking")):
                     ttft = (time.monotonic() - start) * 1000
                     first_content = False
+                if messages is not None and msg.get("content"):
+                    reply_parts.append(msg["content"])
 
                 if chunk.get("done"):
                     prompt_tokens = chunk.get("prompt_eval_count", 0) or 0
@@ -523,6 +545,7 @@ async def send_request(
             completion_tokens=completion_tokens,
             success=True,
             served_model=served,
+            reply="".join(reply_parts),
         )
 
     except Exception as e:
@@ -560,6 +583,55 @@ async def worker(
                 break
             except TimeoutError:
                 pass
+
+
+async def session_worker(
+    pick_client,
+    model: str,
+    results: list[RequestResult],
+    stop_event: asyncio.Event,
+    *,
+    system_prompt: str,
+    turns: int,
+    user_tokens: int = 250,
+    max_tokens: int | None = 150,
+    think: bool | None = None,
+    tag_sessions: bool = True,
+):
+    """Multi-turn conversations, one after another, until ``stop_event``.
+
+    Each starts from ``system_prompt`` (shared by every session) and adds a
+    ~``user_tokens`` user message per turn plus the model's reply, so turn N
+    resends everything before it: what coding agents do, and what a backend's
+    prefix cache saves.  ``pick_client()`` returns (client, node label) per
+    request: the router, or the next node in a round-robin baseline.  Sessions
+    are tagged ``session:<id>`` so the router can tell them apart (they all come
+    from one benchmark client, whose IP would otherwise merge them).
+    """
+    rng = random.Random()
+    while not stop_event.is_set():
+        session = f"session:bench-{rng.getrandbits(48):012x}"
+        messages = [{"role": "system", "content": system_prompt}]
+        for turn in range(turns):
+            if stop_event.is_set():
+                return
+            messages.append({"role": "user", "content": make_prompt(user_tokens, rng)})
+            client, label = pick_client()
+            result = await send_request(
+                client,
+                model,
+                max_tokens=max_tokens,
+                think=think,
+                messages=list(messages),
+                tags=[session] if tag_sessions else None,
+                node_label=label,
+            )
+            result.turn = turn
+            results.append(result)
+            if not result.success:
+                break
+            messages.append({"role": "assistant", "content": result.reply})
+            result.reply = ""  # history kept in `messages`; don't hold it twice
 
 
 async def warm_node_model(
@@ -655,17 +727,34 @@ async def run_load(
     max_tokens: int | None = None,
     think: bool | None = None,
     on_tick=None,
+    sessions: dict | None = None,
 ) -> tuple[list[dict], float]:
     """Run each target's workers for ``duration`` (or until ``stop_event``),
     drain in-flight requests, and return (fleet snapshots, seconds elapsed).
 
     The one load loop the CLI and the dashboard runner share.  ``on_tick(elapsed)``
-    is called every two seconds for progress output.
+    is called every two seconds for progress output.  ``sessions`` switches chat
+    targets to multi-turn sessions: ``session_worker`` keyword arguments plus
+    ``clients``, a list of (client, label) taken in turn per request (one entry,
+    the router; or one per node for a round-robin baseline).
     """
     tasks = []
+    rotation = None
+    if sessions:
+        sessions = dict(sessions)
+        rotation = itertools.cycle(sessions.pop("clients", None) or [(client, "")])
     for target in targets:
         for _ in range(target.concurrency):
-            if target.model_type == "embed":
+            if sessions and target.model_type == "llm":
+                coro = session_worker(
+                    lambda: next(rotation),
+                    target.name,
+                    results,
+                    stop_event,
+                    think=think,
+                    **sessions,
+                )
+            elif target.model_type == "embed":
                 coro = embed_worker(client, target.name, results, stop_event)
             elif target.model_type == "image":
                 coro = image_worker(client, target.name, results, stop_event)
@@ -724,6 +813,21 @@ async def poll_fleet_status(
             pass
 
 
+def _ttft_by_turn(results: list[RequestResult]) -> dict:
+    """``{"ttft_p50_by_turn": {turn: ms}}`` for session results, else ``{}``."""
+    by_turn: dict[int, list[float]] = {}
+    for r in results:
+        if r.turn >= 0 and r.ttft_ms > 0:
+            by_turn.setdefault(r.turn, []).append(r.ttft_ms)
+    if not by_turn:
+        return {}
+    return {
+        "ttft_p50_by_turn": {
+            str(t): round(percentile(v, 50), 1) for t, v in sorted(by_turn.items())
+        }
+    }
+
+
 def build_report(
     results: list[RequestResult],
     duration: float,
@@ -773,6 +877,7 @@ def build_report(
                     "model_type": m_type,
                     "requests": len(mr),
                     "nodes": node_counts,  # where the router placed it
+                    **_ttft_by_turn(mr),
                     "tok_s": round(m_tok_s, 1),
                     "avg_latency_ms": round(m_lat, 1),
                     "avg_ttft_ms": round(m_ttft, 1),
