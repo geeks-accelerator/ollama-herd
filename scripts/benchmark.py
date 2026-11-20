@@ -101,7 +101,8 @@ def print_report(report, targets, nodes_info):
         print("  LATENCY")
         print("  " + "\u2500" * 66)
         print(f"  {'Metric':<16} {'p50':>8} {'p95':>8} {'p99':>8}")
-        print(f"  {'\u2500' * 16} {'\u2500' * 8} {'\u2500' * 8} {'\u2500' * 8}")
+        rule = "\u2500"  # a backslash inside an f-string needs Python 3.12; we support 3.11
+        print(f"  {rule * 16} {rule * 8} {rule * 8} {rule * 8}")
         print(
             f"  {'Total (ms)':<16} "
             f"{report['latency_p50_ms']:>8,.0f} "
