@@ -23,7 +23,8 @@ Scaling is real once the router is allowed to use each machine: `qwen3-coder:30b
 | 5 | Benchmark harness: warms one node, requires models to be loaded, cannot demand the exact model | Our own measurements | S | A |
 | 6 | Docs say things the code does not do | Readers of the Docker and Linux guides | S | A |
 
-Items 7-9 below are investigations, not fixes.
+Items 7-9 below are investigations, not fixes; 10-11 came from comparing run 1 with published
+gateway and scaling benchmarks.
 
 ---
 
@@ -224,6 +225,23 @@ the setting on; image requests unchanged.
    context for `qwen3.5:9b` and `qwen3-coder:30b` took 31 GB, against 20 GB on the 24 GB cards.
    Check that `_model_fit_cost_gb()` (which uses measured context where it has it) estimates the
    larger figure on a large card, or item 3's "fits without evicting" will be wrong exactly there.
+
+10. **Router overhead over a network.** The router added 6.5 ms p50 on a Mac's loopback but 24.4 ms
+    p50 / 27.7 ms p95 between two datacenter machines, where the direct path crossed the same network,
+    so nearly all of it is the router. Published Python gateways (LiteLLM) add 2-7 ms p50 against a
+    mock. The chat path pools connections per node (`streaming.py` `_get_client`), so it is not new
+    handshakes. Find it: add an `X-Fleet-Overhead-Ms` response header (total time minus upstream time,
+    like LiteLLM's `x-litellm-overhead-duration-ms`) and per-stage timings in the trace (scoring,
+    queue wait, connect, first byte). Also: native embedding, speech-to-text and image requests open a
+    new `httpx.AsyncClient` per request (`streaming.py` around lines 1283, 1313, 1396 at v0.12.9);
+    pool them like the chat path.
+11. **Benchmark method for run 2.** Overhead measured the way gateway vendors do, so the number is
+    comparable: a mock upstream with a fixed delay, direct vs through herd, at fixed arrival rates
+    (k6 `constant-arrival-rate` or vegeta) of 10 / 50 / 100 RPS, thousands of samples, p50/p95/p99
+    and the rate where errors start; plus the real-model A/B with far more than 20 pairs. And a
+    prefix-sharing workload (multi-turn agent sessions with a long shared system prompt), herd's
+    routing against plain round-robin on the same machines: the published routing gains (SGLang,
+    llm-d) all come from cache reuse, and run 1's unique prompts could not show it.
 
 ## Order
 
