@@ -55,6 +55,12 @@ Open, from run 2:
     overload the node's heartbeats fail too (17 `Heartbeat cycle failed` at 300+ req/s), because
     the router serves them on the same saturated loop. Open: profile the event loop per request
     (py-spy shows aiosqlite's C time but not which store), and keep heartbeats answerable under load.
+    **Reproduced locally 2026-11-20** (`docs/experiments/router-scale.sh`,
+    `router_scale_results.json`): 64 fake nodes on one Mac, 0.12.10 router; at 300 req/s heartbeats
+    were fine, at 600 req/s (past the Mac's ceiling) they waited up to 6.2 s (p99 133 ms) and 2
+    failed. The fix can be built and checked there, no cloud machines needed. Up to 256 nodes at
+    50 req/s nothing failed and scoring took 0.2-1.5 ms, so the problem is request load, not
+    fleet size.
 13. **Shared-prompt sessions: first turn ~2x slower through herd.** 16 sessions over 4 nodes: herd's
     median TTFT 1.4-1.5 s against round-robin's 1.07 s, almost all of it on first turns (1.3 s
     against 0.66 s), although herd's own queue wait was 3 ms. Later turns favour herd (+26 % growth
@@ -121,6 +127,12 @@ with runtime faults, against a real router). All fixed on `main`, unreleased:
     `ollama_base_url` is rebuilt on every heartbeat; moving a fake node from one mock port to
     another moved `/fleet/status` and dispatch after one heartbeat. The stale thing was
     `HardwareProfile.ollama_host`, copied at registration and never read: removed.
+23. **After a retry, the session stays pinned to the node that failed.** Session affinity records
+    the first-choice node, so the next turn of that conversation tries the failed node first.
+    Re-pin to the node that served (the queue entry knows it since `c0dd89b`).
+24. **A retried request is counted twice in per-node queue stats**: failed on the first node,
+    completed on the second. Count the attempt that served as the request; show the failed attempt
+    as a retry, not a failure.
 
 ## Rules for this work
 

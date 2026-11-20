@@ -1,0 +1,262 @@
+{
+  "date": "2026-11-20",
+  "hardware": "One Apple Silicon Mac, 128 GB; router, mock Ollama, fake nodes and load generator on the same machine",
+  "herd": "router 0.12.10 from Homebrew, default settings, telemetry off; scripts/fake_fleet.py and scripts/mock_ollama.py from main (3278ebd, 0ba9302)",
+  "method": "docs/experiments/router-scale.sh: per fleet size, a fresh router, N fake herd-nodes heartbeating every 5 s (jitter, num_parallel 64) all pointing at one mock Ollama (4 workers, 20 ms per reply), and 50 requests/s of open-loop load through the router for 20 s (scripts/router_overhead.py --rate) while they heartbeat. route_ms from the router's own traces.",
+  "scale": [
+    {
+      "nodes": 1,
+      "nodes_seen": 1,
+      "heartbeats": 16,
+      "heartbeat_failures": 0,
+      "heartbeat_post_ms": {
+        "n": 16,
+        "p50": 3.48,
+        "p90": 4.82,
+        "p99": 5.33,
+        "max": 5.4
+      },
+      "route_ms_p50": 0.2,
+      "route_ms_p99": 0.4,
+      "added_p50_ms_at_50rps": 2.5,
+      "router_p99_ms_at_50rps": 29.0,
+      "request_errors": 0,
+      "fleet_status_kb": 1.4,
+      "fleet_status_ms": 0.5,
+      "router_cpu_pct": 13.2,
+      "router_rss_mb": 92
+    },
+    {
+      "nodes": 2,
+      "nodes_seen": 2,
+      "heartbeats": 30,
+      "heartbeat_failures": 0,
+      "heartbeat_post_ms": {
+        "n": 30,
+        "p50": 4.22,
+        "p90": 9.87,
+        "p99": 30.36,
+        "max": 33.77
+      },
+      "route_ms_p50": 0.2,
+      "route_ms_p99": 2.5,
+      "added_p50_ms_at_50rps": 2.4,
+      "router_p99_ms_at_50rps": 60.4,
+      "request_errors": 0,
+      "fleet_status_kb": 2.6,
+      "fleet_status_ms": 1.7,
+      "router_cpu_pct": 28.9,
+      "router_rss_mb": 94
+    },
+    {
+      "nodes": 4,
+      "nodes_seen": 4,
+      "heartbeats": 60,
+      "heartbeat_failures": 0,
+      "heartbeat_post_ms": {
+        "n": 60,
+        "p50": 2.72,
+        "p90": 4.93,
+        "p99": 11.36,
+        "max": 13.51
+      },
+      "route_ms_p50": 0.2,
+      "route_ms_p99": 1.2,
+      "added_p50_ms_at_50rps": 1.9,
+      "router_p99_ms_at_50rps": 34.9,
+      "request_errors": 0,
+      "fleet_status_kb": 4.9,
+      "fleet_status_ms": 0.7,
+      "router_cpu_pct": 12.5,
+      "router_rss_mb": 95
+    },
+    {
+      "nodes": 8,
+      "nodes_seen": 8,
+      "heartbeats": 118,
+      "heartbeat_failures": 0,
+      "heartbeat_post_ms": {
+        "n": 118,
+        "p50": 3.06,
+        "p90": 4.69,
+        "p99": 8.57,
+        "max": 19.73
+      },
+      "route_ms_p50": 0.2,
+      "route_ms_p99": 0.4,
+      "added_p50_ms_at_50rps": 2.7,
+      "router_p99_ms_at_50rps": 32.2,
+      "request_errors": 0,
+      "fleet_status_kb": 9.0,
+      "fleet_status_ms": 0.9,
+      "router_cpu_pct": 19.1,
+      "router_rss_mb": 97
+    },
+    {
+      "nodes": 14,
+      "nodes_seen": 14,
+      "heartbeats": 211,
+      "heartbeat_failures": 0,
+      "heartbeat_post_ms": {
+        "n": 211,
+        "p50": 3.33,
+        "p90": 5.13,
+        "p99": 8.25,
+        "max": 10.79
+      },
+      "route_ms_p50": 0.3,
+      "route_ms_p99": 0.7,
+      "added_p50_ms_at_50rps": 2.6,
+      "router_p99_ms_at_50rps": 28.3,
+      "request_errors": 0,
+      "fleet_status_kb": 14.8,
+      "fleet_status_ms": 1.1,
+      "router_cpu_pct": 27.2,
+      "router_rss_mb": 101
+    },
+    {
+      "nodes": 32,
+      "nodes_seen": 32,
+      "heartbeats": 482,
+      "heartbeat_failures": 0,
+      "heartbeat_post_ms": {
+        "n": 482,
+        "p50": 2.93,
+        "p90": 4.33,
+        "p99": 8.63,
+        "max": 20.52
+      },
+      "route_ms_p50": 0.3,
+      "route_ms_p99": 0.6,
+      "added_p50_ms_at_50rps": 1.7,
+      "router_p99_ms_at_50rps": 27.6,
+      "request_errors": 0,
+      "fleet_status_kb": 33.0,
+      "fleet_status_ms": 2.2,
+      "router_cpu_pct": 29.6,
+      "router_rss_mb": 114
+    },
+    {
+      "nodes": 64,
+      "nodes_seen": 64,
+      "heartbeats": 960,
+      "heartbeat_failures": 0,
+      "heartbeat_post_ms": {
+        "n": 960,
+        "p50": 3.09,
+        "p90": 4.86,
+        "p99": 11.87,
+        "max": 31.16
+      },
+      "route_ms_p50": 0.5,
+      "route_ms_p99": 1.0,
+      "added_p50_ms_at_50rps": 2.8,
+      "router_p99_ms_at_50rps": 38.0,
+      "request_errors": 0,
+      "fleet_status_kb": 65.6,
+      "fleet_status_ms": 4.3,
+      "router_cpu_pct": 27.4,
+      "router_rss_mb": 136
+    },
+    {
+      "nodes": 256,
+      "nodes_seen": 256,
+      "heartbeats": 3842,
+      "heartbeat_failures": 0,
+      "heartbeat_post_ms": {
+        "n": 3842,
+        "p50": 3.08,
+        "p90": 4.46,
+        "p99": 7.39,
+        "max": 27.81
+      },
+      "route_ms_p50": 1.5,
+      "route_ms_p99": 8.6,
+      "added_p50_ms_at_50rps": 3.2,
+      "router_p99_ms_at_50rps": 40.9,
+      "request_errors": 0,
+      "fleet_status_kb": 259.9,
+      "fleet_status_ms": 17.1,
+      "router_cpu_pct": 63.1,
+      "router_rss_mb": 270
+    }
+  ],
+  "overload_64_nodes": {
+    "method": "64 fake nodes, mock with 8 workers, router-ceiling-loadgen.py at 300 then 600 requests/s for 20 s each",
+    "heartbeats": 1279,
+    "heartbeat_failures": 2,
+    "failure_reasons": {
+      "heartbeat ConnectError": 2,
+      "drain ConnectError": 58
+    },
+    "heartbeat_post_ms": {
+      "n": 1277,
+      "p50": 2.92,
+      "p90": 22.88,
+      "p99": 132.85,
+      "max": 6186.22
+    },
+    "load": {
+      "timestamp": "2026-11-20T15:51:48Z",
+      "model": "mock:latest",
+      "seconds_per_rate": 20.0,
+      "rates": [
+        {
+          "rate": 300.0,
+          "direct": {
+            "procs": 3,
+            "n": 6000,
+            "errors": 0,
+            "max_schedule_lag_s": 0.018,
+            "p50_ms": 21.9,
+            "p95_ms": 22.9,
+            "p99_ms": 28.0,
+            "max_ms": 55.0
+          },
+          "router": {
+            "procs": 3,
+            "n": 6000,
+            "errors": 0,
+            "max_schedule_lag_s": 0.012,
+            "p50_ms": 24.6,
+            "p95_ms": 32.1,
+            "p99_ms": 44.3,
+            "max_ms": 65.5,
+            "reported_p50_ms": 2.7,
+            "reported_p99_ms": 17.8
+          },
+          "added_p50_ms": 2.7,
+          "added_p99_ms": 16.3
+        },
+        {
+          "rate": 600.0,
+          "direct": {
+            "procs": 6,
+            "n": 12000,
+            "errors": 0,
+            "max_schedule_lag_s": 0.01,
+            "p50_ms": 21.6,
+            "p95_ms": 23.1,
+            "p99_ms": 25.9,
+            "max_ms": 38.7
+          },
+          "router": {
+            "procs": 6,
+            "n": 9960,
+            "errors": 2040,
+            "max_schedule_lag_s": 0.019,
+            "p50_ms": 527.8,
+            "p95_ms": 2334.0,
+            "p99_ms": 7848.1,
+            "max_ms": 11617.9,
+            "reported_p50_ms": 421.4,
+            "reported_p99_ms": 2520.7
+          },
+          "added_p50_ms": 506.2,
+          "added_p99_ms": 7822.2
+        }
+      ]
+    }
+  },
+  "finding": "Control plane: up to 256 nodes, no heartbeat failed and the latency the router added at 50 requests/s stayed at 2-3 ms; scoring grew from 0.2 ms (1-32 nodes) to 1.5 ms at the median (256). Overload: at 600 requests/s (past this Mac's ceiling) heartbeats waited up to 6.2 s and 2 failed, reproducing findings item 12 without cloud machines."
+}
