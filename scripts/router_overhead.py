@@ -17,7 +17,9 @@ router may send its half to a different machine than the direct half.
 (requests start on schedule whether or not earlier ones finished, so a slow
 gateway can't hide its queueing), at each fixed arrival rate, for ``--seconds``,
 direct then routed, against an upstream of known latency
-(``scripts/mock_ollama.py``).  Reports p50/p95/p99 and errors per rate.
+(``scripts/mock_ollama.py``).  Reports p50/p95/p99 and errors per rate.  The
+schedule is the benchmark engine's ``open_loop``, the one ``scripts/benchmark.py
+--rate`` uses.
 
     python scripts/router_overhead.py --ollama http://10.0.0.2:11500 \\
         --router http://10.0.0.1:11435 --model mock:latest --rate 10 50 100 --seconds 30
@@ -28,21 +30,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import statistics
 import sys
 import time
 from datetime import UTC, datetime
 
 import httpx
 
+from fleet_manager.common.stats import percentile
+from fleet_manager.server.benchmark_engine import open_loop
+
 PROMPT = "Reply with the word ready."
-
-
-def percentile(values: list[float], pct: float) -> float:
-    ordered = sorted(values)
-    k = (len(ordered) - 1) * pct / 100
-    lo, hi = int(k), min(int(k) + 1, len(ordered) - 1)
-    return ordered[lo] + (ordered[hi] - ordered[lo]) * (k - lo)
 
 
 async def one(
@@ -65,7 +62,7 @@ async def one(
 
 def summary(values: list[float]) -> dict:
     return {
-        "median_ms": round(statistics.median(values), 1),
+        "median_ms": round(percentile(values, 50), 1),
         "p95_ms": round(percentile(values, 95), 1),
         "p99_ms": round(percentile(values, 99), 1),
         "min_ms": round(min(values), 1),
@@ -81,7 +78,7 @@ async def fixed_rate(
     latencies: list[float] = []
     errors = 0
 
-    async def timed() -> None:
+    async def timed(_i: int, _lag: float) -> None:
         nonlocal errors
         try:
             elapsed, _ = await one(client, url, model, max_tokens)
@@ -89,14 +86,7 @@ async def fixed_rate(
         except Exception:  # noqa: BLE001 -- counted, the run goes on
             errors += 1
 
-    tasks = []
-    start = time.perf_counter()
-    for i in range(int(rate * seconds)):
-        delay = start + i / rate - time.perf_counter()
-        if delay > 0:
-            await asyncio.sleep(delay)
-        tasks.append(asyncio.create_task(timed()))
-    await asyncio.gather(*tasks)
+    await open_loop(timed, rate, int(rate * seconds))
     out = summary(latencies) if latencies else {"n": 0}
     out["errors"] = errors
     return out

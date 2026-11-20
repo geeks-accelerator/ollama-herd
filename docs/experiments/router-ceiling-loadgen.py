@@ -5,9 +5,12 @@
 core at 200 requests/s and carries a backlog from one rate into the next.  This splits each rate
 across fresh processes (``--per-proc`` requests/s each), sends it direct to the upstream and then
 through the router, and merges the raw latencies before taking percentiles.  ``lag`` is how far
-the generator fell behind its own schedule: above zero, the client was the limit, not the router.
+the generator fell behind its own schedule (the latest request's start, over every process): above
+a few milliseconds, the client was the limit, not the router.  The schedule is the benchmark
+engine's ``open_loop`` and the percentile ``fleet_manager.common.stats.percentile``, so it runs
+where herd is installed (``uv run`` in a checkout).
 
-    python docs/experiments/router-ceiling-loadgen.py --direct http://<node>:11500 \
+    uv run python docs/experiments/router-ceiling-loadgen.py --direct http://<node>:11500 \
         --router http://<router>:11435 --model mock:latest --rate 100 150 200 --out ceiling.json
 
 Run against ``scripts/mock_ollama.py --workers 8`` and a node started with its own
@@ -24,6 +27,9 @@ import multiprocessing as mp
 import time
 
 import httpx
+
+from fleet_manager.common.stats import percentile
+from fleet_manager.server.benchmark_engine import open_loop
 
 
 def body(model: str) -> dict:
@@ -60,28 +66,12 @@ async def run(url: str, model: str, rate: float, seconds: float):
         lat.clear()
         rep.clear()
         errs = 0
-        tasks = []
-        start = time.perf_counter()
-        for i in range(int(rate * seconds)):
-            delay = start + i / rate - time.perf_counter()
-            if delay > 0:
-                await asyncio.sleep(delay)
-            tasks.append(asyncio.create_task(one()))
-        lag = time.perf_counter() - (start + seconds)  # > 0: the generator fell behind
-        await asyncio.gather(*tasks)
-    return lat, errs, rep, lag
+        lags = await open_loop(lambda _i, _lag: one(), rate, int(rate * seconds))
+    return lat, errs, rep, max(lags, default=0.0)  # > 0: the generator fell behind
 
 
 def worker(args: tuple) -> tuple:
     return asyncio.run(run(*args))
-
-
-def pct(values: list[float], p: float) -> float:
-    ordered = sorted(values)
-    k = (len(ordered) - 1) * p / 100
-    lo = int(k)
-    hi = min(lo + 1, len(ordered) - 1)
-    return ordered[lo] + (ordered[hi] - ordered[lo]) * (k - lo)
 
 
 def measure(url: str, model: str, rate: float, seconds: float, per_proc: float) -> dict:
@@ -98,13 +88,16 @@ def measure(url: str, model: str, rate: float, seconds: float, per_proc: float) 
     }
     if lat:
         out.update(
-            p50_ms=round(pct(lat, 50), 1),
-            p95_ms=round(pct(lat, 95), 1),
-            p99_ms=round(pct(lat, 99), 1),
+            p50_ms=round(percentile(lat, 50), 1),
+            p95_ms=round(percentile(lat, 95), 1),
+            p99_ms=round(percentile(lat, 99), 1),
             max_ms=round(max(lat), 1),
         )
     if rep:
-        out.update(reported_p50_ms=round(pct(rep, 50), 1), reported_p99_ms=round(pct(rep, 99), 1))
+        out.update(
+            reported_p50_ms=round(percentile(rep, 50), 1),
+            reported_p99_ms=round(percentile(rep, 99), 1),
+        )
     return out
 
 

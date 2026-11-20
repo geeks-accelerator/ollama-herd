@@ -19,13 +19,17 @@ from fleet_manager.server.benchmark_engine import (
     NodeInfo,
     RequestResult,
     build_report,
+    dashboard_record,
     discover_fleet,
     discover_image_models,
     run_load,
     warm_node_model,
     warmup,
 )
-from fleet_manager.server.model_knowledge import is_embedding_model
+from fleet_manager.server.model_knowledge import (
+    VISION_EMBEDDING_MODEL_NAMES,
+    is_embedding_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +95,7 @@ class BenchmarkRunner:
         """Launch benchmark in a background task. Returns run_id.
 
         model_types: list of types to benchmark. Default: ["llm"].
-        Options: "llm", "embed", "image".
+        Options: "llm", "vision", "embed", "embed-image", "image".
         """
         if self.is_running:
             raise RuntimeError("Benchmark already running")
@@ -179,7 +183,14 @@ class BenchmarkRunner:
                 self._status = "warming_up"
                 self._phase = "Discovering fleet..."
 
-                targets, nodes_info = await discover_fleet(client)
+                # Vision embedding models live in node sidecars, not in Ollama's
+                # loaded models, so they are asked for by name.
+                targets, nodes_info = await discover_fleet(
+                    client,
+                    include_on_disk=sorted(VISION_EMBEDDING_MODEL_NAMES)
+                    if "embed-image" in model_types
+                    else (),
+                )
                 all_targets = [t for t in targets if t.model_type in model_types]
                 if "image" in model_types:
                     all_targets.extend(await discover_image_models(client))
@@ -215,26 +226,38 @@ class BenchmarkRunner:
                 self._start_time = time.time()  # Reset for accurate elapsed
                 self._results = []
 
-                fleet_snapshots, elapsed = await run_load(
-                    client, all_targets, duration, self._stop_event, self._results
+                load = await run_load(
+                    client,
+                    all_targets,
+                    duration,
+                    self._stop_event,
+                    self._results,
+                    fleet_client=client,
                 )
 
                 # Build report
-                run = {"mode": mode}
+                run = {
+                    "mode": mode,
+                    "model_types": model_types,
+                    "workload": {"duration_s": duration},
+                    "seed": load.seed,
+                }
                 if self._models_pulled:
                     run["smart_pulled_models"] = self._models_pulled
                 self._report = build_report(
                     self._results,
-                    min(elapsed, duration * 2),
+                    min(load.elapsed_s, duration * 2),
                     all_targets,
                     nodes_info,
-                    fleet_snapshots,
+                    load.snapshots,
                     run=run,
+                    started_at=load.started_at,
+                    ended_at=load.ended_at,
                 )
 
-                # Save results
+                # Save results (the per-request records stay out of the table)
                 if trace_store:
-                    await trace_store.save_benchmark_run(self._report)
+                    await trace_store.save_benchmark_run(dashboard_record(self._report))
 
                 self._status = "complete"
                 self._phase = "Benchmark complete"

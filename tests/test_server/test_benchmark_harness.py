@@ -202,7 +202,7 @@ class TestReport:
         )
         assert report["per_model_results"][0]["nodes"] == {"a": 1, "b": 2}
         assert report["served_model_mismatches"] == 1
-        assert report["fleet_snapshot"]["run"]["workload"]["prompt_tokens"] == 1250
+        assert report["manifest"]["workload"]["prompt_tokens"] == 1250
 
     @pytest.mark.asyncio
     async def test_a_saved_run_keeps_what_it_was(self, tmp_path):
@@ -211,9 +211,10 @@ class TestReport:
         store = TraceStore(data_dir=str(tmp_path))
         await store.initialize()
         report = build_report(self._results(), 10.0, [], [], [], run={"mode": "smart"})
-        await store.save_benchmark_run(report)
+        await store.save_benchmark_run(engine.dashboard_record(report))
         [saved] = await store.get_benchmark_runs(limit=1)
-        assert saved["fleet_snapshot"]["run"] == {"mode": "smart"}
+        assert saved["fleet_snapshot"]["manifest"]["mode"] == "smart"
+        assert "requests" not in saved
         await store.close()
 
 
@@ -234,11 +235,11 @@ class TestRunLoad:
         monkeypatch.setattr(engine, "poll_fleet_status", no_poll)
         results: list = []
         async with httpx.AsyncClient(base_url=ROUTER) as c:
-            _, elapsed = await engine.run_load(
+            load = await engine.run_load(
                 c, [ModelTarget("m", 1.0, 2)], 0.2, asyncio.Event(), results
             )
         assert results and all(r.success for r in results)
-        assert 0.15 < elapsed < 5
+        assert 0.15 < load.elapsed_s < 5
 
 
 @pytest.mark.asyncio
@@ -256,7 +257,7 @@ async def test_dashboard_run_without_chat_models_does_not_crash(monkeypatch):
         results.append(
             RequestResult("nomic-embed-text:latest", "a", 5, 5, 0, 1, True, model_type="embed")
         )
-        return [], duration
+        return engine.LoadResult([], duration, "start", "end", seed=3)
 
     monkeypatch.setattr(benchmark_runner, "discover_fleet", fake_discover)
     monkeypatch.setattr(benchmark_runner, "warmup", fake_warmup)
@@ -264,7 +265,8 @@ async def test_dashboard_run_without_chat_models_does_not_crash(monkeypatch):
     runner = benchmark_runner.BenchmarkRunner(base_url=ROUTER)
     await runner._run("default", 0.1, ["embed"], None, None, None, None)
     assert runner._status == "complete", runner._error
-    assert runner._report["fleet_snapshot"]["run"] == {"mode": "default"}
+    assert runner._report["manifest"]["mode"] == "default"
+    assert runner._report["manifest"]["seed"] == 3
 
 
 class TestSessions:

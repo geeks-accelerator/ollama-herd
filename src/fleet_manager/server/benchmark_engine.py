@@ -7,19 +7,28 @@ Provides fleet discovery, concurrent request generation, and report building.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import itertools
 import json
 import logging
+import math
 import random
 import statistics
+import struct
+import subprocess
 import time
+import zlib
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 
+import fleet_manager
 from fleet_manager.common.stats import percentile
-from fleet_manager.server.model_knowledge import is_embedding_model
+from fleet_manager.server.model_knowledge import model_type
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +141,47 @@ IMAGE_PROMPTS = [
     "a cozy coffee shop interior with warm lighting",
 ]
 
+# For vision models: questions about the image the request carries.
+VISION_PROMPTS = [
+    "Describe this image in one sentence.",
+    "What colours are in this image? One sentence.",
+    "Is this a photo or a drawing? One sentence.",
+]
+
+
+def _test_png(size: int = 64) -> bytes:
+    """A small RGB gradient PNG, drawn here so no binary file is committed.
+
+    64 px, not 1: vision encoders resize to their own input (224 for DINOv2 and
+    CLIP), and some (Qwen-VL) refuse images under 28 px a side.
+    """
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+    step = 255 // (size - 1)
+    rows = b"".join(
+        b"\x00" + bytes(c for x in range(size) for c in (x * step, y * step, 128))
+        for y in range(size)
+    )
+    header = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)  # 8-bit RGB
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
+TEST_IMAGE_B64 = base64.b64encode(_test_png()).decode()
+
+# Model types the engine has a workload for.  STT has none yet (it needs audio).
+WORKLOAD_TYPES = ("llm", "vision", "embed", "embed-image", "image")
+# Types warmed straight at a node's Ollama; image generation and vision
+# embeddings run in node sidecars, so their first request includes the load.
+WARMED_TYPES = ("llm", "vision", "embed")
+
 
 @dataclass
 class RequestResult:
@@ -143,10 +193,13 @@ class RequestResult:
     completion_tokens: int
     success: bool
     error: str | None = None
-    model_type: str = "llm"  # llm, embed, image, stt
+    model_type: str = "llm"  # llm, vision, embed, embed-image, image
     served_model: str = ""  # X-Fleet-Served-Model: what actually answered
     turn: int = -1  # turn within a multi-turn session (session workload), else -1
     reply: str = ""  # the reply text, kept only where a session needs its history
+    started_ms: float = 0.0  # when it was sent, ms after the run began (the run clock)
+    request_id: str = ""  # X-Request-Id, joins it to the router's trace; "" if absent
+    schedule_lag_ms: float | None = None  # open loop only: how late it started
 
 
 @dataclass
@@ -155,7 +208,7 @@ class ModelTarget:
     size_gb: float
     concurrency: int
     nodes: list[str] = field(default_factory=list)
-    model_type: str = "llm"  # llm, embed, image, stt
+    model_type: str = "llm"  # llm, vision, embed, embed-image, image, stt
 
 
 @dataclass
@@ -169,17 +222,35 @@ class NodeInfo:
     model_sizes: dict[str, float] = field(default_factory=dict)
     ollama_url: str = ""  # the node's Ollama, for warming it directly
     model_contexts: dict[str, int] = field(default_factory=dict)  # resident num_ctx
+    # For the run manifest; None where /fleet/status doesn't report it.
+    chip: str | None = None
+    agent_version: str | None = None
+    ollama_version: str | None = None
+    num_parallel: int | None = None
+    # Per loaded model: digest, quantization, parameter_size, size_gb, context_length.
+    model_meta: dict[str, dict] = field(default_factory=dict)
+
+
+def _loaded_meta(m: dict) -> dict:
+    return {
+        "digest": m.get("digest") or None,
+        "quantization": m.get("quantization") or None,
+        "parameter_size": m.get("parameter_size") or None,
+        "size_gb": m.get("size_gb"),
+        "context_length": m.get("context_length") or None,
+    }
 
 
 async def discover_fleet(
     client: httpx.AsyncClient,
-    include_on_disk: tuple[str, ...] | list[str] = (),
+    include_on_disk: Iterable[str] = (),
 ) -> tuple[list[ModelTarget], list[NodeInfo]]:
     """Discover nodes and the models to benchmark, with concurrency per model.
 
-    Targets are the models loaded on any online node, labelled ``embed`` or
-    ``llm`` by name, plus any model in ``include_on_disk`` that is not loaded
-    but is on some node's disk (its first request then includes the load).
+    Targets are the models loaded on any online node, typed by
+    ``model_knowledge.model_type``, plus any model in ``include_on_disk`` that
+    is not loaded but is on some node's disk (its first request then includes
+    the load) or served by a node's vision-embedding sidecar (``embed-image``).
     Concurrency is calculated per-node:
     1. Total node budget = min(available_gb / KV_CACHE, MAX_TOTAL_PER_NODE)
     2. Budget is split evenly across models on that node
@@ -192,6 +263,7 @@ async def discover_fleet(
     nodes_info: list[NodeInfo] = []
     model_map: dict[str, ModelTarget] = {}
     on_disk_by_node: dict[str, tuple[set[str], dict]] = {}
+    vision_embed_by_node: dict[str, set[str]] = {}
 
     def target(name: str, size_gb: float, concurrency: int) -> ModelTarget:
         if name not in model_map:
@@ -199,7 +271,7 @@ async def discover_fleet(
                 name=name,
                 size_gb=size_gb,
                 concurrency=concurrency,
-                model_type="embed" if is_embedding_model(name) else "llm",
+                model_type=model_type(name).value,
             )
         else:
             model_map[name].concurrency = max(model_map[name].concurrency, concurrency)
@@ -230,8 +302,16 @@ async def discover_fleet(
                 model_contexts={
                     m["name"]: m["context_length"] for m in loaded if m.get("context_length")
                 },
+                chip=(node.get("hardware") or {}).get("chip") or None,
+                agent_version=node.get("agent_version") or None,
+                ollama_version=ollama.get("version") or None,
+                num_parallel=ollama.get("num_parallel") or None,  # 0 = not reported
+                model_meta={m["name"]: _loaded_meta(m) for m in loaded},
             )
         )
+        vision_embed_by_node[node_id] = {
+            m["name"] for m in (node.get("vision_embedding") or {}).get("models_available", [])
+        }
 
         if loaded:
             # Available memory is already free (models are loaded and accounted for).
@@ -258,8 +338,23 @@ async def discover_fleet(
         for node_id, (on_disk, sizes) in on_disk_by_node.items():
             if name in on_disk:
                 target(name, sizes.get(name, 0.0), MIN_CONCURRENCY).nodes.append(node_id)
+        # Vision embeddings live in the node's sidecar, never in Ollama.
+        for node_id, served in vision_embed_by_node.items():
+            if name in served:
+                t = target(name, 0.0, MIN_CONCURRENCY)
+                t.model_type = "embed-image"
+                t.nodes.append(node_id)
 
     return list(model_map.values()), nodes_info
+
+
+def explicit_targets(names: Iterable[str], concurrency: int = 1) -> list[ModelTarget]:
+    """Targets for an endpoint with no ``/fleet/status`` (plain Ollama,
+    llama-swap, llama.cpp's router): the named models, typed by name, no nodes."""
+    return [
+        ModelTarget(name=n, size_gb=0.0, concurrency=concurrency, model_type=model_type(n).value)
+        for n in names
+    ]
 
 
 async def discover_image_models(
@@ -295,160 +390,217 @@ async def discover_image_models(
 EXACT_MODEL_HEADERS = {"X-Fleet-No-Fallback": "true"}
 
 
+def _same_model(model: str) -> tuple[str, str]:
+    """The names an answer from ``model`` may carry: ``:latest`` is the same model."""
+    return model, f"{model}:latest"
+
+
 def served_mismatch(model: str, resp: httpx.Response) -> str | None:
     """Why ``resp`` is not an answer from ``model``, or None if it is."""
     served = resp.headers.get("x-fleet-served-model", "")
-    if not served or served == model or served == f"{model}:latest":
+    if not served or served in _same_model(model):
         return None
     return f"served by {served}, not {model}"
+
+
+def _failure(model: str, model_type: str, start: float, error: str, **kw) -> RequestResult:
+    return RequestResult(
+        model=model,
+        node_id=kw.pop("node_id", "unknown"),
+        latency_ms=(time.monotonic() - start) * 1000,
+        ttft_ms=kw.pop("ttft_ms", 0),
+        prompt_tokens=0,
+        completion_tokens=0,
+        success=False,
+        error=error,
+        model_type=model_type,
+        **kw,
+    )
+
+
+def _ids(resp: httpx.Response) -> dict:
+    """The response headers every result keeps: what answered, and the id that
+    joins it to the router's trace (absent from a backend that isn't herd)."""
+    return {
+        "served_model": resp.headers.get("x-fleet-served-model", ""),
+        "request_id": resp.headers.get("x-request-id", ""),
+    }
+
+
+async def _send_unary(
+    client: httpx.AsyncClient,
+    model: str,
+    model_type: str,
+    path: str,
+    body: dict,
+    timeout: float,
+) -> RequestResult:
+    """One non-streaming request (embeddings, images): latency is the whole answer."""
+    start = time.monotonic()
+    try:
+        resp = await client.post(path, json=body, timeout=timeout, headers=EXACT_MODEL_HEADERS)
+        latency_ms = (time.monotonic() - start) * 1000
+        node_id = resp.headers.get("x-fleet-node", "unknown")
+        mismatch = served_mismatch(model, resp)
+        if resp.status_code != 200 or mismatch:
+            return _failure(
+                model,
+                model_type,
+                start,
+                mismatch or f"HTTP {resp.status_code}",
+                node_id=node_id,
+                **_ids(resp),
+            )
+        return RequestResult(
+            model=model,
+            node_id=node_id,
+            latency_ms=latency_ms,
+            ttft_ms=latency_ms,
+            prompt_tokens=0,
+            completion_tokens=1,
+            success=True,
+            model_type=model_type,
+            **_ids(resp),
+        )
+    except Exception as e:
+        return _failure(model, model_type, start, str(e)[:120])
 
 
 async def send_embed_request(
     client: httpx.AsyncClient,
     model: str,
     timeout: float = 60.0,
+    rng: random.Random | None = None,
 ) -> RequestResult:
-    """Send an embedding request and measure latency."""
+    """One text embedding request (``/api/embed``)."""
     body = {
         "model": model,
-        "input": random.choice(EMBED_PROMPTS),
+        "input": (rng or random).choice(EMBED_PROMPTS),
         "metadata": {"tags": ["benchmark"]},
     }
-    start = time.monotonic()
-    try:
-        resp = await client.post(
-            "/api/embed", json=body, timeout=timeout, headers=EXACT_MODEL_HEADERS
-        )
-        latency_ms = (time.monotonic() - start) * 1000
-        mismatch = served_mismatch(model, resp)
-        if resp.status_code != 200 or mismatch:
-            return RequestResult(
-                model=model,
-                node_id="unknown",
-                latency_ms=latency_ms,
-                ttft_ms=0,
-                prompt_tokens=0,
-                completion_tokens=0,
-                success=False,
-                error=mismatch or f"HTTP {resp.status_code}",
-                model_type="embed",
-                served_model=resp.headers.get("x-fleet-served-model", ""),
-            )
-        node_id = resp.headers.get("x-fleet-node", "unknown")
-        return RequestResult(
-            model=model,
-            node_id=node_id,
-            latency_ms=latency_ms,
-            ttft_ms=latency_ms,
-            prompt_tokens=0,
-            completion_tokens=1,
-            success=True,
-            model_type="embed",
-        )
-    except Exception as e:
-        return RequestResult(
-            model=model,
-            node_id="unknown",
-            latency_ms=(time.monotonic() - start) * 1000,
-            ttft_ms=0,
-            prompt_tokens=0,
-            completion_tokens=0,
-            success=False,
-            error=str(e)[:120],
-            model_type="embed",
-        )
+    return await _send_unary(client, model, "embed", "/api/embed", body, timeout)
+
+
+async def send_embed_image_request(
+    client: httpx.AsyncClient,
+    model: str,
+    timeout: float = 60.0,
+) -> RequestResult:
+    """One vision embedding request (``/api/embed-image``: DINOv2, CLIP, SigLIP)
+    with the engine's test image."""
+    body = {"model": model, "images": [TEST_IMAGE_B64]}
+    return await _send_unary(client, model, "embed-image", "/api/embed-image", body, timeout)
 
 
 async def send_image_request(
     client: httpx.AsyncClient,
     model: str,
     timeout: float = 120.0,
+    rng: random.Random | None = None,
 ) -> RequestResult:
-    """Send an image generation request and measure latency."""
+    """One image generation request (``/api/generate-image``)."""
     body = {
         "model": model,
-        "prompt": random.choice(IMAGE_PROMPTS),
+        "prompt": (rng or random).choice(IMAGE_PROMPTS),
         "size": "512x512",
         "steps": 4,  # Fast for benchmarking
         "metadata": {"tags": ["benchmark"]},
     }
-    start = time.monotonic()
+    return await _send_unary(client, model, "image", "/api/generate-image", body, timeout)
+
+
+def _with_image(message: dict, api: str) -> dict:
+    """``message`` carrying the test image, in the API's own shape."""
+    if api == "openai":
+        return {
+            "role": message["role"],
+            "content": [
+                {"type": "text", "text": message["content"]},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{TEST_IMAGE_B64}"},
+                },
+            ],
+        }
+    return {**message, "images": [TEST_IMAGE_B64]}
+
+
+def _chat_body(
+    api: str,
+    model: str,
+    messages: list[dict],
+    tags: list[str],
+    max_tokens: int | None,
+    temperature: float | None,
+    think: bool | None,
+) -> tuple[str, dict]:
+    """(path, body) of a streaming chat request in Ollama's or OpenAI's format."""
+    body: dict = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "metadata": {"tags": tags},
+    }
+    if api == "openai":
+        body["stream_options"] = {"include_usage": True}
+        if max_tokens:
+            body["max_tokens"] = max_tokens
+        if temperature is not None:
+            body["temperature"] = temperature
+        return "/v1/chat/completions", body
+    options: dict = {}
+    if max_tokens:
+        options["num_predict"] = max_tokens
+    if temperature is not None:
+        options["temperature"] = temperature
+    if options:
+        body["options"] = options
+    if think is not None:
+        body["think"] = think
+    return "/api/chat", body
+
+
+def _parse_chunk(api: str, line: str) -> tuple[str, bool, tuple[int, int] | None] | None:
+    """One streamed line as (content, first-token-seen, final token counts), or
+    None for a line that carries nothing (blank, keep-alive, ``[DONE]``).
+
+    A thinking model streams its reasoning (Ollama ``thinking``, OpenAI-style
+    ``reasoning_content`` / ``reasoning``) before any content; its first token
+    is the first of either, or TTFT reads 0 for every request still reasoning
+    at the cap.  Counts are Ollama's ``prompt_eval_count`` / ``eval_count`` on
+    the ``done`` chunk, or the OpenAI ``usage`` object.
+    """
+    line = line.strip()
+    if api == "openai":
+        if not line.startswith("data:") or line == "data: [DONE]":
+            return None
+        line = line[5:]
+    if not line:
+        return None
     try:
-        resp = await client.post("/api/generate-image", json=body, timeout=timeout)
-        latency_ms = (time.monotonic() - start) * 1000
-        node_id = resp.headers.get("x-fleet-node", "unknown")
-        if resp.status_code != 200:
-            return RequestResult(
-                model=model,
-                node_id=node_id,
-                latency_ms=latency_ms,
-                ttft_ms=0,
-                prompt_tokens=0,
-                completion_tokens=0,
-                success=False,
-                error=f"HTTP {resp.status_code}",
-                model_type="image",
+        chunk = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if api == "openai":
+        content, token = "", False
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            content += delta.get("content") or ""
+            token = token or bool(
+                delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning")
             )
-        return RequestResult(
-            model=model,
-            node_id=node_id,
-            latency_ms=latency_ms,
-            ttft_ms=latency_ms,
-            prompt_tokens=0,
-            completion_tokens=1,
-            success=True,
-            model_type="image",
+        usage = chunk.get("usage")
+        counts = (
+            (usage.get("prompt_tokens") or 0, usage.get("completion_tokens") or 0)
+            if usage
+            else None
         )
-    except Exception as e:
-        return RequestResult(
-            model=model,
-            node_id="unknown",
-            latency_ms=(time.monotonic() - start) * 1000,
-            ttft_ms=0,
-            prompt_tokens=0,
-            completion_tokens=0,
-            success=False,
-            error=str(e)[:120],
-            model_type="image",
-        )
-
-
-async def embed_worker(
-    client: httpx.AsyncClient,
-    model: str,
-    results: list[RequestResult],
-    stop_event: asyncio.Event,
-    error_backoff: float = 1.0,
-):
-    """Continuously send embedding requests until stop_event is set."""
-    while not stop_event.is_set():
-        result = await send_embed_request(client, model)
-        results.append(result)
-        if not result.success:
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=error_backoff)
-                break
-            except TimeoutError:
-                pass
-
-
-async def image_worker(
-    client: httpx.AsyncClient,
-    model: str,
-    results: list[RequestResult],
-    stop_event: asyncio.Event,
-    error_backoff: float = 2.0,
-):
-    """Continuously send image generation requests until stop_event is set."""
-    while not stop_event.is_set():
-        result = await send_image_request(client, model)
-        results.append(result)
-        if not result.success:
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=error_backoff)
-                break
-            except TimeoutError:
-                pass
+        return content, token, counts
+    msg = chunk.get("message") or {}
+    counts = None
+    if chunk.get("done"):
+        counts = (chunk.get("prompt_eval_count") or 0, chunk.get("eval_count") or 0)
+    return msg.get("content") or "", bool(msg.get("content") or msg.get("thinking")), counts
 
 
 async def send_request(
@@ -461,129 +613,275 @@ async def send_request(
     messages: list[dict] | None = None,
     tags: list[str] | None = None,
     node_label: str = "",
+    *,
+    rng: random.Random | None = None,
+    prompt: str | None = None,
+    temperature: float | None = None,
+    image: bool = False,
+    api: str = "ollama",
 ) -> RequestResult:
-    """Send a streaming request via Ollama format to get token counts.
+    """Send one streaming chat request and measure TTFT, latency and tokens.
 
-    ``prompt_tokens`` pads the prompt to about that length (``make_prompt``);
-    ``max_tokens`` caps the reply (Ollama's ``num_predict``).  Both default to
-    the original short prompt with no cap.  ``think=False`` turns a thinking
-    model's reasoning off, which also stops the router raising a capped
-    ``num_predict`` to its thinking minimum.  A reply from any model other than
+    ``api`` is ``"ollama"`` (``/api/chat``, the default) or ``"openai"``
+    (``/v1/chat/completions``, for endpoints that speak only that: llama-swap,
+    llama-server).  ``prompt`` is the user message as given; otherwise
+    ``prompt_tokens`` pads it to about that length (``make_prompt``, drawing
+    from ``rng``).  ``max_tokens`` caps the reply (Ollama's ``num_predict``);
+    ``temperature`` is sent only when set.  ``think=False`` turns a thinking
+    model's reasoning off (Ollama API only), which also stops the router raising
+    a capped ``num_predict`` to its thinking minimum.  ``image`` attaches the
+    engine's test PNG, for vision models.  A reply from any model other than
     ``model`` is a failure (``EXACT_MODEL_HEADERS``).
     """
-    body = {
-        "model": model,
-        "messages": messages or [{"role": "user", "content": make_prompt(prompt_tokens)}],
-        "stream": True,
-        "metadata": {"tags": ["benchmark", *(tags or [])]},
-    }
-    if max_tokens:
-        body["options"] = {"num_predict": max_tokens}
-    if think is not None:
-        body["think"] = think
+    rng = rng or random
+    keep_reply = messages is not None  # a session's history needs the reply
+    if messages is None:
+        text = prompt or (rng.choice(VISION_PROMPTS) if image else make_prompt(prompt_tokens, rng))
+        user = {"role": "user", "content": text}
+        messages = [_with_image(user, api) if image else user]
+    path, body = _chat_body(
+        api, model, messages, ["benchmark", *(tags or [])], max_tokens, temperature, think
+    )
+    kind = "vision" if image else "llm"
 
     start = time.monotonic()
     ttft = 0.0
-    prompt_tokens = 0
-    completion_tokens = 0
+    counts: tuple[int, int] | None = None
     node_id = node_label
-    first_content = True
+    ids: dict = {}
     reply_parts: list[str] = []
 
     try:
         async with client.stream(
-            "POST",
-            "/api/chat",
-            json=body,
-            timeout=timeout,
-            headers=EXACT_MODEL_HEADERS,
+            "POST", path, json=body, timeout=timeout, headers=EXACT_MODEL_HEADERS
         ) as resp:
             node_id = resp.headers.get("x-fleet-node", node_label or "unknown")
-            served = resp.headers.get("x-fleet-served-model", "")
+            ids = _ids(resp)
             mismatch = served_mismatch(model, resp)
 
             if resp.status_code != 200 or mismatch:
                 raw = await resp.aread()
-                return RequestResult(
-                    model=model,
+                return _failure(
+                    model,
+                    kind,
+                    start,
+                    mismatch or f"HTTP {resp.status_code}: {raw.decode()[:200]}",
                     node_id=node_id,
-                    latency_ms=(time.monotonic() - start) * 1000,
-                    ttft_ms=0,
-                    prompt_tokens=0,
-                    completion_tokens=0,
-                    success=False,
-                    error=mismatch or f"HTTP {resp.status_code}: {raw.decode()[:200]}",
-                    served_model=served,
+                    **ids,
                 )
 
+            chunks = 0
             async for line in resp.aiter_lines():
-                line = line.strip()
-                if not line:
+                parsed = _parse_chunk(api, line)
+                if parsed is None:
                     continue
-                try:
-                    chunk = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                msg = chunk.get("message", {})
-                # A thinking model streams its reasoning in "thinking" before any
-                # "content"; its first token is the first of either, or TTFT reads
-                # 0 for every request that is still reasoning at the cap.
-                if first_content and (msg.get("content") or msg.get("thinking")):
-                    ttft = (time.monotonic() - start) * 1000
-                    first_content = False
-                if messages is not None and msg.get("content"):
-                    reply_parts.append(msg["content"])
-
-                if chunk.get("done"):
-                    prompt_tokens = chunk.get("prompt_eval_count", 0) or 0
-                    completion_tokens = chunk.get("eval_count", 0) or 0
-
-        latency_ms = (time.monotonic() - start) * 1000
+                content, token, final = parsed
+                if token:
+                    chunks += 1
+                    if not ttft:
+                        ttft = (time.monotonic() - start) * 1000
+                if keep_reply and content:
+                    reply_parts.append(content)
+                if final:
+                    counts = final
+        prompt_n, completion_n = counts or (0, chunks)
         return RequestResult(
             model=model,
             node_id=node_id,
-            latency_ms=latency_ms,
+            latency_ms=(time.monotonic() - start) * 1000,
             ttft_ms=ttft,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
+            prompt_tokens=prompt_n,
+            completion_tokens=completion_n,
             success=True,
-            served_model=served,
+            model_type=kind,
             reply="".join(reply_parts),
+            **ids,
         )
 
     except Exception as e:
-        return RequestResult(
-            model=model,
-            node_id=node_id or "unknown",
-            latency_ms=(time.monotonic() - start) * 1000,
-            ttft_ms=ttft,
-            prompt_tokens=0,
-            completion_tokens=0,
-            success=False,
-            error=str(e)[:120],
+        return _failure(
+            model, kind, start, str(e)[:120], node_id=node_id or "unknown", ttft_ms=ttft, **ids
         )
+
+
+async def send_one(
+    client: httpx.AsyncClient,
+    target: ModelTarget,
+    *,
+    rng: random.Random,
+    origin: float,
+    chat: dict | None = None,
+) -> RequestResult:
+    """One request of ``target``'s type, stamped with when it started on the
+    run clock (``origin`` is the run's ``time.monotonic()`` start).
+
+    ``chat`` is ``send_request``'s workload keywords (prompt_tokens, max_tokens,
+    think, prompt, temperature, api, timeout), used for chat and vision targets.
+    """
+    t0 = time.monotonic()
+    kind = target.model_type
+    if kind == "embed":
+        result = await send_embed_request(client, target.name, rng=rng)
+    elif kind == "embed-image":
+        result = await send_embed_image_request(client, target.name)
+    elif kind == "image":
+        result = await send_image_request(client, target.name, rng=rng)
+    else:
+        result = await send_request(
+            client, target.name, rng=rng, image=kind == "vision", **(chat or {})
+        )
+    result.started_ms = round((t0 - origin) * 1000, 1)
+    return result
+
+
+class RequestBudget:
+    """``--requests N``: a total shared by every worker; ``None`` is unlimited."""
+
+    def __init__(self, total: int | None = None):
+        self.remaining = total
+
+    def take(self) -> bool:
+        if self.remaining is None:
+            return True
+        if self.remaining <= 0:
+            return False
+        self.remaining -= 1
+        return True
+
+
+class ModelSequence:
+    """Which target each request goes to, when workers share the targets.
+
+    ``alternate`` cycles through the targets in order, each repeated by its
+    (whole-number) weight: ``a=2,b=1`` gives a, a, b, a, a, b.  ``random`` draws
+    each request's target by weight from ``rng``, so a seeded run asks for the
+    same models in the same order every time.
+    """
+
+    def __init__(
+        self,
+        targets: list[ModelTarget],
+        mode: str,
+        weights: dict[str, float] | None = None,
+        rng: random.Random | None = None,
+    ):
+        if not targets:
+            raise ValueError("a model sequence needs at least one model")
+        weights = weights or {}
+        unknown = set(weights) - {t.name for t in targets}
+        if unknown:
+            raise ValueError(f"weights for models not in the run: {sorted(unknown)}")
+        self.targets = targets
+        self.weights = [float(weights.get(t.name, 1)) for t in targets]
+        if any(w <= 0 for w in self.weights):
+            raise ValueError("model weights must be positive")
+        self.mode = mode
+        self.rng = rng or random.Random()
+        if mode == "alternate":
+            if any(w != int(w) for w in self.weights):
+                raise ValueError("--sequence alternate needs whole-number weights")
+            order = [t for t, w in zip(targets, self.weights, strict=True) for _ in range(int(w))]
+            self._cycle = itertools.cycle(order)
+        elif mode != "random":
+            raise ValueError(f"unknown sequence {mode!r} (alternate or random)")
+
+    def next(self) -> ModelTarget:
+        if self.mode == "alternate":
+            return next(self._cycle)
+        return self.rng.choices(self.targets, weights=self.weights)[0]
+
+
+def parse_models(values: Iterable[str]) -> tuple[list[str], dict[str, float]]:
+    """``--models`` as (names in order, weights): ``a b``, ``a=3,b=1`` or ``a=3 b``.
+
+    Model names never contain ``=`` or ``,``; a name without a weight has none
+    in the returned dict (weight 1 where weights apply).
+    """
+    names: list[str] = []
+    weights: dict[str, float] = {}
+    for value in values:
+        for item in filter(None, (p.strip() for p in value.split(","))):
+            name, sep, weight = item.partition("=")
+            names.append(name)
+            if sep:
+                try:
+                    weights[name] = float(weight)
+                except ValueError:
+                    raise ValueError(f"bad weight in {item!r}") from None
+    return names, weights
+
+
+async def open_loop(
+    fire: Callable[[int, float], Awaitable[None]],
+    rate: float,
+    count: int | None,
+    *,
+    stop_event: asyncio.Event | None = None,
+    drain_timeout: float | None = None,
+) -> list[float]:
+    """Open-loop arrivals: start ``fire(i, lag_s)`` at ``i / rate`` seconds, for
+    ``i < count`` (``None``: until ``stop_event``), never waiting for earlier
+    calls to finish, so a slow server can't slow the arrivals and hide its
+    queueing (the closed loop's blind spot).  Then waits for the calls
+    (at most ``drain_timeout`` s; the rest are cancelled).
+
+    Returns each call's schedule lag in seconds (how late it started): above a
+    millisecond or two, the client was the limit, not the server.
+    """
+    if rate <= 0:
+        raise ValueError("rate must be positive")
+    tasks: list[asyncio.Task] = []
+    lags: list[float] = []
+    start = time.perf_counter()
+    try:
+        for i in range(count) if count is not None else itertools.count():
+            due = start + i / rate
+            delay = due - time.perf_counter()
+            if delay > 0:
+                if stop_event is None:
+                    await asyncio.sleep(delay)
+                else:
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+            if stop_event is not None and stop_event.is_set():
+                break
+            lag = max(0.0, time.perf_counter() - due)
+            lags.append(lag)
+            tasks.append(asyncio.create_task(fire(i, lag)))
+        if tasks:
+            await asyncio.wait(tasks, timeout=drain_timeout)
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+            elif not t.cancelled() and t.exception():
+                logger.warning(f"open-loop request failed: {t.exception()!r}")
+    return lags
 
 
 async def worker(
     client: httpx.AsyncClient,
-    model: str,
+    pick: Callable[[], ModelTarget],
     results: list[RequestResult],
     stop_event: asyncio.Event,
-    error_backoff: float = 1.0,
-    prompt_tokens: int | None = None,
-    max_tokens: int | None = None,
-    think: bool | None = None,
+    *,
+    rng: random.Random,
+    origin: float,
+    budget: RequestBudget | None = None,
+    chat: dict | None = None,
 ):
-    """Continuously send requests until stop_event is set, with error backoff."""
-    while not stop_event.is_set():
-        result = await send_request(
-            client, model, prompt_tokens=prompt_tokens, max_tokens=max_tokens, think=think
-        )
+    """Send ``pick()``'s next request, one after another, until ``stop_event``
+    or the budget runs out; back off after a failure (2 s for image generation,
+    1 s otherwise) so a broken model doesn't spin."""
+    budget = budget or RequestBudget()
+    while not stop_event.is_set() and budget.take():
+        target = pick()
+        result = await send_one(client, target, rng=rng, origin=origin, chat=chat)
         results.append(result)
         if not result.success:
+            backoff = 2.0 if target.model_type == "image" else 1.0
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=error_backoff)
+                await asyncio.wait_for(stop_event.wait(), timeout=backoff)
                 break
             except TimeoutError:
                 pass
@@ -601,6 +899,9 @@ async def session_worker(
     max_tokens: int | None = 150,
     think: bool | None = None,
     tag_sessions: bool = True,
+    rng: random.Random | None = None,
+    origin: float | None = None,
+    budget: RequestBudget | None = None,
 ):
     """Multi-turn conversations, one after another, until ``stop_event``.
 
@@ -610,17 +911,21 @@ async def session_worker(
     prefix cache saves.  ``pick_client()`` returns (client, node label) per
     request: the router, or the next node in a round-robin baseline.  Sessions
     are tagged ``session:<id>`` so the router can tell them apart (they all come
-    from one benchmark client, whose IP would otherwise merge them).
+    from one benchmark client, whose IP would otherwise merge them).  Session
+    ids and user turns come from ``rng``, so a seeded run sends the same text.
     """
-    rng = random.Random()
+    rng = rng or random.Random()
+    origin = time.monotonic() if origin is None else origin
+    budget = budget or RequestBudget()
     while not stop_event.is_set():
         session = f"session:bench-{rng.getrandbits(48):012x}"
         messages = [{"role": "system", "content": system_prompt}]
         for turn in range(turns):
-            if stop_event.is_set():
+            if stop_event.is_set() or not budget.take():
                 return
             messages.append({"role": "user", "content": make_prompt(user_tokens, rng)})
             client, label = pick_client()
+            t0 = time.monotonic()
             result = await send_request(
                 client,
                 model,
@@ -630,6 +935,7 @@ async def session_worker(
                 tags=[session] if tag_sessions else None,
                 node_label=label,
             )
+            result.started_ms = round((t0 - origin) * 1000, 1)
             result.turn = turn
             results.append(result)
             if not result.success:
@@ -684,7 +990,10 @@ async def warmup(
     log_fn=None,
 ) -> list[ModelTarget]:
     """Warm every node that serves each target, directly; drop targets no node
-    could warm.  Image targets are not warmed.
+    could warm.  Only ``WARMED_TYPES`` are warmed (vision models as chat, with no
+    image: that loads them); image generation and vision embeddings run in node
+    sidecars, so their first request includes the load and shows as
+    ``first_ttft_ms`` in the report.
 
     log_fn: optional callback(message: str) for progress reporting.
     """
@@ -694,7 +1003,7 @@ async def warmup(
     jobs: list[tuple[ModelTarget, str]] = []
     coros = []
     for t in targets:
-        if t.model_type not in ("llm", "embed"):
+        if t.model_type not in WARMED_TYPES:
             continue
         for node_id in t.nodes:
             ni = by_id.get(node_id)
@@ -717,7 +1026,22 @@ async def warmup(
             warmed.setdefault(t.name, []).append(node_id)
         if log_fn:
             log_fn(f"  {t.name} on {node_id}: {'ok' if ok else 'FAILED'}")
-    return [t for t in targets if t.model_type not in ("llm", "embed") or t.name in warmed]
+    return [t for t in targets if t.model_type not in WARMED_TYPES or t.name in warmed]
+
+
+@dataclass
+class LoadResult:
+    """What ``run_load`` saw, on the run clock its requests are stamped with."""
+
+    snapshots: list[dict]  # /fleet/status polls, each with its "t_ms" on the run clock
+    elapsed_s: float
+    started_at: str  # UTC ISO 8601: the run clock's zero
+    ended_at: str
+    seed: int  # what the run's random choices came from: rerun with it to repeat them
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
 async def run_load(
@@ -730,84 +1054,196 @@ async def run_load(
     prompt_tokens: int | None = None,
     max_tokens: int | None = None,
     think: bool | None = None,
+    prompt: str | None = None,
+    temperature: float | None = None,
+    api: str = "ollama",
+    timeout: float = 300.0,
     on_tick=None,
     sessions: dict | None = None,
-) -> tuple[list[dict], float]:
-    """Run each target's workers for ``duration`` (or until ``stop_event``),
-    drain in-flight requests, and return (fleet snapshots, seconds elapsed).
+    fleet_client: httpx.AsyncClient | None = None,
+    sequence: str | None = None,
+    weights: dict[str, float] | None = None,
+    concurrency: int | None = None,
+    rate: float | None = None,
+    max_requests: int | None = None,
+    seed: int | None = None,
+) -> LoadResult:
+    """Send load for ``duration`` s (or until ``stop_event``, or ``max_requests``
+    sent), drain in-flight requests, and return what was seen.
 
-    The one load loop the CLI and the dashboard runner share.  ``on_tick(elapsed)``
-    is called every two seconds for progress output.  ``sessions`` switches chat
-    targets to multi-turn sessions: ``session_worker`` keyword arguments plus
-    ``clients``, a list of (client, label) taken in turn per request (one entry,
-    the router; or one per node for a round-robin baseline).
+    The one load loop the CLI and the dashboard runner share.  Three shapes:
+
+    - **per model** (default): each target's ``concurrency`` workers send to it,
+      one request after another (closed loop);
+    - **shared** (``sequence`` or ``weights``): ``concurrency`` workers (default:
+      the targets' total) each take the next model from a ``ModelSequence``:
+      ``"alternate"`` or ``"random"`` (weighted; the default when weights are
+      given);
+    - **open loop** (``rate``): requests start ``rate`` per second on schedule,
+      whatever is still in flight, each taking the next model from the sequence
+      (``"alternate"`` unless weights make it ``"random"``); every result keeps
+      its ``schedule_lag_ms``.
+
+    ``sessions`` switches chat targets to multi-turn sessions (per-model shape
+    only): ``session_worker`` keyword arguments plus ``clients``, a list of
+    (client, label) taken in turn per request (one entry, the router; or one per
+    node for a round-robin baseline).  ``fleet_client`` is polled for fleet state
+    every 3 s (model load/evict events, utilization); ``None`` polls nothing, for
+    an endpoint with no ``/fleet/status``.  ``seed`` seeds every random choice
+    (prompts, model sequence, session ids); ``None`` picks one, returned so the
+    run can be repeated.  ``timeout`` is per chat request (a cold load of a
+    large model is slow).  ``on_tick(elapsed)`` is called about every two seconds.
     """
-    tasks = []
-    rotation = None
-    if sessions:
-        sessions = dict(sessions)
-        rotation = itertools.cycle(sessions.pop("clients", None) or [(client, "")])
-    for target in targets:
-        for _ in range(target.concurrency):
-            if sessions and target.model_type == "llm":
-                coro = session_worker(
-                    lambda: next(rotation),
-                    target.name,
-                    results,
-                    stop_event,
-                    think=think,
-                    **sessions,
-                )
-            elif target.model_type == "embed":
-                coro = embed_worker(client, target.name, results, stop_event)
-            elif target.model_type == "image":
-                coro = image_worker(client, target.name, results, stop_event)
-            else:
-                coro = worker(
-                    client,
-                    target.name,
-                    results,
-                    stop_event,
-                    prompt_tokens=prompt_tokens,
-                    max_tokens=max_tokens,
-                    think=think,
-                )
+    if sessions and (sequence or weights or rate):
+        raise ValueError("sessions run per model; they don't combine with a sequence or a rate")
+    if seed is None:
+        seed = random.SystemRandom().randrange(2**31)
+    chat = {
+        "prompt_tokens": prompt_tokens,
+        "max_tokens": max_tokens,
+        "think": think,
+        "prompt": prompt,
+        "temperature": temperature,
+        "api": api,
+        "timeout": timeout,
+    }
+    runnable = [t for t in targets if t.model_type in WORKLOAD_TYPES]
+    for t in targets:
+        if t not in runnable:
+            logger.warning(f"Benchmark: no workload for {t.model_type} model {t.name}; skipped")
+    budget = RequestBudget(max_requests)
+    # Each worker draws from its own generator, seeded from the run's, so its
+    # prompts don't depend on how the others' requests interleave.
+    rngs = (random.Random(f"{seed}-{k}") for k in itertools.count())
+    picker = None
+    if runnable and (sequence or weights or rate):
+        mode = sequence or ("random" if weights else "alternate")
+        picker = ModelSequence(runnable, mode, weights, random.Random(seed))
+
+    origin = time.monotonic()
+    started_at = _utc_now()
+    tasks: list[asyncio.Task] = []
+    if rate and picker:
+        count = budget.remaining
+        if math.isfinite(duration):
+            count = min(count, int(rate * duration)) if count is not None else int(rate * duration)
+        rng = next(rngs)
+
+        async def fire(_i: int, lag: float) -> None:
+            result = await send_one(client, picker.next(), rng=rng, origin=origin, chat=chat)
+            result.schedule_lag_ms = round(lag * 1000, 2)
+            results.append(result)
+
+        tasks.append(
+            asyncio.create_task(
+                open_loop(fire, rate, count, stop_event=stop_event, drain_timeout=30)
+            )
+        )
+    elif picker:
+        for _ in range(concurrency or sum(t.concurrency for t in runnable)):
+            coro = worker(
+                client,
+                picker.next,
+                results,
+                stop_event,
+                rng=next(rngs),
+                origin=origin,
+                budget=budget,
+                chat=chat,
+            )
             tasks.append(asyncio.create_task(coro))
+    else:
+        rotation = None
+        if sessions:
+            sessions = dict(sessions)
+            rotation = itertools.cycle(sessions.pop("clients", None) or [(client, "")])
+        for target in runnable:
+            for _ in range(target.concurrency):
+                if sessions and target.model_type == "llm":
+                    coro = session_worker(
+                        lambda: next(rotation),
+                        target.name,
+                        results,
+                        stop_event,
+                        think=think,
+                        rng=next(rngs),
+                        origin=origin,
+                        budget=budget,
+                        **sessions,
+                    )
+                else:
+                    coro = worker(
+                        client,
+                        lambda target=target: target,
+                        results,
+                        stop_event,
+                        rng=next(rngs),
+                        origin=origin,
+                        budget=budget,
+                        chat=chat,
+                    )
+                tasks.append(asyncio.create_task(coro))
 
     snapshots: list[dict] = []
-    poller = asyncio.create_task(poll_fleet_status(client, stop_event, snapshots))
-    start = time.monotonic()
-    while not stop_event.is_set():
-        elapsed = time.monotonic() - start
-        if elapsed >= duration:
+    poller = None
+    if fleet_client is not None:
+        poller = asyncio.create_task(
+            poll_fleet_status(fleet_client, stop_event, snapshots, origin=origin)
+        )
+    # Ends at the duration, at stop_event, or when every worker is done (the
+    # request budget is spent).
+    work = asyncio.gather(*tasks, return_exceptions=True)
+    stopped = asyncio.create_task(stop_event.wait())
+    while True:
+        elapsed = time.monotonic() - origin
+        if elapsed >= duration or stop_event.is_set() or work.done():
             break
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(stop_event.wait(), timeout=min(2.0, duration - elapsed))
+        await asyncio.wait(
+            {stopped, work},
+            timeout=min(2.0, duration - elapsed),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
         if on_tick:
-            on_tick(time.monotonic() - start)
+            on_tick(time.monotonic() - origin)
     stop_event.set()
 
     # Drain in-flight requests, then stop whatever is still waiting.
-    _, pending = await asyncio.wait(tasks, timeout=30)
-    for t in pending:
-        t.cancel()
-    poller.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await poller
-    return snapshots, time.monotonic() - start
+    if tasks:
+        _, pending = await asyncio.wait(tasks, timeout=35)
+        for t in pending:
+            t.cancel()
+    await work
+    await stopped
+    if poller is not None:
+        poller.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await poller
+    return LoadResult(
+        snapshots=snapshots,
+        elapsed_s=time.monotonic() - origin,
+        started_at=started_at,
+        ended_at=_utc_now(),
+        seed=seed,
+    )
 
 
 async def poll_fleet_status(
     client: httpx.AsyncClient,
     stop_event: asyncio.Event,
     snapshots: list[dict],
+    origin: float | None = None,
 ):
-    """Periodically poll /fleet/status to capture utilization during benchmark."""
+    """Poll /fleet/status every 3 s during a run: utilization, and which models
+    each node has loaded (``model_events``).  Each snapshot gets ``t_ms``, when
+    it arrived on the run clock (``origin``)."""
+    origin = time.monotonic() if origin is None else origin
     while not stop_event.is_set():
         try:
             resp = await client.get("/fleet/status", timeout=5)
             if resp.status_code == 200:
-                snapshots.append(resp.json())
+                snap = resp.json()
+                snap["t_ms"] = round((time.monotonic() - origin) * 1000, 1)
+                snapshots.append(snap)
         except Exception:
             pass
         try:
@@ -815,6 +1251,39 @@ async def poll_fleet_status(
             break
         except TimeoutError:
             pass
+
+
+def model_events(snapshots: list[dict]) -> list[dict]:
+    """Model loads and evictions seen between fleet polls:
+    ``[{t_ms, node_id, model, event: "loaded" | "unloaded"}]``.
+
+    The first poll of each node is its baseline.  ``t_ms`` is when the poll that
+    saw the change arrived, so an event happened up to one poll interval (3 s)
+    plus one node heartbeat (~5 s) earlier.  A node missing from a poll is not
+    taken to have unloaded anything.
+    """
+    events: list[dict] = []
+    previous: dict[str, set[str]] = {}
+    for snap in snapshots:
+        for node in snap.get("nodes", []):
+            node_id = node["node_id"]
+            loaded = {m["name"] for m in (node.get("ollama") or {}).get("models_loaded", [])}
+            before = previous.get(node_id)
+            if before is not None:
+                for name, event in [
+                    *((n, "loaded") for n in sorted(loaded - before)),
+                    *((n, "unloaded") for n in sorted(before - loaded)),
+                ]:
+                    events.append(
+                        {
+                            "t_ms": snap.get("t_ms"),
+                            "node_id": node_id,
+                            "model": name,
+                            "event": event,
+                        }
+                    )
+            previous[node_id] = loaded
+    return events
 
 
 def _ttft_by_turn(results: list[RequestResult]) -> dict:
@@ -832,6 +1301,127 @@ def _ttft_by_turn(results: list[RequestResult]) -> dict:
     }
 
 
+REPORT_PERCENTILES = (50, 90, 95, 99)
+
+
+def _percentiles(values: list[float], name: str) -> dict:
+    """``{name_p50_ms: ..., name_p90_ms: ...}``; ``None`` for no samples."""
+    out = {}
+    for p in REPORT_PERCENTILES:
+        v = percentile(values, p)
+        out[f"{name}_p{p}_ms"] = round(v, 1) if v is not None else None
+    return out
+
+
+def _first_and_after(results: list[RequestResult]) -> dict:
+    """A model's first TTFT (a cold load unless it was warmed) and its TTFT
+    after that: what a swap costs, per request, when models alternate."""
+    ttfts = [r.ttft_ms for r in sorted(results, key=lambda r: r.started_ms) if r.ttft_ms > 0]
+    if not ttfts:
+        return {}
+    after = ttfts[1:] or ttfts
+    return {
+        "first_ttft_ms": round(ttfts[0], 1),
+        "ttft_p50_ms_after_first": round(percentile(after, 50), 1),
+        "ttft_max_ms_after_first": round(max(after), 1),
+    }
+
+
+def request_record(r: RequestResult) -> dict:
+    """One request as the report keeps it (``report["requests"]``)."""
+    record = {
+        "started_ms": r.started_ms,
+        "model": r.model,
+        "model_type": r.model_type,
+        "node_id": r.node_id,
+        "served_model": r.served_model,
+        "request_id": r.request_id,
+        "success": r.success,
+        "error": r.error,
+        "ttft_ms": round(r.ttft_ms, 1),
+        "latency_ms": round(r.latency_ms, 1),
+        "prompt_tokens": r.prompt_tokens,
+        "completion_tokens": r.completion_tokens,
+        "turn": r.turn,
+    }
+    if r.schedule_lag_ms is not None:
+        record["schedule_lag_ms"] = r.schedule_lag_ms
+    return record
+
+
+def _git_revision() -> tuple[str | None, bool | None]:
+    """(short commit, dirty) of the checkout this code runs from; (None, None)
+    for an installed package, or if git is missing.  Never raises.
+
+    Only when the repository's ``src/fleet_manager`` is the package actually
+    imported: a wheel installed in a virtualenv inside some other repository
+    must not report that repository's commit.
+    """
+    package = Path(fleet_manager.__file__).resolve().parent
+
+    def git(*args: str) -> str | None:
+        try:
+            out = subprocess.run(
+                ["git", *args], cwd=package, capture_output=True, text=True, timeout=5
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return out.stdout.strip() if out.returncode == 0 else None
+
+    top = git("rev-parse", "--show-toplevel")
+    if not top or Path(top).resolve() / "src" / "fleet_manager" != package:
+        return None, None
+    commit = git("rev-parse", "--short", "HEAD")
+    status = git("status", "--porcelain", "--untracked-files=no")
+    return commit, (bool(status) if status is not None else None)
+
+
+def build_manifest(
+    nodes_info: list[NodeInfo],
+    run: dict | None = None,
+    started_at: str | None = None,
+    ended_at: str | None = None,
+) -> dict:
+    """What produced a result: herd version and commit, when, the run settings
+    (``run``: workload, seed, repetition, mode, ...), and per node the agent and
+    Ollama versions, ``num_parallel`` and each loaded model's digest,
+    quantization and size.  ``None`` wherever ``/fleet/status`` doesn't say."""
+    commit, dirty = _git_revision()
+    return {
+        "herd_version": fleet_manager.__version__,
+        "git_commit": commit,
+        "git_dirty": dirty,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        **(run or {}),
+        "nodes": [
+            {
+                "node_id": ni.node_id,
+                "chip": ni.chip,
+                "agent_version": ni.agent_version,
+                "ollama_version": ni.ollama_version,
+                "num_parallel": ni.num_parallel,
+                "models": ni.model_meta,
+            }
+            for ni in nodes_info
+        ],
+    }
+
+
+def dashboard_record(report: dict) -> dict:
+    """``report`` as the dashboard stores it: without the per-request records
+    (megabytes on a long run, and never displayed) and with the manifest and
+    model events moved into ``fleet_snapshot``, the one free-form column a saved
+    run keeps."""
+    record = {k: v for k, v in report.items() if k not in ("requests", "manifest", "model_events")}
+    record["fleet_snapshot"] = {
+        **report["fleet_snapshot"],
+        "manifest": report["manifest"],
+        "model_events": report["model_events"],
+    }
+    return record
+
+
 def build_report(
     results: list[RequestResult],
     duration: float,
@@ -839,11 +1429,16 @@ def build_report(
     nodes_info: list[NodeInfo],
     fleet_snapshots: list[dict],
     run: dict | None = None,
+    *,
+    started_at: str | None = None,
+    ended_at: str | None = None,
 ) -> dict:
-    """Build report data dict. Returns data for storage.
+    """The run's report: aggregates, per model / node, peak utilization, every
+    request (``requests``, in start order), model load/evict events and the run
+    manifest (``build_manifest``; ``run`` holds the settings it records).
 
-    ``run`` (workload, mode, ...) is stored inside ``fleet_snapshot``, the one
-    free-form column a saved run keeps.
+    Save it to the dashboard with ``dashboard_record``; write it whole for a
+    published result.
     """
     success = [r for r in results if r.success]
     failed = [r for r in results if not r.success]
@@ -853,6 +1448,7 @@ def build_report(
 
     latencies = [r.latency_ms for r in success]
     ttfts = [r.ttft_ms for r in success if r.ttft_ms > 0]
+    lags = [r.schedule_lag_ms for r in results if r.schedule_lag_ms is not None]
 
     req_s = len(success) / duration if duration > 0 else 0
     tok_s = total_completion / duration if duration > 0 else 0
@@ -882,6 +1478,7 @@ def build_report(
                     "requests": len(mr),
                     "nodes": node_counts,  # where the router placed it
                     **_ttft_by_turn(mr),
+                    **_first_and_after(mr),
                     "tok_s": round(m_tok_s, 1),
                     "avg_latency_ms": round(m_lat, 1),
                     "avg_ttft_ms": round(m_ttft, 1),
@@ -961,29 +1558,39 @@ def build_report(
             for t in targets
         ],
     }
-    if run:
-        fleet_snapshot["run"] = run
 
-    return {
+    report = {
         "run_id": f"bench-{int(time.time())}",
         "timestamp": time.time(),
         "duration_s": round(duration, 1),
         "total_requests": len(success),
         "total_failures": len(failed),
-        # Failures that were answers from another model than the one asked for.
-        "served_model_mismatches": sum(1 for r in failed if r.served_model),
+        # Failures that were answers from another model than the one asked for
+        # (not every failure that named the model it came from: a timeout
+        # mid-stream from the right model is a failure, not a mismatch).
+        "served_model_mismatches": sum(
+            1 for r in failed if r.served_model and r.served_model not in _same_model(r.model)
+        ),
         "total_prompt_tokens": total_prompt,
         "total_completion_tokens": total_completion,
         "requests_per_sec": round(req_s, 2),
         "tokens_per_sec": round(tok_s, 1),
-        "latency_p50_ms": round(percentile(latencies, 50), 1) if latencies else None,
-        "latency_p95_ms": round(percentile(latencies, 95), 1) if latencies else None,
-        "latency_p99_ms": round(percentile(latencies, 99), 1) if latencies else None,
-        "ttft_p50_ms": round(percentile(ttfts, 50), 1) if ttfts else None,
-        "ttft_p95_ms": round(percentile(ttfts, 95), 1) if ttfts else None,
-        "ttft_p99_ms": round(percentile(ttfts, 99), 1) if ttfts else None,
+        **_percentiles(latencies, "latency"),
+        **_percentiles(ttfts, "ttft"),
         "fleet_snapshot": fleet_snapshot,
         "per_model_results": per_model,
         "per_node_results": per_node,
         "peak_utilization": peak_util,
+        "manifest": build_manifest(nodes_info, run, started_at, ended_at),
+        "model_events": model_events(fleet_snapshots),
+        "requests": [request_record(r) for r in sorted(results, key=lambda r: r.started_ms)],
     }
+    if lags:
+        # Open loop: above a millisecond or two, the client fell behind its own
+        # schedule and the arrival rate was lower than asked.
+        report["schedule_lag_ms"] = {
+            "p50": round(percentile(lags, 50), 2),
+            "p99": round(percentile(lags, 99), 2),
+            "max": round(max(lags), 2),
+        }
+    return report

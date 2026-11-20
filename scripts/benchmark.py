@@ -15,6 +15,11 @@ visible in the Benchmarks dashboard tab at /dashboard/benchmarks.
 Core benchmark logic lives in fleet_manager.server.benchmark_engine.
 This script is a CLI wrapper.
 
+``--output FILE`` writes the whole report as JSON, with every request
+(``requests``), the model loads and evictions seen (``model_events``) and the
+run manifest (versions, commit, settings, seed): the file a published result
+is.  The dashboard copy leaves the per-request records out.
+
 Usage:
     python scripts/benchmark.py                          # defaults: localhost:11435, 5 min
     python scripts/benchmark.py --duration 60            # 1-minute run
@@ -22,18 +27,28 @@ Usage:
     python scripts/benchmark.py --models qwen3:14b       # specific model only
     python scripts/benchmark.py --concurrency 4          # override per-model concurrency
     python scripts/benchmark.py --no-save                # don't store results
+
+Two models strictly alternating, one request at a time (what a swap costs):
+    python scripts/benchmark.py --models A B --sequence alternate --concurrency 1 \\
+        --requests 20 --max-tokens 128 --temperature 0 --skip-warmup \\
+        --prompt "List three facts about the moon, one line each." --output arm4.json
 """
 
 import argparse
 import asyncio
 import contextlib
+import json
+import math
 import sys
 
 import httpx
 
 from fleet_manager.server.benchmark_engine import (
     build_report,
+    dashboard_record,
     discover_fleet,
+    explicit_targets,
+    parse_models,
     run_load,
     session_system_prompt,
     warmup,
@@ -103,21 +118,19 @@ def print_report(report, targets, nodes_info):
         print()
         print("  LATENCY")
         print("  " + "\u2500" * 66)
-        print(f"  {'Metric':<16} {'p50':>8} {'p95':>8} {'p99':>8}")
+        pcts = ("p50", "p90", "p95", "p99")
+        print(f"  {'Metric':<16} " + " ".join(f"{p:>8}" for p in pcts))
         rule = "\u2500"  # a backslash inside an f-string needs Python 3.12; we support 3.11
-        print(f"  {rule * 16} {rule * 8} {rule * 8} {rule * 8}")
-        print(
-            f"  {'Total (ms)':<16} "
-            f"{report['latency_p50_ms']:>8,.0f} "
-            f"{report['latency_p95_ms']:>8,.0f} "
-            f"{report['latency_p99_ms']:>8,.0f}"
-        )
-        if report.get("ttft_p50_ms") is not None:
+        print(f"  {rule * 16} " + " ".join(rule * 8 for _ in pcts))
+        for label, name in (("Total (ms)", "latency"), ("TTFT (ms)", "ttft")):
+            if report.get(f"{name}_p50_ms") is not None:
+                values = " ".join(f"{report[f'{name}_{p}_ms']:>8,.0f}" for p in pcts)
+                print(f"  {label:<16} {values}")
+        lag = report.get("schedule_lag_ms")
+        if lag:
             print(
-                f"  {'TTFT (ms)':<16} "
-                f"{report['ttft_p50_ms']:>8,.0f} "
-                f"{report['ttft_p95_ms']:>8,.0f} "
-                f"{report['ttft_p99_ms']:>8,.0f}"
+                f"  Schedule lag:   p50 {lag['p50']:.2f} ms, p99 {lag['p99']:.2f} ms,"
+                f" max {lag['max']:.2f} ms (open loop: above ~2 ms the client fell behind)"
             )
 
     per_model = report.get("per_model_results", [])
@@ -132,6 +145,20 @@ def print_report(report, targets, nodes_info):
                 f"  {m['avg_latency_ms']:>8,.0f}ms lat"
                 f"  {m['avg_ttft_ms']:>6,.0f}ms ttft"
             )
+            if "first_ttft_ms" in m:
+                print(
+                    f"  {'':<30} first ttft {m['first_ttft_ms']:,.0f}ms,"
+                    f" after it p50 {m['ttft_p50_ms_after_first']:,.0f}ms"
+                    f" / max {m['ttft_max_ms_after_first']:,.0f}ms"
+                )
+
+    events = report.get("model_events", [])
+    if events:
+        print()
+        print("  MODEL LOADS AND EVICTIONS (from fleet polls, ~3-8 s resolution)")
+        print("  " + "\u2500" * 66)
+        for e in events:
+            print(f"  {e['t_ms'] / 1000:>7.1f}s  {e['node_id']:<25} {e['event']:<9} {e['model']}")
 
     per_node = report.get("per_node_results", [])
     if per_node:
@@ -150,45 +177,54 @@ def print_report(report, targets, nodes_info):
     print()
 
 
-async def run_benchmark(
-    url: str,
-    duration: float,
-    model_filter: list[str] | None,
-    concurrency_override: int | None,
-    skip_warmup: bool = False,
-    no_save: bool = False,
-    prompt_tokens: int | None = None,
-    max_tokens: int | None = None,
-    think: bool | None = None,
-    session_turns: int = 0,
-    system_tokens: int = 2400,
-    user_tokens: int = 250,
-    round_robin: bool = False,
-):
+async def run_benchmark(args: argparse.Namespace) -> None:
+    names, weights = parse_models(args.models or [])
+    observe = args.fleet_url != "none"
+    fleet_url = args.fleet_url or args.url
+    # Weights mean a draw by weight; an open loop needs some order: alternate.
+    sequence = args.sequence or ("random" if weights else "alternate" if args.rate else None)
+    duration = (
+        args.duration if args.duration is not None else (math.inf if args.requests else 300.0)
+    )
     async with contextlib.AsyncExitStack() as stack:
-        client = await stack.enter_async_context(httpx.AsyncClient(base_url=url, timeout=300))
-        # Discover fleet
-        print(f"\nDiscovering fleet at {url}...")
-        try:
-            targets, nodes_info = await discover_fleet(client, include_on_disk=model_filter or ())
-        except httpx.HTTPError as e:
-            print(f"Error: Could not connect to fleet at {url}: {e}", file=sys.stderr)
-            sys.exit(1)
-
-        if model_filter:
-            targets = [t for t in targets if t.name in model_filter]
+        client = await stack.enter_async_context(
+            httpx.AsyncClient(base_url=args.url, timeout=args.timeout)
+        )
+        fleet_client = None
+        if observe:
+            fleet_client = client
+            if fleet_url != args.url:
+                fleet_client = await stack.enter_async_context(
+                    httpx.AsyncClient(base_url=fleet_url, timeout=300)
+                )
+            print(f"\nDiscovering fleet at {fleet_url}...")
+            try:
+                targets, nodes_info = await discover_fleet(fleet_client, include_on_disk=names)
+            except httpx.HTTPError as e:
+                print(f"Error: Could not connect to fleet at {fleet_url}: {e}", file=sys.stderr)
+                sys.exit(1)
+            if names:
+                by_name = {t.name: t for t in targets}
+                targets = [by_name[n] for n in names if n in by_name]  # --models order
+        else:
+            # Nothing exposes /fleet/status (plain Ollama, llama-swap): the
+            # models as named, no nodes to warm or observe.
+            targets, nodes_info = explicit_targets(names, args.concurrency or 1), []
         if not targets:
-            wanted = f": {model_filter}" if model_filter else ""
+            wanted = f": {names}" if names else ""
             print(f"Error: none of the models are loaded or on disk{wanted}", file=sys.stderr)
             sys.exit(1)
+        if args.url != fleet_url and observe:
+            print(f"  Sending traffic to {args.url}, observing the fleet at {fleet_url}")
 
-        # Override concurrency if specified
-        if concurrency_override:
+        # Per-model workers take --concurrency each; a sequence or a rate shares
+        # --concurrency workers (or the arrival rate) across all the models.
+        shared = bool(sequence or args.rate)
+        if args.concurrency and not shared:
             for t in targets:
-                t.concurrency = concurrency_override
+                t.concurrency = args.concurrency
 
-        # Print discovery
-        total_conc = sum(t.concurrency for t in targets)
+        total_conc = args.concurrency or sum(t.concurrency for t in targets)
         print(f"Found {len(nodes_info)} nodes, {len(targets)} models\n")
         for ni in nodes_info:
             print(
@@ -199,32 +235,40 @@ async def run_benchmark(
             )
         print()
         for t in targets:
+            weight = f", weight {weights[t.name]:g}" if t.name in weights else ""
             print(
-                f"  {t.name} ({t.size_gb:.0f} GB, {t.model_type})"
-                f" \u2014 {t.concurrency} workers"
-                f" \u2014 {', '.join(t.nodes)}"
+                f"  {t.name} ({t.size_gb:.0f} GB, {t.model_type}{weight})"
+                + ("" if shared else f" — {t.concurrency} workers")
+                + (f" — {', '.join(t.nodes)}" if t.nodes else "")
             )
-        print(f"\n  Total workers: {total_conc} across {len(targets)} models\n")
+        if args.rate:
+            print(f"\n  Open loop: {args.rate:g} requests/s, models {sequence}\n")
+        elif shared:
+            print(f"\n  {total_conc} workers sharing the models, {sequence}\n")
+        else:
+            print(f"\n  Total workers: {total_conc} across {len(targets)} models\n")
 
         # Warmup: every node that has each model, directly
-        if not skip_warmup:
+        if not args.skip_warmup and nodes_info:
             targets = await warmup(targets, nodes_info, log_fn=lambda msg: print(f"  {msg}"))
             if not targets:
                 print("\n  ERROR: All models failed warmup. Nothing to benchmark.")
                 sys.exit(1)
-            total_conc = sum(t.concurrency for t in targets)
             print()
 
-        print(f"Starting {duration:.0f}s benchmark with {total_conc} concurrent workers...\n")
+        stop = f"{args.requests} requests" if args.requests else ""
+        if math.isfinite(duration):
+            stop = f"{stop} or {duration:.0f}s" if stop else f"{duration:.0f}s"
+        print(f"Starting benchmark: {stop}...\n")
 
         results: list = []
 
         # Multi-turn sessions over one shared system prompt; either through the
         # router (sessions tagged) or round-robin straight to each node's Ollama.
         sessions = None
-        if session_turns:
+        if args.session_turns:
             clients = [(client, "")]
-            if round_robin:
+            if args.round_robin:
                 urls = sorted({ni.ollama_url for ni in nodes_info if ni.ollama_url})
                 clients = [
                     (
@@ -236,11 +280,11 @@ async def run_benchmark(
                 print(f"  Round-robin across {len(clients)} nodes' Ollama, bypassing the router\n")
             sessions = {
                 "clients": clients,
-                "system_prompt": session_system_prompt(system_tokens),
-                "turns": session_turns,
-                "user_tokens": user_tokens,
-                "max_tokens": max_tokens or 150,
-                "tag_sessions": not round_robin,
+                "system_prompt": session_system_prompt(args.system_tokens),
+                "turns": args.session_turns,
+                "user_tokens": args.user_tokens,
+                "max_tokens": args.max_tokens or 150,
+                "tag_sessions": not args.round_robin,
             }
 
         def progress(elapsed: float) -> None:
@@ -248,60 +292,95 @@ async def run_benchmark(
             fail = len(results) - ok
             tok = sum(r.completion_tokens for r in results if r.success)
             tok_s = tok / elapsed if elapsed > 0 else 0
+            left = f"  ({max(0, duration - elapsed):.0f}s left)" if math.isfinite(duration) else ""
             print(
-                f"\r  [{elapsed:5.1f}s / {duration:.0f}s]  {ok} ok, {fail} err"
-                f"  | {tok_s:,.0f} tok/s  ({max(0, duration - elapsed):.0f}s left)     ",
+                f"\r  [{elapsed:5.1f}s]  {ok} ok, {fail} err  | {tok_s:,.0f} tok/s{left}     ",
                 end="",
                 flush=True,
             )
 
-        fleet_snapshots, elapsed = await run_load(
+        think = False if args.no_think else None
+        load = await run_load(
             client,
             targets,
             duration,
             asyncio.Event(),
             results,
-            prompt_tokens=prompt_tokens,
-            max_tokens=max_tokens,
+            prompt_tokens=args.prompt_tokens,
+            max_tokens=args.max_tokens,
             think=think,
+            prompt=args.prompt,
+            temperature=args.temperature,
+            api=args.api,
+            timeout=args.timeout,
             on_tick=progress,
             sessions=sessions,
+            fleet_client=fleet_client,
+            sequence=sequence,
+            weights=weights or None,
+            concurrency=args.concurrency if shared else None,
+            rate=args.rate,
+            max_requests=args.requests,
+            seed=args.seed,
         )
         print("\r  Done.                                                                         ")
 
         # Saved with the run, so a result always says what load produced it.
+        workload = {
+            "url": args.url,
+            "fleet_url": fleet_url if observe else None,
+            "api": args.api,
+            "models": names or None,
+            "weights": weights or None,
+            "sequence": sequence,
+            "concurrency": args.concurrency,
+            "rate": args.rate,
+            "requests": args.requests,
+            "duration_s": duration if math.isfinite(duration) else None,
+            "prompt": args.prompt,
+            "prompt_tokens": args.prompt_tokens,
+            "max_tokens": args.max_tokens,
+            "temperature": args.temperature,
+            "think": think,
+            "timeout_s": args.timeout,
+            "warmup": not args.skip_warmup and bool(nodes_info),
+        }
+        if args.session_turns:
+            workload.update(
+                session_turns=args.session_turns,
+                system_tokens=args.system_tokens,
+                user_tokens=args.user_tokens,
+                target="round-robin" if args.round_robin else "router",
+            )
         report = build_report(
             results,
-            min(elapsed, duration * 2),
+            min(load.elapsed_s, duration * 2),
             targets,
             nodes_info,
-            fleet_snapshots,
+            load.snapshots,
             run={
-                "workload": {
-                    "prompt_tokens": prompt_tokens,
-                    "max_tokens": max_tokens,
-                    "think": think,
-                    **(
-                        {
-                            "session_turns": session_turns,
-                            "system_tokens": system_tokens,
-                            "user_tokens": user_tokens,
-                            "target": "round-robin" if round_robin else "router",
-                        }
-                        if session_turns
-                        else {}
-                    ),
-                }
+                "label": args.label,
+                "workload": workload,
+                "seed": load.seed,
+                "repetition": args.repetition,
             },
+            started_at=load.started_at,
+            ended_at=load.ended_at,
         )
         print_report(report, targets, nodes_info)
 
-        # Save results to the router
-        if not no_save:
+        if args.output:
+            with open(args.output, "w") as f:
+                json.dump(report, f, indent=2)
+                f.write("\n")
+            print(f"  Report written to {args.output} ({len(report['requests'])} requests)")
+
+        # Save results to the router (the one observing, when that isn't --url)
+        if not args.no_save and fleet_client is not None:
             try:
-                resp = await client.post(
+                resp = await fleet_client.post(
                     "/dashboard/api/benchmarks",
-                    json=report,
+                    json=dashboard_record(report),
                     timeout=10,
                 )
                 if resp.status_code == 200:
@@ -314,7 +393,7 @@ async def run_benchmark(
                 print(f"  Warning: Could not save results: {e}")
 
 
-def main():
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Ollama Herd Fleet Benchmark",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -325,28 +404,83 @@ Examples:
   python scripts/benchmark.py --models qwen3:14b     # single model
   python scripts/benchmark.py --concurrency 2        # override workers per model
   python scripts/benchmark.py --no-save              # don't save results
+  python scripts/benchmark.py --models a=3,b=1 --sequence random --seed 7 --concurrency 4
+  python scripts/benchmark.py --models a b --rate 5 --duration 60   # open loop, 5 req/s
         """,
     )
     parser.add_argument(
         "--url",
         default="http://localhost:11435",
-        help="Router URL (default: http://localhost:11435)",
+        help="Where requests go: the router, or any endpoint under test (default: "
+        "http://localhost:11435)",
+    )
+    parser.add_argument(
+        "--fleet-url",
+        help="The router polled for fleet state (discovery, model loads and evictions, "
+        "utilization) when traffic goes elsewhere, e.g. an HAProxy or a node's Ollama "
+        "(default: --url). 'none' for an endpoint with no router at all (plain Ollama, "
+        "llama-swap): --models are then used as named, with no warmup and nothing observed",
     )
     parser.add_argument(
         "--duration",
         type=float,
-        default=300.0,
-        help="Benchmark duration in seconds (default: 300 = 5 minutes)",
+        default=None,
+        help="Benchmark duration in seconds (default: 300, or no limit with --requests)",
+    )
+    parser.add_argument(
+        "--requests",
+        type=int,
+        help="Stop after this many requests in total (with --duration, whichever comes first)",
     )
     parser.add_argument(
         "--models",
         nargs="+",
-        help="Specific model(s) to benchmark (default: all loaded)",
+        help="Specific model(s) to benchmark (default: all loaded), optionally weighted: "
+        "'a b', 'a=3,b=1' or 'a=3 b'. Weights imply --sequence random unless set",
     )
     parser.add_argument(
         "--concurrency",
         type=int,
-        help="Override per-model concurrency (default: auto-calculated from memory)",
+        help="Workers per model (default: auto-calculated from memory); with --sequence, "
+        "workers in total, sharing the models",
+    )
+    parser.add_argument(
+        "--sequence",
+        choices=("alternate", "random"),
+        help="Workers share the models: each request goes to the next model in turn "
+        "(alternate, weights repeat a model) or to one drawn by weight (random)",
+    )
+    parser.add_argument(
+        "--rate",
+        type=float,
+        help="Open loop: start this many requests per second on schedule whether or not "
+        "earlier ones finished, instead of fixed concurrency (models: --sequence, "
+        "default alternate)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="Seed for every random choice (prompts, model sequence, session ids); the "
+        "report records the one used, so any run can be repeated (default: a random seed)",
+    )
+    parser.add_argument(
+        "--repetition", type=int, help="Which repetition of this arm the run is (recorded)"
+    )
+    parser.add_argument(
+        "--label",
+        help="Free text recorded in the manifest: what the manifest can't see, such as an "
+        "endpoint that isn't herd (llama-swap's version, the hardware)",
+    )
+    parser.add_argument(
+        "--api",
+        choices=("ollama", "openai"),
+        default="ollama",
+        help="Chat API: Ollama /api/chat (default) or OpenAI /v1/chat/completions, for "
+        "endpoints that speak only that",
+    )
+    parser.add_argument(
+        "--output",
+        help="Write the whole report as JSON: every request, model events, the manifest",
     )
     parser.add_argument(
         "--skip-warmup",
@@ -357,6 +491,10 @@ Examples:
         "--no-save",
         action="store_true",
         help="Don't save results to the router (skip POST to /dashboard/api/benchmarks)",
+    )
+    parser.add_argument(
+        "--prompt",
+        help="Send this user message on every chat request instead of a generated one",
     )
     parser.add_argument(
         "--prompt-tokens",
@@ -372,6 +510,16 @@ Examples:
         default=None,
         help="Cap each reply at this many tokens (Ollama num_predict; default: no cap). "
         "Real replies average ~200",
+    )
+    parser.add_argument(
+        "--temperature", type=float, help="Sampling temperature (default: the model's own)"
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Seconds per chat request (default 300); raise it when first requests are cold "
+        "loads of large models",
     )
     parser.add_argument(
         "--no-think",
@@ -394,25 +542,30 @@ Examples:
         help="Baseline: send each session request straight to the next node's Ollama in turn, "
         "bypassing the router (needs the nodes' Ollama reachable from here)",
     )
-    args = parser.parse_args()
-
-    asyncio.run(
-        run_benchmark(
-            args.url,
-            args.duration,
-            args.models,
-            args.concurrency,
-            args.skip_warmup,
-            args.no_save,
-            prompt_tokens=args.prompt_tokens,
-            max_tokens=args.max_tokens,
-            think=False if args.no_think else None,
-            session_turns=args.session_turns,
-            system_tokens=args.system_tokens,
-            user_tokens=args.user_tokens,
-            round_robin=args.round_robin,
+    args = parser.parse_args(argv)
+    try:
+        _, weights = parse_models(args.models or [])
+    except ValueError as e:
+        parser.error(str(e))
+    if args.fleet_url == "none" and not args.models:
+        parser.error("--fleet-url none needs --models: there is no fleet to discover them from")
+    if args.fleet_url == "none" and args.round_robin:
+        parser.error(
+            "--round-robin needs the fleet's node list; it can't run with --fleet-url none"
         )
-    )
+    if args.session_turns and (args.sequence or args.rate or weights):
+        parser.error("--session-turns runs per model; it doesn't combine with a sequence or --rate")
+    if args.no_think and args.api == "openai":
+        parser.error("--no-think is an Ollama API option; it has no effect with --api openai")
+    if args.rate is not None and args.rate <= 0:
+        parser.error("--rate must be positive")
+    if args.sequence == "alternate" and any(w != int(w) for w in weights.values()):
+        parser.error("--sequence alternate needs whole-number weights")
+    return args
+
+
+def main():
+    asyncio.run(run_benchmark(parse_args()))
 
 
 if __name__ == "__main__":
