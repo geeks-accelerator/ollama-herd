@@ -91,10 +91,17 @@ open-loop and seeded workloads / vision work in the benchmark engine (`4243946`,
     - context too long: prompts at 90/100/101/125% of a model's window, rejected before dispatch
       or sent to a node with a bigger window (existing: `test_context_protection_every_format.py`,
       `test_context_window_visibility.py`).
-15. **Image generation and transcription write no trace row.** Since `7111ee4` they return
-    `X-Request-Id`, but `/dashboard/api/traces?request_id=` finds nothing for them, and they are
-    missing from the dashboard's usage and from community error counts. Trace them like the
-    embedding paths (`direct_proxy_tracer`).
+15. **Fixed (`ffa2f1f`): image generation and transcription wrote no trace row.** Since `7111ee4`
+    they returned `X-Request-Id`, but `/dashboard/api/traces?request_id=` found nothing for them,
+    and they were missing from the dashboard's usage and from community error counts. They are
+    queue-dispatched, so they trace the way the queue path does (`StreamingProxy._record_trace`,
+    from one helper, `_run_media_job`), not with `direct_proxy_tracer`: `completed`, `failed`,
+    and `client_disconnected` when `first_chunk` cancels the job (a client that leaves while
+    queued was already traced by `dispatched_stream`). The routes add the disconnect to the
+    in-memory image/transcription events as well. No double count: the community rollup reads
+    only `request_traces` (and `latency_observations`, which these jobs never wrote), and the
+    per-type stats read only their own events. The trace's model is the queue entry's name,
+    which `InferenceRequest` normalizes (`z-image-turbo:latest`), as the queue key already was.
 16. **Dashboard benchmark runner can't select vision or embed-image work.** The runner accepts
     both types since `4243946`; the checkboxes in `dashboard.py` don't offer them.
 
@@ -123,6 +130,7 @@ with runtime faults, against a real router). All fixed on `main`, unreleased:
 21. **Fixed (`9a4b870`): a failed request's trace `retry_count` counted attempts.** Rows now read
     0, 1, 2 (retries before that attempt); `X-Fleet-Retries` is the serving attempt's value; the
     dashboard and health retry totals sum terminal rows only; the embed path follows the same rule.
+    (That sum was right fleet-wide but credited retries to the serving node: replaced in item 26.)
 22. **Not reproduced as reported (`e60f8d8`): "the router keeps a node's first backend URL".**
     `ollama_base_url` is rebuilt on every heartbeat; moving a fake node from one mock port to
     another moved `/fleet/status` and dispatch after one heartbeat. The stale thing was
@@ -133,6 +141,30 @@ with runtime faults, against a real router). All fixed on `main`, unreleased:
 24. **A retried request is counted twice in per-node queue stats**: failed on the first node,
     completed on the second. Count the attempt that served as the request; show the failed attempt
     as a retry, not a failure.
+
+Found by an independent review of the fixes above (confirmed by experiment unless noted). Fixed
+on `main` in `ffa2f1f`, unreleased:
+
+25. **Fixed: with `FLEET_MAX_RETRIES=0` a client that left before the first chunk was traced
+    `incomplete`.** `first_chunk` (from `c0dd89b`) cancels the stream, which arrives as
+    `CancelledError`; `_stream_with_tracking` caught only `GeneratorExit`, so `finally` recorded
+    `incomplete` and logged "was sent an error terminal". It now handles cancellation like
+    `_stream_with_retry` (traced `client_disconnected`, re-raised); a test runs both paths through
+    `first_chunk`.
+26. **Fixed: per-node retry totals named the node that served, not the one that failed** (found by
+    reading). Since `9a4b870` `_RETRIES_SUM` summed `retry_count` on terminal rows, which carry the
+    serving node's id. A retry is now its `retried` row, on the node whose attempt failed, so the
+    count is right per node and one per retry fleet-wide; the Ollama embed path, which retries a
+    ReadTimeout on the same node and wrote no such row, now writes one. Fleet-wide request counts
+    (`get_retry_stats_24h`, `get_overall_stats_24h`, `get_usage_overview`, the stream-reliability
+    total) exclude `retried` rows, so `high_retry_rate` divides by requests: 4 retries in 12
+    requests read 0.25 (under the 0.3 threshold) and now reads 0.33. Fallback totals count each
+    request once. Per-node `request_count` still counts attempts, deliberately. Not changed:
+    `get_error_rates_24h` still puts a node's `retried` rows in its denominator but not its
+    failures, so a node whose attempts fail over reads a lower error rate than its attempts had.
+27. **Fixed: an unhandled 500 had no `X-Request-Id`.** Starlette's `ServerErrorMiddleware` answers
+    outside every `add_middleware` layer. `install_request_id_header` wraps the built middleware
+    stack instead, which is safe because the layer only adds a header on `http.response.start`.
 
 ## Rules for this work
 
