@@ -184,6 +184,21 @@ def _parse_systemd_environment(text: str) -> dict[str, str]:
     return env
 
 
+def _positive_int(raw: str) -> int:
+    """A positive integer setting, or 0 when unset or not one (Ollama ignores those)."""
+    try:
+        value = int(raw.strip())
+    except (AttributeError, ValueError):
+        return 0
+    return value if value > 0 else 0
+
+
+def _is_this_machine(url: str) -> bool:
+    """Whether ``url`` points at this machine (loopback or its own LAN address)."""
+    host = urlparse(url).hostname or ""
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or host == get_local_ip()
+
+
 @_ttl_cache(ttl_seconds=15.0)
 def _runner_num_parallel() -> int:
     """The slot count Ollama gave its running models, from their command lines.
@@ -743,17 +758,19 @@ async def collect_heartbeat(
         except ValueError:
             logger.debug(f"OLLAMA_MAX_LOADED_MODELS not an int: {raw_cap!r}")
 
-    # OLLAMA_NUM_PARALLEL — Ollama's per-model decode concurrency.  What its
-    # running models were started with wins; the configured value covers the
-    # time before anything is loaded.  0 = unknown.
-    num_parallel = _runner_num_parallel()
-    raw_np = "" if num_parallel else _ollama_env("OLLAMA_NUM_PARALLEL")
-    if raw_np:
-        try:
-            parsed_np = int(raw_np)
-            num_parallel = parsed_np if parsed_np > 0 else 0
-        except ValueError:
-            logger.debug(f"OLLAMA_NUM_PARALLEL not an int: {raw_np!r}")
+    # OLLAMA_NUM_PARALLEL — Ollama's per-model decode concurrency.  0 = unknown.
+    # 1. Set for herd-node itself: the operator's explicit word (and the only
+    #    source a container has).
+    # 2. The -np this machine's Ollama started its running models with: what it
+    #    actually applied.  Only when the Ollama we serve is on this machine:
+    #    runners on this host belong to some other Ollama otherwise (a node
+    #    pointed at a mock or a remote Ollama read the local one's -np 1).
+    # 3. Ollama's service configuration (launchd, systemd), before anything loads.
+    num_parallel = _positive_int(os.environ.get("OLLAMA_NUM_PARALLEL", ""))
+    if not num_parallel and _is_this_machine(ollama_host):
+        num_parallel = _runner_num_parallel()
+    if not num_parallel:
+        num_parallel = _positive_int(_ollama_env("OLLAMA_NUM_PARALLEL"))
 
     # MLX backend — the supervisor set drives heartbeat.mlx_servers; each
     # healthy server's model is added to models_available with an mlx: prefix.

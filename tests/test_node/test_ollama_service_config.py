@@ -150,11 +150,28 @@ def _ollama():
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_prefers_what_the_runner_was_started_with(monkeypatch):
-    monkeypatch.setenv("OLLAMA_NUM_PARALLEL", "2")
+async def test_heartbeat_reads_the_local_runners(monkeypatch, no_env):
     monkeypatch.setattr(collector, "_runner_num_parallel", lambda: 4)
-    payload = await collector.collect_heartbeat("n1", _ollama())
+    payload = await collector.collect_heartbeat("n1", _ollama(), "http://localhost:11434")
     assert payload.ollama.num_parallel == 4
+
+
+@pytest.mark.asyncio
+async def test_set_for_herd_node_it_wins(monkeypatch):
+    """The operator's explicit word, and the only source a container has."""
+    monkeypatch.setenv("OLLAMA_NUM_PARALLEL", "8")
+    monkeypatch.setattr(collector, "_runner_num_parallel", lambda: 1)
+    payload = await collector.collect_heartbeat("n1", _ollama(), "http://localhost:11434")
+    assert payload.ollama.num_parallel == 8
+
+
+@pytest.mark.asyncio
+async def test_runners_on_this_host_are_not_a_remote_ollamas(monkeypatch, no_env):
+    """A node serving another machine's Ollama read this one's -np (2026-11-20)."""
+    monkeypatch.setattr(collector, "_runner_num_parallel", lambda: 1)
+    monkeypatch.setattr(collector, "_service_env", lambda name: "")  # nor a service value
+    payload = await collector.collect_heartbeat("n1", _ollama(), "http://10.9.9.9:11434")
+    assert payload.ollama.num_parallel == 0
 
 
 @pytest.mark.asyncio
