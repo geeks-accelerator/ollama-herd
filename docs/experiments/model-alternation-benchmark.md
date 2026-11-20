@@ -1,7 +1,7 @@
 # Two models, strictly alternating: what a swap costs
 
-**Status:** harness ready (`model-alternation-benchmark.py`), smoke-tested 2026-10-26. The real runs
-(arms 1 to 5 below) are not done yet; they need two fleet machines and llama-swap installed.
+**Status:** arms 1 and 4 run 2026-11-20 (results below, `model_alternation_arm1.json` and
+`_arm4.json`). Arms 2, 3 and 5 (llama-swap, llama.cpp router mode) are not run yet.
 
 ## Question
 
@@ -61,3 +61,21 @@ page cache), only proof the harness separates the two cases:
 |---|---|
 | `OLLAMA_MAX_LOADED_MODELS=1` (forced swap) | 1.2 to 1.6 s, every request |
 | `OLLAMA_MAX_LOADED_MODELS=2` (both resident) | 15 ms (`llama3.2:3b`), 44 ms (`qwen3:8b`) |
+
+## Results, arms 1 and 4 (2026-11-20)
+
+Two NVIDIA Quadro RTX 6000 24 GB (Lambda Cloud), Ollama 0.40.16, `qwen2.5:14b-instruct-q8_0` and
+`phi4:14b-q8_0` (~15.7 GB each: one card holds one), 20 alternating requests, 128 output tokens. Arm
+4 through herd `main` at `3a225b3` (released in 0.12.10), with `X-Fleet-No-Fallback: true` so every
+answer came from the model asked for. 0 errors in both arms.
+
+| | TTFT after each model's first request | 20 requests, wall |
+|---|---|---|
+| Arm 1: one machine, Ollama directly | 7.6-8.0 s, every request (a swap each time) | 247.6 s |
+| Arm 4: two machines behind herd | **59-92 ms** (each model stays on its own machine) | **82.2 s** |
+
+The first request of each model is a cold load in both arms (arm 4: 36.4 s and 8.0 s). After that,
+arm 1 swaps on every request and arm 4 never does. Before 0.12.10 arm 4 did not hold: herd sent
+every request to one machine, which swapped (the node that had just evicted a model scored best
+for it), and with defaults it answered requests for one model with the other. Both are fixed in
+0.12.10.

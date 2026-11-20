@@ -1,0 +1,265 @@
+{
+  "date": "2026-11-20",
+  "hardware": "Lambda Cloud us-south-2: 4 x NVIDIA Quadro RTX 6000 24 GB (Turing), 1 x RTX A6000 48 GB; Ubuntu 22.04 (Lambda Stack); private network between machines",
+  "ollama": "0.40.16, OLLAMA_NUM_PARALLEL=4 in the systemd unit only (Ollama's documented Linux method), OLLAMA_HOST=0.0.0.0:11434; nothing passed to herd-node",
+  "telemetry": "off on every router and node",
+  "herd": "router at c786c64, nodes at c0891f5 (both released in 0.12.10)",
+  "models": "qwen3-coder:30b, qwen3.5:9b (thinking; replies raised to 1,024 tokens by the router's thinking minimum), nomic-embed-text through Ollama (no fastembed installed)",
+  "workload": "scripts/benchmark.py --concurrency 4 --duration 180 --prompt-tokens 1250 --max-tokens 200, all three models at once",
+  "start_state": "D2: qwen3-coder:30b loaded on m1 and m2 (RTX 6000), qwen3.5:9b and nomic-embed-text on m5 (A6000). D1: m1 alone, coder loaded, the other two on disk",
+  "arms": {
+    "D2_three_machines": {
+      "run_id": "bench-1795158892",
+      "timestamp": 1795158892.8257275,
+      "duration_s": 210.0,
+      "total_requests": 11490,
+      "total_failures": 0,
+      "total_prompt_tokens": 208074,
+      "total_completion_tokens": 55037,
+      "requests_per_sec": 54.71,
+      "tokens_per_sec": 262.1,
+      "latency_p50_ms": 60.6,
+      "latency_p95_ms": 87.7,
+      "latency_p99_ms": 4127.6,
+      "ttft_p50_ms": 60.6,
+      "ttft_p95_ms": 87.7,
+      "ttft_p99_ms": 778.1,
+      "fleet_snapshot": {
+        "nodes": [
+          {
+            "node_id": "m1",
+            "cores": 14,
+            "memory_total_gb": 54.92,
+            "memory_available_gb": 56.02
+          },
+          {
+            "node_id": "m5",
+            "cores": 14,
+            "memory_total_gb": 98.23,
+            "memory_available_gb": 128.34
+          },
+          {
+            "node_id": "m2",
+            "cores": 14,
+            "memory_total_gb": 54.92,
+            "memory_available_gb": 56.11
+          }
+        ],
+        "models": [
+          {
+            "name": "qwen3-coder:30b",
+            "size_gb": 18.7,
+            "concurrency": 4,
+            "model_type": "llm"
+          },
+          {
+            "name": "nomic-embed-text:latest",
+            "size_gb": 0.31,
+            "concurrency": 4,
+            "model_type": "embed"
+          },
+          {
+            "name": "qwen3.5:9b",
+            "size_gb": 9.4,
+            "concurrency": 4,
+            "model_type": "llm"
+          }
+        ],
+        "run": {
+          "workload": {
+            "prompt_tokens": 1250,
+            "max_tokens": 200,
+            "think": null
+          }
+        }
+      },
+      "per_model_results": [
+        {
+          "model": "nomic-embed-text:latest",
+          "model_type": "embed",
+          "requests": 11325,
+          "nodes": {
+            "m5": 11325
+          },
+          "tok_s": 53.9,
+          "avg_latency_ms": 63.5,
+          "avg_ttft_ms": 63.5
+        },
+        {
+          "model": "qwen3-coder:30b",
+          "model_type": "llm",
+          "requests": 152,
+          "nodes": {
+            "m2": 76,
+            "m1": 76
+          },
+          "tok_s": 144.8,
+          "avg_latency_ms": 4822.6,
+          "avg_ttft_ms": 936.5
+        },
+        {
+          "model": "qwen3.5:9b",
+          "model_type": "llm",
+          "requests": 13,
+          "nodes": {
+            "m5": 13
+          },
+          "tok_s": 63.4,
+          "avg_latency_ms": 54897.9,
+          "avg_ttft_ms": 40015.3
+        }
+      ],
+      "per_node_results": [
+        {
+          "node_id": "m1",
+          "requests": 76,
+          "pct": 0.7,
+          "tok_s": 72.4,
+          "tokens": 15200
+        },
+        {
+          "node_id": "m2",
+          "requests": 76,
+          "pct": 0.7,
+          "tok_s": 72.4,
+          "tokens": 15200
+        },
+        {
+          "node_id": "m5",
+          "requests": 11338,
+          "pct": 98.7,
+          "tok_s": 117.3,
+          "tokens": 24637
+        }
+      ],
+      "peak_utilization": [
+        {
+          "node_id": "m1",
+          "cpu_avg": 51.0,
+          "cpu_peak": 69.5,
+          "mem_avg": 12.8,
+          "mem_peak": 19.3,
+          "active_peak": 0
+        },
+        {
+          "node_id": "m2",
+          "cpu_avg": 50.8,
+          "cpu_peak": 69.0,
+          "mem_avg": 12.7,
+          "mem_peak": 18.9,
+          "active_peak": 0
+        },
+        {
+          "node_id": "m5",
+          "cpu_avg": 79.9,
+          "cpu_peak": 93.3,
+          "mem_avg": 5.1,
+          "mem_peak": 6.4,
+          "active_peak": 0
+        }
+      ]
+    },
+    "D1_one_machine": {
+      "run_id": "bench-1795159150",
+      "timestamp": 1795159150.2047596,
+      "duration_s": 210.0,
+      "total_requests": 98,
+      "total_failures": 12,
+      "total_prompt_tokens": 123569,
+      "total_completion_tokens": 19600,
+      "requests_per_sec": 0.47,
+      "tokens_per_sec": 93.3,
+      "latency_p50_ms": 7135.3,
+      "latency_p95_ms": 7676.4,
+      "latency_p99_ms": 15472.6,
+      "ttft_p50_ms": 1409.2,
+      "ttft_p95_ms": 1949.7,
+      "ttft_p99_ms": 10282.8,
+      "fleet_snapshot": {
+        "nodes": [
+          {
+            "node_id": "m1",
+            "cores": 14,
+            "memory_total_gb": 54.92,
+            "memory_available_gb": 48.15
+          }
+        ],
+        "models": [
+          {
+            "name": "qwen3-coder:30b",
+            "size_gb": 18.7,
+            "concurrency": 4,
+            "model_type": "llm"
+          },
+          {
+            "name": "qwen3.5:9b",
+            "size_gb": 6.55082555,
+            "concurrency": 4,
+            "model_type": "llm"
+          },
+          {
+            "name": "nomic-embed-text:latest",
+            "size_gb": 0.27430245,
+            "concurrency": 4,
+            "model_type": "embed"
+          }
+        ],
+        "run": {
+          "workload": {
+            "prompt_tokens": 1250,
+            "max_tokens": 200,
+            "think": null
+          }
+        }
+      },
+      "per_model_results": [
+        {
+          "model": "qwen3-coder:30b",
+          "model_type": "llm",
+          "requests": 98,
+          "nodes": {
+            "m1": 98
+          },
+          "tok_s": 93.3,
+          "avg_latency_ms": 7419.9,
+          "avg_ttft_ms": 1745.7
+        }
+      ],
+      "per_node_results": [
+        {
+          "node_id": "m1",
+          "requests": 98,
+          "pct": 100.0,
+          "tok_s": 93.3,
+          "tokens": 19600
+        }
+      ],
+      "peak_utilization": [
+        {
+          "node_id": "m1",
+          "cpu_avg": 50.2,
+          "cpu_peak": 61.5,
+          "mem_avg": 13.6,
+          "mem_peak": 19.3,
+          "active_peak": 0
+        },
+        {
+          "node_id": "m2",
+          "cpu_avg": 0.3,
+          "cpu_peak": 0.3,
+          "mem_avg": 18.8,
+          "mem_peak": 18.8,
+          "active_peak": 0
+        },
+        {
+          "node_id": "m5",
+          "cpu_avg": 0.3,
+          "cpu_peak": 0.3,
+          "mem_avg": 6.9,
+          "mem_peak": 6.9,
+          "active_peak": 0
+        }
+      ]
+    }
+  }
+}

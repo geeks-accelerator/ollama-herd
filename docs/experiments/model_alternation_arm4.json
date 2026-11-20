@@ -1,0 +1,192 @@
+{
+  "label": "arm 4: herd main 3a225b3, 2 nodes, Ollama 0.40.16, Lambda Quadro RTX 6000 24GB",
+  "url": "http://127.0.0.1:11435/v1/chat/completions",
+  "models": [
+    "qwen2.5:14b-instruct-q8_0",
+    "phi4:14b-q8_0"
+  ],
+  "prompt": "List three facts about the moon, one line each.",
+  "max_tokens": 128,
+  "run_at": "2026-11-20T07:31:47+0000",
+  "summary": {
+    "qwen2.5:14b-instruct-q8_0": {
+      "requests": 10,
+      "first_ttft_ms": 36417.3,
+      "median_ttft_ms_after_first": 63.3,
+      "max_ttft_ms_after_first": 68.1
+    },
+    "phi4:14b-q8_0": {
+      "requests": 10,
+      "first_ttft_ms": 7955.4,
+      "median_ttft_ms_after_first": 62.2,
+      "max_ttft_ms_after_first": 91.6
+    },
+    "_all": {
+      "requests": 20,
+      "errors": 0,
+      "wall_s": 82.2
+    }
+  },
+  "requests": [
+    {
+      "i": 0,
+      "model": "qwen2.5:14b-instruct-q8_0",
+      "ttft_ms": 36417.3,
+      "total_ms": 37744.3,
+      "completion_tokens": 39,
+      "node": "m2"
+    },
+    {
+      "i": 1,
+      "model": "phi4:14b-q8_0",
+      "ttft_ms": 7955.4,
+      "total_ms": 10302.0,
+      "completion_tokens": 72,
+      "node": "m1"
+    },
+    {
+      "i": 2,
+      "model": "qwen2.5:14b-instruct-q8_0",
+      "ttft_ms": 68.1,
+      "total_ms": 1389.0,
+      "completion_tokens": 39,
+      "node": "m2"
+    },
+    {
+      "i": 3,
+      "model": "phi4:14b-q8_0",
+      "ttft_ms": 91.6,
+      "total_ms": 2445.5,
+      "completion_tokens": 72,
+      "node": "m1"
+    },
+    {
+      "i": 4,
+      "model": "qwen2.5:14b-instruct-q8_0",
+      "ttft_ms": 64.6,
+      "total_ms": 1371.9,
+      "completion_tokens": 39,
+      "node": "m2"
+    },
+    {
+      "i": 5,
+      "model": "phi4:14b-q8_0",
+      "ttft_ms": 91.4,
+      "total_ms": 2431.5,
+      "completion_tokens": 72,
+      "node": "m1"
+    },
+    {
+      "i": 6,
+      "model": "qwen2.5:14b-instruct-q8_0",
+      "ttft_ms": 61.3,
+      "total_ms": 1358.9,
+      "completion_tokens": 39,
+      "node": "m2"
+    },
+    {
+      "i": 7,
+      "model": "phi4:14b-q8_0",
+      "ttft_ms": 62.9,
+      "total_ms": 2417.6,
+      "completion_tokens": 72,
+      "node": "m1"
+    },
+    {
+      "i": 8,
+      "model": "qwen2.5:14b-instruct-q8_0",
+      "ttft_ms": 63.9,
+      "total_ms": 1363.3,
+      "completion_tokens": 39,
+      "node": "m2"
+    },
+    {
+      "i": 9,
+      "model": "phi4:14b-q8_0",
+      "ttft_ms": 61.2,
+      "total_ms": 2415.4,
+      "completion_tokens": 72,
+      "node": "m1"
+    },
+    {
+      "i": 10,
+      "model": "qwen2.5:14b-instruct-q8_0",
+      "ttft_ms": 63.3,
+      "total_ms": 1360.6,
+      "completion_tokens": 39,
+      "node": "m2"
+    },
+    {
+      "i": 11,
+      "model": "phi4:14b-q8_0",
+      "ttft_ms": 60.0,
+      "total_ms": 2425.9,
+      "completion_tokens": 72,
+      "node": "m1"
+    },
+    {
+      "i": 12,
+      "model": "qwen2.5:14b-instruct-q8_0",
+      "ttft_ms": 62.2,
+      "total_ms": 1364.2,
+      "completion_tokens": 39,
+      "node": "m2"
+    },
+    {
+      "i": 13,
+      "model": "phi4:14b-q8_0",
+      "ttft_ms": 63.2,
+      "total_ms": 2403.2,
+      "completion_tokens": 72,
+      "node": "m1"
+    },
+    {
+      "i": 14,
+      "model": "qwen2.5:14b-instruct-q8_0",
+      "ttft_ms": 63.5,
+      "total_ms": 1377.4,
+      "completion_tokens": 39,
+      "node": "m2"
+    },
+    {
+      "i": 15,
+      "model": "phi4:14b-q8_0",
+      "ttft_ms": 62.2,
+      "total_ms": 2406.0,
+      "completion_tokens": 72,
+      "node": "m1"
+    },
+    {
+      "i": 16,
+      "model": "qwen2.5:14b-instruct-q8_0",
+      "ttft_ms": 59.4,
+      "total_ms": 1365.0,
+      "completion_tokens": 39,
+      "node": "m2"
+    },
+    {
+      "i": 17,
+      "model": "phi4:14b-q8_0",
+      "ttft_ms": 60.3,
+      "total_ms": 2449.7,
+      "completion_tokens": 72,
+      "node": "m1"
+    },
+    {
+      "i": 18,
+      "model": "qwen2.5:14b-instruct-q8_0",
+      "ttft_ms": 58.9,
+      "total_ms": 1355.2,
+      "completion_tokens": 39,
+      "node": "m2"
+    },
+    {
+      "i": 19,
+      "model": "phi4:14b-q8_0",
+      "ttft_ms": 61.6,
+      "total_ms": 2430.9,
+      "completion_tokens": 72,
+      "node": "m1"
+    }
+  ]
+}

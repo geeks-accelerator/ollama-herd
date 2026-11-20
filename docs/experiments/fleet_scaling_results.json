@@ -1,0 +1,1349 @@
+{
+  "date": "2026-11-20",
+  "hardware": "Lambda Cloud us-south-2: 4 x NVIDIA Quadro RTX 6000 24 GB (Turing), 1 x RTX A6000 48 GB; Ubuntu 22.04 (Lambda Stack); private network between machines",
+  "ollama": "0.40.16, OLLAMA_NUM_PARALLEL=4 in the systemd unit only (Ollama's documented Linux method), OLLAMA_HOST=0.0.0.0:11434; nothing passed to herd-node",
+  "telemetry": "off on every router and node",
+  "herd": "main at c0891f5 (released in 0.12.10)",
+  "model": "qwen3-coder:30b (Q4_K_M, 18.6 GB)",
+  "workload": "scripts/benchmark.py --prompt-tokens 1250 --max-tokens 200 --duration 120: ~1,260 prompt / 200 completion tokens per request, different filler per request; every node warmed directly first",
+  "arms": {
+    "N1": {
+      "c1": {
+        "run_id": "bench-1795153539",
+        "timestamp": 1795153539.4976993,
+        "duration_s": 122.0,
+        "total_requests": 41,
+        "total_failures": 0,
+        "total_prompt_tokens": 51695,
+        "total_completion_tokens": 8200,
+        "requests_per_sec": 0.34,
+        "tokens_per_sec": 67.2,
+        "latency_p50_ms": 2541.8,
+        "latency_p95_ms": 2582.0,
+        "latency_p99_ms": 12229.1,
+        "ttft_p50_ms": 556.3,
+        "ttft_p95_ms": 585.0,
+        "ttft_p99_ms": 593.4,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 75.29
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.556700761,
+              "concurrency": 1,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 41,
+            "nodes": {
+              "m1": 41
+            },
+            "tok_s": 67.2,
+            "avg_latency_ms": 2933.5,
+            "avg_ttft_ms": 559.2
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 41,
+            "pct": 100.0,
+            "tok_s": 67.2,
+            "tokens": 8200
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 43.9,
+            "cpu_peak": 54.0,
+            "mem_avg": 9.1,
+            "mem_peak": 14.5,
+            "active_peak": 0
+          }
+        ]
+      },
+      "c2": {
+        "run_id": "bench-1795153663",
+        "timestamp": 1795153663.6239033,
+        "duration_s": 123.4,
+        "total_requests": 60,
+        "total_failures": 0,
+        "total_prompt_tokens": 75653,
+        "total_completion_tokens": 12000,
+        "requests_per_sec": 0.49,
+        "tokens_per_sec": 97.2,
+        "latency_p50_ms": 4105.9,
+        "latency_p95_ms": 4172.2,
+        "latency_p99_ms": 4208.4,
+        "ttft_p50_ms": 868.6,
+        "ttft_p95_ms": 1168.1,
+        "ttft_p99_ms": 1177.8,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 50.26
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.7,
+              "concurrency": 2,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 60,
+            "nodes": {
+              "m1": 60
+            },
+            "tok_s": 97.2,
+            "avg_latency_ms": 4093.5,
+            "avg_ttft_ms": 940.9
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 60,
+            "pct": 100.0,
+            "tok_s": 97.2,
+            "tokens": 12000
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 53.5,
+            "cpu_peak": 59.4,
+            "mem_avg": 18.8,
+            "mem_peak": 19.7,
+            "active_peak": 0
+          }
+        ]
+      },
+      "c4": {
+        "run_id": "bench-1795153833",
+        "timestamp": 1795153833.4266865,
+        "duration_s": 121.8,
+        "total_requests": 68,
+        "total_failures": 0,
+        "total_prompt_tokens": 85746,
+        "total_completion_tokens": 13600,
+        "requests_per_sec": 0.56,
+        "tokens_per_sec": 111.6,
+        "latency_p50_ms": 7156.6,
+        "latency_p95_ms": 7514.5,
+        "latency_p99_ms": 7776.6,
+        "ttft_p50_ms": 1425.4,
+        "ttft_p95_ms": 1938.4,
+        "ttft_p99_ms": 2058.3,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.79
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.7,
+              "concurrency": 4,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 68,
+            "nodes": {
+              "m1": 68
+            },
+            "tok_s": 111.6,
+            "avg_latency_ms": 7135.1,
+            "avg_ttft_ms": 1438.4
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 68,
+            "pct": 100.0,
+            "tok_s": 111.6,
+            "tokens": 13600
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 50.8,
+            "cpu_peak": 62.0,
+            "mem_avg": 19.8,
+            "mem_peak": 20.2,
+            "active_peak": 0
+          }
+        ]
+      },
+      "c8": {
+        "run_id": "bench-1795153964",
+        "timestamp": 1795153964.0824394,
+        "duration_s": 129.7,
+        "total_requests": 72,
+        "total_failures": 0,
+        "total_prompt_tokens": 90783,
+        "total_completion_tokens": 14400,
+        "requests_per_sec": 0.56,
+        "tokens_per_sec": 111.0,
+        "latency_p50_ms": 14372.3,
+        "latency_p95_ms": 14683.8,
+        "latency_p99_ms": 15060.5,
+        "ttft_p50_ms": 8428.8,
+        "ttft_p95_ms": 8760.5,
+        "ttft_p99_ms": 8967.1,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.71
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.7,
+              "concurrency": 8,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 72,
+            "nodes": {
+              "m1": 72
+            },
+            "tok_s": 111.0,
+            "avg_latency_ms": 13987.6,
+            "avg_ttft_ms": 7998.3
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 72,
+            "pct": 100.0,
+            "tok_s": 111.0,
+            "tokens": 14400
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 55.5,
+            "cpu_peak": 64.6,
+            "mem_avg": 19.7,
+            "mem_peak": 19.8,
+            "active_peak": 0
+          }
+        ]
+      }
+    },
+    "N2": {
+      "c1": {
+        "run_id": "bench-1795154219",
+        "timestamp": 1795154219.005857,
+        "duration_s": 120.9,
+        "total_requests": 47,
+        "total_failures": 0,
+        "total_prompt_tokens": 59266,
+        "total_completion_tokens": 9400,
+        "requests_per_sec": 0.39,
+        "tokens_per_sec": 77.8,
+        "latency_p50_ms": 2558.8,
+        "latency_p95_ms": 2592.0,
+        "latency_p99_ms": 2600.8,
+        "ttft_p50_ms": 568.3,
+        "ttft_p95_ms": 588.4,
+        "ttft_p99_ms": 615.1,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.78
+            },
+            {
+              "node_id": "m2",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 75.37
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.7,
+              "concurrency": 1,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 47,
+            "nodes": {
+              "m1": 47
+            },
+            "tok_s": 77.8,
+            "avg_latency_ms": 2553.0,
+            "avg_ttft_ms": 567.3
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 47,
+            "pct": 100.0,
+            "tok_s": 77.8,
+            "tokens": 9400
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 49.7,
+            "cpu_peak": 54.2,
+            "mem_avg": 19.6,
+            "mem_peak": 19.8,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m2",
+            "cpu_avg": 0.7,
+            "cpu_peak": 7.5,
+            "mem_avg": 5.0,
+            "mem_peak": 5.0,
+            "active_peak": 0
+          }
+        ]
+      },
+      "c2": {
+        "run_id": "bench-1795154357",
+        "timestamp": 1795154357.1636944,
+        "duration_s": 121.4,
+        "total_requests": 94,
+        "total_failures": 0,
+        "total_prompt_tokens": 118525,
+        "total_completion_tokens": 18800,
+        "requests_per_sec": 0.77,
+        "tokens_per_sec": 154.9,
+        "latency_p50_ms": 2555.3,
+        "latency_p95_ms": 2607.9,
+        "latency_p99_ms": 2620.4,
+        "ttft_p50_ms": 566.3,
+        "ttft_p95_ms": 607.0,
+        "ttft_p99_ms": 611.3,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.65
+            },
+            {
+              "node_id": "m2",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 55.75
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.7,
+              "concurrency": 2,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 94,
+            "nodes": {
+              "m2": 47,
+              "m1": 47
+            },
+            "tok_s": 154.9,
+            "avg_latency_ms": 2553.5,
+            "avg_ttft_ms": 567.5
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 47,
+            "pct": 50.0,
+            "tok_s": 77.4,
+            "tokens": 9400
+          },
+          {
+            "node_id": "m2",
+            "requests": 47,
+            "pct": 50.0,
+            "tok_s": 77.4,
+            "tokens": 9400
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 50.8,
+            "cpu_peak": 54.9,
+            "mem_avg": 19.6,
+            "mem_peak": 19.7,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m2",
+            "cpu_avg": 49.8,
+            "cpu_peak": 53.1,
+            "mem_avg": 10.2,
+            "mem_peak": 15.4,
+            "active_peak": 0
+          }
+        ]
+      },
+      "c4": {
+        "run_id": "bench-1795154478",
+        "timestamp": 1795154478.4945784,
+        "duration_s": 120.7,
+        "total_requests": 100,
+        "total_failures": 0,
+        "total_prompt_tokens": 126092,
+        "total_completion_tokens": 20000,
+        "requests_per_sec": 0.83,
+        "tokens_per_sec": 165.7,
+        "latency_p50_ms": 4281.4,
+        "latency_p95_ms": 5581.7,
+        "latency_p99_ms": 5614.2,
+        "ttft_p50_ms": 882.5,
+        "ttft_p95_ms": 1161.2,
+        "ttft_p99_ms": 1171.6,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.71
+            },
+            {
+              "node_id": "m2",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 49.76
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.7,
+              "concurrency": 4,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 100,
+            "nodes": {
+              "m1": 50,
+              "m2": 50
+            },
+            "tok_s": 165.7,
+            "avg_latency_ms": 4791.3,
+            "avg_ttft_ms": 946.8
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 50,
+            "pct": 50.0,
+            "tok_s": 82.8,
+            "tokens": 10000
+          },
+          {
+            "node_id": "m2",
+            "requests": 50,
+            "pct": 50.0,
+            "tok_s": 82.8,
+            "tokens": 10000
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 49.4,
+            "cpu_peak": 56.2,
+            "mem_avg": 19.7,
+            "mem_peak": 19.8,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m2",
+            "cpu_avg": 48.8,
+            "cpu_peak": 60.4,
+            "mem_avg": 18.9,
+            "mem_peak": 19.6,
+            "active_peak": 0
+          }
+        ]
+      },
+      "c8": {
+        "run_id": "bench-1795154601",
+        "timestamp": 1795154601.1582072,
+        "duration_s": 122.0,
+        "total_requests": 136,
+        "total_failures": 0,
+        "total_prompt_tokens": 171482,
+        "total_completion_tokens": 27200,
+        "requests_per_sec": 1.11,
+        "tokens_per_sec": 223.0,
+        "latency_p50_ms": 7157.8,
+        "latency_p95_ms": 7592.2,
+        "latency_p99_ms": 7906.1,
+        "ttft_p50_ms": 1433.9,
+        "ttft_p95_ms": 1944.0,
+        "ttft_p99_ms": 2252.6,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.71
+            },
+            {
+              "node_id": "m2",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.83
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.7,
+              "concurrency": 8,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 136,
+            "nodes": {
+              "m2": 68,
+              "m1": 68
+            },
+            "tok_s": 223.0,
+            "avg_latency_ms": 7140.3,
+            "avg_ttft_ms": 1449.1
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 68,
+            "pct": 50.0,
+            "tok_s": 111.5,
+            "tokens": 13600
+          },
+          {
+            "node_id": "m2",
+            "requests": 68,
+            "pct": 50.0,
+            "tok_s": 111.5,
+            "tokens": 13600
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 54.3,
+            "cpu_peak": 61.3,
+            "mem_avg": 19.7,
+            "mem_peak": 19.8,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m2",
+            "cpu_avg": 53.2,
+            "cpu_peak": 63.4,
+            "mem_avg": 19.4,
+            "mem_peak": 19.6,
+            "active_peak": 0
+          }
+        ]
+      }
+    },
+    "N4": {
+      "c1": {
+        "run_id": "bench-1795154861",
+        "timestamp": 1795154861.7062364,
+        "duration_s": 120.8,
+        "total_requests": 47,
+        "total_failures": 0,
+        "total_prompt_tokens": 59263,
+        "total_completion_tokens": 9400,
+        "requests_per_sec": 0.39,
+        "tokens_per_sec": 77.8,
+        "latency_p50_ms": 2545.6,
+        "latency_p95_ms": 2607.7,
+        "latency_p99_ms": 2646.0,
+        "ttft_p50_ms": 559.3,
+        "ttft_p95_ms": 591.6,
+        "ttft_p99_ms": 601.9,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.81
+            },
+            {
+              "node_id": "m2",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.84
+            },
+            {
+              "node_id": "m3",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 75.52
+            },
+            {
+              "node_id": "m4",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 75.49
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.7,
+              "concurrency": 1,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 47,
+            "nodes": {
+              "m1": 47
+            },
+            "tok_s": 77.8,
+            "avg_latency_ms": 2551.4,
+            "avg_ttft_ms": 563.8
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 47,
+            "pct": 100.0,
+            "tok_s": 77.8,
+            "tokens": 9400
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 48.7,
+            "cpu_peak": 52.6,
+            "mem_avg": 19.6,
+            "mem_peak": 19.8,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m2",
+            "cpu_avg": 0.2,
+            "cpu_peak": 0.4,
+            "mem_avg": 19.4,
+            "mem_peak": 19.4,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m3",
+            "cpu_avg": 0.2,
+            "cpu_peak": 0.4,
+            "mem_avg": 4.9,
+            "mem_peak": 4.9,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m4",
+            "cpu_avg": 0.5,
+            "cpu_peak": 7.3,
+            "mem_avg": 4.9,
+            "mem_peak": 4.9,
+            "active_peak": 0
+          }
+        ]
+      },
+      "c2": {
+        "run_id": "bench-1795155001",
+        "timestamp": 1795155001.9685426,
+        "duration_s": 121.2,
+        "total_requests": 94,
+        "total_failures": 0,
+        "total_prompt_tokens": 118522,
+        "total_completion_tokens": 18800,
+        "requests_per_sec": 0.78,
+        "tokens_per_sec": 155.1,
+        "latency_p50_ms": 2556.8,
+        "latency_p95_ms": 2592.0,
+        "latency_p99_ms": 2616.9,
+        "ttft_p50_ms": 568.0,
+        "ttft_p95_ms": 591.9,
+        "ttft_p99_ms": 595.1,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.57
+            },
+            {
+              "node_id": "m2",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.85
+            },
+            {
+              "node_id": "m3",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 55.85
+            },
+            {
+              "node_id": "m4",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 55.83
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.7,
+              "concurrency": 2,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 94,
+            "nodes": {
+              "m2": 47,
+              "m1": 47
+            },
+            "tok_s": 155.1,
+            "avg_latency_ms": 2553.2,
+            "avg_ttft_ms": 568.0
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 47,
+            "pct": 50.0,
+            "tok_s": 77.5,
+            "tokens": 9400
+          },
+          {
+            "node_id": "m2",
+            "requests": 47,
+            "pct": 50.0,
+            "tok_s": 77.5,
+            "tokens": 9400
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 50.9,
+            "cpu_peak": 55.2,
+            "mem_avg": 19.6,
+            "mem_peak": 19.7,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m2",
+            "cpu_avg": 49.3,
+            "cpu_peak": 53.3,
+            "mem_avg": 19.4,
+            "mem_peak": 19.5,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m3",
+            "cpu_avg": 0.5,
+            "cpu_peak": 7.5,
+            "mem_avg": 4.9,
+            "mem_peak": 4.9,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m4",
+            "cpu_avg": 0.5,
+            "cpu_peak": 7.4,
+            "mem_avg": 4.9,
+            "mem_peak": 5.0,
+            "active_peak": 0
+          }
+        ]
+      },
+      "c4": {
+        "run_id": "bench-1795155125",
+        "timestamp": 1795155125.1590123,
+        "duration_s": 122.6,
+        "total_requests": 189,
+        "total_failures": 0,
+        "total_prompt_tokens": 238312,
+        "total_completion_tokens": 37800,
+        "requests_per_sec": 1.54,
+        "tokens_per_sec": 308.4,
+        "latency_p50_ms": 2565.7,
+        "latency_p95_ms": 2615.7,
+        "latency_p99_ms": 2660.3,
+        "ttft_p50_ms": 566.3,
+        "ttft_p95_ms": 601.8,
+        "ttft_p99_ms": 619.0,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.74
+            },
+            {
+              "node_id": "m2",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.77
+            },
+            {
+              "node_id": "m3",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 55.85
+            },
+            {
+              "node_id": "m4",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 55.82
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.7,
+              "concurrency": 4,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 189,
+            "nodes": {
+              "m2": 47,
+              "m1": 47,
+              "m3": 48,
+              "m4": 47
+            },
+            "tok_s": 308.4,
+            "avg_latency_ms": 2563.9,
+            "avg_ttft_ms": 564.6
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 47,
+            "pct": 24.9,
+            "tok_s": 76.7,
+            "tokens": 9400
+          },
+          {
+            "node_id": "m2",
+            "requests": 47,
+            "pct": 24.9,
+            "tok_s": 76.7,
+            "tokens": 9400
+          },
+          {
+            "node_id": "m3",
+            "requests": 48,
+            "pct": 25.4,
+            "tok_s": 78.3,
+            "tokens": 9600
+          },
+          {
+            "node_id": "m4",
+            "requests": 47,
+            "pct": 24.9,
+            "tok_s": 76.7,
+            "tokens": 9400
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 55.8,
+            "cpu_peak": 57.4,
+            "mem_avg": 19.7,
+            "mem_peak": 19.8,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m2",
+            "cpu_avg": 54.9,
+            "cpu_peak": 56.7,
+            "mem_avg": 19.4,
+            "mem_peak": 19.6,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m3",
+            "cpu_avg": 49.9,
+            "cpu_peak": 53.9,
+            "mem_avg": 10.1,
+            "mem_peak": 15.6,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m4",
+            "cpu_avg": 48.6,
+            "cpu_peak": 52.9,
+            "mem_avg": 10.1,
+            "mem_peak": 15.7,
+            "active_peak": 0
+          }
+        ]
+      },
+      "c8": {
+        "run_id": "bench-1795155247",
+        "timestamp": 1795155247.0471241,
+        "duration_s": 121.2,
+        "total_requests": 198,
+        "total_failures": 0,
+        "total_prompt_tokens": 249664,
+        "total_completion_tokens": 39600,
+        "requests_per_sec": 1.63,
+        "tokens_per_sec": 326.7,
+        "latency_p50_ms": 4291.7,
+        "latency_p95_ms": 5859.1,
+        "latency_p99_ms": 6026.6,
+        "ttft_p50_ms": 881.4,
+        "ttft_p95_ms": 1165.7,
+        "ttft_p99_ms": 1182.2,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.73
+            },
+            {
+              "node_id": "m2",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.85
+            },
+            {
+              "node_id": "m3",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 49.66
+            },
+            {
+              "node_id": "m4",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 49.63
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.7,
+              "concurrency": 8,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 198,
+            "nodes": {
+              "m4": 48,
+              "m1": 50,
+              "m2": 50,
+              "m3": 50
+            },
+            "tok_s": 326.7,
+            "avg_latency_ms": 4846.6,
+            "avg_ttft_ms": 947.4
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 50,
+            "pct": 25.3,
+            "tok_s": 82.5,
+            "tokens": 10000
+          },
+          {
+            "node_id": "m2",
+            "requests": 50,
+            "pct": 25.3,
+            "tok_s": 82.5,
+            "tokens": 10000
+          },
+          {
+            "node_id": "m3",
+            "requests": 50,
+            "pct": 25.3,
+            "tok_s": 82.5,
+            "tokens": 10000
+          },
+          {
+            "node_id": "m4",
+            "requests": 48,
+            "pct": 24.2,
+            "tok_s": 79.2,
+            "tokens": 9600
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 50.2,
+            "cpu_peak": 58.0,
+            "mem_avg": 19.7,
+            "mem_peak": 19.8,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m2",
+            "cpu_avg": 48.4,
+            "cpu_peak": 70.4,
+            "mem_avg": 19.4,
+            "mem_peak": 19.5,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m3",
+            "cpu_avg": 50.7,
+            "cpu_peak": 71.2,
+            "mem_avg": 18.9,
+            "mem_peak": 19.4,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m4",
+            "cpu_avg": 47.6,
+            "cpu_peak": 64.7,
+            "mem_avg": 18.8,
+            "mem_peak": 19.4,
+            "active_peak": 0
+          }
+        ]
+      },
+      "c16": {
+        "run_id": "bench-1795155372",
+        "timestamp": 1795155372.1568892,
+        "duration_s": 124.4,
+        "total_requests": 272,
+        "total_failures": 0,
+        "total_prompt_tokens": 342959,
+        "total_completion_tokens": 54400,
+        "requests_per_sec": 2.19,
+        "tokens_per_sec": 437.1,
+        "latency_p50_ms": 7194.8,
+        "latency_p95_ms": 7721.6,
+        "latency_p99_ms": 8090.4,
+        "ttft_p50_ms": 1413.9,
+        "ttft_p95_ms": 1949.1,
+        "ttft_p99_ms": 2251.6,
+        "fleet_snapshot": {
+          "nodes": [
+            {
+              "node_id": "m1",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.72
+            },
+            {
+              "node_id": "m2",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.82
+            },
+            {
+              "node_id": "m3",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.9
+            },
+            {
+              "node_id": "m4",
+              "cores": 14,
+              "memory_total_gb": 54.92,
+              "memory_available_gb": 47.87
+            }
+          ],
+          "models": [
+            {
+              "name": "qwen3-coder:30b",
+              "size_gb": 18.7,
+              "concurrency": 16,
+              "model_type": "llm"
+            }
+          ],
+          "run": {
+            "workload": {
+              "prompt_tokens": 1250,
+              "max_tokens": 200,
+              "think": null
+            }
+          }
+        },
+        "per_model_results": [
+          {
+            "model": "qwen3-coder:30b",
+            "model_type": "llm",
+            "requests": 272,
+            "nodes": {
+              "m1": 68,
+              "m2": 68,
+              "m3": 68,
+              "m4": 68
+            },
+            "tok_s": 437.1,
+            "avg_latency_ms": 7185.5,
+            "avg_ttft_ms": 1404.1
+          }
+        ],
+        "per_node_results": [
+          {
+            "node_id": "m1",
+            "requests": 68,
+            "pct": 25.0,
+            "tok_s": 109.3,
+            "tokens": 13600
+          },
+          {
+            "node_id": "m2",
+            "requests": 68,
+            "pct": 25.0,
+            "tok_s": 109.3,
+            "tokens": 13600
+          },
+          {
+            "node_id": "m3",
+            "requests": 68,
+            "pct": 25.0,
+            "tok_s": 109.3,
+            "tokens": 13600
+          },
+          {
+            "node_id": "m4",
+            "requests": 68,
+            "pct": 25.0,
+            "tok_s": 109.3,
+            "tokens": 13600
+          }
+        ],
+        "peak_utilization": [
+          {
+            "node_id": "m1",
+            "cpu_avg": 55.5,
+            "cpu_peak": 59.4,
+            "mem_avg": 19.6,
+            "mem_peak": 19.7,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m2",
+            "cpu_avg": 53.2,
+            "cpu_peak": 61.3,
+            "mem_avg": 19.5,
+            "mem_peak": 19.7,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m3",
+            "cpu_avg": 52.2,
+            "cpu_peak": 58.5,
+            "mem_avg": 19.3,
+            "mem_peak": 19.3,
+            "active_peak": 0
+          },
+          {
+            "node_id": "m4",
+            "cpu_avg": 52.0,
+            "cpu_peak": 61.9,
+            "mem_avg": 19.3,
+            "mem_peak": 19.4,
+            "active_peak": 0
+          }
+        ]
+      }
+    }
+  }
+}
