@@ -723,24 +723,39 @@ class NodeAgent:
             logger.warning(f"Unknown command type: {cmd_type}")
 
     async def _restart_ollama(self, env_overrides: dict[str, str] | None = None):
-        """Restart the local Ollama process with optional env var changes."""
+        """Restart the Ollama this agent started, with optional env var changes.
+
+        Only an Ollama herd-node spawned itself can be restarted from here.  One
+        run by the OS (Ollama.app under launchd, the systemd service on Linux)
+        reads its configuration from there, so setting the variables in our own
+        environment changed nothing for Ollama, while ``_ollama_env`` -- which
+        trusts our environment first -- reported values Ollama never received.
+        """
         import os
         import signal
+
+        if self._ollama_process is None:
+            logger.warning(
+                "Router asked to restart Ollama%s, but this node did not start Ollama "
+                "(it is run by the OS), so it cannot. Apply the change where Ollama is "
+                "configured and restart it there.",
+                f" with {env_overrides}" if env_overrides else "",
+            )
+            return
 
         logger.info("Restarting Ollama...")
 
         # Kill current Ollama process
-        if hasattr(self, "_ollama_process") and self._ollama_process:
-            try:
-                self._ollama_process.send_signal(signal.SIGTERM)
-                self._ollama_process.wait(timeout=15)
-            except Exception as e:
-                logger.warning(f"Error stopping Ollama: {e}")
-                import contextlib
+        try:
+            self._ollama_process.send_signal(signal.SIGTERM)
+            self._ollama_process.wait(timeout=15)
+        except Exception as e:
+            logger.warning(f"Error stopping Ollama: {e}")
+            import contextlib
 
-                with contextlib.suppress(Exception):
-                    self._ollama_process.kill()
-            self._ollama_process = None
+            with contextlib.suppress(Exception):
+                self._ollama_process.kill()
+        self._ollama_process = None
 
         # Apply env overrides
         if env_overrides:

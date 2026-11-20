@@ -53,10 +53,9 @@ async def fleet_limits(request: Request):
     """Effective serving constraints, so a client can auto-serialize instead of
     self-DoSing a saturated box.
 
-    Reports the per-node hot-model cap and free slots, the router's max
-    in-flight retry budget, and (when set) the node's ``OLLAMA_NUM_PARALLEL``
-    so a caller knows how many concurrent requests the fleet can actually
-    absorb before requests start queueing / 503-ing.
+    Reports the per-node hot-model cap and free slots and the router's max
+    in-flight retry budget, so a caller knows how many concurrent requests the
+    fleet can actually absorb before requests start queueing / 503-ing.
     """
     registry = request.app.state.registry
     settings = request.app.state.settings

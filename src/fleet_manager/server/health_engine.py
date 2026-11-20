@@ -109,6 +109,19 @@ def _anthropic_model_map() -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def set_ollama_env_howto(name: str, value: object) -> str:
+    """How to set an Ollama variable on each platform, for fix text.
+
+    herd-node reads the value from the same places (``collector._ollama_env``),
+    so following this is also how herd learns it.
+    """
+    return (
+        f"`launchctl setenv {name} {value}` (macOS), `sudo systemctl edit ollama` "
+        f'and add `Environment="{name}={value}"` (Linux), or a system environment '
+        f"variable (Windows), then restart Ollama"
+    )
+
+
 def _online(nodes) -> list:
     return [n for n in nodes if n.status.value == "online"]
 
@@ -663,16 +676,13 @@ class HealthEngine:
                 fixes.append(
                     f"Or lower parallelism on {node.node_id} from {np_now} to "
                     f"{self._KV_TARGET_PARALLELISM}: "
-                    f"`launchctl setenv OLLAMA_NUM_PARALLEL "
-                    f"{self._KV_TARGET_PARALLELISM}` (macOS), "
-                    f"`sudo systemctl edit ollama` and add Environment= "
-                    f"(Linux), or the system environment variable (Windows), "
-                    f"then restart Ollama. This is node-wide and not free: it "
-                    f"raises per-request TTFT for every model here, and on a "
-                    f"bandwidth-bound box buys less throughput than the slot "
-                    f"count suggests (measured 2026-10-05: four slots deliver "
-                    f"1.2x of one). Prefer the per-model reload above when it "
-                    f"is available."
+                    + set_ollama_env_howto("OLLAMA_NUM_PARALLEL", self._KV_TARGET_PARALLELISM)
+                    + ". This is node-wide and not free: it "
+                    "raises per-request TTFT for every model here, and on a "
+                    "bandwidth-bound box buys less throughput than the slot "
+                    "count suggests (measured 2026-10-05: four slots deliver "
+                    "1.2x of one). Prefer the per-model reload above when it "
+                    "is available."
                 )
             if not fixes:
                 fixes.append(
@@ -2972,9 +2982,9 @@ class HealthEngine:
                 ),
                 fix=(
                     "1) Increase OLLAMA_NUM_PARALLEL to allow embed requests to run "
-                    "alongside LLM inference: set OLLAMA_NUM_PARALLEL=4 (or higher) in "
-                    "~/.zshrc and run `launchctl setenv OLLAMA_NUM_PARALLEL 4`, then "
-                    "restart Ollama. "
+                    "alongside LLM inference, to 4 or higher: "
+                    + set_ollama_env_howto("OLLAMA_NUM_PARALLEL", 4)
+                    + ". "
                     "2) Enable FLEET_DYNAMIC_NUM_CTX=true in ~/.fleet-manager/env to "
                     "reduce per-model KV cache footprint (counteracts the memory growth "
                     "from higher parallelism). "

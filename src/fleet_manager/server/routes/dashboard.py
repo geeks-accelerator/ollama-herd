@@ -1059,6 +1059,8 @@ Provide a high-level fleet summary (2-3 short bullet points). Rules:
     # Internal LLM call via httpx
     import httpx
 
+    from fleet_manager.server.health_engine import set_ollama_env_howto
+
     base_url = f"http://localhost:{settings.port}"
     try:
         async with httpx.AsyncClient(base_url=base_url, timeout=60) as client:
@@ -1076,7 +1078,9 @@ Provide a high-level fleet summary (2-3 short bullet points). Rules:
                                 "add a new node (run 'herd-node' on another machine), "
                                 'pull a model (curl /api/pull -d \'{"name":"model"}\'), '
                                 "enable dynamic num_ctx in Settings, "
-                                "set OLLAMA_NUM_PARALLEL=2 in ~/.zshrc, "
+                                "raise OLLAMA_NUM_PARALLEL on a node ("
+                                + set_ollama_env_howto("OLLAMA_NUM_PARALLEL", 2)
+                                + "), "
                                 "check the Health or Recommendations dashboard pages. "
                                 "Do NOT suggest commands that don't exist. "
                                 "Do NOT suggest unload_context, load_model, or other "

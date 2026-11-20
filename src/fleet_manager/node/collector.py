@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import json
 import logging
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -102,9 +104,10 @@ def _make_lan_reachable_url(ollama_host: str, lan_ip: str) -> str:
     return ollama_host
 
 
-# Cache for launchctl lookups — the values can't change without restarting
+# Values read from where the OS keeps Ollama's service configuration (launchctl
+# on macOS, the systemd unit on Linux).  They can't change without restarting
 # Ollama, and shelling out on every heartbeat would be wasteful.
-_LAUNCHCTL_CACHE: dict[str, str] = {}
+_SERVICE_ENV_CACHE: dict[str, str] = {}
 
 
 # 60 s, not the 5 s heartbeat interval: this spawns an `lsof` plus one `ps` per
@@ -123,32 +126,99 @@ def _collect_backend_clients(ollama_host: str, router_url: str = ""):
 
 
 def _ollama_env(name: str) -> str:
-    """Read an Ollama env var, falling back to launchctl on macOS.
+    """Read an Ollama setting: herd-node's own environment, else Ollama's service.
 
-    Ollama.app is started by launchd, so its configuration is conventionally set
-    with ``launchctl setenv`` — which does **not** put the value in any shell's
-    environment.  A node agent started from a shell therefore can't see it, and
-    would silently report "unset" for a variable that is very much set for the
-    process it's describing.  (``OLLAMA_MAX_LOADED_MODELS`` avoided this on the
-    dev fleet only because it happened to also be in ``~/.fleet-manager/env``.)
+    Ollama is normally started by the OS, not by the shell herd-node runs in, so
+    its configuration lives somewhere herd-node's environment never sees:
 
-    Shell env still wins when present — it's what a non-launchd Ollama would use.
+    - **macOS**: Ollama.app is started by launchd and configured with
+      ``launchctl setenv``, which puts the value in no shell's environment.
+    - **Linux**: the installer makes Ollama a systemd service, configured in the
+      unit (``systemctl edit ollama``).  A service's environment is not inherited
+      by anything else; on 2026-11-20 a node with ``OLLAMA_NUM_PARALLEL=4`` in
+      its unit reported 0 and the router sent it one request at a time.
+
+    herd-node's own environment still wins when set: it is what an Ollama that
+    herd-node started itself, or one started from the same shell, uses.
     """
     val = os.environ.get(name, "").strip()
-    if val or sys.platform != "darwin":
+    if val:
         return val
-    if name in _LAUNCHCTL_CACHE:
-        return _LAUNCHCTL_CACHE[name]
-    found = ""
+    if name not in _SERVICE_ENV_CACHE:
+        _SERVICE_ENV_CACHE[name] = _service_env(name)
+    return _SERVICE_ENV_CACHE[name]
+
+
+def _service_env(name: str) -> str:
+    """``name`` as configured for the Ollama service, or "" if unknown."""
+    if sys.platform == "darwin":
+        cmd = ["launchctl", "getenv", name]
+    elif sys.platform.startswith("linux"):
+        # Unprivileged; prints the unit's Environment= assignments on one line.
+        cmd = ["systemctl", "show", "ollama.service", "-p", "Environment", "--value"]
+    else:
+        return ""
     try:
-        out = subprocess.run(
-            ["launchctl", "getenv", name], capture_output=True, text=True, timeout=5
-        )
-        found = (out.stdout or "").strip()
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError) as exc:
-        logger.debug(f"launchctl getenv {name} failed: {type(exc).__name__}: {exc}")
-    _LAUNCHCTL_CACHE[name] = found
-    return found
+        logger.debug(f"{cmd[0]} lookup of {name} failed: {type(exc).__name__}: {exc}")
+        return ""
+    text = (out.stdout or "").strip()
+    if sys.platform == "darwin":
+        return text
+    return _parse_systemd_environment(text).get(name, "")
+
+
+def _parse_systemd_environment(text: str) -> dict[str, str]:
+    """Parse ``systemctl show -p Environment --value``: space-separated
+    ``KEY=value`` words, a value with spaces in double quotes."""
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return {}
+    env = {}
+    for word in words:
+        key, sep, value = word.partition("=")
+        if sep:
+            env[key] = value
+    return env
+
+
+@_ttl_cache(ttl_seconds=15.0)
+def _runner_num_parallel() -> int:
+    """The slot count Ollama gave its running models, from their command lines.
+
+    Ollama starts one ``llama-server`` per loaded model with ``-np N``: the
+    parallelism it actually applied, after its own rules (families it forces to
+    1, its default).  That beats any configuration file, wherever Ollama was
+    configured.  The largest across runners is the node's value; per-model
+    exceptions are handled router-side (``decode_parallelism_for``).  0 when no
+    Ollama runner is visible (nothing loaded, or a container that can't see
+    host processes): the caller falls back to the configured value.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return 0
+    best = 0
+    for proc in psutil.process_iter(attrs=["name", "cmdline"]):
+        try:
+            cmdline = proc.info.get("cmdline") or []
+            if not cmdline or os.path.basename(cmdline[0]) not in (
+                "llama-server",
+                "llama-server.exe",
+            ):
+                continue
+            parent = proc.parent()
+            if parent is None or not parent.name().lower().startswith("ollama"):
+                continue  # someone's own llama-server, not Ollama's
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        for flag, value in zip(cmdline, cmdline[1:], strict=False):
+            if flag in ("-np", "--parallel"):
+                with contextlib.suppress(ValueError):
+                    best = max(best, int(value))
+    return best
 
 
 @functools.lru_cache(maxsize=1)
@@ -658,11 +728,9 @@ async def collect_heartbeat(
         logger.debug(f"Model metadata unavailable: {type(e).__name__}: {e}")
 
     # Report the local Ollama's configured hot-model cap so the router doesn't
-    # have to hardcode one.  We read it from our own environment: the node agent
-    # manages the Ollama on its own host and both are started from the same
-    # environment, so this is the closest thing to ground truth available —
-    # Ollama exposes no "what's your max_loaded_models" endpoint.  0 means
-    # "unset/unknown"; the router then falls back to Ollama's documented default.
+    # have to hardcode one.  Ollama exposes no endpoint for it, so read its
+    # configuration (``_ollama_env``: our environment, else Ollama's service).
+    # 0 means "unset/unknown"; the router then falls back to Ollama's default.
     max_loaded_models = 0
     raw_cap = _ollama_env("OLLAMA_MAX_LOADED_MODELS")
     if raw_cap:
@@ -675,12 +743,11 @@ async def collect_heartbeat(
         except ValueError:
             logger.debug(f"OLLAMA_MAX_LOADED_MODELS not an int: {raw_cap!r}")
 
-    # Same story for OLLAMA_NUM_PARALLEL — Ollama's per-model decode
-    # concurrency.  Read from our own environment for the same reason: no
-    # endpoint exposes it, and the node agent shares an environment with the
-    # Ollama it manages.  0 = unset/unknown.
-    num_parallel = 0
-    raw_np = _ollama_env("OLLAMA_NUM_PARALLEL")
+    # OLLAMA_NUM_PARALLEL — Ollama's per-model decode concurrency.  What its
+    # running models were started with wins; the configured value covers the
+    # time before anything is loaded.  0 = unknown.
+    num_parallel = _runner_num_parallel()
+    raw_np = "" if num_parallel else _ollama_env("OLLAMA_NUM_PARALLEL")
     if raw_np:
         try:
             parsed_np = int(raw_np)

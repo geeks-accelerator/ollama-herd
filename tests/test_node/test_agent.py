@@ -50,8 +50,10 @@ async def test_ensure_ollama_starts_when_down(agent):
     # First call: not healthy. Second call (after start): healthy.
     agent.ollama.is_healthy = AsyncMock(side_effect=[False, True])
 
-    with patch("fleet_manager.node.agent.shutil.which", return_value="/usr/local/bin/ollama"), \
-         patch("fleet_manager.node.agent.subprocess.Popen") as mock_popen:
+    with (
+        patch("fleet_manager.node.agent.shutil.which", return_value="/usr/local/bin/ollama"),
+        patch("fleet_manager.node.agent.subprocess.Popen") as mock_popen,
+    ):
         mock_popen.return_value = MagicMock(pid=12345)
 
         result = await agent._ensure_ollama()
@@ -78,8 +80,12 @@ async def test_ensure_ollama_start_fails(agent):
     """If subprocess.Popen raises, return False."""
     agent.ollama.is_healthy = AsyncMock(return_value=False)
 
-    with patch("fleet_manager.node.agent.shutil.which", return_value="/usr/local/bin/ollama"), \
-         patch("fleet_manager.node.agent.subprocess.Popen", side_effect=OSError("permission denied")):
+    with (
+        patch("fleet_manager.node.agent.shutil.which", return_value="/usr/local/bin/ollama"),
+        patch(
+            "fleet_manager.node.agent.subprocess.Popen", side_effect=OSError("permission denied")
+        ),
+    ):
         result = await agent._ensure_ollama()
 
     assert result is False
@@ -90,10 +96,12 @@ async def test_ensure_ollama_timeout(agent):
     """If Ollama never becomes healthy within the timeout, return False."""
     agent.ollama.is_healthy = AsyncMock(return_value=False)
 
-    with patch("fleet_manager.node.agent.shutil.which", return_value="/usr/local/bin/ollama"), \
-         patch("fleet_manager.node.agent.subprocess.Popen") as mock_popen, \
-         patch("fleet_manager.node.agent._OLLAMA_START_TIMEOUT", 2), \
-         patch("fleet_manager.node.agent._OLLAMA_POLL_INTERVAL", 1.0):
+    with (
+        patch("fleet_manager.node.agent.shutil.which", return_value="/usr/local/bin/ollama"),
+        patch("fleet_manager.node.agent.subprocess.Popen") as mock_popen,
+        patch("fleet_manager.node.agent._OLLAMA_START_TIMEOUT", 2),
+        patch("fleet_manager.node.agent._OLLAMA_POLL_INTERVAL", 1.0),
+    ):
         mock_popen.return_value = MagicMock(pid=99999)
 
         result = await agent._ensure_ollama()
@@ -202,8 +210,10 @@ async def test_drain_handlers_skipped_on_windows(agent):
     """
     loop = asyncio.get_running_loop()
 
-    with patch("fleet_manager.node.agent.sys.platform", "win32"), \
-         patch.object(loop, "add_signal_handler") as add_handler:
+    with (
+        patch("fleet_manager.node.agent.sys.platform", "win32"),
+        patch.object(loop, "add_signal_handler") as add_handler,
+    ):
         agent._install_drain_handlers()
 
     add_handler.assert_not_called()
@@ -215,8 +225,10 @@ async def test_drain_handlers_installed_on_posix(agent):
     the handlers exist.  Both signals, or Ctrl+C stops deregistering."""
     loop = asyncio.get_running_loop()
 
-    with patch("fleet_manager.node.agent.sys.platform", "linux"), \
-         patch.object(loop, "add_signal_handler") as add_handler:
+    with (
+        patch("fleet_manager.node.agent.sys.platform", "linux"),
+        patch.object(loop, "add_signal_handler") as add_handler,
+    ):
         agent._install_drain_handlers()
 
     assert {c.args[0] for c in add_handler.call_args_list} == {
@@ -230,8 +242,10 @@ async def test_windows_node_is_told_it_will_not_deregister(agent, caplog):
     """Silent degradation is the dishonest option: without the handlers a
     stopped Windows node lingers as online until its heartbeat goes stale,
     and an operator who is not told reads that as a bug."""
-    with caplog.at_level(logging.INFO, logger="fleet_manager.node.agent"), \
-         patch("fleet_manager.node.agent.sys.platform", "win32"):
+    with (
+        caplog.at_level(logging.INFO, logger="fleet_manager.node.agent"),
+        patch("fleet_manager.node.agent.sys.platform", "win32"),
+    ):
         agent._install_drain_handlers()
 
     assert "Windows" in caplog.text
@@ -252,8 +266,10 @@ async def test_unguarded_add_signal_handler_would_have_broken_start(agent):
     def unsupported(*_args, **_kwargs):
         raise NotImplementedError
 
-    with patch("fleet_manager.node.agent.sys.platform", "win32"), \
-         patch.object(loop, "add_signal_handler", side_effect=unsupported):
+    with (
+        patch("fleet_manager.node.agent.sys.platform", "win32"),
+        patch.object(loop, "add_signal_handler", side_effect=unsupported),
+    ):
         agent._install_drain_handlers()  # must not raise
 
 
@@ -279,3 +295,16 @@ async def test_failed_discovery_ends_with_one_clear_line(caplog):
         await agent.start()
     assert exit_info.value.code == 1
     assert "--router-url" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_restart_refuses_an_ollama_the_os_runs(agent, monkeypatch):
+    """Under launchd or systemd, setting our own env changes nothing for Ollama,
+    and would make the node report values Ollama never received."""
+    import os
+
+    monkeypatch.delenv("OLLAMA_NUM_PARALLEL", raising=False)
+    agent._ensure_ollama = AsyncMock()
+    await agent._restart_ollama({"OLLAMA_NUM_PARALLEL": "2"})
+    assert "OLLAMA_NUM_PARALLEL" not in os.environ
+    agent._ensure_ollama.assert_not_called()

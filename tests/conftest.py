@@ -111,6 +111,9 @@ def _clear_collector_ttl_caches():
         collector._detect_image_models.cache_clear()
     if hasattr(collector._detect_transcription_models, "cache_clear"):
         collector._detect_transcription_models.cache_clear()
+    if hasattr(collector._runner_num_parallel, "cache_clear"):
+        collector._runner_num_parallel.cache_clear()
+    collector._SERVICE_ENV_CACHE.clear()
     dashboard._HEALTH_CACHE["payload"] = None
     dashboard._HEALTH_CACHE["ts"] = 0.0
     # Tag-metadata send-on-change state: a test that "already sent" meta would
@@ -200,10 +203,7 @@ def make_node(
     disk_used: float = 200.0,
     agent_version: str = "",
 ) -> NodeState:
-    loaded = [
-        LoadedModel(name=name, size_gb=size)
-        for name, size in (loaded_models or [])
-    ]
+    loaded = [LoadedModel(name=name, size_gb=size) for name, size in (loaded_models or [])]
     return NodeState(
         node_id=node_id,
         status=status,
