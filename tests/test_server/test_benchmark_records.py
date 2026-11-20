@@ -766,3 +766,26 @@ async def test_dashboard_runner_stores_the_report_without_requests(monkeypatch):
     assert "requests" not in saved and len(runner._report["requests"]) == 1
     assert saved["fleet_snapshot"]["manifest"]["started_at"] == "start"
     assert saved["fleet_snapshot"]["manifest"]["model_types"] == ["embed-image"]
+
+
+def test_requested_models_match_with_or_without_latest():
+    """Run 4: '--models nomic-embed-text moondream' matched nothing, because
+    Ollama reports them as 'nomic-embed-text:latest', and the run went ahead
+    with the chat model alone."""
+    from fleet_manager.server.benchmark_engine import ModelTarget, match_requested
+
+    targets = [
+        ModelTarget(name="qwen3-coder:30b", size_gb=18.6, concurrency=4),
+        ModelTarget(name="nomic-embed-text:latest", size_gb=0.3, concurrency=4),
+        ModelTarget(name="moondream:latest", size_gb=1.7, concurrency=4),
+    ]
+    found, weights, missing = match_requested(
+        targets, ["moondream", "qwen3-coder:30b", "nomic-embed-text", "absent"], {"moondream": 2}
+    )
+    assert [t.name for t in found] == [
+        "moondream:latest",
+        "qwen3-coder:30b",
+        "nomic-embed-text:latest",
+    ]
+    assert weights == {"moondream:latest": 2}
+    assert missing == ["absent"]

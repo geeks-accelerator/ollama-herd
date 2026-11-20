@@ -52,6 +52,7 @@ from fleet_manager.server.benchmark_engine import (
     dashboard_record,
     discover_fleet,
     explicit_targets,
+    match_requested,
     parse_models,
     run_load,
     select_workloads,
@@ -216,8 +217,9 @@ async def run_benchmark(args: argparse.Namespace) -> None:
                 print(f"Error: Could not connect to fleet at {fleet_url}: {e}", file=sys.stderr)
                 sys.exit(1)
             if names:
-                by_name = {t.name: t for t in targets}
-                targets = [by_name[n] for n in names if n in by_name]  # --models order
+                targets, weights, missing = match_requested(targets, names, weights)
+                if missing:
+                    print(f"Warning: not loaded or on disk anywhere: {', '.join(missing)}")
         else:
             # Nothing exposes /fleet/status (plain Ollama, llama-swap): the
             # models as named, no nodes to warm or observe.

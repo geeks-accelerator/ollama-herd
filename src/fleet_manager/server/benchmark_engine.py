@@ -30,6 +30,7 @@ import httpx
 import fleet_manager
 from fleet_manager.common.errors import ollama_stream_error
 from fleet_manager.common.stats import percentile
+from fleet_manager.models.request import normalize_model_name
 from fleet_manager.server.model_knowledge import model_type
 
 logger = logging.getLogger(__name__)
@@ -312,6 +313,28 @@ async def reported_capabilities(client: httpx.AsyncClient) -> dict[str, list[str
         return {}
 
 
+def match_requested(
+    targets: list[ModelTarget], names: list[str], weights: dict[str, float]
+) -> tuple[list[ModelTarget], dict[str, float], list[str]]:
+    """The discovered targets for the ``--models`` asked for, in that order.
+
+    Ollama names a loaded or on-disk model with its tag ("nomic-embed-text:latest");
+    people ask without one.  Matching exactly dropped every untagged model from
+    a run without a word (fleet benchmark run 4, 2026-11-20: the embedding and
+    vision halves of two tests never ran).  Returns the targets, the weights
+    keyed by the targets' own names, and the names nothing matched.
+    """
+    by_name = {normalize_model_name(t.name): t for t in targets}
+    found = [by_name[normalize_model_name(n)] for n in names if normalize_model_name(n) in by_name]
+    remapped = {
+        by_name[normalize_model_name(n)].name: w
+        for n, w in weights.items()
+        if normalize_model_name(n) in by_name
+    }
+    missing = [n for n in names if normalize_model_name(n) not in by_name]
+    return found, remapped, missing
+
+
 async def discover_fleet(
     client: httpx.AsyncClient,
     include_on_disk: Iterable[str] = (),
@@ -403,12 +426,19 @@ async def discover_fleet(
     # loaded it everywhere, evicting resident models before the router decided
     # anything; for the same reason a model loaded somewhere keeps only the
     # nodes it is loaded on (fleet benchmark run 2, 2026-11-20).
+    # Requested names match with or without ":latest", as Ollama reports a
+    # model loaded or on disk with its tag ("nomic-embed-text:latest") while
+    # people ask for it without one.
+    known = {normalize_model_name(k) for k in model_map}
     for name in include_on_disk:
-        if name in model_map:
+        if normalize_model_name(name) in known:
             continue
         for node_id, (on_disk, sizes) in on_disk_by_node.items():
-            if name in on_disk:
-                t = target(name, sizes.get(name, 0.0), MIN_CONCURRENCY, on_disk_only=True)
+            actual = next(
+                (d for d in on_disk if normalize_model_name(d) == normalize_model_name(name)), None
+            )
+            if actual:
+                t = target(actual, sizes.get(actual, 0.0), MIN_CONCURRENCY, on_disk_only=True)
                 t.nodes.append(node_id)
         # Vision embeddings live in the node's sidecar, never in Ollama.
         for node_id, served in vision_embed_by_node.items():
