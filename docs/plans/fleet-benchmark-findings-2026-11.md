@@ -27,6 +27,29 @@ Not done, on purpose: the four test fixtures that patch `httpx.AsyncClient` modu
 keep working because the pool builds clients from the same `httpx` module; converting them was churn
 in passing tests). The site describes released behaviour, so it is synced at the release, not now.
 
+## Benchmark run 2 (2026-11-20): fixed during the run, and what it opened
+
+Fixed during the run: harness warm-up listing disk-only nodes for a model loaded elsewhere
+(`156bad9`); pre-warm evicting busy models (`c786c64`, the rebalancer chose the runner-up without the
+eviction signal: missed by the audit); eviction scored 0 mid-swap, when Ollama lists no model while
+one loads (`3a225b3`). Also `a324ef0`: herd-node read the runners of an Ollama it does not serve.
+
+Open, from run 2:
+
+12. **Router CPU per request.** Through a 20 ms mock the router collapsed between 50 and 80 req/s on a
+    Lambda vCPU (held 200/s on an M-series Mac); ~24 ms of herd time per request over the network,
+    reported identically by `X-Fleet-Overhead-Ms`. py-spy at 80/s: ~43 % the SQLite trace-writer
+    thread (a commit per request; 10 writes failed "cannot commit" under load), ~15 %+ Rich console
+    logging (the per-request "Routing …" INFO line and access logs), ~12 % scoring (`_eliminate`
+    recomputing fit costs). Batch trace writes, log routing decisions at DEBUG or without Rich
+    rendering, cache fit cost per (node, model) per heartbeat; then re-measure with
+    `scripts/router_overhead.py --rate`.
+13. **Shared-prompt sessions: first turn ~2x slower through herd.** 16 sessions over 4 nodes: herd's
+    median TTFT 1.4-1.5 s against round-robin's 1.07 s, almost all of it on first turns (1.3 s
+    against 0.66 s), although herd's own queue wait was 3 ms. Later turns favour herd (+26 % growth
+    over four turns against +171 %), and p95 is 23 % better. Read Ollama's per-request
+    prompt-eval counts and slot assignment for first turns placed by prefix affinity.
+
 ## Rules for this work
 
 herd is greenfield, so:
