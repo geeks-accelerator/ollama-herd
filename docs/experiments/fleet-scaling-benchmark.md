@@ -55,13 +55,17 @@ Aggregate completion tokens per second (TTFT p50):
 | 16 | | | 437.1 (1,414 ms) |
 
 - **One request is no faster on more machines** (C = 1: 67-78 tok/s everywhere). The one-machine
-  C = 1 arm read 67.2 against 77-78 on the others: the same model on another card of the same type;
-  machine-to-machine variance.
+  C = 1 arm read 67.2 against 77-78 on the others, on the same machine (`m1`): one of its 41
+  requests took 12.2 s (latency p99) against ~2.6 s everywhere else, with a normal TTFT, so one
+  slow generation in Ollama, not routing. (Corrected 2026-11-20; an earlier note blamed a
+  different card.)
 - **Saturated, throughput is near-linear in machines:** 111.6 → 223.0 → 437.1 tok/s (2.00x, 3.92x).
   One machine is flat from 4 to 8 concurrent requests (Ollama's 4 slots); past that, requests wait.
 - **Requests per machine is what matters,** not total concurrency: at 8 concurrent, four machines
   each have only 2 in flight, so 326.7 tok/s, not 4x.
-- **Even placement:** every multi-machine arm split requests within 1-2 points of evenly.
+- **Even placement once every machine had work:** with at least as many concurrent requests as
+  machines, every arm split requests within 1-2 of evenly. With fewer (2 machines at C = 1, 4 at
+  C = 1 and C = 2) the spare machines served nothing: one request runs on one machine.
 - **Router overhead,** measured separately on 0.12.10 (2026-11-20, `router_overhead_results.json`):
   **6.3 ms p50, 7.1 ms p95** per request over the private network (200 alternating pairs, direct vs
   through herd; `X-Fleet-Overhead-Ms` reported 6.0 ms). On 0.12.9 it was 23.8 ms. Through a 20 ms mock
