@@ -196,7 +196,29 @@ def _positive_int(raw: str) -> int:
 def _is_this_machine(url: str) -> bool:
     """Whether ``url`` points at this machine (loopback or its own LAN address)."""
     host = urlparse(url).hostname or ""
-    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or host == get_local_ip()
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or host == get_local_ip(warn=False)
+
+
+_last_lan_ip: str | None = None
+
+
+def _heartbeat_lan_ip() -> str:
+    """This node's LAN IP for the heartbeat, logging an outage once, not per tick.
+
+    The heartbeat runs every few seconds, so ``get_local_ip()``'s own warning
+    repeated for as long as the network was down: 274 identical lines in 9 h
+    on 2026-11-20, from Wi-Fi dropping for ~100 s every ~42 min.  Now the
+    first failed probe warns (with its cause), the rest are silent, and the
+    address coming back is logged at INFO, the same shape as the router's
+    mDNS ``watch_address``.
+    """
+    global _last_lan_ip
+    was_down = _last_lan_ip == "127.0.0.1"
+    ip = get_local_ip(warn=not was_down)
+    if was_down and ip != "127.0.0.1":
+        logger.info(f"LAN IP is back: {ip}")
+    _last_lan_ip = ip
+    return ip
 
 
 @_ttl_cache(ttl_seconds=15.0)
@@ -829,7 +851,7 @@ async def collect_heartbeat(
             days_observed=cap_info.days_observed,
         )
 
-    lan_ip = get_local_ip()
+    lan_ip = _heartbeat_lan_ip()
     image = _detect_image_models()
     transcription = _detect_transcription_models()
     vision_embedding = _detect_vision_embedding_models()
