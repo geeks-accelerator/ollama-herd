@@ -883,6 +883,7 @@ Full fleet state — nodes, queues, hardware metrics, and health summary.
   "fleet": {
     "nodes_total": 3,
     "nodes_online": 2,
+    "nodes_degraded": 0,
     "models_loaded": 4,
     "requests_active": 1
   },
@@ -971,6 +972,8 @@ Full fleet state — nodes, queues, hardware metrics, and health summary.
   "timestamp": 1710000000.0
 }
 ```
+
+`fleet.nodes_online` counts every node requests are routed to: `online` plus `degraded` (a late heartbeat, not yet offline). `fleet.nodes_degraded` is the part of that which is late.
 
 **`memory` field:**
 

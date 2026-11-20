@@ -62,6 +62,7 @@ class TestRegistryChecks:
         node.last_heartbeat = time.time() - 20
         report = await engine.analyze(FakeRegistry([node]), None)
         assert report.vitals.nodes_degraded == 1
+        assert report.vitals.nodes_online == 1  # still routed to, like /fleet/status
         warns = [r for r in report.recommendations if r.check_id == "node_degraded"]
         assert len(warns) == 1
 

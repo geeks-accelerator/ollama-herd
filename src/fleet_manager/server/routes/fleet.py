@@ -8,6 +8,7 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from fleet_manager.models.node import NodeStatus
 from fleet_manager.server.serializers import (
     OLLAMA_HOT_MODEL_CAP,
     hot_model_cap_for,
@@ -15,6 +16,18 @@ from fleet_manager.server.serializers import (
 )
 
 router = APIRouter(tags=["fleet"])
+
+
+def _routable_counts(registry) -> tuple[int, int]:
+    """``(nodes_online, nodes_degraded)`` as routing sees them.
+
+    Online is every node routing will send to (``registry.get_online_nodes``),
+    which includes DEGRADED ones (a late heartbeat, not yet offline); degraded
+    is the part of that which is late.  Counting only ONLINE nodes made a fleet
+    routing to two nodes report one.
+    """
+    online = registry.get_online_nodes()
+    return len(online), sum(1 for n in online if n.status == NodeStatus.DEGRADED)
 
 
 @router.get("/fleet/status")
@@ -33,12 +46,13 @@ async def fleet_status(request: Request):
             total_models_loaded += len(node.ollama.models_loaded)
             total_requests_active += node.ollama.requests_active
 
-    online_count = sum(1 for n in registry.get_all_nodes() if n.status.value == "online")
+    online_count, degraded_count = _routable_counts(registry)
 
     return {
         "fleet": {
             "nodes_total": len(nodes),
             "nodes_online": online_count,
+            "nodes_degraded": degraded_count,
             "models_loaded": total_models_loaded,
             "requests_active": total_requests_active,
         },
@@ -399,7 +413,7 @@ async def fleet_queue(request: Request):
             total_concurrency = sum(q.get("concurrency", 1) for q in queue_info.values())
             estimated_wait_ms = int(total_pending * avg_latency / max(total_concurrency, 1))
 
-    online_count = sum(1 for n in registry.get_all_nodes() if n.status.value == "online")
+    online_count, _ = _routable_counts(registry)
 
     return {
         "queue_depth": total_pending + total_in_flight,

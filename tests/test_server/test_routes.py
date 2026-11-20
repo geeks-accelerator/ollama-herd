@@ -235,6 +235,28 @@ class TestFleetStatus:
         assert len(data["nodes"]) == 1
         assert data["nodes"][0]["node_id"] == "studio"
 
+    def test_degraded_nodes_count_as_online_like_routing_does(self, client):
+        """Routing treats a DEGRADED node (a late heartbeat) as online
+        (``registry.get_online_nodes``); the status counts used to say it was
+        not, so a fleet routing to 2 nodes reported ``nodes_online: 1``."""
+        from fleet_manager.models.node import NodeStatus
+
+        for node_id in ("studio", "mini"):
+            hb = make_heartbeat(node_id=node_id, loaded_models=[("phi4:14b", 9.0)])
+            client.post("/heartbeat", json=hb.model_dump())
+        registry = client.app.state.registry
+        registry.get_node("mini").status = NodeStatus.DEGRADED
+        assert len(registry.get_online_nodes()) == 2
+
+        fleet = client.get("/fleet/status").json()["fleet"]
+        assert fleet["nodes_online"] == 2
+        assert fleet["nodes_degraded"] == 1
+        assert client.get("/fleet/queue").json()["nodes_online"] == 2
+
+        registry.get_node("mini").status = NodeStatus.OFFLINE
+        fleet = client.get("/fleet/status").json()["fleet"]
+        assert (fleet["nodes_online"], fleet["nodes_degraded"]) == (1, 0)
+
     def test_fleet_status_exposes_chip_and_bandwidth(self, client):
         """Regression guard: /fleet/status must surface new HardwareProfile
         fields so dashboards and debug tooling can see device-aware scoring

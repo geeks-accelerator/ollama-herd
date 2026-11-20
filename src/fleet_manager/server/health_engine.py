@@ -41,7 +41,7 @@ class FleetVitals(BaseModel):
     """Top-level fleet health summary stats."""
 
     nodes_total: int = 0
-    nodes_online: int = 0
+    nodes_online: int = 0  # routed to: ONLINE plus DEGRADED, as /fleet/status counts
     nodes_degraded: int = 0
     nodes_offline: int = 0
     overall_error_rate_pct: float = 0.0
@@ -335,8 +335,10 @@ class HealthEngine:
     # ------------------------------------------------------------------
 
     def _compute_vitals(self, nodes) -> FleetVitals:
-        online = sum(1 for n in nodes if n.status.value == "online")
+        # Online means routed to, as in /fleet/status: DEGRADED nodes (late
+        # heartbeat) included, and also counted on their own.
         degraded = sum(1 for n in nodes if n.status.value == "degraded")
+        online = sum(1 for n in nodes if n.status.value == "online") + degraded
         offline = sum(1 for n in nodes if n.status.value == "offline")
         return FleetVitals(
             nodes_total=len(nodes),

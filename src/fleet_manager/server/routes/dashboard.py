@@ -4064,7 +4064,7 @@ function renderHealth(report) {
   function fig(value, label, cls) { return '<div class="figure ' + (cls || '') + '"><span class="figure-value">' + value + '</span><span class="figure-label">' + label + '</span></div>'; }
   var err = v.overall_error_rate_pct;
   document.getElementById('vitals-grid').innerHTML =
-    fig(v.nodes_online + '<span class="figure-unit">/ ' + v.nodes_total + '</span>', 'Nodes online', v.nodes_online < v.nodes_total ? 'warn' : '') +
+    fig(v.nodes_online + '<span class="figure-unit">/ ' + v.nodes_total + '</span>', 'Nodes online', v.nodes_online < v.nodes_total || v.nodes_degraded ? 'warn' : '') +
     fig(fmtNum(v.total_requests_24h), 'Requests', v.total_requests_24h ? '' : 'zero') +
     fig(fmtPct(err), 'Error rate', err > 5 ? 'fail' : err > 1 ? 'warn' : err ? '' : 'zero') +
     fig(fmtMs(v.avg_ttft_ms), 'Time to first token', '') +
