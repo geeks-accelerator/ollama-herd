@@ -1,8 +1,8 @@
 # Fixes from the first fleet benchmark (2026-11-20)
 
-**Created:** 2026-11-20 · **Status:** 📋 planned, nothing built. Release A (items 1, 2, 5, 6) is
-small and independent; release B (items 3, 4) changes routing behaviour and needs the decisions at
-the end first.
+**Created:** 2026-11-20 · **Status:** 📋 planned, nothing built; decisions 1-2 made 2026-11-20 (end). Release A (items 1, 2,
+5, 6 and the small half of 10) is small and independent; release B (items 3, 4) changes routing
+behaviour as decided.
 **Source:** a benchmark of herd 0.12.9 with Ollama 0.40.16 on rented NVIDIA machines (four Quadro
 RTX 6000 24 GB and one RTX A6000 48 GB, Ubuntu 22.04, Ollama as a systemd service, one private
 network), using `scripts/benchmark.py` at `56993ff` with `--prompt-tokens 1250 --max-tokens 200`
@@ -241,16 +241,19 @@ the setting on; image requests unchanged.
     and the rate where errors start; plus the real-model A/B with far more than 20 pairs. And a
     prefix-sharing workload (multi-turn agent sessions with a long shared system prompt), herd's
     routing against plain round-robin on the same machines: the published routing gains (SGLang,
-    llm-d) all come from cache reuse, and run 1's unique prompts could not show it.
+    llm-d) all come from cache reuse, and run 1's unique prompts could not show it. Also one
+    `llama-bench` run per GPU type, so per-node Ollama numbers have the card's own ceiling beside them
+    (77 tok/s single-stream on the RTX 6000 is probably below it).
 
 ## Order
 
-1. **Release A:** items 1, 2, 5, 6. Each is local, with tests; none changes routing for a herd that
-   is not hitting the bug.
+1. **Release A:** items 1, 2, 5, 6, plus item 10's overhead header and pooled clients for the
+   native backends. Each is local, with tests; none changes routing for a herd that is not hitting
+   the bug. Then find the 24 ms with the new header and stage timings, fix what it shows.
 2. **Design note for items 3 and 4** (scoring changes, numbers on a whiteboard first), then build,
    then release B.
-3. **Benchmark run 2** on the same hardware once release B is out, with stock configuration on the
-   nodes (no herd-node workaround, no fastembed), to show the fixes: one node scales with
+3. **Benchmark run 2** (method in item 11) on the same hardware once release B is out, with stock
+   configuration on the nodes (no herd-node workaround, no fastembed), to show the fixes: one node scales with
    concurrency when `OLLAMA_NUM_PARALLEL` is in the systemd unit only; embeddings succeed without
    the extra; the alternation test settles one model per node with fallback on and off.
 
