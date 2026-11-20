@@ -581,7 +581,8 @@ class StreamingProxy:
         pending-request queue is already full, so retrying just piles more load
         onto a saturated node — turning a flood into a bigger flood (observed
         2026-07-15: a benchmark's requests + 3x retries produced 156 503s in
-        5 min).  Classified as non-retryable and surfaced upstream as a 429.
+        5 min).  Classified as non-retryable; every surface answers it with a
+        429 + Retry-After (``routes.routing.backend_failure_response``).
         """
         if not isinstance(e, httpx.HTTPStatusError) or e.response.status_code != 503:
             return False

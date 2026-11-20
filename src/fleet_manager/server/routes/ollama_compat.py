@@ -22,7 +22,6 @@ from fleet_manager.common.errors import (
 from fleet_manager.models.node import ModelTagMeta, NodeStatus
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.fleet_headers import (
-    affinity_from_breakdown,
     bind_request_id,
     fleet_headers,
 )
@@ -33,7 +32,7 @@ from fleet_manager.server.routes.routing import (
     EMBEDDING_COUNT_MISMATCH,
     _pick_pull_node,
     _pulls_in_flight,
-    check_context_overflow,
+    backend_failure_response,
     client_concurrency_response,
     direct_proxy_tracer,
     dispatched_stream,
@@ -43,6 +42,7 @@ from fleet_manager.server.routes.routing import (
     parse_allow_fallback,
     record_routing_rejection,
     score_with_fallbacks,
+    served_headers,
 )
 
 logger = logging.getLogger(__name__)
@@ -1129,21 +1129,21 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
         response_future = await queue_mgr.enqueue(entry, process_fn)
     except ClientConcurrencyExceeded as e:
         return client_concurrency_response(e)
-    stream = await dispatched_stream(request, response_future, entry, request.app.state.trace_store)
+    try:
+        stream = await dispatched_stream(
+            request, response_future, entry, request.app.state.trace_store
+        )
+    except Exception as exc:  # noqa: BLE001 — failed before its first chunk; the proxy traced it
+        return backend_failure_response(
+            exc,
+            protocol="ollama",
+            headers=served_headers(entry, requested_model=model, registry=registry),
+        )
     if stream is None:
-        return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
+        return Response(status_code=CLIENT_GONE_STATUS)  # client left before any output
 
-    # Build response headers — canonical X-Fleet-* set via the shared builder.
-    headers = fleet_headers(
-        node_id=winner.node_id,
-        served_model=actual_model,
-        requested_model=model,
-        backend="mlx" if actual_model.startswith("mlx:") else "ollama",
-        score=winner.score,
-        retries=entry.retry_count,
-        affinity=affinity_from_breakdown(winner.scores_breakdown),
-        extra=check_context_overflow(winner, inference_req, registry),
-    )
+    # Headers name the node that produced the first chunk, after any retries.
+    headers = served_headers(entry, requested_model=model, registry=registry)
 
     if inference_req.stream:
 
@@ -1189,26 +1189,15 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
                         logger.debug(f"Skipping malformed Ollama chunk: {e}")
         except Exception as exc:  # noqa: BLE001 — answered in-protocol below
             # Letting this leave the app made FastAPI answer a plain-text 500
-            # for *any* backend error -- including Ollama's own 404 "model not
-            # found", which the client then never saw -- and uvicorn closed the
-            # keep-alive connection too.  A backend 4xx is the client's answer
-            # and passes through with the backend's message, like
-            # ``client_error_passthrough`` on the other surfaces; anything else
-            # is a 502.  The proxy already traced the failure.
+            # and uvicorn closed the keep-alive connection too.  The proxy
+            # already traced the failure.
             proxy.pop_token_counts(inference_req.request_id)
             proxy.pop_request_meta(inference_req.request_id)
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            if not (isinstance(status, int) and 400 <= status < 500):
-                status = 502
             logger.warning(
                 f"Ollama request {inference_req.request_id[:8]} failed on "
-                f"{entry.assigned_node}: {type(exc).__name__}: {exc} -> HTTP {status}"
+                f"{entry.assigned_node}: {type(exc).__name__}: {exc}"
             )
-            return JSONResponse(
-                status_code=status,
-                content={"error": client_error_message(exc)},
-                headers=headers,
-            )
+            return backend_failure_response(exc, protocol="ollama", headers=headers)
 
         # Add thinking-aware headers to non-streaming response
         headers.update(_stream_meta_headers(proxy, inference_req))
@@ -1227,13 +1216,13 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
             elapsed_ms = int((time_mod.time() - inference_req.created_at) * 1000)
             _record_image_gen(
                 model=inference_req.model,
-                node_id=winner.node_id,
+                node_id=entry.assigned_node,
                 status="completed",
                 generation_ms=elapsed_ms,
             )
             logger.info(
                 f"Ollama native image gen: model={inference_req.model} "
-                f"node={winner.node_id} {len(png_bytes)} bytes in {elapsed_ms}ms"
+                f"node={entry.assigned_node} {len(png_bytes)} bytes in {elapsed_ms}ms"
             )
             return Response(
                 content=png_bytes,

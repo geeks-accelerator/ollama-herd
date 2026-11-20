@@ -48,7 +48,6 @@ from fleet_manager.server.anthropic_translator import (
     ollama_chunk_to_anthropic_events,
 )
 from fleet_manager.server.fleet_headers import (
-    affinity_from_breakdown,
     bind_request_id,
     fleet_headers,
 )
@@ -66,17 +65,19 @@ from fleet_manager.server.mlx_proxy import (
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.routing import (
     CLIENT_GONE_STATUS,
-    check_context_overflow,
+    backend_failure_response,
     client_concurrency_response,
     client_error_passthrough,
     dispatched_stream,
     extract_tags,
+    first_mlx_chunk,
     get_all_fleet_models,
     get_fleet_capabilities,
     get_fleet_loaded_and_ondisk,
     parse_allow_fallback,
     record_routing_rejection,
     score_with_fallbacks,
+    served_headers,
     upstream_failure_response,
 )
 
@@ -587,14 +588,25 @@ async def _serve_via_mlx(
             },
         )
 
+    # Through the first chunk, so a failure before any output is a status.
+    upstream, failure = await first_mlx_chunk(
+        request, mlx_proxy, inference_req, trace_store=trace_store, t_start=t_start
+    )
+    if failure is not None:
+        return backend_failure_response(
+            failure, protocol="anthropic", model=body.model, headers=headers
+        )
+    if upstream is None:
+        return Response(status_code=CLIENT_GONE_STATUS)  # client left before any output
+
     async def _sse_generator():
         state = AnthropicSSEState(model=body.model)
         tools_state: dict[int, _MlxToolState] = {}
         first_token_time: float | None = None
         error: Exception | None = None
         try:
-            # already_admitted=True — slot acquired above, we own the release.
-            async for raw in mlx_proxy.stream_openai(inference_req, already_admitted=True):
+            # The slot was acquired above; this generator owns its release.
+            async for raw in upstream:
                 for event in openai_sse_to_anthropic_events(
                     raw.decode("utf-8", errors="replace"),
                     state,
@@ -1123,25 +1135,31 @@ async def messages(
         response_future = await queue_mgr.enqueue(entry, process_fn)
     except ClientConcurrencyExceeded as e:
         return client_concurrency_response(e)
-    stream = await dispatched_stream(request, response_future, entry, request.app.state.trace_store)
+    _extra = {"anthropic-version": anthropic_version} if anthropic_version else None
+    try:
+        stream = await dispatched_stream(
+            request, response_future, entry, request.app.state.trace_store
+        )
+    except Exception as exc:  # noqa: BLE001 — failed before its first chunk; the proxy traced it
+        logger.warning(
+            f"Anthropic[{rid}] failed before any output on node={entry.assigned_node}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return backend_failure_response(
+            exc,
+            protocol="anthropic",
+            model=body.model,
+            headers=served_headers(
+                entry, requested_model=local_model, registry=registry, extra=_extra
+            ),
+        )
     if stream is None:
-        return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
+        return Response(status_code=CLIENT_GONE_STATUS)  # client left before any output
 
-    _extra = check_context_overflow(winner, inference_req, registry)
-    if anthropic_version:
-        _extra["anthropic-version"] = anthropic_version
+    # Headers name the node that produced the first chunk, after any retries.
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
     headers.update(
-        fleet_headers(
-            node_id=winner.node_id,
-            served_model=actual_model,
-            requested_model=local_model,
-            backend="mlx" if actual_model.startswith("mlx:") else "ollama",
-            score=winner.score,
-            retries=entry.retry_count,
-            affinity=affinity_from_breakdown(winner.scores_breakdown),
-            extra=_extra,
-        )
+        served_headers(entry, requested_model=local_model, registry=registry, extra=_extra)
     )
 
     if body.stream:
@@ -1168,7 +1186,7 @@ async def messages(
                 error = exc
                 state.failed = True
                 logger.exception(
-                    f"Anthropic[{rid}] stream aborted on node={winner.node_id}: "
+                    f"Anthropic[{rid}] stream aborted on node={entry.assigned_node}: "
                     f"{type(exc).__name__}: {exc}"
                 )
                 # Headers are already sent: re-raising only tears the connection
@@ -1182,12 +1200,12 @@ async def messages(
                     logger.warning(
                         f"Anthropic[{rid}] stream FAILED — sent an error event"
                         + ("" if error else " (backend ended before done:true)")
-                        + f": node={winner.node_id} tools={len(state.emitted_tools)} "
+                        + f": node={entry.assigned_node} tools={len(state.emitted_tools)} "
                         f"output_tok≈{state.output_tokens} elapsed_ms={elapsed_ms:.0f}"
                     )
                 else:
                     logger.info(
-                        f"Anthropic[{rid}] stream done: node={winner.node_id} "
+                        f"Anthropic[{rid}] stream done: node={entry.assigned_node} "
                         f"stop={state.stop_reason} tools={len(state.emitted_tools)} "
                         f"in_tok={state.input_tokens} out_tok={state.output_tokens} "
                         f"elapsed_ms={elapsed_ms:.0f}"
@@ -1211,16 +1229,13 @@ async def messages(
             chunks.append(line)
     except Exception as exc:  # noqa: BLE001 — surface the failure with context
         logger.exception(
-            f"Anthropic[{rid}] non-streaming failed on node={winner.node_id}: "
+            f"Anthropic[{rid}] non-streaming failed on node={entry.assigned_node}: "
             f"{type(exc).__name__}: {exc}"
         )
-        client_err = client_error_passthrough(exc, model=body.model, anthropic=True)
-        if client_err is not None:
-            return client_err
         # Retries are spent by now (the proxy retries before the first
         # chunk); a re-raise only produced an opaque 500 and a closed
         # connection.  Report the backend failure as one.
-        return upstream_failure_response(client_error_message(exc), anthropic=True)
+        return backend_failure_response(exc, protocol="anthropic", model=body.model)
     finally:
         proxy.pop_token_counts(inference_req.request_id)
         proxy.pop_request_meta(inference_req.request_id)
@@ -1234,7 +1249,7 @@ async def messages(
     except UpstreamIncomplete as exc:
         logger.warning(
             f"Anthropic[{rid}] non-streaming: backend ended before done:true on "
-            f"node={winner.node_id} — answering 502, not a truncated 200"
+            f"node={entry.assigned_node} — answering 502, not a truncated 200"
         )
         return upstream_failure_response(str(exc), anthropic=True)
     elapsed_ms = (time.time() - t_start) * 1000
@@ -1243,7 +1258,7 @@ async def messages(
     tool_names = [b.get("name") for b in blocks if b.get("type") == "tool_use"]
     usage = response.get("usage") or {}
     logger.info(
-        f"Anthropic[{rid}] done: node={winner.node_id} "
+        f"Anthropic[{rid}] done: node={entry.assigned_node} "
         f"stop={response.get('stop_reason')} blocks={block_types} "
         f"in_tok={usage.get('input_tokens', 0)} out_tok={usage.get('output_tokens', 0)} "
         f"elapsed_ms={elapsed_ms:.0f}" + (f" tool_names={tool_names}" if tool_names else "")

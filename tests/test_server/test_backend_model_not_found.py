@@ -248,13 +248,15 @@ class TestSingleNodeAnswersInProtocol:
             assert resp.json() == {"error": NO_MANIFEST}
 
     @pytest.mark.parametrize("surface", SURFACES)
-    def test_streaming_ends_with_the_backends_message_and_no_url(self, one_node, surface):
+    def test_streaming_is_the_backends_404_too(self, one_node, surface):
+        """It fails before the first chunk, so it is answered with a status
+        rather than a 200 stream ending in an error (test_stream_first_chunk)."""
         resp = _post(one_node, surface, stream=True)
+        assert resp.status_code == 404, resp.text
         assert NO_MANIFEST in resp.text
         assert "http://" not in resp.text
         if surface == "ollama":
-            last = json.loads(resp.text.strip().splitlines()[-1])
-            assert last == {"error": NO_MANIFEST}
+            assert resp.json() == {"error": NO_MANIFEST}
 
     def test_native_generate_too(self, one_node):
         resp = one_node.post(

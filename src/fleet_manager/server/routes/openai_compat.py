@@ -23,7 +23,6 @@ from fleet_manager.common.errors import (
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.node.text_embedding_models import DEFAULT_RERANK_MODEL
 from fleet_manager.server.fleet_headers import (
-    affinity_from_breakdown,
     bind_request_id,
     fleet_headers,
     usage_with_cached_tokens,
@@ -45,16 +44,18 @@ from fleet_manager.server.routes.ollama_compat import (
 )
 from fleet_manager.server.routes.routing import (
     CLIENT_GONE_STATUS,
-    check_context_overflow,
+    backend_failure_response,
     client_concurrency_response,
     client_error_passthrough,
     dispatched_stream,
     extract_tags,
+    first_mlx_chunk,
     get_all_fleet_models,
     get_fleet_capabilities,
     parse_allow_fallback,
     record_routing_rejection,
     score_with_fallbacks,
+    served_headers,
     upstream_failure_response,
 )
 from fleet_manager.server.routes.text_embedding_compat import (
@@ -269,6 +270,15 @@ async def _serve_openai_via_mlx(
             content={"error": {"message": str(exc), "type": "model_overloaded"}},
         )
 
+    # Through the first chunk, so a failure before any output is a status.
+    upstream, failure = await first_mlx_chunk(
+        request, mlx_proxy, inference_req, trace_store=trace_store, t_start=t_start
+    )
+    if failure is not None:
+        return backend_failure_response(failure, protocol="openai", model=model, headers=headers)
+    if upstream is None:
+        return Response(status_code=CLIENT_GONE_STATUS)  # client left before any output
+
     async def _passthrough():
         first_token_time: float | None = None
         error: Exception | None = None
@@ -277,11 +287,11 @@ async def _serve_openai_via_mlx(
         # off for the client.  See UPSTREAM_INCOMPLETE.
         saw_done = False
         try:
-            # already_admitted=True — slot acquired above, we own the release.
+            # The slot was acquired above; this generator owns its release.
             # stream_openai yields bare SSE lines (aiter_lines strips the "\n\n"
             # event framing and drops empty separator lines); re-add "\n\n" so
             # the client receives well-formed `data: {...}\n\n` events.
-            async for raw in mlx_proxy.stream_openai(inference_req, already_admitted=True):
+            async for raw in upstream:
                 if first_token_time is None:
                     first_token_time = time.time()
                 if raw.strip() == b"data: [DONE]":
@@ -480,24 +490,23 @@ async def chat_completions(request: Request):
         response_future = await queue_mgr.enqueue(entry, process_fn)
     except ClientConcurrencyExceeded as e:
         return client_concurrency_response(e)
-    stream = await dispatched_stream(request, response_future, entry, request.app.state.trace_store)
-    if stream is None:
-        return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
-
-    # Build response headers — canonical X-Fleet-* set via the shared builder.
-    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
-    headers.update(
-        fleet_headers(
-            node_id=winner.node_id,
-            served_model=actual_model,
-            requested_model=model,
-            backend="mlx" if actual_model.startswith("mlx:") else "ollama",
-            score=winner.score,
-            retries=entry.retry_count,
-            affinity=affinity_from_breakdown(winner.scores_breakdown),
-            extra=check_context_overflow(winner, inference_req, registry),
+    try:
+        stream = await dispatched_stream(
+            request, response_future, entry, request.app.state.trace_store
         )
-    )
+    except Exception as exc:  # noqa: BLE001 — failed before its first chunk; the proxy traced it
+        return backend_failure_response(
+            exc,
+            protocol="openai",
+            model=actual_model,
+            headers=served_headers(entry, requested_model=model, registry=registry),
+        )
+    if stream is None:
+        return Response(status_code=CLIENT_GONE_STATUS)  # client left before any output
+
+    # Headers name the node that produced the first chunk, after any retries.
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    headers.update(served_headers(entry, requested_model=model, registry=registry))
 
     if inference_req.stream:
 
@@ -564,21 +573,12 @@ async def chat_completions(request: Request):
                             collected_tool_calls.append(tc)
                     except (json.JSONDecodeError, IndexError) as e:
                         logger.debug(f"Skipping malformed SSE chunk: {e}")
-        except Exception as exc:  # noqa: BLE001 — 4xx passes through, 5xx re-raises
-            # A backend client-error (e.g. "model does not support tools") must
-            # reach the caller as that 4xx, not an opaque 500. See
-            # client_error_passthrough.
-            client_err = client_error_passthrough(exc, model=actual_model)
-            if client_err is not None:
-                logger.info(
-                    f"OpenAI: backend client-error for {actual_model} → "
-                    f"passing through {client_err.status_code}"
-                )
-                return client_err
+        except Exception as exc:  # noqa: BLE001 — answered with a status, not re-raised
             # Retries are spent by now (the proxy retries before the first
             # chunk); a re-raise only produced an opaque 500 and a closed
-            # connection.  Report the backend failure as one.
-            return upstream_failure_response(client_error_message(exc))
+            # connection.  The proxy already traced the failure.
+            proxy.pop_token_counts(inference_req.request_id)
+            return backend_failure_response(exc, protocol="openai", model=actual_model)
 
         if upstream_failed or finish_reason is None:
             proxy.pop_token_counts(inference_req.request_id)

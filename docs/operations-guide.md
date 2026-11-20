@@ -254,9 +254,11 @@ When a node fails before the first response chunk, the router automatically retr
 3. Router adds Node A to the `excluded_nodes` list
 4. Router re-scores all remaining nodes (excluding Node A)
 5. Routes to the next-best node (Node B)
-6. Up to `FLEET_MAX_RETRIES` (default: 2) attempts
+6. Up to `FLEET_MAX_RETRIES` (default: 2) retries, so at most 3 attempts
 
-Each failed attempt is recorded as a `retried` trace. The successful attempt is recorded as `completed` with `retry_count` reflecting total retries.
+Each failed attempt is recorded as a `retried` trace; the last attempt as `completed` or `failed`. Every row's `retry_count` is the number of retries before that attempt (0, 1, 2), so the last row's is the request's total.
+
+The response is answered once the first chunk exists, so its `X-Fleet-Node`, `X-Fleet-Score` and `X-Fleet-Retries` describe the node that served it. A request that fails before its first chunk on every node gets a real status (streaming or not): the backend's 4xx, `429` + `Retry-After` for Ollama's queue-full 503, otherwise `502`. A failure after the first chunk ends the stream with the protocol's error event, since the `200` is already sent.
 
 ---
 

@@ -30,9 +30,7 @@ from fleet_manager.common.errors import (
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server.anthropic_autoroute import resolve_model
 from fleet_manager.server.fleet_headers import (
-    affinity_from_breakdown,
     bind_request_id,
-    fleet_headers,
 )
 from fleet_manager.server.mlx_proxy import is_mlx_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
@@ -47,9 +45,8 @@ from fleet_manager.server.responses_translator import (
 )
 from fleet_manager.server.routes.routing import (
     CLIENT_GONE_STATUS,
-    check_context_overflow,
+    backend_failure_response,
     client_concurrency_response,
-    client_error_passthrough,
     dispatched_stream,
     extract_tags,
     get_all_fleet_models,
@@ -58,6 +55,7 @@ from fleet_manager.server.routes.routing import (
     parse_allow_fallback,
     record_routing_rejection,
     score_with_fallbacks,
+    served_headers,
     upstream_failure_response,
 )
 
@@ -259,26 +257,27 @@ async def responses(request: Request):
         response_future = await queue_mgr.enqueue(entry, process_fn)
     except ClientConcurrencyExceeded as e:
         return client_concurrency_response(e)
-    ollama_stream = await dispatched_stream(
-        request, response_future, entry, request.app.state.trace_store
-    )
-    if ollama_stream is None:
-        return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
-
-    _extra = check_context_overflow(winner, inference_req, registry)
-    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
-    headers.update(
-        fleet_headers(
-            node_id=winner.node_id,
-            served_model=actual_model,
-            requested_model=local_model,
-            backend="mlx" if actual_model.startswith("mlx:") else "ollama",
-            score=winner.score,
-            retries=entry.retry_count,
-            affinity=affinity_from_breakdown(winner.scores_breakdown),
-            extra=_extra,
+    try:
+        ollama_stream = await dispatched_stream(
+            request, response_future, entry, request.app.state.trace_store
         )
-    )
+    except Exception as exc:  # noqa: BLE001 — failed before its first chunk; the proxy traced it
+        logger.warning(
+            f"Responses[{rid}] failed before any output on node={entry.assigned_node}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return backend_failure_response(
+            exc,
+            protocol="openai",
+            model=requested_model,
+            headers=served_headers(entry, requested_model=local_model, registry=registry),
+        )
+    if ollama_stream is None:
+        return Response(status_code=CLIENT_GONE_STATUS)  # client left before any output
+
+    # Headers name the node that produced the first chunk, after any retries.
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    headers.update(served_headers(entry, requested_model=local_model, registry=registry))
 
     if stream:
 
@@ -297,13 +296,13 @@ async def responses(request: Request):
                     # truncated turn had finished.  It now gets response.failed.
                     logger.warning(
                         f"Responses[{rid}] stream ended without a terminal on "
-                        f"node={winner.node_id} — sending response.failed"
+                        f"node={entry.assigned_node} — sending response.failed"
                     )
                     for event in responses_failure_events(state):
                         yield event
             except Exception as exc:  # noqa: BLE001 — reported in-stream, not re-raised
                 logger.exception(
-                    f"Responses[{rid}] stream aborted on node={winner.node_id}: "
+                    f"Responses[{rid}] stream aborted on node={entry.assigned_node}: "
                     f"{type(exc).__name__}: {exc}"
                 )
                 # Headers are already sent: re-raising only tears the connection,
@@ -314,7 +313,7 @@ async def responses(request: Request):
                 proxy.pop_token_counts(inference_req.request_id)
                 proxy.pop_request_meta(inference_req.request_id)
                 logger.info(
-                    f"Responses[{rid}] stream done: node={winner.node_id} "
+                    f"Responses[{rid}] stream done: node={entry.assigned_node} "
                     f"tools={len(state.emitted_tools)} "
                     f"out_tok={state.output_tokens} "
                     f"elapsed_ms={(time.time() - t_start) * 1000:.0f}"
@@ -346,16 +345,13 @@ async def responses(request: Request):
             chunks.append(line)
     except Exception as exc:  # noqa: BLE001 — surface the failure with context
         logger.exception(
-            f"Responses[{rid}] non-streaming failed on node={winner.node_id}: "
+            f"Responses[{rid}] non-streaming failed on node={entry.assigned_node}: "
             f"{type(exc).__name__}: {exc}"
         )
-        client_err = client_error_passthrough(exc, model=requested_model)
-        if client_err is not None:
-            return client_err
         # Retries are spent by now (the proxy retries before the first
         # chunk); a re-raise only produced an opaque 500 and a closed
         # connection.  Report the backend failure as one.
-        return upstream_failure_response(client_error_message(exc))
+        return backend_failure_response(exc, protocol="openai", model=requested_model)
     finally:
         proxy.pop_token_counts(inference_req.request_id)
         proxy.pop_request_meta(inference_req.request_id)
@@ -367,7 +363,7 @@ async def responses(request: Request):
     except UpstreamIncomplete as exc:
         logger.warning(
             f"Responses[{rid}] non-streaming: backend ended before done:true on "
-            f"node={winner.node_id} — answering 502, not a truncated 200"
+            f"node={entry.assigned_node} — answering 502, not a truncated 200"
         )
         return upstream_failure_response(str(exc))
     _text = "".join(
@@ -389,7 +385,7 @@ async def responses(request: Request):
         )
     usage = response.get("usage") or {}
     logger.info(
-        f"Responses[{rid}] done: node={winner.node_id} "
+        f"Responses[{rid}] done: node={entry.assigned_node} "
         f"status={response.get('status')} items={len(response.get('output') or [])} "
         f"in_tok={usage.get('input_tokens', 0)} out_tok={usage.get('output_tokens', 0)} "
         f"elapsed_ms={(time.time() - t_start) * 1000:.0f}"

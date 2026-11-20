@@ -61,8 +61,8 @@ def test_overflow_routing_marks_the_request_with_the_window():
     )
     registry = MagicMock()
     registry.get_node.return_value = node
-    winner = SimpleNamespace(node_id="bb", scores_breakdown={"context_fit": -10})
-    headers = check_context_overflow(winner, req, registry)
+    entry = QueueEntry(request=req, assigned_node="bb", routing_breakdown={"context_fit": -10})
+    headers = check_context_overflow(entry, registry)
     assert "X-Fleet-Context-Overflow" in headers
     assert req.overflow_context_length == 2048
 

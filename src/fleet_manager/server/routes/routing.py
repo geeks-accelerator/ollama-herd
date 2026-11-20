@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
+from collections.abc import AsyncIterator
 
 import httpx
 from fastapi.responses import JSONResponse
@@ -12,10 +14,12 @@ from fastapi.responses import JSONResponse
 from fleet_manager.common.errors import (
     UPSTREAM_INCOMPLETE_MESSAGE,
     backend_error_detail,
+    client_error_message,
     error_body,
 )
 from fleet_manager.models.node import MemoryPressure, NodeStatus
-from fleet_manager.models.request import InferenceRequest, RoutingResult
+from fleet_manager.models.request import InferenceRequest, QueueEntry, RoutingResult
+from fleet_manager.server.fleet_headers import affinity_from_breakdown, fleet_headers
 from fleet_manager.server.model_knowledge import classify_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.scorer import ScoringEngine
@@ -104,12 +108,13 @@ def client_error_passthrough(exc, *, model: str = "", anthropic: bool = False):
 def upstream_failure_response(
     message: str = UPSTREAM_INCOMPLETE_MESSAGE, *, anthropic: bool = False
 ) -> JSONResponse:
-    """The **502** for a non-streaming request whose backend failed it.
+    """The **502** for a request whose backend failed it.
 
     Two ways that happens, one answer: the backend stream ended without
-    completing (the default message), or it raised mid-stream (the route passes
-    ``describe_exception(exc)``).  The streaming paths end with an in-stream
-    error event instead; this is the non-streaming half.
+    completing (the default message), or it raised (via
+    ``backend_failure_response``).  A streaming path answers this way only when
+    the failure comes before its first chunk; after it, the headers are sent
+    and it ends with an in-stream error event instead.
 
     Before 2026-10-22 the first case returned **200** with the partial text and
     a normal stop reason, indistinguishable from a real answer, and the second
@@ -150,6 +155,64 @@ def client_concurrency_response(e: ClientConcurrencyExceeded) -> JSONResponse:
         },
         headers={"Retry-After": str(e.retry_after)},
     )
+
+
+# Retry-After on the 429 for Ollama's queue-full 503.  The node's pending queue
+# is full of requests that take seconds each: 10 s, what herd advertises for a
+# busy MLX backend (``mlx_retry_after_seconds``'s default).
+QUEUE_FULL_RETRY_AFTER_S = 10
+
+
+def backend_failure_response(
+    exc: BaseException,
+    *,
+    protocol: str,
+    model: str = "",
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
+    """The HTTP answer for a request whose backend failed it, in ``protocol``'s
+    error shape (``ollama``, ``openai`` -- Responses shares it -- or
+    ``anthropic``).  One mapping for every surface, streaming or not:
+
+    * Ollama's queue-full 503 is a **429** + ``Retry-After``: the node is
+      saturated, which is the client's cue to back off.  It is never retried
+      on another node (``StreamingProxy._is_queue_full_error``), and it used to
+      reach OpenAI and Anthropic clients as a 502 and streaming clients as a 200;
+    * a backend 4xx is the caller's error and keeps its status
+      (``client_error_passthrough``);
+    * anything else is a **502**: herd is a gateway and its upstream failed.
+
+    A streaming route uses it only before the first chunk; after that the
+    headers are sent and the failure ends the stream in-protocol instead.
+    """
+    from fleet_manager.server.streaming import StreamingProxy
+
+    anthropic = protocol == "anthropic"
+    message = client_error_message(exc)
+    if StreamingProxy._is_queue_full_error(exc):
+        content = (
+            {"error": message}
+            if protocol == "ollama"
+            else error_body(
+                message,
+                "rate_limit_error" if anthropic else "rate_limit_exceeded",
+                anthropic=anthropic,
+            )
+        )
+        resp = JSONResponse(status_code=429, content=content)
+        resp.headers["Retry-After"] = str(QUEUE_FULL_RETRY_AFTER_S)
+    elif protocol == "ollama":
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if not (isinstance(status, int) and 400 <= status < 500):
+            status = 502
+        resp = JSONResponse(status_code=status, content={"error": message})
+    else:
+        resp = client_error_passthrough(
+            exc, model=model, anthropic=anthropic
+        ) or upstream_failure_response(message, anthropic=anthropic)
+    if headers:
+        resp.headers.update(headers)
+    return resp
 
 
 def parse_allow_fallback(body: dict, headers=None) -> bool | None:
@@ -366,7 +429,8 @@ CLIENT_GONE_STATUS = 499
 
 
 async def dispatched_stream(request, future, entry, trace_store, *, poll_s: float = 0.5):
-    """Await a queued request's stream -- or cancel it if the client leaves first.
+    """Await a queued request's stream through its first chunk -- or cancel it
+    if the client leaves first.
 
     With the queue enforcing concurrency, a request can wait in herd's queue.
     Starlette doesn't cancel a route on client disconnect while it awaits, so a
@@ -375,14 +439,23 @@ async def dispatched_stream(request, future, entry, trace_store, *, poll_s: floa
     requests in one queue).  Polling ``is_disconnected`` while waiting and
     cancelling the future lets the worker skip it instead.
 
-    Returns the stream, or ``None`` when the client is gone -- the caller
-    returns ``Response(status_code=CLIENT_GONE_STATUS)``.  Recorded as a
-    ``client_disconnected`` trace so it counts like any other disconnect.
+    Then the first chunk (``first_chunk``), because the proxy retries on other
+    nodes while producing it: only after it does ``entry`` say which node
+    served, after how many retries, at what score -- and only before it can a
+    failure still be answered with a status instead of a 200 stream.
+
+    Returns the stream (its first chunk included), or ``None`` when the client
+    is gone -- the caller returns ``Response(status_code=CLIENT_GONE_STATUS)``.
+    Leaving while queued is recorded as a ``client_disconnected`` trace here;
+    leaving while the first chunk is awaited cancels the stream, which the
+    proxy traces the same way.  Raises the stream's error if it fails before
+    its first chunk (the proxy has traced that too); answer it with
+    ``backend_failure_response``.
     """
     while True:
         done, _ = await asyncio.wait({future}, timeout=poll_s)
         if done:
-            return future.result()
+            return await first_chunk(request, future.result(), poll_s=poll_s)
         if await request.is_disconnected():
             future.cancel()
             req = entry.request
@@ -403,6 +476,94 @@ async def dispatched_stream(request, future, entry, trace_store, *, poll_s: floa
                 except Exception as exc:  # pragma: no cover - a trace must never fail the request
                     logger.warning(f"Could not trace queued disconnect: {exc!r}")
             return None
+
+
+_END = object()
+
+
+async def first_chunk(request, stream, *, poll_s: float = 0.5) -> AsyncIterator | None:
+    """Wait for ``stream``'s first chunk; return a stream that yields it, then the rest.
+
+    Returns ``None`` if the client disconnects first: the wait is cancelled, so
+    a cold load nobody will read stops holding its slot.  Raises the stream's
+    own error if it fails before producing anything.  An empty stream comes
+    back empty.  Used by ``dispatched_stream`` and by the MLX passthroughs,
+    which stream from ``mlx_lm.server`` without the queue.
+    """
+    it = aiter(stream)
+    task = asyncio.ensure_future(anext(it, _END))
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=poll_s)
+            if done:
+                break
+            if await request.is_disconnected():
+                task.cancel()
+                await asyncio.wait({task})
+                with contextlib.suppress(BaseException):
+                    task.result()  # retrieved, so it is never logged as unhandled
+                return None
+    finally:
+        if not task.done():  # this route was cancelled while waiting
+            task.cancel()
+    first = task.result()
+    if first is _END:
+        return it
+
+    async def _from_first():
+        yield first
+        async for chunk in it:
+            yield chunk
+
+    return _from_first()
+
+
+async def first_mlx_chunk(
+    request, mlx_proxy, inference_req: InferenceRequest, *, trace_store, t_start: float
+) -> tuple[AsyncIterator | None, Exception | None]:
+    """Open an admitted ``mlx_lm.server`` stream through its first chunk.
+
+    The MLX twin of ``dispatched_stream`` (MLX has no queue entry and no
+    retries, so its headers are right before the stream starts; its status is
+    not): a stream that fails before producing anything is answered with a
+    status rather than a 200 carrying an error event.  The route acquired the
+    model's slot; when no stream comes back this releases it and traces the
+    outcome, since no generator will run to do either.
+
+    Returns ``(stream, None)``; ``(None, exc)`` when it failed -- answer with
+    ``backend_failure_response``; ``(None, None)`` when the client left first.
+    """
+    from fleet_manager.common.errors import describe_exception
+    from fleet_manager.server.mlx_proxy import record_trace_mlx, strip_mlx_prefix
+
+    stream = failure = None
+    try:
+        stream = await first_chunk(
+            request, mlx_proxy.stream_openai(inference_req, already_admitted=True)
+        )
+    except Exception as exc:  # noqa: BLE001 -- returned to the route to answer
+        failure = exc
+        logger.error(
+            f"MLX stream for {inference_req.request_id[:8]} failed before any output: "
+            f"{type(exc).__name__}: {describe_exception(exc)}"
+        )
+    finally:
+        if stream is None:
+            mlx_proxy._release_slot(strip_mlx_prefix(inference_req.model))
+            mlx_proxy.pop_token_counts(inference_req.request_id)
+            record_trace_mlx(
+                trace_store,
+                inference_req,
+                t_start,
+                None,
+                "failed" if failure is not None else "client_disconnected",
+                error_message=(
+                    describe_exception(failure)
+                    if failure is not None
+                    else "Client disconnected before the first chunk"
+                ),
+            )
+    return stream, failure
 
 
 async def record_routing_rejection(
@@ -720,19 +881,18 @@ def _pick_pull_node(registry, model: str, scorer) -> str | None:
     return best_node
 
 
-def check_context_overflow(
-    winner: RoutingResult,
-    inference_req: InferenceRequest,
-    registry,
-) -> dict[str, str]:
-    """Return overflow warning headers if estimated tokens exceed context window."""
-    ctx_score = winner.scores_breakdown.get("context_fit", 0)
+def check_context_overflow(entry: QueueEntry, registry) -> dict[str, str]:
+    """Return overflow warning headers if estimated tokens exceed the context
+    window of the node that served ``entry``."""
+    inference_req = entry.request
+    ctx_score = (entry.routing_breakdown or {}).get("context_fit", 0)
     if ctx_score >= 0:
         return {}
 
-    # Look up the winning node's context_length for the model
+    # Look up the serving node's context_length for the model
+    node_id = entry.assigned_node
     estimated_tokens = ScoringEngine.estimate_tokens(inference_req.messages)
-    node = registry.get_node(winner.node_id)
+    node = registry.get_node(node_id)
     ctx_length = 0
     if node and node.ollama:
         for m in node.ollama.models_loaded:
@@ -742,7 +902,7 @@ def check_context_overflow(
 
     logger.warning(
         f"Context overflow: ~{estimated_tokens} estimated tokens exceeds "
-        f"{ctx_length} context window on {winner.node_id} — "
+        f"{ctx_length} context window on {node_id} — "
         f"input may be truncated by Ollama"
     )
     # Persist it.  This detection has existed as long as the context_fit signal
@@ -760,7 +920,7 @@ def check_context_overflow(
     _record_context_protection(
         "overflow",
         inference_req.model,
-        winner.node_id,
+        node_id,
         estimated_tokens,
         ctx_length,
     )
@@ -769,6 +929,35 @@ def check_context_overflow(
             f"estimated_tokens={estimated_tokens}; context_length={ctx_length}"
         ),
     }
+
+
+def served_headers(
+    entry: QueueEntry,
+    *,
+    requested_model: str,
+    registry,
+    extra: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """``X-Fleet-*`` for the node that actually served ``entry``.
+
+    Built from the queue entry, not the first-choice ``RoutingResult``: a retry
+    moves the request to another node and puts that node, its score and its
+    breakdown on the entry, and counts the retry (``entry.retry_count``, the
+    retries before the attempt that served).  So call it once the stream has
+    produced its first chunk -- ``dispatched_stream`` returns then -- or after
+    it failed, when it names the last node tried.
+    """
+    served_model = entry.request.model
+    return fleet_headers(
+        node_id=entry.assigned_node,
+        served_model=served_model,
+        requested_model=requested_model,
+        backend="mlx" if served_model.startswith("mlx:") else "ollama",
+        score=entry.routing_score,
+        retries=entry.retry_count,
+        affinity=affinity_from_breakdown(entry.routing_breakdown),
+        extra={**check_context_overflow(entry, registry), **(extra or {})},
+    )
 
 
 def get_all_fleet_models(registry) -> set[str]:
