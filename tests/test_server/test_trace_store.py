@@ -554,6 +554,26 @@ class TestHealthQueries:
         assert stats["total_retries"] == 1
 
     @pytest.mark.asyncio
+    async def test_retries_count_each_retry_once(self, store):
+        """A request served on its third node leaves rows with retry_count 0, 1
+        and 2 (retries before each attempt).  It made two retries, not three."""
+        for node, status, retries in (
+            ("node-a", "retried", 0),
+            ("node-b", "retried", 1),
+            ("node-c", "completed", 2),
+        ):
+            await store.record_trace(
+                request_id="req-r",
+                model="phi4:14b",
+                original_model="phi4:14b",
+                node_id=node,
+                status=status,
+                retry_count=retries,
+            )
+        assert (await store.get_retry_stats_24h())["total_retries"] == 2
+        assert (await store.get_overall_stats_24h())["total_retries"] == 2
+
+    @pytest.mark.asyncio
     async def test_get_retry_stats_empty(self, store):
         stats = await store.get_retry_stats_24h()
         assert stats["total_requests"] == 0

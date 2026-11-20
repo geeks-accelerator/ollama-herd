@@ -651,14 +651,13 @@ class StreamingProxy:
         excluded_nodes = list(entry.excluded_nodes)
         current_node = entry.assigned_node
         current_queue_key = queue_key
-        attempt = 0
 
         debug_enabled = bool(
             self._settings and getattr(self._settings, "debug_request_bodies", False)
         )
         DEBUG_CAPTURE_MAX_BYTES = 2 * 1024 * 1024
 
-        while attempt <= max_retries:
+        while True:
             first_chunk_sent = False
             first_token_time = None
             start_time = time.time()
@@ -729,18 +728,22 @@ class StreamingProxy:
                         )
                     raise
 
-                # Retryable pre-first-chunk failure
-                attempt += 1
+                # Retryable pre-first-chunk failure.  ``entry.retry_count`` is
+                # the number of retries *before* this attempt (0 on the first
+                # node), which is what this attempt's trace row records and
+                # what X-Fleet-Retries reports.  It only grows once another
+                # node is actually tried, so the terminal row of a request that
+                # tried three nodes says 2, not 3.
                 excluded_nodes.append(current_node)
                 entry.excluded_nodes = excluded_nodes
-                entry.retry_count = attempt
 
                 logger.warning(
                     f"Node {current_node} failed for {entry.request.request_id[:8]} "
-                    f"(attempt {attempt}/{max_retries + 1}): {type(e).__name__}: {e}"
+                    f"(attempt {entry.retry_count + 1}/{max_retries + 1}): "
+                    f"{type(e).__name__}: {e}"
                 )
 
-                if attempt > max_retries:
+                if entry.retry_count >= max_retries:
                     # Retries exhausted — terminal failure.  Record it as
                     # "failed" (not another "retried") so the trace DB has a
                     # terminal outcome for this request; otherwise a request
@@ -797,6 +800,7 @@ class StreamingProxy:
                     response_chunks=capture_chunks,
                 )
 
+                entry.retry_count += 1
                 next_winner = results[0]
                 current_node = next_winner.node_id
                 current_queue_key = next_winner.queue_key
@@ -806,7 +810,7 @@ class StreamingProxy:
 
                 logger.info(
                     f"Retrying {entry.request.request_id[:8]} on {current_node} "
-                    f"(attempt {attempt + 1})"
+                    f"(attempt {entry.retry_count + 1})"
                 )
                 continue
             else:

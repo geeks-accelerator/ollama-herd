@@ -983,10 +983,12 @@ async def dispatch_embed(
             )
 
         except httpx.ReadTimeout as e:
-            retry_count += 1
             last_exc = e
             if backoff is None:
                 break  # exhausted retries — fall through to failure path
+            # retry_count is retries before the current attempt, as on every
+            # trace row: it grows only when another attempt is about to start.
+            retry_count += 1
             logger.warning(
                 f"Embed ReadTimeout on {winner.node_id} (attempt {retry_count}), "
                 f"retrying in {backoff}s — Ollama queue likely full"
@@ -1008,19 +1010,20 @@ async def dispatch_embed(
     # ReadTimeout exhausted all retries
     elapsed_ms = (time.time() - start) * 1000
     error_detail = str(last_exc) or repr(last_exc)
+    attempts = retry_count + 1
     logger.error(
-        f"Embed ReadTimeout on {winner.node_id} after {retry_count} attempt(s) "
+        f"Embed ReadTimeout on {winner.node_id} after {attempts} attempt(s) "
         f"({elapsed_ms:.0f}ms total) — Ollama queue saturated"
     )
     trace(
         "failed",
-        error=f"ReadTimeout after {retry_count} attempt(s): {error_detail}",
+        error=f"ReadTimeout after {attempts} attempt(s): {error_detail}",
         retry_count=retry_count,
     )
     return JSONResponse(
         status_code=504,
         content={
-            "error": f"Embed timed out on {winner.node_id} after {retry_count} attempt(s). "
+            "error": f"Embed timed out on {winner.node_id} after {attempts} attempt(s). "
             f"Ollama may be saturated with concurrent inference. Try again shortly."
         },
     )

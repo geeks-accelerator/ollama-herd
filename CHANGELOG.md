@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **One percentile definition in the router.** The p75 latency the scorer's wait-time estimate and `/fleet/queue` read, and the p99 and median time per output token behind `decode_degraded`, now use the same linear interpolation as the benchmark report and the community payload. The old indexing picked an observed sample at or above the rank, which on small samples is the maximum (two latencies of 100 and 1,000 ms gave a p75 of 1,000; it is now 775), so these figures read slightly lower on little data and are unchanged in kind on a lot. The cache loaded at startup uses the same function, so a restart no longer changes the value. `scripts/benchmark-performance.py` switched from nearest rank to the same function too.
 
+### Fixed
+
+- **A trace's `retry_count` is the number of retries before that attempt.** A request that tried three nodes was traced 1, 2, 3 (the first attempt claimed a retry, the last counted attempts); it is now 0, 1, 2, and `X-Fleet-Retries` reports the same number for the attempt that served. The dashboard's and health checks' retry totals count each retry once (they summed every attempt row), and the embedding path's count follows the same rule.
+
 ## [0.12.10] - 2026-11-20
 
 Most of this release comes from two benchmark runs on rented NVIDIA machines (2026-11-20). The first found most of what is listed here; the second, on stock settings, confirmed the fixes and found three more. With them, `qwen3-coder:30b` scales from 112 tok/s on one machine to 223 on two and 437 on four, and two models that cannot share one 24 GB card settle one per machine: 60-90 ms to the first token instead of an 8 s swap on every request.

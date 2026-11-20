@@ -62,6 +62,13 @@ BACKEND_FAILURE_KINDS: dict[str, tuple[str, object]] = {
 # patience before we declare the trace lost.
 _RETRY_BACKOFFS_S = (0.2, 0.8, 2.0)
 
+# Retries a set of trace rows represents.  ``retry_count`` on a row is the
+# number of retries made *before* that attempt (0 on the first node), so a
+# request that was retried on two more nodes leaves rows 0, 1 and 2: summing
+# every row counts 3, and only its terminal row (any status but "retried")
+# carries the request's real total.
+_RETRIES_SUM = "SUM(CASE WHEN status != 'retried' THEN retry_count ELSE 0 END)"
+
 # The columns every per-request read returns, in ``_row_to_dict``'s order.
 _TRACE_COLUMNS = (
     "request_id, model, original_model, node_id, score, scores_breakdown, status, "
@@ -488,7 +495,7 @@ class TraceStore:
             return []
         cutoff = time.time() - (days * 86400)
         cursor = await self._read_db.execute(
-            """
+            f"""
             SELECT
                 node_id,
                 model,
@@ -500,7 +507,7 @@ class TraceStore:
                 AVG(time_to_first_token_ms) AS avg_ttft_ms,
                 SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
                 SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens,
-                SUM(retry_count) AS total_retries,
+                {_RETRIES_SUM} AS total_retries,
                 SUM(fallback_used) AS total_fallbacks
             FROM request_traces
             WHERE timestamp >= ?
@@ -560,7 +567,7 @@ class TraceStore:
         if not self._db:
             return []
         cursor = await self._read_db.execute(
-            """
+            f"""
             SELECT
                 node_id,
                 COUNT(*) AS total_requests,
@@ -569,7 +576,7 @@ class TraceStore:
                 AVG(latency_ms) AS avg_latency_ms,
                 SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
                 SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens,
-                SUM(retry_count) AS total_retries,
+                {_RETRIES_SUM} AS total_retries,
                 MIN(timestamp) AS first_seen,
                 MAX(timestamp) AS last_seen
             FROM request_traces
@@ -608,14 +615,14 @@ class TraceStore:
                 "total_fallbacks": 0,
             }
         cursor = await self._read_db.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) AS total_requests,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
                 SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
                 SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens,
-                SUM(retry_count) AS total_retries,
+                {_RETRIES_SUM} AS total_retries,
                 SUM(fallback_used) AS total_fallbacks
             FROM request_traces
             """
@@ -935,8 +942,8 @@ class TraceStore:
             return {"total_requests": 0, "total_retries": 0}
         cutoff = time.time() - 86400
         cursor = await self._read_db.execute(
-            """
-            SELECT COUNT(*) AS total, SUM(retry_count) AS retries
+            f"""
+            SELECT COUNT(*) AS total, {_RETRIES_SUM} AS retries
             FROM request_traces
             WHERE timestamp >= ?
             """,
@@ -1032,13 +1039,13 @@ class TraceStore:
             }
         cutoff = time.time() - 86400
         cursor = await self._read_db.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) AS total,
                 SUM(CASE WHEN status != 'completed' AND status != 'retried'
                     THEN 1 ELSE 0 END) AS failed,
                 AVG(time_to_first_token_ms) AS avg_ttft,
-                SUM(retry_count) AS retries
+                {_RETRIES_SUM} AS retries
             FROM request_traces
             WHERE timestamp >= ?
             """,

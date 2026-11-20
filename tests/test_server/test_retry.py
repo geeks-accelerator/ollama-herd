@@ -220,7 +220,7 @@ class TestStreamWithRetry:
             ):
                 pass
 
-        assert entry.retry_count == 2  # attempt 1 (original) + attempt 2 (retry)
+        assert entry.retry_count == 1  # two attempts: the original and one retry
         queue_mgr.mark_failed.assert_called()
 
     @pytest.mark.asyncio
@@ -432,3 +432,84 @@ class TestClientDisconnectMidGeneration:
         queue_mgr.mark_failed.assert_called_once_with("node-a:phi4:14b", entry)
         assert proxy._record_trace.call_args.args[4] == "client_disconnected"
         assert entry.retry_count == 0  # a disconnect is not retried on another node
+
+
+class TestRetryCountIsRetriesBeforeThisAttempt:
+    """``retry_count`` on a trace row is the number of retries that happened
+    before that attempt: 0 for the first node, 1 for the second, and so on.
+    It used to be incremented before the failed attempt was recorded, so a
+    request that tried three nodes left rows 1, 2, 3 -- the first attempt
+    claimed a retry, and the terminal row counted attempts, not retries."""
+
+    @staticmethod
+    def _three_nodes():
+        nodes = iter(["node-b", "node-c"])
+
+        def scoring(model, depths):
+            node_id = next(nodes)
+            return [RoutingResult(node_id=node_id, queue_key=f"{node_id}:{model}", score=50.0)]
+
+        return _mock_scorer(score_fn=scoring)
+
+    @staticmethod
+    async def _rows(proxy, entry, *, succeed_on=None):
+        async def backend(node_id, request):
+            if node_id != succeed_on:
+                raise httpx.ConnectError("refused")
+            yield "data: ok\n\n"
+            proxy._request_tokens[request.request_id] = (1, 1)
+
+        proxy.stream_from_node = backend
+        proxy._record_trace = MagicMock(wraps=proxy._record_trace)
+        try:
+            async for _ in proxy._stream_with_retry(
+                entry,
+                "node-a:phi4:14b",
+                _mock_queue_mgr(),
+                TestRetryCountIsRetriesBeforeThisAttempt._three_nodes(),
+                ServerSettings(max_retries=2),
+            ):
+                pass
+        except httpx.ConnectError:
+            pass
+        return proxy._record_trace
+
+    @pytest.mark.asyncio
+    async def test_served_after_two_retries(self):
+        trace_store = MagicMock()
+        trace_store.record_trace = AsyncMock()
+        proxy = StreamingProxy(MagicMock(), trace_store=trace_store)
+        entry = _make_entry(node_id="node-a")
+        await self._rows(proxy, entry, succeed_on="node-c")
+        for _ in range(5):
+            await asyncio.sleep(0)
+        rows = [
+            (c.kwargs["node_id"], c.kwargs["status"], c.kwargs["retry_count"])
+            for c in trace_store.record_trace.call_args_list
+        ]
+        assert rows == [
+            ("node-a", "retried", 0),
+            ("node-b", "retried", 1),
+            ("node-c", "completed", 2),
+        ]
+        assert entry.retry_count == 2  # what X-Fleet-Retries reports
+
+    @pytest.mark.asyncio
+    async def test_failed_on_every_node(self):
+        trace_store = MagicMock()
+        trace_store.record_trace = AsyncMock()
+        proxy = StreamingProxy(MagicMock(), trace_store=trace_store)
+        entry = _make_entry(node_id="node-a")
+        await self._rows(proxy, entry)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        rows = [
+            (c.kwargs["node_id"], c.kwargs["status"], c.kwargs["retry_count"])
+            for c in trace_store.record_trace.call_args_list
+        ]
+        assert rows == [
+            ("node-a", "retried", 0),
+            ("node-b", "retried", 1),
+            ("node-c", "failed", 2),
+        ]
+        assert entry.retry_count == 2
