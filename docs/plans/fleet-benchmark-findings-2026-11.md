@@ -1,12 +1,31 @@
 # Fixes from the first fleet benchmark (2026-11-20)
 
 **Created:** 2026-11-20 · **Revised:** 2026-11-20, after a code audit of `main` (file:line below are
-`main` at `b156472`) · **Status:** 📋 planned, nothing built. Decisions made (end). Release A
-(items 1, 2, 5, 6, 10 and the debt list) is local; release B (items 3, 4, 9) changes routing.
+`main` at `b156472`) · **Status:** ✅ **implemented on `main`, unreleased** (2026-11-20; suite 2334
+passed). Open: run 2 (item 11), item 10 step 4 (fix what run 2's timings show), investigations 7-8,
+and the release decision (end). Implementation notes are in "Implemented" just below.
 **Source:** a benchmark of herd 0.12.9 with Ollama 0.40.16 on rented NVIDIA machines (four Quadro
 RTX 6000 24 GB and one RTX A6000 48 GB, Ubuntu 22.04, Ollama as a systemd service, one private
 network), using `scripts/benchmark.py` at `56993ff` with `--prompt-tokens 1250 --max-tokens 200`
 and `docs/experiments/model-alternation-benchmark.py`.
+
+## Implemented (2026-11-20, OSS `main`)
+
+| Item | Commit | Notes |
+|---|---|---|
+| 1 | `3b470a0`, `ee27af2` | systemd unit read through `_ollama_env`; **runner `-np` built** (Ollama 0.40's `llama-server` carries `-np N` per model; the largest across Ollama's runners, someone else's `llama-server` ignored); restart guard; one howto helper; `parallelism_unknown` (INFO) from item 10's `queue_ms` |
+| 2 | `817e42a` | `TraceStore.has_served` + `native_text_embeddings_in_use` (also counts a known-but-offline native node); docker smoke embeds through the router |
+| 10 | `e2949f6`, `b98af1f` | one pool keyed (node, port); `/api/version` from heartbeats (no request at all); `timings` column; `X-Fleet-Overhead-Ms`; async image fetch. Local check: 5.7 ms measured outside, 5.4 ms reported; ~1.3 routing, ~0.5 queue, ~3.7 in the upstream leg beyond Ollama's own time |
+| 5 | `fa4e0da`, `af32336` | one engine path (`discover_fleet` labels embeddings, `warmup` direct per node, `run_load`); `discover_embed_models` deleted |
+| debt | `5d67a8c` | `score_role_affinity_max` deleted; canonical headers on the OpenAI image route and the Anthropic MLX passthrough. Pull and `/api/show` responses keep only `X-Fleet-Node`: they are not model answers |
+| 9 | `9aded6f` | fallback is the largest context any node ran the model with (cautious), not a prediction of Ollama's VRAM rule |
+| 3 | `d721663` | weights worked through run 1's two cases: alternation, the empty node wins by memory fit (8) + the penalty; mixed, evicting the busy coder costs 40 |
+| 4 | `621e5f2` | verified live on a Mac: with Ollama's 3-model cap full a same-category model answered (`X-Fleet-Fallback: true`); with a slot free the requested model loaded (`false`) |
+| 6 | `847929d` | changelog, configuration and API references, Docker guide, guides, skills |
+
+Not done, on purpose: the four test fixtures that patch `httpx.AsyncClient` module-wide still do (they
+keep working because the pool builds clients from the same `httpx` module; converting them was churn
+in passing tests). The site describes released behaviour, so it is synced at the release, not now.
 
 ## Rules for this work
 
