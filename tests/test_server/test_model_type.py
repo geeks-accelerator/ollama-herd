@@ -45,3 +45,15 @@ def test_capabilities_never_overrule_the_name():
     """Older Ollama under-reports, so a missing capability proves nothing."""
     assert is_embedding_model("nomic-embed-text", ["completion"])
     assert model_type("dinov2-vit-s14", ["completion"]) is ModelType.EMBED_IMAGE
+
+
+def test_fleet_status_reports_the_agent_version():
+    """Benchmark manifests record which herd-node each machine ran."""
+    from fleet_manager.server.serializers import serialize_node
+    from tests.conftest import make_node
+
+    node = make_node("n1")
+    node.agent_version = "0.12.10"
+    assert serialize_node(node)["agent_version"] == "0.12.10"
+    node.agent_version = ""
+    assert serialize_node(node)["agent_version"] is None

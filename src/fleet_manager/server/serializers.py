@@ -158,6 +158,7 @@ def serialize_node(node) -> dict:
             "arch": node.hardware.arch,
         },
         "ollama_url": node.ollama_base_url,
+        "agent_version": node.agent_version or None,
     }
     if node.cpu:
         data["cpu"] = node.cpu.model_dump()
