@@ -44,6 +44,16 @@ Open, from run 2:
     recomputing fit costs). Batch trace writes, log routing decisions at DEBUG or without Rich
     rendering, cache fit cost per (node, model) per heartbeat; then re-measure with
     `scripts/router_overhead.py --rate`.
+    **Re-measured on 0.12.10 (2026-11-20, `docs/experiments/router_overhead_results.json`):** 6.3 ms
+    p50 over the network (was 23.8), header 6.0 ms; +6-7 ms through the mock up to 125 req/s, a knee
+    at ~175 req/s, failures from 300 req/s, on the same Lambda vCPU. Three things learned: (a) run 2's
+    "collapse at 50-80 req/s" was partly herd's own per-model queue cap (the mock node reported the
+    systemd unit's 4 slots, and 4 slots at ~31 ms carry ~130 req/s), so the clean ceiling needs a node
+    with a high `OLLAMA_NUM_PARALLEL`; (b) the event loop still spends ~4.5 ms of CPU per request on
+    that vCPU (~2.4 ms on an M-series Mac), with three aiosqlite threads at 5-20 % each; (c) at
+    overload the node's heartbeats fail too (17 `Heartbeat cycle failed` at 300+ req/s), because
+    the router serves them on the same saturated loop. Open: profile the event loop per request
+    (py-spy shows aiosqlite's C time but not which store), and keep heartbeats answerable under load.
 13. **Shared-prompt sessions: first turn ~2x slower through herd.** 16 sessions over 4 nodes: herd's
     median TTFT 1.4-1.5 s against round-robin's 1.07 s, almost all of it on first turns (1.3 s
     against 0.66 s), although herd's own queue wait was 3 ms. Later turns favour herd (+26 % growth

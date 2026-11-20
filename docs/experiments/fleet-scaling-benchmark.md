@@ -62,6 +62,9 @@ Aggregate completion tokens per second (TTFT p50):
 - **Requests per machine is what matters,** not total concurrency: at 8 concurrent, four machines
   each have only 2 in flight, so 326.7 tok/s, not 4x.
 - **Even placement:** every multi-machine arm split requests within 1-2 points of evenly.
-- **Router overhead,** measured separately: ~24 ms per request over the private network (200
-  alternating pairs, direct vs through herd; `X-Fleet-Overhead-Ms` reported 22.8 ms). This was
-  before 0.12.10's logging change, which halved the router's CPU per request.
+- **Router overhead,** measured separately on 0.12.10 (2026-11-20, `router_overhead_results.json`):
+  **6.3 ms p50, 7.1 ms p95** per request over the private network (200 alternating pairs, direct vs
+  through herd; `X-Fleet-Overhead-Ms` reported 6.0 ms). On 0.12.9 it was 23.8 ms. Through a 20 ms mock
+  upstream the router adds 6-7 ms up to 125 req/s, 11 ms at 150, and queues from about 175 req/s
+  (p99 104 ms); at 200 req/s it adds ~200 ms and from 300 req/s requests fail. That is one router
+  process on one 14-vCPU AMD EPYC-Rome cloud machine, with its event loop at ~80 % of a core at 175/s.
