@@ -110,6 +110,7 @@ jobs:
           fi
           up || { cat /tmp/ollama.log; exit 1; }
           ollama pull "$SMOKE_MODEL"
+          ollama pull nomic-embed-text
 
       - name: End-to-end test
         run: scripts/docker-smoke.sh herd:smoke "$SMOKE_MODEL" "${{ needs.plan.outputs.version != 'dev' && needs.plan.outputs.version || '' }}"

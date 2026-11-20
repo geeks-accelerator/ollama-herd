@@ -9,6 +9,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from fleet_manager.node.text_embedding_models import TEXT_EMBEDDING_MODEL_NAMES
+
 logger = logging.getLogger(__name__)
 
 
@@ -2543,8 +2545,9 @@ class HealthEngine:
         Mirrors ``_check_vision_backend_missing`` exactly.  Fires when the
         operator has pre-downloaded nomic-embed-text (so weights exist in
         ~/.fleet-manager/models/text-embedding/) but fastembed isn't installed
-        in the herd-node venv, meaning the text embedding server can't start
-        and /api/embed calls for nomic-embed-text will fall back to Ollama.
+        in the herd-node venv, meaning the text embedding server can't start.
+        Embeds for nomic-embed-text then go to Ollama, unless the herd has
+        served them natively before (``native_text_embeddings_in_use``).
 
         Read from ``node.text_embedding_status`` (populated by the node
         collector via ``_text_embedding_backend_status``).  Older agents that
@@ -2572,8 +2575,9 @@ class HealthEngine:
                         f"{cached_count} text embedding model(s) are cached on disk "
                         "(nomic-embed-text-v1.5) but fastembed is not installed in "
                         "the herd-node venv, so the native text embedding server "
-                        "cannot start. Embed requests for nomic-embed-text will fall "
-                        "back to Ollama and may queue behind LLM inference slots."
+                        "cannot start. Embed requests for nomic-embed-text go to "
+                        "Ollama instead, where they may queue behind LLM inference "
+                        "slots, or fail if this herd has served them natively before."
                     ),
                     fix=(
                         "Run `uv sync --extra embedding` (or `uv sync --all-extras`) "
@@ -2589,14 +2593,6 @@ class HealthEngine:
                 )
             )
         return recs
-
-    # Text embedding model names that have a native fastembed equivalent
-    _NATIVE_TEXT_EMBED_MODELS = frozenset(
-        {
-            "nomic-embed-text",
-            "nomic-embed-text:latest",
-        }
-    )
 
     def _check_text_embedding_ollama_bypass(self, nodes) -> list[Recommendation]:
         """Warn when nomic-embed-text is in Ollama but the native server isn't running.
@@ -2624,7 +2620,7 @@ class HealthEngine:
             if not node.ollama:
                 continue
             ollama_models = set(node.ollama.models_available or [])
-            matched = ollama_models & self._NATIVE_TEXT_EMBED_MODELS
+            matched = ollama_models & TEXT_EMBEDDING_MODEL_NAMES
             if not matched:
                 continue  # nomic-embed-text not present on this node
 
@@ -2656,7 +2652,9 @@ class HealthEngine:
                         "`uv sync --extra embedding` (or `uv sync --all-extras`) on the node, "
                         "then restart `herd-node`. nomic-embed-text requests will be routed "
                         "to port 11439 and will never touch Ollama's inference queue again. "
-                        "The 130 MB model weights download automatically on the first request."
+                        "The 130 MB model weights download automatically on the first request. "
+                        "The native model's vectors differ from Ollama's, so re-embed anything "
+                        "already indexed with Ollama's copy."
                     ),
                     node_id=node.node_id,
                     data={
@@ -2686,7 +2684,7 @@ class HealthEngine:
             if not node.ollama:
                 continue
             loaded_names = {m.name for m in (node.ollama.models_loaded or [])}
-            matched = loaded_names & self._NATIVE_TEXT_EMBED_MODELS
+            matched = loaded_names & TEXT_EMBEDDING_MODEL_NAMES
             if not matched:
                 continue
 

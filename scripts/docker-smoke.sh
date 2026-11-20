@@ -7,9 +7,9 @@
 #
 #     scripts/docker-smoke.sh <image> [model] [expected-version]
 #
-# Needs: docker, curl, jq, and Ollama on this host with <model> pulled
-# (default qwen2.5:0.5b). Telemetry is off in both containers, so a test run
-# never reaches ollamaherd.com/stats.
+# Needs: docker, curl, jq, and Ollama on this host with <model> (default
+# qwen2.5:0.5b) and nomic-embed-text pulled. Telemetry is off in both
+# containers, so a test run never reaches ollamaherd.com/stats.
 set -euo pipefail
 
 IMAGE=${1:?usage: docker-smoke.sh <image> [model] [expected-version]}
@@ -76,5 +76,16 @@ echo "HTTP $code, x-fleet-node: $served_by"
 [ "$code" = "200" ] || { cat "$body" >&2; fail "chat request returned HTTP $code"; }
 [ "$served_by" = "$NODE_ID" ] || fail "served by '$served_by', expected '$NODE_ID'"
 jq -e '.choices[0].message.content | length > 0' "$body" >/dev/null || fail "empty completion"
+
+# The image has no fastembed, so Ollama's nomic-embed-text must answer (until
+# 2026-11 every one of these 503'd: "No node is running the native server").
+echo "== one nomic-embed-text request through the router"
+code=$(curl -s -m 120 -o "$body" -D "$headers" -w '%{http_code}' "$ROUTER/api/embed" \
+  -H 'Content-Type: application/json' -d '{"model":"nomic-embed-text","input":"hello"}')
+backend=$(grep -i '^x-fleet-backend:' "$headers" | cut -d: -f2- | tr -d ' \r')
+echo "HTTP $code, x-fleet-backend: $backend"
+[ "$code" = "200" ] || { cat "$body" >&2; fail "embed request returned HTTP $code"; }
+[ "$backend" = "ollama" ] || fail "embed served by backend '$backend', expected 'ollama'"
+jq -e '.embeddings[0] | length > 0' "$body" >/dev/null || fail "empty embedding"
 
 echo "PASS"

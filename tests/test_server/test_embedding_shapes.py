@@ -204,3 +204,26 @@ class TestEmbeddingCountMismatch:
     def test_trace_text_is_digit_free(self):
         """categorize_error files bare status-like numbers, so counts stay out."""
         assert not any(ch.isdigit() for ch in EMBEDDING_COUNT_MISMATCH)
+
+
+class TestNomicThroughOllama:
+    """No node has the ``embedding`` extra and none ever served nomic-embed-text
+    natively, so Ollama's copy answers (fleet benchmark 2026-11-20: every one of
+    these 503'd while Ollama had the model loaded)."""
+
+    @pytest.mark.parametrize("path", ["/api/embed", "/v1/embeddings"])
+    def test_served_by_ollama(self, app_client, path):
+        seen: dict = {}
+        _register_embed_node(app_client, model="nomic-embed-text:latest")
+
+        def handler(request: httpx.Request):
+            seen["path"] = request.url.path
+            return httpx.Response(
+                200, json={"model": "nomic-embed-text:latest", "embeddings": [[0.5, 0.25]]}
+            )
+
+        _install_mock_ollama(app_client, "studio", handler)
+        resp = app_client.post(path, json={"model": "nomic-embed-text", "input": "hello"})
+        assert resp.status_code == 200, resp.text
+        assert seen["path"] == "/api/embed"
+        assert resp.headers["X-Fleet-Backend"] == "ollama"

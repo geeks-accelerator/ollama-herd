@@ -53,6 +53,11 @@ def native_backend(monkeypatch):
     return state
 
 
+def _served_natively_before(client: TestClient) -> None:
+    """The trace store remembers a completed native embed (survives restarts)."""
+    client.app.state.trace_store.has_served = AsyncMock(return_value=True)
+
+
 def _trace(client: TestClient) -> dict:
     return client.app.state.trace_store.record_trace.call_args.kwargs
 
@@ -117,6 +122,7 @@ class TestEmbedTextProxy:
         assert t["error_message"].startswith("HTTP 500")
 
     def test_no_text_server_is_503_with_install_hint(self, app_client):
+        _served_natively_before(app_client)
         app_client.post("/heartbeat", json=make_heartbeat(node_id="mini").model_dump())
         resp = app_client.post("/api/embed", json={"model": "nomic-embed-text", "input": "x"})
         assert resp.status_code == 503
@@ -140,6 +146,7 @@ class TestEmbedTextProxy:
 
     def test_an_empty_registry_is_retryable(self, app_client):
         """A router that just restarted knows no nodes until their next heartbeat."""
+        _served_natively_before(app_client)
         resp = app_client.post("/api/embed", json={"model": "nomic-embed-text", "input": "x"})
         assert resp.status_code == 503
         assert "retry-after" in resp.headers
@@ -624,3 +631,43 @@ class TestIsModelCached:
         (tmp_path / "models--BAAI--bge-reranker-base").mkdir()
         monkeypatch.setattr(text_embedding_models, "TEXT_EMBEDDING_CACHE_DIR", tmp_path)
         assert not text_embedding_models.is_model_cached("bge-reranker-base")
+
+
+# ---------------------------------------------------------------------------
+# Never served natively: Ollama serves the native-list model instead
+# ---------------------------------------------------------------------------
+
+
+class TestOllamaUntilServedNatively:
+    """2026-11-20: a herd without the ``embedding`` extra 503'd every
+    nomic-embed-text request although Ollama had the model loaded."""
+
+    def test_goes_to_ollama_when_no_node_ever_served_it(self, app_client):
+        app_client.post("/heartbeat", json=make_heartbeat(node_id="mini").model_dump())
+        resp = app_client.post("/api/embed", json={"model": "nomic-embed-text", "input": "x"})
+        # Not pulled into Ollama in this fleet either: Ollama's own answer.
+        assert resp.status_code == 404
+        assert "ollama pull" in resp.json()["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_node_serving_natively_now_keeps_it_native(self, app_client):
+        from fleet_manager.server.routes.text_embedding_compat import (
+            native_text_embeddings_in_use,
+        )
+
+        _with_text_server(app_client)
+        assert await native_text_embeddings_in_use(app_client.app.state)
+
+    @pytest.mark.asyncio
+    async def test_the_trace_store_survives_a_restart(self, app_client):
+        from fleet_manager.server.routes.text_embedding_compat import (
+            native_text_embeddings_in_use,
+        )
+
+        state = app_client.app.state
+        assert not await native_text_embeddings_in_use(state)
+        _served_natively_before(app_client)
+        assert await native_text_embeddings_in_use(state)
+        # Remembered: no second query once known.
+        state.trace_store.has_served = AsyncMock(return_value=False)
+        assert await native_text_embeddings_in_use(state)

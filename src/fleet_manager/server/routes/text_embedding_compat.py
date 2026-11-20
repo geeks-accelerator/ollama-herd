@@ -28,7 +28,11 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from fleet_manager.models.node import NodeStatus
-from fleet_manager.node.text_embedding_models import get_model_spec, is_text_embedding_model
+from fleet_manager.node.text_embedding_models import (
+    TEXT_EMBEDDING_MODEL_NAMES,
+    get_model_spec,
+    is_text_embedding_model,
+)
 from fleet_manager.server.fleet_headers import fleet_headers
 from fleet_manager.server.routes.routing import (
     EMBEDDING_COUNT_MISMATCH,
@@ -165,8 +169,16 @@ def _no_native_server(registry, model: str, kind: _NativeKind) -> tuple[str, boo
             f"{NATIVE_RETRY_AFTER_SECONDS}s.",
             True,
         )
+    # Embeddings only reach here once the herd has served them natively
+    # (``native_text_embeddings_in_use``); reranking has no Ollama path at all.
+    why = (
+        " This herd has served it natively before, so it stays on that backend "
+        "(Ollama's copy of the model produces different vectors)."
+        if kind is EMBED
+        else ""
+    )
     return (
-        f"No node is running the native {kind.label} server for '{model}'. "
+        f"No node is running the native {kind.label} server for '{model}'.{why} "
         "Install fastembed on a node: `uv sync --extra embedding`, "
         "then restart herd-node.",
         False,
@@ -297,6 +309,28 @@ async def proxy_to_native_text_server(
             backend="native",
         ),
     )
+
+
+async def native_text_embeddings_in_use(app_state) -> bool:
+    """Whether this herd serves its native-list text embedding models natively.
+
+    True once any node serves them natively, now or before: a node that is
+    known but offline (restarting), or a completed native embed in the trace
+    store, which survives a router restart.  While False, ``dispatch_embed``
+    sends them to Ollama instead of answering 503 ("no fastembed"), which on
+    2026-11-20 failed every embed from a herd without the ``embedding`` extra.
+    Once True it stays native: fastembed and Ollama produce different vectors
+    for the same model name, and one index must not mix them.
+    """
+    if getattr(app_state, "native_text_embeddings_seen", False):
+        return True
+    seen = any(EMBED.serves(n) for n in app_state.registry.get_all_nodes())
+    trace_store = getattr(app_state, "trace_store", None)
+    if not seen and trace_store is not None:
+        seen = await trace_store.has_served(TEXT_EMBEDDING_MODEL_NAMES, EMBED.original_format)
+    if seen:
+        app_state.native_text_embeddings_seen = True
+    return seen
 
 
 async def embed_text(request: Request):

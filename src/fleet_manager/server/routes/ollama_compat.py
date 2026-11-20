@@ -806,15 +806,17 @@ async def dispatch_embed(
         request.state._parsed_body = body
         return await embed_image(request)
 
-    # Route text embedding models (nomic-embed-text, etc.) to the native
-    # fastembed server on port 11439 — completely bypasses Ollama so embed
-    # requests never queue behind LLM inference slots.
+    # Text embedding models with a native equivalent (nomic-embed-text) go to
+    # the fastembed server on port 11439, outside Ollama, so embeds never queue
+    # behind LLM inference slots -- once this herd serves them natively.  Until
+    # then they fall through to Ollama like any other embedding model.
     from fleet_manager.server.routes.text_embedding_compat import (
         embed_text,
         is_text_embedding_model,
+        native_text_embeddings_in_use,
     )
 
-    if is_text_embedding_model(model):
+    if is_text_embedding_model(model) and await native_text_embeddings_in_use(request.app.state):
         request.state._parsed_body = body
         return await embed_text(request)
 
@@ -847,7 +849,8 @@ async def dispatch_embed(
 
     if not results:
         all_fleet_models = get_all_fleet_models(registry)
-        missing = model not in all_fleet_models
+        # The normalised name: a bare "nomic-embed-text" is on disk as ":latest".
+        missing = inference_req.model not in all_fleet_models
         await record_routing_rejection(
             getattr(request.app.state, "trace_store", None),
             inference_req,

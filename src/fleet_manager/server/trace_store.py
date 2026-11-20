@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from collections import deque
+from collections.abc import Iterable
 from pathlib import Path
 
 import aiosqlite
@@ -993,6 +994,24 @@ class TraceStore:
         )
         rows = await cursor.fetchall()
         return {row[0]: row[1] for row in rows}
+
+    async def has_served(self, models: Iterable[str], original_format: str) -> bool:
+        """True if any of ``models`` ever completed a request on ``original_format``.
+
+        Survives a router restart, unlike the registry: it is how the router
+        knows a backend has been used for a model before (e.g. native text
+        embeddings, ``original_format="embed"``).
+        """
+        names = list(models)
+        if not self._db or not names:
+            return False
+        marks = ",".join("?" * len(names))
+        cursor = await self._read_db.execute(
+            f"SELECT 1 FROM request_traces WHERE status = 'completed' "  # noqa: S608
+            f"AND original_format = ? AND model IN ({marks}) LIMIT 1",
+            (original_format, *names),
+        )
+        return await cursor.fetchone() is not None
 
     async def get_recently_used_models(self, seconds: int = 3600) -> set[str]:
         """Return model names with at least 1 request in the last N seconds.
