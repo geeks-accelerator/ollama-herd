@@ -21,11 +21,13 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import NamedTuple
 
 import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from fleet_manager.common.errors import client_error_message, describe_exception
 from fleet_manager.models.node import NodeStatus
 from fleet_manager.node.text_embedding_models import (
     TEXT_EMBEDDING_MODEL_NAMES,
@@ -168,10 +170,10 @@ def _no_native_server(registry, model: str, kind: _NativeKind) -> tuple[str, boo
             f"{NATIVE_RETRY_AFTER_SECONDS}s.",
             True,
         )
-    # Embeddings only reach here once the herd has served them natively
-    # (``native_text_embeddings_in_use``); reranking has no Ollama path at all.
+    # Embeddings only reach here when native is this herd's backend for them
+    # (``text_embedding_backend``); reranking has no Ollama path at all.
     why = (
-        " This herd has served it natively before, so it stays on that backend "
+        " This herd has served it natively, so it stays on that backend "
         "(Ollama's copy of the model produces different vectors)."
         if kind is EMBED
         else ""
@@ -258,12 +260,14 @@ async def proxy_to_native_text_server(
             },
         )
     except Exception as exc:
-        logger.error(f"{kind.label.capitalize()} transport error on {best.node_id}: {exc}")
-        trace("failed", error=f"{type(exc).__name__}: {exc}")
+        detail = describe_exception(exc)
+        logger.error(f"{kind.label.capitalize()} transport error on {best.node_id}: {detail}")
+        trace("failed", error=f"{type(exc).__name__}: {detail}")
         return JSONResponse(
             status_code=502,
             content={
-                "error": f"{kind.label.capitalize()} failed: {exc}",
+                # Never the backend's address: logs and traces keep the full text.
+                "error": f"{kind.label.capitalize()} failed: {client_error_message(exc)}",
                 "node": best.node_id,
             },
         )
@@ -307,26 +311,49 @@ async def proxy_to_native_text_server(
     )
 
 
-async def native_text_embeddings_in_use(app_state) -> bool:
-    """Whether this herd serves its native-list text embedding models natively.
+class TextEmbeddingBackend(NamedTuple):
+    """Which backend serves the native-list text embedding models, and why."""
 
-    True once any node serves them natively, now or before: a node that is
-    known but offline (restarting), or a completed native embed in the trace
-    store, which survives a router restart.  While False, ``dispatch_embed``
-    sends them to Ollama instead of answering 503 ("no fastembed"), which on
-    2026-11-20 failed every embed from a herd without the ``embedding`` extra.
-    Once True it stays native: fastembed and Ollama produce different vectors
-    for the same model name, and one index must not mix them.
+    native: bool  # True: the fastembed server; False: Ollama
+    # Kept on Ollama although a node now runs the native server, because
+    # Ollama is what this herd's vectors have come from.
+    held_on_ollama: bool = False
+
+
+async def text_embedding_backend(registry, trace_store) -> TextEmbeddingBackend:
+    """Where ``nomic-embed-text`` and friends go: whichever backend served them last.
+
+    fastembed and Ollama produce different vectors for the same model name
+    (cosine ~0.95 measured for one text), and one index must never mix them,
+    so the choice is sticky in **both** directions:
+
+    - Never served: native if any node runs the native server (no contention
+      with LLM slots), otherwise Ollama.  Before the Ollama path existed, a
+      herd without the ``embedding`` extra 503'd every request (2026-11-20).
+    - Last served natively: native, even while that node is restarting (the
+      client gets a 503 to retry, not a vector from the other backend).
+    - Last served by Ollama: Ollama, even once a node starts the native server,
+      because installing the ``embedding`` extra must not silently switch an
+      index's backend.  It moves to native only when no node's Ollama has the
+      model any more: removing it from Ollama is the deliberate switch, and
+      the ``text_embedding_backend_held`` check says so.
+
+    Read from the trace store, so the answer survives a router restart.  One
+    definition, shared by ``dispatch_embed`` and the health checks.
     """
-    if getattr(app_state, "native_text_embeddings_seen", False):
-        return True
-    seen = any(EMBED.serves(n) for n in app_state.registry.get_all_nodes())
-    trace_store = getattr(app_state, "trace_store", None)
-    if not seen and trace_store is not None:
-        seen = await trace_store.has_served(TEXT_EMBEDDING_MODEL_NAMES, EMBED.original_format)
-    if seen:
-        app_state.native_text_embeddings_seen = True
-    return seen
+    nodes = registry.get_all_nodes()
+    native_available = any(EMBED.serves(n) for n in nodes)
+    last = await trace_store.last_served_format(TEXT_EMBEDDING_MODEL_NAMES) if trace_store else None
+    if last is None:
+        return TextEmbeddingBackend(native=native_available)
+    if last == EMBED.original_format:
+        return TextEmbeddingBackend(native=True)
+    in_ollama = any(
+        set(n.ollama.models_available or []) & TEXT_EMBEDDING_MODEL_NAMES for n in nodes if n.ollama
+    )
+    if native_available and not in_ollama:
+        return TextEmbeddingBackend(native=True)
+    return TextEmbeddingBackend(native=False, held_on_ollama=native_available)
 
 
 async def embed_text(request: Request):

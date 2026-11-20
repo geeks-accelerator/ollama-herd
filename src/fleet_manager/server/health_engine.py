@@ -188,7 +188,13 @@ class HealthEngine:
         recommendations.extend(self._check_pin_cannot_fit())
         recommendations.extend(self._check_text_embedding_backend_missing(nodes))
         recommendations.extend(self._check_text_embedding_ollama_bypass(nodes))
-        recommendations.extend(self._check_nomic_loaded_in_ollama(nodes))
+        # The same answer dispatch_embed acts on, so the checks cannot disagree
+        # with the route about which backend serves nomic-embed-text.
+        from fleet_manager.server.routes.text_embedding_compat import text_embedding_backend
+
+        embed_backend = await text_embedding_backend(registry, trace_store)
+        recommendations.extend(self._check_text_embedding_backend_held(nodes, embed_backend))
+        recommendations.extend(self._check_nomic_loaded_in_ollama(nodes, embed_backend))
         # Node state only: a co-tenant on the backend must be detectable even
         # with no trace data, which is precisely when herd is least able to
         # explain a throughput drop any other way.
@@ -2603,7 +2609,7 @@ class HealthEngine:
         ~/.fleet-manager/models/text-embedding/) but fastembed isn't installed
         in the herd-node venv, meaning the text embedding server can't start.
         Embeds for nomic-embed-text then go to Ollama, unless the herd has
-        served them natively before (``native_text_embeddings_in_use``).
+        made native its backend for them (``text_embedding_backend``).
 
         Read from ``node.text_embedding_status`` (populated by the node
         collector via ``_text_embedding_backend_status``).  Older agents that
@@ -2722,15 +2728,63 @@ class HealthEngine:
             )
         return recs
 
-    def _check_nomic_loaded_in_ollama(self, nodes) -> list[Recommendation]:
-        """Inform when nomic-embed-text is loaded in Ollama while the native server is up.
+    def _check_text_embedding_backend_held(self, nodes, backend) -> list[Recommendation]:
+        """A node runs the native text server, but nomic-embed-text stays on Ollama.
 
-        Once the fastembed server is running, Ollama's copy of nomic-embed-text is
-        never used — it just occupies VRAM (~275 MB) and an Ollama model slot.
-        This is cosmetic, not critical, so severity is INFO.  The model will
-        self-evict once KEEP_ALIVE expires; this check nudges operators who want
-        to free the slot immediately.
+        ``text_embedding_backend`` keeps a herd on the backend that served it
+        last, because fastembed's vectors differ from Ollama's for the same
+        model name and an index must not mix them.  So installing the
+        ``embedding`` extra on a herd that has been embedding through Ollama
+        changes nothing, deliberately.  Without this check that looks like the
+        install failed.  INFO: nothing is wrong, and switching means re-embedding,
+        which only the operator can decide.
         """
+        if not backend.held_on_ollama:
+            return []
+        native_nodes = sorted(
+            n.node_id for n in nodes if n.status.value == "online" and n.text_embedding_port > 0
+        )
+        in_ollama = sorted(
+            n.node_id
+            for n in nodes
+            if n.ollama and set(n.ollama.models_available or []) & TEXT_EMBEDDING_MODEL_NAMES
+        )
+        return [
+            Recommendation(
+                check_id="text_embedding_backend_held",
+                severity=Severity.INFO,
+                title="nomic-embed-text stays on Ollama although the native server is running",
+                description=(
+                    f"{', '.join(native_nodes) or 'A node'} runs the native fastembed text "
+                    "embedding server, but this herd's nomic-embed-text vectors have come "
+                    "from Ollama, so requests keep going there. The two backends produce "
+                    "different vectors for the same text, and switching silently would mix "
+                    "them in any index built so far."
+                ),
+                fix=(
+                    "To switch to the native server (no contention with LLM slots), remove "
+                    "the model from Ollama on every node that has it "
+                    f"({', '.join(in_ollama)}): `ollama rm nomic-embed-text`. herd then "
+                    "serves it natively from the next request. Re-embed anything already "
+                    "indexed, since the old vectors came from Ollama's copy. To stay on "
+                    "Ollama, no action is needed."
+                ),
+                data={"native_nodes": native_nodes, "ollama_nodes": in_ollama},
+            )
+        ]
+
+    def _check_nomic_loaded_in_ollama(self, nodes, backend) -> list[Recommendation]:
+        """Inform when nomic-embed-text is loaded in Ollama while the native server serves it.
+
+        When native is the herd's backend (``text_embedding_backend``), Ollama's
+        copy of nomic-embed-text is never used: it just occupies VRAM (~275 MB)
+        and an Ollama model slot.  This is cosmetic, not critical, so severity
+        is INFO.  The model will self-evict once KEEP_ALIVE expires; this check
+        nudges operators who want to free the slot immediately.  Silent when the
+        herd is held on Ollama, where that copy is the one serving.
+        """
+        if not backend.native:
+            return []
         recs: list[Recommendation] = []
         for node in nodes:
             if node.status.value != "online":

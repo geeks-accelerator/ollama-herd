@@ -1029,23 +1029,29 @@ class TraceStore:
         rows = await cursor.fetchall()
         return {row[0]: row[1] for row in rows}
 
-    async def has_served(self, models: Iterable[str], original_format: str) -> bool:
-        """True if any of ``models`` ever completed a request on ``original_format``.
+    async def last_served_format(self, models: Iterable[str]) -> str | None:
+        """``original_format`` of the most recent completed request for ``models``.
 
         Survives a router restart, unlike the registry: it is how the router
-        knows a backend has been used for a model before (e.g. native text
-        embeddings, ``original_format="embed"``).
+        knows which backend a model's vectors have been coming from (native
+        text embeddings record ``"embed"``, Ollama records the client API).
+        ``None`` when none of them ever completed.  One indexed lookup per
+        name (``idx_traces_model_timestamp``), newest first.
         """
-        names = list(models)
-        if not self._db or not names:
-            return False
-        marks = ",".join("?" * len(names))
-        cursor = await self._read_db.execute(
-            f"SELECT 1 FROM request_traces WHERE status = 'completed' "  # noqa: S608
-            f"AND original_format = ? AND model IN ({marks}) LIMIT 1",
-            (original_format, *names),
-        )
-        return await cursor.fetchone() is not None
+        if not self._db:
+            return None
+        newest: tuple[float, str] | None = None
+        for name in models:
+            cursor = await self._read_db.execute(
+                "SELECT timestamp, original_format FROM request_traces "
+                "WHERE model = ? AND status = 'completed' "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (name,),
+            )
+            row = await cursor.fetchone()
+            if row and (newest is None or row[0] > newest[0]):
+                newest = (row[0], row[1] or "")
+        return newest[1] if newest else None
 
     async def get_recently_used_models(self, seconds: int = 3600) -> set[str]:
         """Return model names with at least 1 request in the last N seconds.

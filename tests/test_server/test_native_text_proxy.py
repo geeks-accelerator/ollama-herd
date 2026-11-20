@@ -55,7 +55,7 @@ def native_backend(monkeypatch):
 
 def _served_natively_before(client: TestClient) -> None:
     """The trace store remembers a completed native embed (survives restarts)."""
-    client.app.state.trace_store.has_served = AsyncMock(return_value=True)
+    client.app.state.trace_store.last_served_format = AsyncMock(return_value="embed")
 
 
 def _trace(client: TestClient) -> dict:
@@ -649,25 +649,166 @@ class TestOllamaUntilServedNatively:
         assert resp.status_code == 404
         assert "ollama pull" in resp.json()["error"]
 
+
+def _node(node_id, *, native=False, ollama_models=()):
+    hb = make_heartbeat(node_id=node_id, available_models=list(ollama_models))
+    if native:
+        hb.text_embedding_port = 11439
+    return hb
+
+
+class TestBackendIsStickyBothWays:
+    """fastembed and Ollama give different vectors for one model name, so the
+    backend a herd has been serving from is kept in both directions."""
+
+    async def _backend(self, client, last):
+        from fleet_manager.server.routes.text_embedding_compat import text_embedding_backend
+
+        client.app.state.trace_store.last_served_format = AsyncMock(return_value=last)
+        return await text_embedding_backend(client.app.state.registry, client.app.state.trace_store)
+
+    def _register(self, client, *hbs):
+        for hb in hbs:
+            client.post("/heartbeat", json=hb.model_dump())
+
     @pytest.mark.asyncio
-    async def test_a_node_serving_natively_now_keeps_it_native(self, app_client):
-        from fleet_manager.server.routes.text_embedding_compat import (
-            native_text_embeddings_in_use,
-        )
-
-        _with_text_server(app_client)
-        assert await native_text_embeddings_in_use(app_client.app.state)
+    async def test_never_served_prefers_native_when_available(self, app_client):
+        self._register(app_client, _node("mini", native=True))
+        assert (await self._backend(app_client, None)).native
 
     @pytest.mark.asyncio
-    async def test_the_trace_store_survives_a_restart(self, app_client):
-        from fleet_manager.server.routes.text_embedding_compat import (
-            native_text_embeddings_in_use,
-        )
+    async def test_never_served_without_native_is_ollama(self, app_client):
+        self._register(app_client, _node("mini", ollama_models=["nomic-embed-text:latest"]))
+        assert not (await self._backend(app_client, None)).native
 
-        state = app_client.app.state
-        assert not await native_text_embeddings_in_use(state)
+    @pytest.mark.asyncio
+    async def test_served_natively_stays_native_while_the_node_is_away(self, app_client):
+        self._register(app_client, _node("mini", ollama_models=["nomic-embed-text:latest"]))
+        assert (await self._backend(app_client, "embed")).native
+
+    @pytest.mark.asyncio
+    async def test_served_by_ollama_stays_on_ollama_when_native_appears(self, app_client):
+        """The reverse mix: installing the embedding extra must not switch it."""
+        self._register(
+            app_client, _node("mini", native=True, ollama_models=["nomic-embed-text:latest"])
+        )
+        backend = await self._backend(app_client, "ollama")
+        assert not backend.native
+        assert backend.held_on_ollama
+
+    @pytest.mark.asyncio
+    async def test_openai_format_counts_as_ollama(self, app_client):
+        self._register(
+            app_client, _node("mini", native=True, ollama_models=["nomic-embed-text:latest"])
+        )
+        assert not (await self._backend(app_client, "openai")).native
+
+    @pytest.mark.asyncio
+    async def test_removing_it_from_ollama_is_the_deliberate_switch(self, app_client):
+        self._register(app_client, _node("mini", native=True, ollama_models=["gpt-oss:120b"]))
+        backend = await self._backend(app_client, "ollama")
+        assert backend.native and not backend.held_on_ollama
+
+    @pytest.mark.asyncio
+    async def test_held_only_when_native_exists(self, app_client):
+        self._register(app_client, _node("mini", ollama_models=["nomic-embed-text:latest"]))
+        backend = await self._backend(app_client, "ollama")
+        assert not backend.native and not backend.held_on_ollama
+
+    def test_a_held_herd_routes_embeds_to_ollama(self, app_client, native_backend):
+        """End to end: the native server is never contacted."""
+        app_client.app.state.trace_store.last_served_format = AsyncMock(return_value="ollama")
+        self._register(
+            app_client, _node("mini", native=True, ollama_models=["nomic-embed-text:latest"])
+        )
+        contacted = []
+        native_backend["handler"] = lambda r: contacted.append(r) or httpx.Response(500)
+        app_client.post("/api/embed", json={"model": "nomic-embed-text", "input": "x"})
+        assert contacted, "the request went nowhere"
+        assert {(r.url.port, r.url.path) for r in contacted} == {(11434, "/api/embed")}
+
+
+class TestBackendHealthChecks:
+    def _nodes(self, *, native=True, ollama=True):
+        from types import SimpleNamespace
+
+        return [
+            SimpleNamespace(
+                node_id="mini",
+                status=SimpleNamespace(value="online"),
+                text_embedding_port=11439 if native else 0,
+                ollama=SimpleNamespace(
+                    models_available=["nomic-embed-text:latest"] if ollama else [],
+                    models_loaded=[SimpleNamespace(name="nomic-embed-text:latest")]
+                    if ollama
+                    else [],
+                ),
+            )
+        ]
+
+    def test_held_check_explains_the_switch(self):
+        from fleet_manager.server.health_engine import HealthEngine, Severity
+        from fleet_manager.server.routes.text_embedding_compat import TextEmbeddingBackend
+
+        (rec,) = HealthEngine()._check_text_embedding_backend_held(
+            self._nodes(), TextEmbeddingBackend(native=False, held_on_ollama=True)
+        )
+        assert rec.check_id == "text_embedding_backend_held"
+        assert rec.severity == Severity.INFO
+        assert "ollama rm nomic-embed-text" in rec.fix
+        assert rec.data == {"native_nodes": ["mini"], "ollama_nodes": ["mini"]}
+
+    def test_held_check_silent_otherwise(self):
+        from fleet_manager.server.health_engine import HealthEngine
+        from fleet_manager.server.routes.text_embedding_compat import TextEmbeddingBackend
+
+        engine = HealthEngine()
+        for backend in (TextEmbeddingBackend(native=True), TextEmbeddingBackend(native=False)):
+            assert engine._check_text_embedding_backend_held(self._nodes(), backend) == []
+
+    def test_nomic_loaded_is_silent_when_ollama_serves_it(self):
+        """Its claim, 'the native backend is handling all requests', is false then."""
+        from fleet_manager.server.health_engine import HealthEngine
+        from fleet_manager.server.routes.text_embedding_compat import TextEmbeddingBackend
+
+        engine = HealthEngine()
+        held = TextEmbeddingBackend(native=False, held_on_ollama=True)
+        assert engine._check_nomic_loaded_in_ollama(self._nodes(), held) == []
+        (rec,) = engine._check_nomic_loaded_in_ollama(
+            self._nodes(), TextEmbeddingBackend(native=True)
+        )
+        assert rec.check_id == "nomic_loaded_in_ollama"
+
+    @pytest.mark.asyncio
+    async def test_analyze_uses_the_routes_answer(self, app_client):
+        app_client.app.state.trace_store.last_served_format = AsyncMock(return_value="ollama")
+        app_client.post(
+            "/heartbeat",
+            json=_node("mini", native=True, ollama_models=["nomic-embed-text:latest"]).model_dump(),
+        )
+        from fleet_manager.server.health_engine import HealthEngine
+
+        report = await HealthEngine().analyze(
+            app_client.app.state.registry, app_client.app.state.trace_store
+        )
+        ids = {r.check_id for r in report.recommendations}
+        assert "text_embedding_backend_held" in ids
+
+
+class TestTransportErrorText:
+    def test_client_never_gets_the_backend_address(self, app_client, native_backend):
         _served_natively_before(app_client)
-        assert await native_text_embeddings_in_use(state)
-        # Remembered: no second query once known.
-        state.trace_store.has_served = AsyncMock(return_value=False)
-        assert await native_text_embeddings_in_use(state)
+        _with_text_server(app_client)
+
+        def handler(request):
+            response = httpx.Response(503, request=request)
+            raise httpx.HTTPStatusError(
+                f"Server error '503' for url '{request.url}'", request=request, response=response
+            )
+
+        native_backend["handler"] = handler
+        resp = app_client.post("/api/embed", json={"model": "nomic-embed-text", "input": "x"})
+        assert resp.status_code == 502
+        assert ":11439" not in resp.json()["error"]
+        assert "HTTP 503" in resp.json()["error"]
+        assert ":11439" in _trace(app_client)["error_message"]  # the trace keeps it

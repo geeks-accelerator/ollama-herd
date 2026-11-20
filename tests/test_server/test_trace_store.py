@@ -539,41 +539,35 @@ class TestHealthQueries:
         assert stats["total_requests"] == 0
 
 
-class TestHasServed:
-    """Whether a backend has ever served a model: it must survive a restart,
-    which only the trace store does (the registry is memory-only)."""
+class TestLastServedFormat:
+    """Which backend served a model last: it must survive a restart, which
+    only the trace store does (the registry is memory-only)."""
 
     @pytest.mark.asyncio
-    async def test_completed_native_embed_counts(self, store):
+    async def test_newest_completed_wins_across_names(self, store):
         names = {"nomic-embed-text", "nomic-embed-text:latest"}
-        assert not await store.has_served(names, "embed")
-        await store.record_trace(
-            request_id="r1",
-            model="nomic-embed-text",
-            original_model="nomic-embed-text",
-            node_id="n1",
-            status="completed",
-            latency_ms=12.0,
-            original_format="ollama",
-        )
-        assert not await store.has_served(names, "embed")  # Ollama's, not native
-        await store.record_trace(
-            request_id="r2",
-            model="nomic-embed-text",
-            original_model="nomic-embed-text",
-            node_id="n1",
-            status="rejected",
-            latency_ms=1.0,
-            original_format="embed",
-        )
-        assert not await store.has_served(names, "embed")  # never answered
-        await store.record_trace(
-            request_id="r3",
-            model="nomic-embed-text:latest",
-            original_model="nomic-embed-text:latest",
-            node_id="n1",
-            status="completed",
-            latency_ms=12.0,
-            original_format="embed",
-        )
-        assert await store.has_served(names, "embed")
+        assert await store.last_served_format(names) is None
+
+        async def rec(rid, model, status, fmt, ts):
+            await store.record_trace(
+                request_id=rid,
+                model=model,
+                original_model=model,
+                node_id="n1",
+                status=status,
+                latency_ms=1.0,
+                original_format=fmt,
+            )
+            await store._db.execute(
+                "UPDATE request_traces SET timestamp = ? WHERE request_id = ?", (ts, rid)
+            )
+            await store._db.commit()
+
+        await rec("r1", "nomic-embed-text:latest", "completed", "ollama", 100.0)
+        assert await store.last_served_format(names) == "ollama"
+        await rec("r2", "nomic-embed-text", "completed", "embed", 200.0)
+        assert await store.last_served_format(names) == "embed"
+        await rec("r3", "nomic-embed-text:latest", "failed", "ollama", 300.0)
+        assert await store.last_served_format(names) == "embed"  # never answered
+        await rec("r4", "nomic-embed-text:latest", "completed", "openai", 400.0)
+        assert await store.last_served_format(names) == "openai"
