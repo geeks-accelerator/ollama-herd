@@ -170,6 +170,85 @@ on `main` in `ffa2f1f`, unreleased:
     outside every `add_middleware` layer. `install_request_id_header` wraps the built middleware
     stack instead, which is safe because the layer only adds a header on `http.response.start`.
 
+From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-herd-private
+`.bench-lambda-2026-11-20-run4`):
+
+28. **Fixed (`4b020b5`, harness `3dd2230`): a load that had to evict a busy model never happened, and its requests
+    starved.** Three nodes with `OLLAMA_NUM_PARALLEL=4` (two 24 GB cards, one 48 GB), four models,
+    0.5 req/s open loop for 180 s, strict mode (the benchmark sends `X-Fleet-No-Fallback`):
+    `qwen3-coder:30b` answered 2 of 27, 25 timed out at 300 s, and the whole run had 2 model loads.
+    HAProxy least-connections answered all 27 (median TTFT ~50 s). **Not** "the router never takes
+    the eviction": it did, every time (`Routing qwen3-coder:30b -> m1 (... evict=-40)`; with every
+    option evicting and no other coding model, `routing.py:343` returns the cold result). Ollama
+    could not carry it out:
+    - Ollama evicts a busy runner by setting its `sessionDuration` to 0 and waiting on
+      `unloadedCh` with no timeout (`processPending` in `server/sched.go`, on the scheduler's
+      context, so a client giving up does not end it), and nothing else loads on that node
+      meanwhile. Requests for a resident model skip that queue (`getRunner`'s fast path), and
+      `useLoadedRunner` sets the runner's `sessionDuration` from the request's `keep_alive`.
+    - herd sent `keep_alive: -1` on every request (`streaming.py:1855` and `:1865`,
+      `anthropic_compat.py:292`, `ollama_compat.py:925`), so one request for the busy model during
+      that wait re-arms it, it never unloads, and the node loads nothing more. Run 4's timeline
+      fits: phi4 took m1 at about t=15 s; the coder requests sent to m1 from t=6 s, and a phi4
+      request (t=8 s) that reached Ollama behind them, timed out at 300 s while later phi4
+      requests were answered in 1 s, and m2 did the same from t=20 s (a qwen2.5 request at
+      t=24 s among them); the benchmark saw two model loads in 180 s. HAProxy sends no
+      `keep_alive`, so its evictions completed.
+    - Even without the re-arm the wait was unbounded: the node is assigned at enqueue
+      (`queue_manager.py:338`), nothing re-scores a queued request (only a failed attempt is,
+      `streaming.py:785`), and herd kept dispatching the busy model hot (+50) to the node that had
+      to drop it (`queue_manager.py:404`), so it went idle only by chance.
+    - Stranding (`dc5779c`) was a charge of 50 against 40 for a busy model, and up to 55 points of
+      queue and wait penalty outweigh it: harmless while evictions never completed, but once they
+      do the coder was sent to the 48 GB card and evicted the 35 GB model.
+
+    **Fix**, in the queue (where requests wait), the scorer and the request body:
+    1. `keep_alive: -1` is left off while another model's request on that node is at Ollama and
+       still waiting for its first token (`QueueManager.load_pending_on`, read in
+       `_build_ollama_body`, the embed path too); the translator no longer adds its own. Decided
+       from herd's queue, not residency: heartbeats lag a load by up to an interval, and a first
+       version that sent it "only on loads" still wedged a node when a request herd took for a load
+       hit a model that had just loaded. The runner keeps the `-1` it was loaded with.
+    2. `QueueManager._must_wait`, before each dispatch. **A load waits its turn:** a request that
+       must evict (`eviction < 0`, or routed hot and its model evicted since) on a node whose models
+       are all busy stays in herd's queue until one goes idle (Ollama evicts an idle one at once),
+       or for at most `_LOAD_WAIT_SECONDS` (30 s); requests for the same model join it and go with
+       it. **Then it gets the room:** while it is at the node without output, new requests for that
+       node's resident models are held, so the ones already running are the last. Held requests
+       count in the queue depth. Nothing waits beside an idle model or for a load that fits.
+    3. Scorer: requests for a model already queued or in flight on a node it is not resident on
+       join that load (`joins_load` offsets the eviction, which stays in the breakdown for the
+       queue) instead of each starting a load, and an eviction, elsewhere; a node whose load would
+       strand a model is dropped from the candidates while any other can serve.
+
+    **Local reproduction** (no GPUs): `scripts/mock_ollama.py` now schedules loads as `sched.go`
+    does (one queue, a load waits for a busy model, a `keep_alive` re-arms it; `/_mock/state`
+    shows the model loading) and `scripts/fake_fleet.py --follow-ps --gpu-gb G` reports each mock's
+    `/api/ps` and its card memory as nvidia-smi would. Three mocks (`--max-loaded 1`, ~8 s loads
+    and replies; the 32b only on the 48 GB node, ~80 s replies), three fake nodes, a real router,
+    run 4's benchmark command (seed 7, 0.5 req/s, 180 s, 300 s timeout):
+
+    | Model | before (`8eae448`) | after |
+    |---|---|---|
+    | qwen3-coder:30b | 27/27, 0.5 / 0.5 s | 27/27, 2.0 / 57.8 s |
+    | phi4:14b-q8_0 | **2/23**, 12.3 / 12.3 s | 23/23, 32.3 / 94.8 s |
+    | qwen2.5:14b-instruct-q8_0 | 22/23, 0.5 / 8.1 s | 23/23, 44.0 / 80.6 s |
+    | qwen2.5:32b-instruct-q8_0 | 17/17, 70.1 / 166.1 s | 17/17, 70.1 / 166.2 s |
+
+    Answered, TTFT p50 / p95. Before, the model that lost its card first starved, as on Lambda
+    (here phi4, not the coder: the mock's timings order the first evictions differently), with
+    two loads in the whole run and one qwen2.5 request lost too; after, all 90 answered (the
+    slowest small-model first token 97 s, against a 300 s timeout) with 23 loads, and the 32b was
+    never evicted. The price is visible: the two 24 GB cards now swap among three models (a load
+    per card every 10-15 s), so the models that had a card to themselves got slower. Under strict
+    mode that is the only way to serve all three; HAProxy least-connections on the real fleet
+    swapped constantly too (medians 26-50 s) and lost 14 of 17 32b requests. What did not work on
+    the way, for whoever tunes this next: the drain hold alone (at a 1/5 time scale) made evictions
+    complete, so before stranding became a filter the coder evicted the 32b (1 of 17 answered) and
+    the cards swapped constantly; deciding `keep_alive` from residency wedged a node again at full
+    scale (a mock showed phi4 idle with a coder load stuck behind it; 20/27, 19/23, 16/23
+    answered). Open: confirm on the Lambda fleet with run 4's command.
+
 ## Rules for this work
 
 herd is greenfield, so:
