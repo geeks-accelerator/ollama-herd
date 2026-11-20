@@ -3,7 +3,8 @@
 # Usage: ./scripts/health.sh
 #
 # Checks: tests pass, lint clean, format clean, test count hasn't dropped,
-# no known vulnerabilities in the locked dependency set.
+# every quoted test/check count is current, no known vulnerabilities in the
+# locked dependency set.
 
 set -euo pipefail
 
@@ -73,33 +74,25 @@ else
     record_fail "Format issues ($FORMAT_COUNT file(s) — run: uv run ruff format src/)"
 fi
 
-# 4. CLAUDE.md test count matches
-echo "Checking CLAUDE.md test count..."
-CLAUDE_COUNT=$(grep -oE 'run all [0-9]+ tests' CLAUDE.md | grep -oE '[0-9]+' || true)
-if [ -n "$CLAUDE_COUNT" ] && [ -n "$TEST_COUNT" ]; then
-    if [ "$CLAUDE_COUNT" = "$TEST_COUNT" ]; then
-        record_pass "CLAUDE.md test count matches ($CLAUDE_COUNT)"
+# 4. Every quoted test and check count matches the real one: CLAUDE.md,
+#    README.md, AGENTS.md and the skills, by shape, skipping CLAUDE.md's
+#    release history.  It used to compare the test count in two files only,
+#    so releases refreshed those and left the rest stale (docs/issues.md).
+echo "Checking quoted test and check counts..."
+if [ -n "${TEST_COUNT:-}" ]; then
+    QUOTE_OUTPUT=$(uv run python scripts/check_count_quotes.py "$TEST_COUNT" 2>&1) && QUOTE_EXIT=0 || QUOTE_EXIT=$?
+    if [ "$QUOTE_EXIT" -eq 0 ]; then
+        record_pass "Quoted counts match (${QUOTE_OUTPUT#all quotes match: })"
     else
-        record_fail "CLAUDE.md says $CLAUDE_COUNT tests but $TEST_COUNT actually ran — update CLAUDE.md"
+        STALE=$(echo "$QUOTE_OUTPUT" | grep -c . || true)
+        record_fail "$STALE stale count quote(s) — update them:"
+        echo "$QUOTE_OUTPUT"
     fi
 else
-    yellow "Could not verify CLAUDE.md test count"
+    yellow "Could not verify quoted counts (no test count)"
 fi
 
-# 5. README.md test count matches
-echo "Checking README.md test count..."
-README_COUNT=$(grep -oE 'run all [0-9]+ tests' README.md | grep -oE '[0-9]+' || true)
-if [ -n "$README_COUNT" ] && [ -n "$TEST_COUNT" ]; then
-    if [ "$README_COUNT" = "$TEST_COUNT" ]; then
-        record_pass "README.md test count matches ($README_COUNT)"
-    else
-        record_fail "README.md says $README_COUNT tests but $TEST_COUNT actually ran — update README.md"
-    fi
-else
-    yellow "Could not verify README.md test count"
-fi
-
-# 6. No known vulnerabilities in the locked dependency set (all extras,
+# 5. No known vulnerabilities in the locked dependency set (all extras,
 #    since the node's embedding servers parse network input too)
 echo "Auditing dependencies..."
 AUDIT_REQS=$(mktemp)

@@ -2870,7 +2870,7 @@ The dashboard is a large amount of inline HTML/CSS/JS in Python strings across 5
 
 ## Test Coverage Gaps
 
-### Count quotes drift because `health.sh` checks two of them `OPEN` (2026-11-19)
+### Count quotes drift because `health.sh` checks two of them `FIXED` (2026-11-19, unreleased)
 
 **Severity:** low (documentation accuracy), but recurring.
 
@@ -2882,7 +2882,7 @@ test counts it reads (`run all N tests` in CLAUDE.md and README.md). So a releas
 updates those two lines passes the gate and leaves AGENTS.md, all 37 skills and every
 check count stale. That is how three releases shipped with them stale, and how the skills
 were a release behind in October too (see CLAUDE.md § Skills). Refreshed by hand on
-2026-11-19 to 2353 / 56.
+2026-11-19 to 2353 / 56 (and to 2355 once the script below landed).
 
 **Proposed fix.** Make `health.sh` check every quote, by shape, in all four locations:
 - test counts: `[0-9]{3,4} tests` in CLAUDE.md, README.md, AGENTS.md and `skills/`
@@ -2893,7 +2893,16 @@ were a release behind in October too (see CLAUDE.md § Skills). Refreshed by han
   numbers are records of what each release had and must not be rewritten.
 
 The release checklist step 4 already requires `health.sh` to pass, so this closes the gap
-without a new step. Keep the release-history exemption explicit in the script: a refresh
+without a new step.
+
+**As built (2026-11-19).** `scripts/check_count_quotes.py`, run by `health.sh` in place of
+its two single-file test-count checks, compares every test and check quote in CLAUDE.md,
+README.md, AGENTS.md and `skills/*/SKILL.md` against the suite's count and the engine's
+distinct `check_id`s, and lists each stale one as `file:line`. CLAUDE.md's release-history
+bullets are skipped with their indented continuation paragraphs; `tests/test_count_quotes.py`
+pins both the matching (five quote shapes in four kinds of file) and the skip. Its first run
+proved the point: another session's commit had just refreshed CLAUDE.md and README to 2355
+and left AGENTS.md and eleven skills at 2353, and the old check passed it. Keep the release-history exemption explicit in the script: a refresh
 that rewrites history is the failure CLAUDE.md § Skills warns about.
 
 

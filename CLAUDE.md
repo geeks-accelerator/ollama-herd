@@ -18,7 +18,7 @@ The `--extra embedding` now also installs `fastembed` for the **native text embe
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 2355 tests (~25s)
+uv run pytest                    # run all 2364 tests (~25s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -586,7 +586,7 @@ Silent failures are dishonest. Fail fast, fail loud.
   uv run pytest -q | tail -1                                                    # real test count
   grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l   # real check count
   ```
-  Refresh **all four locations**, not just CLAUDE.md — the skills are where the drift hides.
+  Refresh **all four locations**, not just CLAUDE.md — the skills are where the drift hides. **`./scripts/health.sh` now checks all of them** (`scripts/check_count_quotes.py`, since 2026-11-19) and lists every stale quote as `file:line`; it used to read only the test count in CLAUDE.md and README, which is how three releases shipped with the rest stale. It skips the release-history bullets below, so keep historical numbers inside those bullets or spelled out in words.
 
 - **Three checks added 2026-10-11** — `duplicate_runners` (one name, two digests, one node; rates by reclaimable GB and carries the two-call `ollama stop` remediation), `mlx_routing_disabled` (a node running `mlx_lm.server` while the router has `FLEET_MLX_ENABLED` unset — nothing surfaced it, because `mlx_backend_active` fires INFO on that same state), and `mlx_requests_unservable` (traffic for an `mlx:` model no healthy server hosts). Runbooks for all three plus the rate-check sample floor are in `docs/troubleshooting.md`.
 - **Health:** 56 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
