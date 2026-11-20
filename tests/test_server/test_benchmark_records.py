@@ -181,6 +181,9 @@ class TestRecords:
         assert record["fleet_snapshot"]["manifest"]["seed"] == 4
         assert record["fleet_snapshot"]["model_events"] == []
         assert record["latency_p50_ms"] == report["latency_p50_ms"]
+        # No column of their own, so kept in the snapshot rather than dropped.
+        assert record["fleet_snapshot"]["cancelled_at_drain"] == 0
+        assert record["fleet_snapshot"]["per_type_results"][0]["model_type"] == "llm"
 
     @pytest.mark.asyncio
     async def test_request_id_and_start_time_come_from_the_response_and_run_clock(self, httpx_mock):
@@ -209,6 +212,7 @@ class TestManifest:
             url=f"{ROUTER}/fleet/status",
             json=_status([_node("a", loaded=["m:7b"], version="0.40.16", num_parallel=4)]),
         )
+        httpx_mock.add_response(url=f"{ROUTER}/api/tags", json={"models": []})
         async with httpx.AsyncClient(base_url=ROUTER) as c:
             _, nodes = await discover_fleet(c)
         manifest = build_manifest(
@@ -501,6 +505,7 @@ class TestVision:
                 ]
             ),
         )
+        httpx_mock.add_response(url=f"{ROUTER}/api/tags", json={"models": []})
         async with httpx.AsyncClient(base_url=ROUTER) as c:
             targets, _ = await discover_fleet(c, include_on_disk=["dinov2-vit-s14"])
         types = {t.name: (t.model_type, t.nodes) for t in targets}
@@ -516,6 +521,7 @@ class TestVision:
             url=f"{ROUTER}/fleet/status",
             json=_status([_node("a", loaded=["m:7b"], vision_embed=["dinov2-vit-s14"])]),
         )
+        httpx_mock.add_response(url=f"{ROUTER}/api/tags", json={"models": []})
         async with httpx.AsyncClient(base_url=ROUTER) as c:
             targets, _ = await discover_fleet(c)
         assert [t.name for t in targets] == ["m:7b"]
@@ -526,7 +532,7 @@ class TestVision:
         async with httpx.AsyncClient(base_url=ROUTER) as c:
             r = await send_one(
                 c,
-                ModelTarget("llava:7b", 1, 1, model_type="vision"),
+                ModelTarget("llava:7b", 1, 1, model_type="vision", workload="vision"),
                 rng=random.Random(1),
                 origin=time.monotonic(),
             )
@@ -610,6 +616,7 @@ class TestCli:
             return httpx.Response(200, json={"run_id": "x"})
 
         httpx_mock.add_callback(fleet, url=f"{ROUTER}/fleet/status", is_reusable=True)
+        httpx_mock.add_response(url=f"{ROUTER}/api/tags", json={"models": []})
         httpx_mock.add_callback(chat, url="http://proxy.test/api/chat", is_reusable=True)
         httpx_mock.add_callback(save, url=f"{ROUTER}/dashboard/api/benchmarks")
         out = tmp_path / "run.json"
@@ -740,7 +747,7 @@ async def test_dashboard_runner_stores_the_report_without_requests(monkeypatch):
     async def fake_run_load(client, targets, duration, stop_event, results, **kw):
         assert kw["fleet_client"] is client
         results.append(_ok("dinov2-vit-s14", model_type="embed-image"))
-        return engine.LoadResult([], duration, "start", "end", seed=9)
+        return engine.LoadResult([], duration, "start", "end", seed=9, window_s=duration)
 
     class Store:
         saved: list = []

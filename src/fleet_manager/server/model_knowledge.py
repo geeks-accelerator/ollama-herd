@@ -870,6 +870,13 @@ def lookup_model(name: str) -> ModelSpec | None:
     return None
 
 
+# Vision families by name, for models the catalog doesn't list.  "-vl" is the
+# Qwen VL naming (qwen2.5-vl, qwen3-vl); "qwen2.5vl" is Ollama's spelling of
+# that family.  No common chat model name contains either (pinned in
+# tests/test_server/test_model_type.py).
+_VISION_HINTS = ("vision", "llava", "moondream", "minicpm-v", "qwen2.5vl", "-vl")
+
+
 def classify_model(name: str) -> ModelCategory:
     """Classify a model name into a category. Falls back to GENERAL."""
     spec = lookup_model(name)
@@ -883,7 +890,7 @@ def classify_model(name: str) -> ModelCategory:
         return ModelCategory.REASONING
     if any(k in lower for k in ("creative", "mistral-nemo", "story")):
         return ModelCategory.CREATIVE
-    if any(k in lower for k in ("vision", "llava", "moondream", "minicpm-v")):
+    if any(k in lower for k in _VISION_HINTS):
         return ModelCategory.VISION
     # Ollama native image models use x/ prefix
     if lower.startswith("x/"):
@@ -945,7 +952,7 @@ def is_vision_model(name: str) -> bool:
         )
     # Heuristic fallback
     lower = name.lower()
-    return any(p in lower for p in ("vision", "llava", "moondream", "minicpm-v"))
+    return any(p in lower for p in _VISION_HINTS)
 
 
 def is_image_model(name: str) -> bool:

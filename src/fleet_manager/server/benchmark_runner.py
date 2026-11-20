@@ -12,17 +12,17 @@ import asyncio
 import logging
 import time
 
-import httpx
-
 from fleet_manager.server.benchmark_engine import (
     ModelTarget,
     NodeInfo,
     RequestResult,
+    bench_client,
     build_report,
     dashboard_record,
     discover_fleet,
     discover_image_models,
     run_load,
+    select_workloads,
     warm_node_model,
     warmup,
 )
@@ -95,7 +95,9 @@ class BenchmarkRunner:
         """Launch benchmark in a background task. Returns run_id.
 
         model_types: list of types to benchmark. Default: ["llm"].
-        Options: "llm", "vision", "embed", "embed-image", "image".
+        Options: "llm", "vision", "embed", "embed-image", "image".  A
+        vision-capable chat model runs the text workload under "llm", and
+        the image workload instead only when "vision" is asked for.
         """
         if self.is_running:
             raise RuntimeError("Benchmark already running")
@@ -147,7 +149,7 @@ class BenchmarkRunner:
     ):
         """Main benchmark execution flow."""
         try:
-            async with httpx.AsyncClient(base_url=self._base_url) as client:
+            async with bench_client(self._base_url) as client:
                 # Smart mode: pull recommended models first
                 if mode == "smart":
                     await self._smart_pull(client, registry, streaming_proxy, scorer)
@@ -191,7 +193,7 @@ class BenchmarkRunner:
                     if "embed-image" in model_types
                     else (),
                 )
-                all_targets = [t for t in targets if t.model_type in model_types]
+                all_targets = select_workloads(targets, model_types)
                 if "image" in model_types:
                     all_targets.extend(await discover_image_models(client))
 
@@ -220,7 +222,7 @@ class BenchmarkRunner:
                     return
 
                 # Run benchmark
-                type_summary = ", ".join(sorted(set(t.model_type for t in all_targets)))
+                type_summary = ", ".join(sorted(set(t.workload for t in all_targets)))
                 self._status = "running"
                 self._phase = f"Running {duration:.0f}s benchmark ({type_summary})..."
                 self._start_time = time.time()  # Reset for accurate elapsed
@@ -244,9 +246,12 @@ class BenchmarkRunner:
                 }
                 if self._models_pulled:
                     run["smart_pulled_models"] = self._models_pulled
-                self._report = build_report(
+                # In a thread: it runs git for the manifest and walks every
+                # request, neither of which belongs in the router's event loop.
+                self._report = await asyncio.to_thread(
+                    build_report,
                     self._results,
-                    min(load.elapsed_s, duration * 2),
+                    load.window_s,
                     all_targets,
                     nodes_info,
                     load.snapshots,

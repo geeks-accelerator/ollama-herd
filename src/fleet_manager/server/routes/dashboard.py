@@ -3801,7 +3801,7 @@ var benchMode = 'default', benchDuration = 300, progressPoll = null;
 
 async function showBenchDialog() {
   benchMode = 'default'; benchDuration = 300;
-  var hasLlm = false, hasEmbed = false, hasImage = false;
+  var hasLlm = false, hasEmbed = false, hasImage = false, hasVisionEmbed = false;
   try {
     var status = await (await fetch('/fleet/status')).json();
     var embedPatterns = ['embed', 'nomic', 'bge', 'e5-'];
@@ -3810,6 +3810,7 @@ async function showBenchDialog() {
         var lower = m.name.toLowerCase();
         if (embedPatterns.some(function(p) { return lower.indexOf(p) !== -1; })) hasEmbed = true; else hasLlm = true;
       });
+      if (((node.vision_embedding || {}).models_available || []).length) hasVisionEmbed = true;
     });
     var imgResp = await fetch('/api/image-models');
     if (imgResp.ok && ((await imgResp.json()).models || []).length) hasImage = true;
@@ -3828,6 +3829,11 @@ async function showBenchDialog() {
         '<label class="type-check' + (hasLlm ? '' : ' disabled') + '"><input type="checkbox" id="type-llm" ' + (hasLlm ? 'checked' : 'disabled') + '> Chat</label>' +
         '<label class="type-check' + (hasEmbed ? '' : ' disabled') + '"><input type="checkbox" id="type-embed" ' + (hasEmbed ? 'checked' : 'disabled') + '> Embeddings</label>' +
         '<label class="type-check' + (hasImage ? '' : ' disabled') + '"><input type="checkbox" id="type-image" ' + (hasImage ? 'checked' : 'disabled') + '> Images</label>' +
+        // Opt-in, so unchecked: Vision sends an image with each request to the
+        // vision-capable chat models (which otherwise run as Chat); vision
+        // embeddings may download their model on the first request.
+        '<label class="type-check' + (hasLlm ? '' : ' disabled') + '" title="Send an image to vision-capable chat models instead of text"><input type="checkbox" id="type-vision" ' + (hasLlm ? '' : 'disabled') + '> Vision</label>' +
+        '<label class="type-check' + (hasVisionEmbed ? '' : ' disabled') + '"><input type="checkbox" id="type-embed-image" ' + (hasVisionEmbed ? '' : 'disabled') + '> Vision embeddings</label>' +
       '</div>' +
       '<div class="dialog-row"><label>Duration</label><div class="segmented" id="dur-control">' +
         '<button data-dur="60">1 min</button><button data-dur="300" class="active">5 min</button><button data-dur="600">10 min</button>' +
@@ -3859,6 +3865,8 @@ async function startBenchmark() {
   if (document.getElementById('type-llm') && document.getElementById('type-llm').checked) types.push('llm');
   if (document.getElementById('type-embed') && document.getElementById('type-embed').checked) types.push('embed');
   if (document.getElementById('type-image') && document.getElementById('type-image').checked) types.push('image');
+  if (document.getElementById('type-vision') && document.getElementById('type-vision').checked) types.push('vision');
+  if (document.getElementById('type-embed-image') && document.getElementById('type-embed-image').checked) types.push('embed-image');
   if (!types.length) types.push('llm');
   closeBenchDialog();
   setRunButton(true);

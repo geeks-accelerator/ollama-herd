@@ -27,6 +27,7 @@ Usage:
     python scripts/benchmark.py --models qwen3:14b       # specific model only
     python scripts/benchmark.py --concurrency 4          # override per-model concurrency
     python scripts/benchmark.py --no-save                # don't store results
+    python scripts/benchmark.py --types llm,vision       # images to vision-capable models
 
 Two models strictly alternating, one request at a time (what a swap costs):
     python scripts/benchmark.py --models A B --sequence alternate --concurrency 1 \\
@@ -44,12 +45,16 @@ import sys
 import httpx
 
 from fleet_manager.server.benchmark_engine import (
+    DEFAULT_TYPES,
+    WORKLOAD_TYPES,
+    bench_client,
     build_report,
     dashboard_record,
     discover_fleet,
     explicit_targets,
     parse_models,
     run_load,
+    select_workloads,
     session_system_prompt,
     warmup,
 )
@@ -75,7 +80,7 @@ def print_report(report, targets, nodes_info):
     total_conc = sum(t.concurrency for t in targets)
     print(f"\n  Workers: {total_conc} total across {len(targets)} models")
     for t in targets:
-        print(f"    {t.name:<35} {t.concurrency} workers  ({t.size_gb:.0f} GB)")
+        print(f"    {t.name:<35} {t.concurrency} workers  ({t.size_gb:.0f} GB, {t.workload})")
 
     peak_util = report.get("peak_utilization", [])
     if peak_util:
@@ -94,8 +99,10 @@ def print_report(report, targets, nodes_info):
     print("  THROUGHPUT")
     print("  " + "\u2500" * 66)
     print(f"  Duration:       {report['duration_s']:.1f}s")
+    cut = report.get("cancelled_at_drain")
     print(
         f"  Requests:       {report['total_requests']} completed, {report['total_failures']} failed"
+        + (f" ({cut} still running when the drain ended)" if cut else "")
     )
     total_tok = report["total_prompt_tokens"] + report["total_completion_tokens"]
     print(
@@ -111,8 +118,17 @@ def print_report(report, targets, nodes_info):
     if report["total_requests"]:
         print(
             f"  Throughput:     {report['requests_per_sec']:.2f} req/s"
-            f" | {report['tokens_per_sec']:.1f} completion tok/s"
+            f" | {report['tokens_per_sec']:.1f} completion tok/s (chat requests)"
         )
+    per_type = report.get("per_type_results", [])
+    if len(per_type) > 1:
+        for t in per_type:
+            p50 = t["latency_p50_ms"]
+            print(
+                f"    {t['model_type']:<12} {t['requests']:>5} ok {t['failures']:>4} failed"
+                f"  {t['requests_per_sec']:>7.2f} req/s"
+                + (f"  latency p50 {p50:,.0f}ms" if p50 is not None else "")
+            )
 
     if report.get("latency_p50_ms") is not None:
         print()
@@ -187,16 +203,12 @@ async def run_benchmark(args: argparse.Namespace) -> None:
         args.duration if args.duration is not None else (math.inf if args.requests else 300.0)
     )
     async with contextlib.AsyncExitStack() as stack:
-        client = await stack.enter_async_context(
-            httpx.AsyncClient(base_url=args.url, timeout=args.timeout)
-        )
+        client = await stack.enter_async_context(bench_client(args.url, args.timeout))
         fleet_client = None
         if observe:
             fleet_client = client
             if fleet_url != args.url:
-                fleet_client = await stack.enter_async_context(
-                    httpx.AsyncClient(base_url=fleet_url, timeout=300)
-                )
+                fleet_client = await stack.enter_async_context(bench_client(fleet_url))
             print(f"\nDiscovering fleet at {fleet_url}...")
             try:
                 targets, nodes_info = await discover_fleet(fleet_client, include_on_disk=names)
@@ -210,9 +222,19 @@ async def run_benchmark(args: argparse.Namespace) -> None:
             # Nothing exposes /fleet/status (plain Ollama, llama-swap): the
             # models as named, no nodes to warm or observe.
             targets, nodes_info = explicit_targets(names, args.concurrency or 1), []
+        found = targets
+        targets = select_workloads(found, args.types)
         if not targets:
-            wanted = f": {names}" if names else ""
-            print(f"Error: none of the models are loaded or on disk{wanted}", file=sys.stderr)
+            if found:
+                kinds = sorted({t.model_type for t in found})
+                print(
+                    f"Error: no models of the types asked for ({','.join(args.types)});"
+                    f" found {', '.join(kinds)}",
+                    file=sys.stderr,
+                )
+            else:
+                wanted = f": {names}" if names else ""
+                print(f"Error: none of the models are loaded or on disk{wanted}", file=sys.stderr)
             sys.exit(1)
         if args.url != fleet_url and observe:
             print(f"  Sending traffic to {args.url}, observing the fleet at {fleet_url}")
@@ -236,8 +258,11 @@ async def run_benchmark(args: argparse.Namespace) -> None:
         print()
         for t in targets:
             weight = f", weight {weights[t.name]:g}" if t.name in weights else ""
+            kind = (
+                t.model_type if t.workload == t.model_type else f"{t.model_type}, {t.workload} work"
+            )
             print(
-                f"  {t.name} ({t.size_gb:.0f} GB, {t.model_type}{weight})"
+                f"  {t.name} ({t.size_gb:.0f} GB, {kind}{weight})"
                 + ("" if shared else f" — {t.concurrency} workers")
                 + (f" — {', '.join(t.nodes)}" if t.nodes else "")
             )
@@ -272,7 +297,7 @@ async def run_benchmark(args: argparse.Namespace) -> None:
                 urls = sorted({ni.ollama_url for ni in nodes_info if ni.ollama_url})
                 clients = [
                     (
-                        await stack.enter_async_context(httpx.AsyncClient(base_url=u, timeout=300)),
+                        await stack.enter_async_context(bench_client(u)),
                         u.split("//")[-1].split(":")[0],
                     )
                     for u in urls
@@ -330,6 +355,7 @@ async def run_benchmark(args: argparse.Namespace) -> None:
             "url": args.url,
             "fleet_url": fleet_url if observe else None,
             "api": args.api,
+            "types": args.types,
             "models": names or None,
             "weights": weights or None,
             "sequence": sequence,
@@ -354,7 +380,7 @@ async def run_benchmark(args: argparse.Namespace) -> None:
             )
         report = build_report(
             results,
-            min(load.elapsed_s, duration * 2),
+            load.window_s,
             targets,
             nodes_info,
             load.snapshots,
@@ -391,6 +417,16 @@ async def run_benchmark(args: argparse.Namespace) -> None:
                     print(f"  Warning: Failed to save results (HTTP {resp.status_code})")
             except Exception as e:
                 print(f"  Warning: Could not save results: {e}")
+
+
+def _types(value: str) -> list[str]:
+    types = [t.strip() for t in value.split(",") if t.strip()]
+    unknown = sorted(set(types) - set(WORKLOAD_TYPES))
+    if unknown or not types:
+        raise argparse.ArgumentTypeError(
+            f"unknown type(s) {unknown}; choose from {','.join(WORKLOAD_TYPES)}"
+        )
+    return types
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -437,6 +473,15 @@ Examples:
         nargs="+",
         help="Specific model(s) to benchmark (default: all loaded), optionally weighted: "
         "'a b', 'a=3,b=1' or 'a=3 b'. Weights imply --sequence random unless set",
+    )
+    parser.add_argument(
+        "--types",
+        type=_types,
+        default=list(DEFAULT_TYPES),
+        help=f"Comma-separated workloads to run, of {','.join(WORKLOAD_TYPES)} (default: "
+        f"{','.join(DEFAULT_TYPES)}). A vision-capable chat model (gemma3, llava) is a chat "
+        "model: it gets the text workload under llm, and an image with each request only "
+        "when vision is listed",
     )
     parser.add_argument(
         "--concurrency",

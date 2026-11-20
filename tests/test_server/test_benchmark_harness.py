@@ -61,6 +61,7 @@ class TestDiscovery:
             url=f"{ROUTER}/fleet/status",
             json=_status([_node("a", loaded=["qwen3-coder:30b", "nomic-embed-text:latest"])]),
         )
+        httpx_mock.add_response(url=f"{ROUTER}/api/tags", json={"models": []})
         async with httpx.AsyncClient(base_url=ROUTER) as c:
             targets, nodes = await discover_fleet(c)
         types = {t.name: t.model_type for t in targets}
@@ -74,6 +75,7 @@ class TestDiscovery:
             url=f"{ROUTER}/fleet/status",
             json=_status([_node("a", loaded=["qwen3-coder:30b"], on_disk=["qwen3.5:9b"])]),
         )
+        httpx_mock.add_response(url=f"{ROUTER}/api/tags", json={"models": []})
         async with httpx.AsyncClient(base_url=ROUTER) as c:
             targets, _ = await discover_fleet(c, include_on_disk=["qwen3.5:9b"])
         by_name = {t.name: t for t in targets}
@@ -95,6 +97,7 @@ class TestDiscovery:
                 ]
             ),
         )
+        httpx_mock.add_response(url=f"{ROUTER}/api/tags", json={"models": []})
         async with httpx.AsyncClient(base_url=ROUTER) as c:
             targets, _ = await discover_fleet(c, include_on_disk=["qwen3-coder:30b", "qwen3.5:9b"])
         assert {t.name: t.nodes for t in targets} == {
@@ -257,7 +260,7 @@ async def test_dashboard_run_without_chat_models_does_not_crash(monkeypatch):
         results.append(
             RequestResult("nomic-embed-text:latest", "a", 5, 5, 0, 1, True, model_type="embed")
         )
-        return engine.LoadResult([], duration, "start", "end", seed=3)
+        return engine.LoadResult([], duration, "start", "end", seed=3, window_s=duration)
 
     monkeypatch.setattr(benchmark_runner, "discover_fleet", fake_discover)
     monkeypatch.setattr(benchmark_runner, "warmup", fake_warmup)

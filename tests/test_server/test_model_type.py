@@ -57,3 +57,50 @@ def test_fleet_status_reports_the_agent_version():
     assert serialize_node(node)["agent_version"] == "0.12.10"
     node.agent_version = ""
     assert serialize_node(node)["agent_version"] is None
+
+
+@pytest.mark.parametrize(
+    "name", ["qwen2.5vl:7b", "qwen2.5vl:72b", "qwen3-vl:8b", "qwen3-vl:235b", "qwen2.5-vl:3b"]
+)
+def test_the_qwen_vl_family_is_vision(name):
+    assert model_type(name) is ModelType.VISION
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "llama3.1:8b",
+        "llama3.2:3b",
+        "llama3.3:70b",
+        "qwen3:14b",
+        "qwen2.5:7b",
+        "qwen2.5-coder:7b",
+        "qwen3-coder:30b",
+        "qwq:32b",
+        "deepseek-r1:14b",
+        "gpt-oss:20b",
+        "mistral:7b",
+        "mistral-nemo:12b",
+        "mixtral:8x7b",
+        "phi4:14b",
+        "gemma2:9b",
+        "devstral:24b",
+        "codestral:22b",
+        "command-r:35b",
+        "glm-4.7-flash",
+        "granite3.3:8b",
+        "olmo2:13b",
+        "smollm2:1.7b",
+        "dolphin3:8b",
+        "starcoder2:15b",
+        "nemotron:70b",
+        "tinyllama",
+        "solar:10.7b",
+        "yi:34b",
+        "openchat:7b",
+        "vicuna:13b",
+        "wizardlm2:7b",
+    ],
+)
+def test_no_common_chat_model_is_taken_for_vision(name):
+    assert model_type(name) is ModelType.LLM

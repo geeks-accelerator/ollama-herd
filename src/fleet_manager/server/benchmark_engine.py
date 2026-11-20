@@ -19,14 +19,16 @@ import struct
 import subprocess
 import time
 import zlib
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Collection, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 
 import fleet_manager
+from fleet_manager.common.errors import ollama_stream_error
 from fleet_manager.common.stats import percentile
 from fleet_manager.server.model_knowledge import model_type
 
@@ -104,11 +106,12 @@ def make_prompt(prompt_tokens: int | None = None, rng: random.Random | None = No
         f"of at least 40 points, each a full sentence."
     )
     budget = max(0, prompt_tokens - len(enc.encode(tail)))
+    # Every filler word is at least one token, so ``budget`` words are enough:
+    # encode once and cut, instead of re-encoding the growing text per batch.
     words: list[str] = []
-    while len(enc.encode(" ".join(words))) < budget:
+    while len(words) < budget:
         words.extend(rng.sample(_FILLER_WORDS, k=min(40, len(_FILLER_WORDS))))
-    text = " ".join(words)
-    tokens = enc.encode(text)[:budget]
+    tokens = enc.encode(" ".join(words))[:budget]
     return "Notes: " + enc.decode(tokens) + tail
 
 
@@ -176,11 +179,30 @@ def _test_png(size: int = 64) -> bytes:
 
 TEST_IMAGE_B64 = base64.b64encode(_test_png()).decode()
 
-# Model types the engine has a workload for.  STT has none yet (it needs audio).
+# Workloads the engine can send.  STT has none yet (it needs audio).
 WORKLOAD_TYPES = ("llm", "vision", "embed", "embed-image", "image")
-# Types warmed straight at a node's Ollama; image generation and vision
+# What a run measures unless asked otherwise: everything but the image
+# workload for vision-capable chat models, which is opt-in (``select_workloads``).
+DEFAULT_TYPES = ("llm", "embed", "embed-image", "image")
+# Chat workloads: the ones that stream tokens, so the ones TTFT and token rates
+# are about.
+CHAT_WORKLOADS = ("llm", "vision")
+# Workloads warmed straight at a node's Ollama; image generation and vision
 # embeddings run in node sidecars, so their first request includes the load.
 WARMED_TYPES = ("llm", "vision", "embed")
+# A request still in flight when the drain ran out: recorded as a failure, never
+# dropped, because under overload it is the slowest requests the drain cuts off.
+CANCELLED_AT_DRAIN = "cancelled at drain"
+
+# No connection cap.  httpx's default pool holds 100 connections, so in an open
+# loop the 101st concurrent request waited inside the client: timed as server
+# latency while the schedule lag read ~1 ms.
+UNLIMITED_POOL = httpx.Limits(max_connections=None, max_keepalive_connections=None)
+
+
+def bench_client(base_url: str, timeout: float = 300.0) -> httpx.AsyncClient:
+    """The client every benchmark request goes through: no pool limit."""
+    return httpx.AsyncClient(base_url=base_url, timeout=timeout, limits=UNLIMITED_POOL)
 
 
 @dataclass
@@ -200,6 +222,9 @@ class RequestResult:
     started_ms: float = 0.0  # when it was sent, ms after the run began (the run clock)
     request_id: str = ""  # X-Request-Id, joins it to the router's trace; "" if absent
     schedule_lag_ms: float | None = None  # open loop only: how late it started
+    # Why the reply ended: Ollama's done_reason / OpenAI's finish_reason
+    # ("stop", "length", ...); None when the stream did not say.
+    finish_reason: str | None = None
 
 
 @dataclass
@@ -208,7 +233,37 @@ class ModelTarget:
     size_gb: float
     concurrency: int
     nodes: list[str] = field(default_factory=list)
-    model_type: str = "llm"  # llm, vision, embed, embed-image, image, stt
+    model_type: str = "llm"  # what the model is: llm, vision, embed, embed-image, image, stt
+    # What is sent to it.  A vision-capable chat model is a chat model: it gets
+    # the text workload unless the run asks for vision (``select_workloads``).
+    workload: str = ""
+    # Loaded on no node, only on disk: not warmed, so its first request
+    # includes the load wherever the router puts it.
+    on_disk_only: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.workload:
+            self.workload = "llm" if self.model_type == "vision" else self.model_type
+
+
+def select_workloads(targets: Iterable[ModelTarget], types: Collection[str]) -> list[ModelTarget]:
+    """The targets the requested ``types`` cover, each set to the workload it runs.
+
+    A vision-capable model (gemma3, llava, qwen-vl) runs the image workload when
+    ``"vision"`` is asked for, else the text workload under ``"llm"``: never
+    both, so one model is not measured twice at double the concurrency.  Every
+    other target runs as its type, when that type is asked for.
+    """
+    selected = []
+    for t in targets:
+        if t.model_type == "vision":
+            workload = "vision" if "vision" in types else "llm" if "llm" in types else None
+        else:
+            workload = t.model_type if t.model_type in types else None
+        if workload:
+            t.workload = workload
+            selected.append(t)
+    return selected
 
 
 @dataclass
@@ -241,6 +296,22 @@ def _loaded_meta(m: dict) -> dict:
     }
 
 
+async def reported_capabilities(client: httpx.AsyncClient) -> dict[str, list[str]]:
+    """Ollama's own capabilities per model, from the router's ``/api/tags``
+    (``/fleet/status`` leaves them out); ``{}`` from an endpoint without it.
+
+    Presence-only, like ``serializers.model_has_capability``: an older Ollama
+    under-reports, so a missing capability only means the name decides.
+    """
+    try:
+        resp = await client.get("/api/tags")
+        if resp.status_code != 200:
+            return {}
+        return {m["name"]: list(m.get("capabilities") or []) for m in resp.json()["models"]}
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return {}
+
+
 async def discover_fleet(
     client: httpx.AsyncClient,
     include_on_disk: Iterable[str] = (),
@@ -248,9 +319,11 @@ async def discover_fleet(
     """Discover nodes and the models to benchmark, with concurrency per model.
 
     Targets are the models loaded on any online node, typed by
-    ``model_knowledge.model_type``, plus any model in ``include_on_disk`` that
-    is not loaded but is on some node's disk (its first request then includes
-    the load) or served by a node's vision-embedding sidecar (``embed-image``).
+    ``model_knowledge.model_type`` (with the capabilities Ollama reports), plus
+    any model in ``include_on_disk`` that is not loaded but is on some node's
+    disk (``on_disk_only``: its first request includes the load) or served by a
+    node's vision-embedding sidecar (``embed-image``).  Each target's
+    ``workload`` is its type's default; ``select_workloads`` sets the run's.
     Concurrency is calculated per-node:
     1. Total node budget = min(available_gb / KV_CACHE, MAX_TOTAL_PER_NODE)
     2. Budget is split evenly across models on that node
@@ -259,20 +332,17 @@ async def discover_fleet(
     resp = await client.get("/fleet/status")
     resp.raise_for_status()
     data = resp.json()
+    capabilities = await reported_capabilities(client)
 
     nodes_info: list[NodeInfo] = []
     model_map: dict[str, ModelTarget] = {}
     on_disk_by_node: dict[str, tuple[set[str], dict]] = {}
     vision_embed_by_node: dict[str, set[str]] = {}
 
-    def target(name: str, size_gb: float, concurrency: int) -> ModelTarget:
+    def target(name: str, size_gb: float, concurrency: int, **kw) -> ModelTarget:
         if name not in model_map:
-            model_map[name] = ModelTarget(
-                name=name,
-                size_gb=size_gb,
-                concurrency=concurrency,
-                model_type=model_type(name).value,
-            )
+            kw.setdefault("model_type", model_type(name, capabilities.get(name, ())).value)
+            model_map[name] = ModelTarget(name=name, size_gb=size_gb, concurrency=concurrency, **kw)
         else:
             model_map[name].concurrency = max(model_map[name].concurrency, concurrency)
         return model_map[name]
@@ -328,22 +398,22 @@ async def discover_fleet(
         )
 
     # A requested model that is loaded nowhere: every node with it on disk is a
-    # candidate (its first request includes the load).  A model loaded somewhere
-    # keeps only the nodes it is loaded on: listing the others too made the
-    # warm-up load it on them directly, evicting their resident models before
-    # the router decided anything (fleet benchmark run 2, 2026-11-20).
+    # candidate, and none is warmed (``on_disk_only``): its first request
+    # includes the load, on the node the router picks.  Warming it on each node
+    # loaded it everywhere, evicting resident models before the router decided
+    # anything; for the same reason a model loaded somewhere keeps only the
+    # nodes it is loaded on (fleet benchmark run 2, 2026-11-20).
     for name in include_on_disk:
         if name in model_map:
             continue
         for node_id, (on_disk, sizes) in on_disk_by_node.items():
             if name in on_disk:
-                target(name, sizes.get(name, 0.0), MIN_CONCURRENCY).nodes.append(node_id)
+                t = target(name, sizes.get(name, 0.0), MIN_CONCURRENCY, on_disk_only=True)
+                t.nodes.append(node_id)
         # Vision embeddings live in the node's sidecar, never in Ollama.
         for node_id, served in vision_embed_by_node.items():
             if name in served:
-                t = target(name, 0.0, MIN_CONCURRENCY)
-                t.model_type = "embed-image"
-                t.nodes.append(node_id)
+                target(name, 0.0, MIN_CONCURRENCY, model_type="embed-image").nodes.append(node_id)
 
     return list(model_map.values()), nodes_info
 
@@ -418,6 +488,12 @@ def _failure(model: str, model_type: str, start: float, error: str, **kw) -> Req
     )
 
 
+def _exception_text(e: Exception) -> str:
+    """A failed request's error: the exception's class too, since httpx's
+    timeouts have no message (a ReadTimeout was recorded as "")."""
+    return f"{type(e).__name__}: {e}"[:120] if str(e) else type(e).__name__
+
+
 def _ids(resp: httpx.Response) -> dict:
     """The response headers every result keeps: what answered, and the id that
     joins it to the router's trace (absent from a backend that isn't herd)."""
@@ -463,7 +539,7 @@ async def _send_unary(
             **_ids(resp),
         )
     except Exception as e:
-        return _failure(model, model_type, start, str(e)[:120])
+        return _failure(model, model_type, start, _exception_text(e))
 
 
 async def send_embed_request(
@@ -560,47 +636,71 @@ def _chat_body(
     return "/api/chat", body
 
 
-def _parse_chunk(api: str, line: str) -> tuple[str, bool, tuple[int, int] | None] | None:
-    """One streamed line as (content, first-token-seen, final token counts), or
-    None for a line that carries nothing (blank, keep-alive, ``[DONE]``).
+class _Chunk(NamedTuple):
+    """One streamed line, as ``send_request`` reads it."""
+
+    content: str = ""
+    token: bool = False  # a first token: content or reasoning
+    counts: tuple[int, int] | None = None  # (prompt, completion) on the final chunk
+    error: str | None = None  # the stream's in-band error
+    end: bool = False  # Ollama's done:true, or OpenAI's [DONE]
+    finish_reason: str | None = None
+
+
+def _parse_chunk(api: str, line: str) -> _Chunk | None:
+    """One streamed line, or None for a line that carries nothing (blank,
+    keep-alive, not JSON).
 
     A thinking model streams its reasoning (Ollama ``thinking``, OpenAI-style
     ``reasoning_content`` / ``reasoning``) before any content; its first token
     is the first of either, or TTFT reads 0 for every request still reasoning
     at the cap.  Counts are Ollama's ``prompt_eval_count`` / ``eval_count`` on
-    the ``done`` chunk, or the OpenAI ``usage`` object.
+    the ``done`` chunk, or the OpenAI ``usage`` object.  An error is Ollama's
+    ``{"error": ...}`` line or an OpenAI ``data: {"error": {...}}`` event: what
+    a backend or the router sends when a stream fails after it began (HTTP 200).
     """
     line = line.strip()
     if api == "openai":
-        if not line.startswith("data:") or line == "data: [DONE]":
+        if not line.startswith("data:"):
             return None
-        line = line[5:]
+        line = line[5:].strip()
+        if line == "[DONE]":
+            return _Chunk(end=True)
     if not line:
         return None
     try:
         chunk = json.loads(line)
     except json.JSONDecodeError:
         return None
+    if not isinstance(chunk, dict):
+        return None
+    error = ollama_stream_error(chunk)
+    if error:
+        return _Chunk(error=error)
     if api == "openai":
-        content, token = "", False
+        content, token, finish = "", False, None
         for choice in chunk.get("choices") or []:
             delta = choice.get("delta") or {}
             content += delta.get("content") or ""
             token = token or bool(
                 delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning")
             )
+            finish = choice.get("finish_reason") or finish
         usage = chunk.get("usage")
         counts = (
             (usage.get("prompt_tokens") or 0, usage.get("completion_tokens") or 0)
             if usage
             else None
         )
-        return content, token, counts
+        return _Chunk(content, token, counts, finish_reason=finish)
     msg = chunk.get("message") or {}
-    counts = None
-    if chunk.get("done"):
-        counts = (chunk.get("prompt_eval_count") or 0, chunk.get("eval_count") or 0)
-    return msg.get("content") or "", bool(msg.get("content") or msg.get("thinking")), counts
+    token = bool(msg.get("content") or msg.get("thinking"))
+    if not chunk.get("done"):
+        return _Chunk(msg.get("content") or "", token)
+    counts = (chunk.get("prompt_eval_count") or 0, chunk.get("eval_count") or 0)
+    return _Chunk(
+        msg.get("content") or "", token, counts, end=True, finish_reason=chunk.get("done_reason")
+    )
 
 
 async def send_request(
@@ -671,19 +771,47 @@ async def send_request(
                 )
 
             chunks = 0
+            ended = False
+            finish: str | None = None
             async for line in resp.aiter_lines():
-                parsed = _parse_chunk(api, line)
-                if parsed is None:
+                chunk = _parse_chunk(api, line)
+                if chunk is None:
                     continue
-                content, token, final = parsed
-                if token:
+                if chunk.error:
+                    # HTTP 200, then the stream failed: the node died mid-reply,
+                    # the context overflowed.  A failure, with the reason given.
+                    return _failure(
+                        model,
+                        kind,
+                        start,
+                        f"stream error: {chunk.error[:200]}",
+                        node_id=node_id,
+                        ttft_ms=ttft,
+                        **ids,
+                    )
+                if chunk.token:
                     chunks += 1
                     if not ttft:
                         ttft = (time.monotonic() - start) * 1000
-                if keep_reply and content:
-                    reply_parts.append(content)
-                if final:
-                    counts = final
+                if keep_reply and chunk.content:
+                    reply_parts.append(chunk.content)
+                if chunk.counts:
+                    counts = chunk.counts
+                finish = chunk.finish_reason or finish
+                ended = ended or chunk.end
+        # A stream that just stops is not an answer: Ollama ends every complete
+        # one with done:true, an OpenAI server with [DONE] or a finish_reason.
+        if not (ended or (api == "openai" and finish)):
+            marker = "done" if api == "ollama" else "[DONE] or a finish_reason"
+            return _failure(
+                model,
+                kind,
+                start,
+                f"stream ended without {marker}",
+                node_id=node_id,
+                ttft_ms=ttft,
+                **ids,
+            )
         prompt_n, completion_n = counts or (0, chunks)
         return RequestResult(
             model=model,
@@ -695,13 +823,54 @@ async def send_request(
             success=True,
             model_type=kind,
             reply="".join(reply_parts),
+            finish_reason=finish,
             **ids,
         )
 
     except Exception as e:
         return _failure(
-            model, kind, start, str(e)[:120], node_id=node_id or "unknown", ttft_ms=ttft, **ids
+            model,
+            kind,
+            start,
+            _exception_text(e),
+            node_id=node_id or "unknown",
+            ttft_ms=ttft,
+            **ids,
         )
+
+
+async def _recorded(
+    request: Awaitable[RequestResult],
+    model: str,
+    kind: str,
+    origin: float,
+    results: list[RequestResult] | None,
+    **fields,
+) -> RequestResult:
+    """Await one request; its result stamped with when it started on the run
+    clock (``origin``) and ``fields`` (turn, schedule lag), and appended to
+    ``results``.
+
+    A request cancelled in flight (the drain ran out) is appended as a
+    ``CANCELLED_AT_DRAIN`` failure before the cancellation goes on: dropping it
+    lost exactly the slowest requests of an overloaded run.
+    """
+    t0 = time.monotonic()
+
+    def keep(result: RequestResult) -> RequestResult:
+        result.started_ms = round((t0 - origin) * 1000, 1)
+        for name, value in fields.items():
+            setattr(result, name, value)
+        if results is not None:
+            results.append(result)
+        return result
+
+    try:
+        result = await request
+    except asyncio.CancelledError:
+        keep(_failure(model, kind, t0, CANCELLED_AT_DRAIN))
+        raise
+    return keep(result)
 
 
 async def send_one(
@@ -711,27 +880,26 @@ async def send_one(
     rng: random.Random,
     origin: float,
     chat: dict | None = None,
+    results: list[RequestResult] | None = None,
+    **fields,
 ) -> RequestResult:
-    """One request of ``target``'s type, stamped with when it started on the
-    run clock (``origin`` is the run's ``time.monotonic()`` start).
+    """One request of ``target``'s workload, stamped with when it started on
+    the run clock (``origin`` is the run's ``time.monotonic()`` start) and
+    appended to ``results`` (see ``_recorded``; ``fields`` are set on it).
 
     ``chat`` is ``send_request``'s workload keywords (prompt_tokens, max_tokens,
     think, prompt, temperature, api, timeout), used for chat and vision targets.
     """
-    t0 = time.monotonic()
-    kind = target.model_type
+    kind = target.workload
     if kind == "embed":
-        result = await send_embed_request(client, target.name, rng=rng)
+        request = send_embed_request(client, target.name, rng=rng)
     elif kind == "embed-image":
-        result = await send_embed_image_request(client, target.name)
+        request = send_embed_image_request(client, target.name)
     elif kind == "image":
-        result = await send_image_request(client, target.name, rng=rng)
+        request = send_image_request(client, target.name, rng=rng)
     else:
-        result = await send_request(
-            client, target.name, rng=rng, image=kind == "vision", **(chat or {})
-        )
-    result.started_ms = round((t0 - origin) * 1000, 1)
-    return result
+        request = send_request(client, target.name, rng=rng, image=kind == "vision", **(chat or {}))
+    return await _recorded(request, target.name, kind, origin, results, **fields)
 
 
 class RequestBudget:
@@ -823,7 +991,8 @@ async def open_loop(
     ``i < count`` (``None``: until ``stop_event``), never waiting for earlier
     calls to finish, so a slow server can't slow the arrivals and hide its
     queueing (the closed loop's blind spot).  Then waits for the calls
-    (at most ``drain_timeout`` s; the rest are cancelled).
+    (at most ``drain_timeout`` s; the rest are cancelled, and so are all of
+    them if this is cancelled, and each has finished when this returns).
 
     Returns each call's schedule lag in seconds (how late it started): above a
     millisecond or two, the client was the limit, not the server.
@@ -852,9 +1021,12 @@ async def open_loop(
             await asyncio.wait(tasks, timeout=drain_timeout)
     finally:
         for t in tasks:
-            if not t.done():
-                t.cancel()
-            elif not t.cancelled() and t.exception():
+            t.cancel()
+        # Let each cancelled call run its own handling (a benchmark request
+        # records itself as cancelled) before anyone reads what they recorded.
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for t in tasks:
+            if not t.cancelled() and t.exception():
                 logger.warning(f"open-loop request failed: {t.exception()!r}")
     return lags
 
@@ -876,10 +1048,9 @@ async def worker(
     budget = budget or RequestBudget()
     while not stop_event.is_set() and budget.take():
         target = pick()
-        result = await send_one(client, target, rng=rng, origin=origin, chat=chat)
-        results.append(result)
+        result = await send_one(client, target, rng=rng, origin=origin, chat=chat, results=results)
         if not result.success:
-            backoff = 2.0 if target.model_type == "image" else 1.0
+            backoff = 2.0 if target.workload == "image" else 1.0
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=backoff)
                 break
@@ -925,8 +1096,7 @@ async def session_worker(
                 return
             messages.append({"role": "user", "content": make_prompt(user_tokens, rng)})
             client, label = pick_client()
-            t0 = time.monotonic()
-            result = await send_request(
+            request = send_request(
                 client,
                 model,
                 max_tokens=max_tokens,
@@ -935,9 +1105,7 @@ async def session_worker(
                 tags=[session] if tag_sessions else None,
                 node_label=label,
             )
-            result.started_ms = round((t0 - origin) * 1000, 1)
-            result.turn = turn
-            results.append(result)
+            result = await _recorded(request, model, "llm", origin, results, turn=turn)
             if not result.success:
                 break
             messages.append({"role": "assistant", "content": result.reply})
@@ -990,10 +1158,11 @@ async def warmup(
     log_fn=None,
 ) -> list[ModelTarget]:
     """Warm every node that serves each target, directly; drop targets no node
-    could warm.  Only ``WARMED_TYPES`` are warmed (vision models as chat, with no
-    image: that loads them); image generation and vision embeddings run in node
-    sidecars, so their first request includes the load and shows as
-    ``first_ttft_ms`` in the report.
+    could warm.  Only ``WARMED_TYPES`` workloads are warmed (vision as chat, with
+    no image: that loads the model).  Not warmed, so their first request includes
+    the load and shows as ``first_ttft_ms`` in the report: image generation and
+    vision embeddings (node sidecars), and a model only on disk
+    (``on_disk_only``), which warming would load on every node that has it.
 
     log_fn: optional callback(message: str) for progress reporting.
     """
@@ -1002,8 +1171,12 @@ async def warmup(
     by_id = {ni.node_id: ni for ni in nodes_info}
     jobs: list[tuple[ModelTarget, str]] = []
     coros = []
+
+    def warmed_here(t: ModelTarget) -> bool:
+        return t.workload in WARMED_TYPES and not t.on_disk_only
+
     for t in targets:
-        if t.model_type not in WARMED_TYPES:
+        if not warmed_here(t):
             continue
         for node_id in t.nodes:
             ni = by_id.get(node_id)
@@ -1014,7 +1187,7 @@ async def warmup(
                 warm_node_model(
                     ni.ollama_url,
                     t.name,
-                    embed=t.model_type == "embed",
+                    embed=t.workload == "embed",
                     num_ctx=ni.model_contexts.get(t.name),
                 )
             )
@@ -1026,7 +1199,7 @@ async def warmup(
             warmed.setdefault(t.name, []).append(node_id)
         if log_fn:
             log_fn(f"  {t.name} on {node_id}: {'ok' if ok else 'FAILED'}")
-    return [t for t in targets if t.model_type not in WARMED_TYPES or t.name in warmed]
+    return [t for t in targets if not warmed_here(t) or t.name in warmed]
 
 
 @dataclass
@@ -1034,10 +1207,13 @@ class LoadResult:
     """What ``run_load`` saw, on the run clock its requests are stamped with."""
 
     snapshots: list[dict]  # /fleet/status polls, each with its "t_ms" on the run clock
-    elapsed_s: float
+    elapsed_s: float  # the whole run, drain included
     started_at: str  # UTC ISO 8601: the run clock's zero
     ended_at: str
     seed: int  # what the run's random choices came from: rerun with it to repeat them
+    # What rates are over: the send window in an open loop (arrivals), the load
+    # phase in a closed loop.  Never the drain, when nothing new is sent.
+    window_s: float
 
 
 def _utc_now() -> str:
@@ -1070,6 +1246,12 @@ async def run_load(
 ) -> LoadResult:
     """Send load for ``duration`` s (or until ``stop_event``, or ``max_requests``
     sent), drain in-flight requests, and return what was seen.
+
+    The drain gives in-flight requests up to ``timeout`` (the per-request
+    timeout) to finish; any still running then is cancelled and recorded as a
+    ``CANCELLED_AT_DRAIN`` failure.  The fleet is polled until the drain ends,
+    so model loads and evictions in it are seen.  ``LoadResult.window_s``, what
+    rates are over, leaves the drain out.
 
     The one load loop the CLI and the dashboard runner share.  Three shapes:
 
@@ -1107,7 +1289,7 @@ async def run_load(
         "api": api,
         "timeout": timeout,
     }
-    runnable = [t for t in targets if t.model_type in WORKLOAD_TYPES]
+    runnable = [t for t in targets if t.workload in WORKLOAD_TYPES]
     for t in targets:
         if t not in runnable:
             logger.warning(f"Benchmark: no workload for {t.model_type} model {t.name}; skipped")
@@ -1123,6 +1305,7 @@ async def run_load(
     origin = time.monotonic()
     started_at = _utc_now()
     tasks: list[asyncio.Task] = []
+    last_send: float | None = None  # open loop: when the latest request started
     if rate and picker:
         count = budget.remaining
         if math.isfinite(duration):
@@ -1130,15 +1313,20 @@ async def run_load(
         rng = next(rngs)
 
         async def fire(_i: int, lag: float) -> None:
-            result = await send_one(client, picker.next(), rng=rng, origin=origin, chat=chat)
-            result.schedule_lag_ms = round(lag * 1000, 2)
-            results.append(result)
-
-        tasks.append(
-            asyncio.create_task(
-                open_loop(fire, rate, count, stop_event=stop_event, drain_timeout=30)
+            nonlocal last_send
+            last_send = time.monotonic()
+            await send_one(
+                client,
+                picker.next(),
+                rng=rng,
+                origin=origin,
+                chat=chat,
+                results=results,
+                schedule_lag_ms=round(lag * 1000, 2),
             )
-        )
+
+        # No drain bound of its own: the drain below bounds every shape alike.
+        tasks.append(asyncio.create_task(open_loop(fire, rate, count, stop_event=stop_event)))
     elif picker:
         for _ in range(concurrency or sum(t.concurrency for t in runnable)):
             coro = worker(
@@ -1159,7 +1347,7 @@ async def run_load(
             rotation = itertools.cycle(sessions.pop("clients", None) or [(client, "")])
         for target in runnable:
             for _ in range(target.concurrency):
-                if sessions and target.model_type == "llm":
+                if sessions and target.workload == "llm":
                     coro = session_worker(
                         lambda: next(rotation),
                         target.name,
@@ -1186,9 +1374,10 @@ async def run_load(
 
     snapshots: list[dict] = []
     poller = None
+    polled = asyncio.Event()  # set when the drain is over, not when sending stops
     if fleet_client is not None:
         poller = asyncio.create_task(
-            poll_fleet_status(fleet_client, stop_event, snapshots, origin=origin)
+            poll_fleet_status(fleet_client, polled, snapshots, origin=origin)
         )
     # Ends at the duration, at stop_event, or when every worker is done (the
     # request budget is spent).
@@ -1205,25 +1394,31 @@ async def run_load(
         )
         if on_tick:
             on_tick(time.monotonic() - origin)
+    load_s = min(time.monotonic() - origin, duration)
     stop_event.set()
 
-    # Drain in-flight requests, then stop whatever is still waiting.
+    # Drain: each request in flight gets up to its own timeout; what is still
+    # running then is cancelled, and records itself as a failure.
     if tasks:
-        _, pending = await asyncio.wait(tasks, timeout=35)
+        _, pending = await asyncio.wait(tasks, timeout=timeout)
         for t in pending:
             t.cancel()
     await work
     await stopped
+    polled.set()
     if poller is not None:
-        poller.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await poller
+    # Open loop: the arrivals' window, to the end of the last one's slot however
+    # late it started.  Closed loop: the load phase.
+    window_s = last_send - origin + 1 / rate if last_send is not None else load_s
     return LoadResult(
         snapshots=snapshots,
         elapsed_s=time.monotonic() - origin,
         started_at=started_at,
         ended_at=_utc_now(),
         seed=seed,
+        window_s=window_s,
     )
 
 
@@ -1346,6 +1541,8 @@ def request_record(r: RequestResult) -> dict:
     }
     if r.schedule_lag_ms is not None:
         record["schedule_lag_ms"] = r.schedule_lag_ms
+    if r.finish_reason is not None:
+        record["finish_reason"] = r.finish_reason
     return record
 
 
@@ -1408,16 +1605,25 @@ def build_manifest(
     }
 
 
+# Report keys the dashboard's benchmark table has no column for.
+SNAPSHOT_KEYS = (
+    "manifest",
+    "model_events",
+    "per_type_results",
+    "cancelled_at_drain",
+    "schedule_lag_ms",
+)
+
+
 def dashboard_record(report: dict) -> dict:
     """``report`` as the dashboard stores it: without the per-request records
-    (megabytes on a long run, and never displayed) and with the manifest and
-    model events moved into ``fleet_snapshot``, the one free-form column a saved
-    run keeps."""
-    record = {k: v for k, v in report.items() if k not in ("requests", "manifest", "model_events")}
+    (megabytes on a long run, and never displayed) and with what has no column
+    of its own (``SNAPSHOT_KEYS``) moved into ``fleet_snapshot``, the one
+    free-form column a saved run keeps."""
+    record = {k: v for k, v in report.items() if k != "requests" and k not in SNAPSHOT_KEYS}
     record["fleet_snapshot"] = {
         **report["fleet_snapshot"],
-        "manifest": report["manifest"],
-        "model_events": report["model_events"],
+        **{k: report[k] for k in SNAPSHOT_KEYS if k in report},
     }
     return record
 
@@ -1433,25 +1639,48 @@ def build_report(
     started_at: str | None = None,
     ended_at: str | None = None,
 ) -> dict:
-    """The run's report: aggregates, per model / node, peak utilization, every
-    request (``requests``, in start order), model load/evict events and the run
-    manifest (``build_manifest``; ``run`` holds the settings it records).
+    """The run's report: aggregates, per model / type / node, peak utilization,
+    every request (``requests``, in start order), model load/evict events and
+    the run manifest (``build_manifest``; ``run`` holds the settings it records).
+
+    ``duration`` is what rates are over (``LoadResult.window_s``).  Tokens,
+    token rates and TTFT come from chat requests only (``CHAT_WORKLOADS``): an
+    embedding is one "token" and its TTFT is its whole latency, so mixing them
+    in inflated the one and pulled down the other.  ``per_type_results`` has
+    each workload's own figures.
 
     Save it to the dashboard with ``dashboard_record``; write it whole for a
     published result.
     """
     success = [r for r in results if r.success]
     failed = [r for r in results if not r.success]
+    chat = [r for r in success if r.model_type in CHAT_WORKLOADS]
 
-    total_prompt = sum(r.prompt_tokens for r in success)
-    total_completion = sum(r.completion_tokens for r in success)
+    total_prompt = sum(r.prompt_tokens for r in chat)
+    total_completion = sum(r.completion_tokens for r in chat)
 
     latencies = [r.latency_ms for r in success]
-    ttfts = [r.ttft_ms for r in success if r.ttft_ms > 0]
+    ttfts = [r.ttft_ms for r in chat if r.ttft_ms > 0]
     lags = [r.schedule_lag_ms for r in results if r.schedule_lag_ms is not None]
 
     req_s = len(success) / duration if duration > 0 else 0
     tok_s = total_completion / duration if duration > 0 else 0
+
+    per_type = []
+    for kind in sorted({r.model_type for r in results}):
+        ok = [r for r in success if r.model_type == kind]
+        entry = {
+            "model_type": kind,
+            "requests": len(ok),
+            "failures": sum(1 for r in failed if r.model_type == kind),
+            "requests_per_sec": round(len(ok) / duration, 2) if duration > 0 else 0,
+            **_percentiles([r.latency_ms for r in ok], "latency"),
+        }
+        if kind in CHAT_WORKLOADS:
+            tokens = sum(r.completion_tokens for r in ok)
+            entry["tok_s"] = round(tokens / duration, 1) if duration > 0 else 0
+            entry.update(_percentiles([r.ttft_ms for r in ok if r.ttft_ms > 0], "ttft"))
+        per_type.append(entry)
 
     # Build per-model results
     per_model = []
@@ -1491,7 +1720,7 @@ def build_report(
         for node in sorted(set(r.node_id for r in success)):
             nr = [r for r in success if r.node_id == node]
             n_pct = len(nr) / len(success) * 100
-            n_tok = sum(r.completion_tokens for r in nr)
+            n_tok = sum(r.completion_tokens for r in nr if r.model_type in CHAT_WORKLOADS)
             n_tok_s = n_tok / duration if duration > 0 else 0
             per_node.append(
                 {
@@ -1554,6 +1783,7 @@ def build_report(
                 "size_gb": t.size_gb,
                 "concurrency": t.concurrency,
                 "model_type": t.model_type,
+                "workload": t.workload,
             }
             for t in targets
         ],
@@ -1565,6 +1795,8 @@ def build_report(
         "duration_s": round(duration, 1),
         "total_requests": len(success),
         "total_failures": len(failed),
+        # Of the failures: still in flight when the drain ran out.
+        "cancelled_at_drain": sum(1 for r in failed if r.error == CANCELLED_AT_DRAIN),
         # Failures that were answers from another model than the one asked for
         # (not every failure that named the model it came from: a timeout
         # mid-stream from the right model is a failure, not a mismatch).
@@ -1579,6 +1811,7 @@ def build_report(
         **_percentiles(ttfts, "ttft"),
         "fleet_snapshot": fleet_snapshot,
         "per_model_results": per_model,
+        "per_type_results": per_type,
         "per_node_results": per_node,
         "peak_utilization": peak_util,
         "manifest": build_manifest(nodes_info, run, started_at, ended_at),

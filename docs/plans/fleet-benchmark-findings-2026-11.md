@@ -102,8 +102,12 @@ open-loop and seeded workloads / vision work in the benchmark engine (`4243946`,
     only `request_traces` (and `latency_observations`, which these jobs never wrote), and the
     per-type stats read only their own events. The trace's model is the queue entry's name,
     which `InferenceRequest` normalizes (`z-image-turbo:latest`), as the queue key already was.
-16. **Dashboard benchmark runner can't select vision or embed-image work.** The runner accepts
-    both types since `4243946`; the checkboxes in `dashboard.py` don't offer them.
+16. **Fixed: dashboard benchmark runner can't select vision or embed-image work.** The runner
+    accepted both types since `4243946`; the dialog now offers "Vision" and "Vision embeddings"
+    (unchecked: both are opt-in). A vision-capable chat model (gemma3, llava) runs the text
+    workload under "Chat" and the image workload only with "Vision" (`select_workloads`); before,
+    `model_type()` saying `vision` made the dashboard's default `["llm"]` drop it and the CLI send
+    it an image instead of the `--prompt-tokens` text.
 
 Found by the local smoke test (`scripts/fake_fleet.py`, 8 fake nodes on one `scripts/mock_ollama.py`
 with runtime faults, against a real router). All fixed on `main`, unreleased:
