@@ -173,8 +173,8 @@ on `main` in `ffa2f1f`, unreleased:
 From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-herd-private
 `.bench-lambda-2026-11-20-run4`):
 
-28. **Fixed (`4b020b5`, harness `3dd2230`): a load that had to evict a busy model never happened, and its requests
-    starved.** Three nodes with `OLLAMA_NUM_PARALLEL=4` (two 24 GB cards, one 48 GB), four models,
+28. **Fixed (`4b020b5`, harness `3dd2230`): a load that had to evict a busy model never
+    happened, and its requests starved.** Three nodes with `OLLAMA_NUM_PARALLEL=4` (two 24 GB cards, one 48 GB), four models,
     0.5 req/s open loop for 180 s, strict mode (the benchmark sends `X-Fleet-No-Fallback`):
     `qwen3-coder:30b` answered 2 of 27, 25 timed out at 300 s, and the whole run had 2 model loads.
     HAProxy least-connections answered all 27 (median TTFT ~50 s). **Not** "the router never takes
