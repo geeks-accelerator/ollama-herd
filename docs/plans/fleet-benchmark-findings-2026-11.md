@@ -7,7 +7,8 @@ and the release decision (end). Implementation notes are in "Implemented" just b
 **Source:** a benchmark of herd 0.12.9 with Ollama 0.40.16 on rented NVIDIA machines (four Quadro
 RTX 6000 24 GB and one RTX A6000 48 GB, Ubuntu 22.04, Ollama as a systemd service, one private
 network), using `scripts/benchmark.py` at `56993ff` with `--prompt-tokens 1250 --max-tokens 200`
-and `docs/experiments/model-alternation-benchmark.py`.
+and `docs/experiments/model-alternation-benchmark.py` (since folded into the engine:
+`scripts/benchmark.py --sequence alternate`).
 
 ## Implemented (2026-11-20, OSS `main`)
 
@@ -305,7 +306,8 @@ same-category variant; drop `vram_fallback=` from `ServerSettings(...)` in ~6 te
 - **Demand the exact model:** `send_request` (`benchmark_engine.py:437-457`) sends
   `X-Fleet-No-Fallback: true`, reads `X-Fleet-Served-Model` into a new `RequestResult.served_model`
   (`:129`; `X-Fleet-Node` is already read at `:320,362,473`) and fails on a mismatch. The stdlib-only
-  `docs/experiments/model-alternation-benchmark.py` (`:56`) does the same with its own few lines.
+  `docs/experiments/model-alternation-benchmark.py` (`:56`) did the same with its own few lines (it
+  has since been folded into the engine as `--sequence alternate`).
 - **`think`:** an option that sends `"think": false`, which already disables the router's
   `num_predict` inflation (`streaming.py:1916`).
 - **Models on disk:** `scripts/benchmark.py:173-181` accepts `--models` from `models_available`.
