@@ -143,3 +143,28 @@ class TestNodeRegistry:
         hb = make_heartbeat(node_id="no-version")
         node = await registry.update_from_heartbeat(hb)
         assert node.agent_version == ""
+
+
+@pytest.mark.asyncio
+class TestOllamaHostChange:
+    """A node whose ``ollama_host`` changes while the router runs (Ollama moved
+    to another port or machine) must be reached at the new address, and the
+    router must not keep the first one anywhere in the node's state.  The
+    dispatch URL was always recomputed per heartbeat, but registration also
+    copied the first host into ``hardware.ollama_host``, which nothing updated
+    -- a stale address that read as the node's backend."""
+
+    async def test_the_new_host_replaces_the_old_everywhere(self, registry):
+        from fleet_manager.server.streaming import StreamingProxy
+
+        old = make_heartbeat(node_id="n", ollama_host="http://10.0.0.7:11701")
+        new = make_heartbeat(node_id="n", ollama_host="http://10.0.0.7:11702")
+        await registry.update_from_heartbeat(old, request_ip="10.0.0.7")
+        proxy = StreamingProxy(registry)
+        assert str(proxy._get_client("n").base_url).startswith("http://10.0.0.7:11701")
+
+        node = await registry.update_from_heartbeat(new, request_ip="10.0.0.7")
+        assert node.ollama_base_url == "http://10.0.0.7:11702"
+        assert str(proxy._get_client("n").base_url).startswith("http://10.0.0.7:11702")
+        assert "11701" not in node.model_dump_json()
+        await proxy.close()

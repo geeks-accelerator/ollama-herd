@@ -47,7 +47,6 @@ class NodeRegistry:
                         memory_total_gb=payload.memory.total_gb,
                         cores_physical=payload.cpu.cores_physical,
                         memory_bandwidth_gbps=payload.memory_bandwidth_gbps,
-                        ollama_host=payload.ollama_host,
                     ),
                     ollama_base_url=ollama_url,
                 )
@@ -126,7 +125,8 @@ class NodeRegistry:
             node.missed_heartbeats = 0
             node.status = NodeStatus.ONLINE
 
-            # Update ollama URL if LAN IP changed
+            # Rebuilt from every heartbeat: the node's address, or its
+            # ollama_host, may have changed since it registered.
             new_url = self._build_ollama_url(payload, request_ip)
             if new_url != node.ollama_base_url:
                 node.ollama_base_url = new_url
@@ -191,9 +191,8 @@ class NodeRegistry:
                     continue
                 if srv.model != bare:
                     continue
-                # Prefer node's ollama_base_url hostname since we already
-                # resolved it LAN-reachably; fall back to hardware's
-                # ollama_host.  Both were built by _build_ollama_url().
+                # The node's ollama_base_url hostname: already resolved
+                # LAN-reachably by _build_ollama_url() on every heartbeat.
                 from urllib.parse import urlparse
 
                 parsed = urlparse(node.ollama_base_url)

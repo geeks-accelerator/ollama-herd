@@ -470,7 +470,9 @@ class HardwareProfile(BaseModel):
     # scorer falls back to memory-tier heuristics.  Populated by the collector
     # via ``hardware_lookup.resolve_bandwidth(chip)`` on startup.
     memory_bandwidth_gbps: float = 0.0
-    ollama_host: str = "http://localhost:11434"
+    # No ollama_host here: the backend address is ``NodeState.ollama_base_url``,
+    # rebuilt from every heartbeat.  A copy taken at registration kept a node's
+    # first address after its Ollama moved.
 
 
 class NodeState(BaseModel):
