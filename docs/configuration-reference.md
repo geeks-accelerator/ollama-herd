@@ -10,6 +10,16 @@ These belong to Ollama, not herd. They are documented here because getting them
 wrong degrades the fleet in ways that look like herd bugs, and because two of them
 interact multiplicatively.
 
+**Set them where Ollama reads them**: `launchctl setenv` on macOS, `sudo systemctl
+edit ollama` (an `Environment=` line) on Linux, a system environment variable on
+Windows, then restart Ollama. herd-node reads `OLLAMA_NUM_PARALLEL` and
+`OLLAMA_MAX_LOADED_MODELS` from the same places (its own environment first), and
+`OLLAMA_NUM_PARALLEL` from the `-np` Ollama started each loaded model's runner with,
+which wins. The router sends each node at most that many requests per model at once,
+so a value herd cannot see means one at a time: the `parallelism_unknown` health check
+says when that is happening. **A herd-node in a container** sees neither the host's
+services nor its processes: pass `-e OLLAMA_NUM_PARALLEL=<the same value>` to it.
+
 | Variable | Recommended | Why |
 |----------|-------------|-----|
 | `OLLAMA_CONTEXT_LENGTH` | **the largest per-slot context the fleet needs** (e.g. `131072`) | See the warning below. Setting it *low* is the trap. |
@@ -256,7 +266,7 @@ Pre-warm proactively loads models on runner-up nodes before they're needed.
 | `FLEET_STALE_TIMEOUT` | `600.0` | Seconds before in-flight requests are considered zombied and reaped (10 min) |
 | `FLEET_CLIENT_MAX_IN_FLIGHT` | `0` | Max requests one client (by IP) may have in flight across all queues. `0` = unlimited (no production change). Set a positive value so one caller flooding the herd (e.g. an unthrottled benchmark) can't monopolize the box — excess is shed with `429` + `Retry-After` instead of queued. Anonymous callers (no IP) aren't capped. |
 | `FLEET_CLIENT_CONCURRENCY_RETRY_AFTER` | `2` | `Retry-After` seconds returned on a client-concurrency `429`. |
-| `FLEET_VRAM_FALLBACK` | `true` | When a requested model isn't loaded, route to a loaded same-category model instead of cold-loading (protects Claude Code from the macOS 3-model eviction bug). Per-request override: `X-Fleet-No-Fallback: true` (or `"fallback": false` in the body) for strict "exact model or error" — preferred over flipping this global, which affects every client. |
+| — | — | `FLEET_VRAM_FALLBACK` was **removed** (2026-11). A model that isn't loaded is loaded on a node with room; only when every node would have to evict a resident model is it served by a loaded model of the **same category** (never another). Per request, `X-Fleet-No-Fallback: true` or `"fallback": false` demands the exact model. |
 
 ### Device-Aware Scoring
 
@@ -318,6 +328,8 @@ Per-model overrides are set at runtime via `POST /dashboard/api/settings` with `
 
 Serves text embeddings via a FastAPI server on `:11439` using [fastembed](https://github.com/qdrant/fastembed) (ONNX Runtime, no PyTorch). Intercepts `nomic-embed-text` and `nomic-embed-text:latest` requests in `/api/embed` before they reach Ollama — embed requests never consume `OLLAMA_NUM_PARALLEL` inference slots and cannot be queued behind LLM inference.
 
+**Without it, Ollama serves them.** Until a node in the herd has served `nomic-embed-text` natively, those requests go to Ollama's copy like any other embedding model. Once one has (recorded in the trace store, so it survives a router restart) they stay native: fastembed's and Ollama's vectors for the same model differ, and one index must not mix them. Switching an existing herd to the native backend means re-embedding what was indexed with Ollama's copy.
+
 **Setup:** `uv sync --extra embedding` (fastembed is included in the `embedding` extra alongside onnxruntime). Restart `herd-node` — the server starts automatically. The 130 MB model weights (`nomic-ai/nomic-embed-text-v1.5-Q`, int8 ONNX) download on the first request and cache to `~/.fleet-manager/models/text-embedding/`.
 
 No environment variables needed — the server starts whenever fastembed is importable. Performance: ~4ms inference (model hot), 768-dimensional embeddings, 2048-token context — inputs are truncated there, as Ollama truncates to the model's context (`"truncate": false` returns a 400 instead).
@@ -328,6 +340,7 @@ No environment variables needed — the server starts whenever fastembed is impo
 - `text_embedding_ollama_bypass` (WARNING) — nomic-embed-text in Ollama but native server not running
 - `text_embedding_backend_missing` (WARNING) — model weights cached but fastembed not installed
 - `nomic_loaded_in_ollama` (INFO) — native server running but nomic still occupies an Ollama slot
+- `parallelism_unknown` (INFO) — requests keep waiting in herd's queue on a node that reports no `OLLAMA_NUM_PARALLEL` (see the Ollama environment section above)
 
 **Adding more models:** add an entry to `src/fleet_manager/node/text_embedding_models.py` with the fastembed model name and dimensions. No other code changes needed.
 

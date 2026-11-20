@@ -399,7 +399,7 @@ WAV, MP3, M4A, FLAC, MP4, OGG — any format FFmpeg supports. WAV files get a ~2
 | Header | Description |
 |--------|-------------|
 | `X-Fleet-Node` | Which device transcribed the audio |
-| `X-Fleet-Model` | Which model was used |
+| `X-Fleet-Served-Model` | Which model was used |
 | `X-Transcription-Time` | Processing time in milliseconds |
 
 ### Errors
@@ -522,7 +522,6 @@ for r in d['recommendations']:
 | `FLEET_IMAGE_GENERATION` | `false` | Enable `/api/generate-image` |
 | `FLEET_TRANSCRIPTION` | `false` | Enable `/api/transcribe` |
 | `FLEET_AUTO_PULL` | `true` | Auto-download missing LLM models |
-| `FLEET_VRAM_FALLBACK` | `true` | Route to loaded model if requested model is cold |
 | `FLEET_CONTEXT_PROTECTION` | `strip` | Prevent num_ctx from reloading models |
 
 ### Toggle features at runtime

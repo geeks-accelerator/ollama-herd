@@ -144,7 +144,7 @@ curl -o image.png http://localhost:11435/api/generate-image \
 
 **Response:** Raw PNG bytes with headers:
 - `X-Fleet-Node` — which node generated the image
-- `X-Fleet-Model` — which model was used
+- `X-Fleet-Served-Model` — which model was used (with the rest of the canonical `X-Fleet-*` set)
 - `X-Generation-Time` — generation time in milliseconds
 - `Content-Type: image/png`
 

@@ -109,7 +109,7 @@ Content-Type: application/json
 ```
 Content-Type: image/png
 X-Fleet-Node: Neons-Mac-Studio
-X-Fleet-Model: z-image-turbo
+X-Fleet-Served-Model: z-image-turbo
 X-Generation-Time: 18315
 ```
 

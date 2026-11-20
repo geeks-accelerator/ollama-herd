@@ -102,7 +102,7 @@ Returns AI-powered Ollama model mix recommendations per node based on hardware c
 # View current Ollama config and node versions
 curl -s http://localhost:11435/dashboard/api/settings | python3 -m json.tool
 
-# Toggle Ollama runtime settings (auto_pull, vram_fallback)
+# Toggle runtime settings (auto_pull, image_generation, transcription, dynamic_num_ctx, ...)
 curl -s -X POST http://localhost:11435/dashboard/api/settings \
   -H "Content-Type: application/json" \
   -d '{"auto_pull": false}'

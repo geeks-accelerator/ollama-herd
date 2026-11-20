@@ -112,7 +112,7 @@ WAV, MP3, M4A, FLAC, MP4, OGG — any format FFmpeg supports. WAV files get a ~2
 | Header | Description |
 |--------|-------------|
 | `X-Fleet-Node` | Which device performed the speech-to-text transcription |
-| `X-Fleet-Model` | Transcription model used (qwen3-asr) |
+| `X-Fleet-Served-Model` | Transcription model used (qwen3-asr) |
 | `X-Transcription-Time` | Transcription processing time in milliseconds |
 
 ### Speech-to-text transcription model

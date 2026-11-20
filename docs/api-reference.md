@@ -83,7 +83,7 @@ data: [DONE]\n\n
 
 | Header | Effect |
 |--------|--------|
-| `X-Fleet-No-Fallback: true` | **Strict mode** — serve the *exact* model requested or return an explicit error; never substitute a same-category loaded model. Overrides the global `FLEET_VRAM_FALLBACK` for this one request. (Also settable as `"fallback": false` in the body.) |
+| `X-Fleet-No-Fallback: true` | **Strict mode** — serve the *exact* model requested or return an explicit error; never substitute a loaded model. Without it, a model that isn't loaded is loaded on a node with room, and only when every node would have to evict a resident model is it served by a loaded model of the **same category** (never another). (Also settable as `"fallback": false` in the body.) |
 | `X-Herd-Tags` | Comma-separated request tags for per-app analytics. |
 
 **Response headers** — the canonical `X-Fleet-*` set is emitted on **every** proxied response (all endpoints, streaming and non-streaming), so a client reads the same three fields anywhere and knows exactly what ran:
@@ -98,6 +98,7 @@ data: [DONE]\n\n
 | `X-Fleet-Retries` | ✅ | Retry count (`0` when none) |
 | `X-Fleet-Score` | scorer-routed | Winning routing score (integer) |
 | `X-Fleet-Context-Overflow` | on overflow | `estimated_tokens=N; context_length=M` when input exceeds the node's context window. Ollama truncates such input and still answers 200; when the backend's count confirms it, the router also raises the `input_truncated` health check |
+| `X-Fleet-Overhead-Ms` | non-streaming chat | Herd's own time for the request: its total time minus Ollama's own `total_duration` (routing, any wait in herd's queue, translation, the network hop to the node). Each trace's `timings` splits it. |
 | `X-Thinking-Tokens` / `X-Output-Tokens` / `X-Budget-Used` / `X-Done-Reason` | thinking models, non-streaming | Reasoning-budget diagnostics |
 
 > `X-Fleet-Model` is **retired** (0.8.1) — use `X-Fleet-Served-Model`.
@@ -1043,6 +1044,8 @@ Health checks related to text embedding:
 - `text_embedding_backend_missing` — WARNING: weights cached but fastembed not installed
 - `text_embedding_ollama_bypass` — WARNING: nomic-embed-text in Ollama but native server not running (embed requests will compete with LLM inference)
 - `nomic_loaded_in_ollama` — INFO: native server is running but nomic-embed-text still occupies an Ollama slot (cosmetic; self-resolves on KEEP_ALIVE expiry)
+
+Without the native server, `nomic-embed-text` is served by Ollama's copy until a node in the herd has served it natively; after that it stays native (the two backends' vectors differ, and one index must not mix them).
 - `embed_error_rate` — WARNING/CRITICAL: embed failures in the last hour (regardless of backend)
 
 ---
@@ -1130,7 +1133,7 @@ Generate an image on the best available node with mflux. Requires `FLEET_IMAGE_G
 | Header | Description |
 |--------|-------------|
 | `X-Fleet-Node` | Node that generated the image |
-| `X-Fleet-Model` | Image model used |
+| `X-Fleet-Served-Model` | Image model used (with the rest of the canonical `X-Fleet-*` set) |
 | `X-Generation-Time` | Generation time in ms |
 
 **Error responses:** `400` (missing fields), `404` (model not available), `502` (generation failed), `503` (disabled).
@@ -1174,7 +1177,7 @@ curl http://localhost:11435/api/transcribe -F "audio=@recording.wav"
 | Header | Description |
 |--------|-------------|
 | `X-Fleet-Node` | Node that transcribed the audio |
-| `X-Fleet-Model` | Transcription model used |
+| `X-Fleet-Served-Model` | Transcription model used (with the rest of the canonical `X-Fleet-*` set) |
 | `X-Transcription-Time` | Processing time in ms |
 
 **Error responses:** `404` (no STT models available), `502` (transcription failed), `503` (disabled).
@@ -1845,7 +1848,7 @@ Current router configuration, toggleable settings, and registered node list with
   "router_version": "0.3.0",
   "router_hostname": "Neons-Mac-Studio",
   "config": {
-    "toggles": { "auto_pull": true, "vram_fallback": true },
+    "toggles": { "auto_pull": true, "image_generation": false, "transcription": false, "dynamic_num_ctx": false },
     "server": { "host": "Neons-Mac-Studio", "port": 11435, "data_dir": "~/.fleet-manager", "max_retries": 2 },
     "heartbeat": { "heartbeat_interval": 5.0, "heartbeat_timeout": 15.0, "heartbeat_offline": 30.0 },
     "scoring": { "score_model_hot": 50.0, "score_model_warm": 30.0, "..." : "..." },
@@ -1869,7 +1872,7 @@ Current router configuration, toggleable settings, and registered node list with
 
 ### `POST /dashboard/api/settings`
 
-Toggle runtime-mutable boolean settings. Only `auto_pull` and `vram_fallback` are allowed — all other fields are silently ignored. Changes take effect immediately but are ephemeral (env vars remain source of truth on restart).
+Toggle runtime-mutable boolean settings: `auto_pull`, `image_generation`, `transcription`, `dynamic_num_ctx`, `num_ctx_auto_calculate`, `fleet_intelligence`; all other fields are ignored (`"status": "no_change"`). Changes take effect immediately and are written to `~/.fleet-manager/env`, so they survive a restart.
 
 **Request:**
 

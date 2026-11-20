@@ -74,6 +74,11 @@ With the host network the node reaches Ollama at `http://localhost:11434`, wheth
 natively or in its own container with port 11434 published. Set `FLEET_NODE_OLLAMA_HOST` if it is
 elsewhere. The node takes the host's name as its node id; set `FLEET_NODE_NODE_ID` to choose one.
 
+**If you raised `OLLAMA_NUM_PARALLEL`** for Ollama, pass the same value to the node container
+(`-e OLLAMA_NUM_PARALLEL=4`). Outside a container herd-node reads it from Ollama's systemd unit
+or its running models; in one it can see neither, and without it the router sends the node one
+request at a time.
+
 **If the node does not find the router,** skip discovery and give it the URL. This is also the
 only option when the router runs in bridge mode or under Docker Desktop:
 
@@ -109,8 +114,9 @@ way herd reads memory only: it does not read GPU load or route by it.
   in one it stops with *"Ollama binary not found in PATH… Cannot proceed without Ollama."* Start
   Ollama on the host first. The router's "restart Ollama" action does not reach the host either.
 - **Run Apple Silicon extras** (MLX, image generation, speech-to-text): those need a Mac, natively.
-- **Serve native text embeddings.** The image has the base dependencies only, so embedding models
-  are served through Ollama.
+- **Serve native text embeddings.** The image has the base dependencies only, so embedding models,
+  `nomic-embed-text` included, are served through Ollama. (Before the release after 0.12.9,
+  `nomic-embed-text` failed with a `503` in a container: it went only to the native server.)
 
 ## Docker Compose: router and Open WebUI
 

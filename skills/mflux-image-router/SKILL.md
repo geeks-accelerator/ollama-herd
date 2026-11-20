@@ -118,7 +118,7 @@ async function mfluxGenerateImage(prompt, width = 1024, height = 1024) {
 
 - **200 OK**: Raw PNG bytes from mflux. `Content-Type: image/png`
 - `X-Fleet-Node`: Which device ran mflux image generation
-- `X-Fleet-Model`: mflux model used
+- `X-Fleet-Served-Model`: mflux model used
 - `X-Generation-Time`: mflux generation time in milliseconds
 
 ### Available mflux models

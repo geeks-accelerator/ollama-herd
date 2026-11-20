@@ -1,6 +1,6 @@
 # VRAM-Aware Model Fallback
 
-**Status**: Implemented
+**Status**: Superseded 2026-11-20. `FLEET_VRAM_FALLBACK` is removed: a model that isn't loaded is loaded on a node with room, and substitution happens only when every node would have to evict, within the same category only. See `docs/plans/fleet-benchmark-findings-2026-11.md` item 4.
 **Date**: March 2026
 **Config**: `FLEET_VRAM_FALLBACK=true` (default: enabled)
 
