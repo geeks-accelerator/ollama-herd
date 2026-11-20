@@ -1323,7 +1323,6 @@ async def dashboard_settings_data(request: Request):
             "score_queue_depth_max_penalty": settings.score_queue_depth_max_penalty,
             "score_queue_depth_penalty_per": settings.score_queue_depth_penalty_per,
             "score_wait_time_max_penalty": settings.score_wait_time_max_penalty,
-            "score_role_affinity_max": settings.score_role_affinity_max,
             "score_role_large_threshold_gb": settings.score_role_large_threshold_gb,
             "score_role_small_threshold_gb": settings.score_role_small_threshold_gb,
             "score_availability_trend_max": settings.score_availability_trend_max,

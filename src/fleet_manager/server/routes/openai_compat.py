@@ -707,10 +707,13 @@ async def openai_images_generations(request: Request):
         }
     else:
         # Return raw PNG for "url" format (we don't host URLs, so return the image directly)
+        # The image route already built the canonical X-Fleet-* set; keep it.
         return Response(
             content=png_bytes,
             media_type="image/png",
-            headers={"X-Fleet-Model": model},
+            headers={
+                k: v for k, v in image_response.headers.items() if k.lower().startswith("x-fleet-")
+            },
         )
 
 

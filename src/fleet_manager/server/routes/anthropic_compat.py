@@ -315,8 +315,12 @@ async def _serve_via_mlx(
     headers = {
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
-        "X-Fleet-Node": "mlx-local",
-        "X-Fleet-Backend": "mlx",
+        **fleet_headers(
+            node_id="mlx-local",
+            served_model=inference_req.model,
+            requested_model=inference_req.original_model or inference_req.model,
+            backend="mlx",
+        ),
     }
     if anthropic_version:
         headers["anthropic-version"] = anthropic_version

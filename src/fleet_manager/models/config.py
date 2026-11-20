@@ -24,7 +24,6 @@ class ServerSettings(BaseSettings):
     score_queue_depth_max_penalty: float = 30.0
     score_queue_depth_penalty_per: float = 6.0
     score_wait_time_max_penalty: float = 25.0
-    score_role_affinity_max: float = 15.0
     score_role_large_threshold_gb: float = 20.0
     score_role_small_threshold_gb: float = 8.0
     score_availability_trend_max: float = 10.0
