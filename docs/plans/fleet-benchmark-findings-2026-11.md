@@ -96,7 +96,7 @@ the `embedding` extra").
 
 Check before building: the two backends' vectors differ (fastembed runs a quantised ONNX export of
 nomic v1.5; Ollama runs its GGUF). A herd that has both, with the native server going up and down,
-would mix vectors from two models in one index. Decide the rule (see decisions): the simplest safe
+would mix vectors from two models in one index. Decided (see Decisions): the safe
 one is "prefer native whenever any node has it, Ollama only when none does", plus the existing
 `X-Fleet-Backend` header so a client can tell.
 
@@ -165,7 +165,7 @@ whether some node could load the requested model without evicting anything. The 
 `docs/plans/vram-aware-model-fallback.md`) was for a 512 GB machine where a cold load meant a
 10-minute swap of a 90 GB model; on a herd with an empty node, the same rule refuses to use it.
 
-**Fix (needs the decision below):**
+**Fix (decided, see Decisions):**
 1. When some node can cold-load the requested model **without evicting** (item 3's estimate), load
    it there; do not substitute. Substitution stays for the case it was designed for: every load
    would evict.
@@ -236,11 +236,21 @@ the setting on; image requests unchanged.
    concurrency when `OLLAMA_NUM_PARALLEL` is in the systemd unit only; embeddings succeed without
    the extra; the alternation test settles one model per node with fallback on and off.
 
-## Decisions for the maintainer
+## Decisions
 
-1. **Item 4, default behaviour:** load on a node with room instead of substituting (recommended), and
-   cross-category substitution off by default (recommended)? Both change what existing users get:
-   fewer substitutions, and some requests wait for a load instead.
-2. **Item 2, mixing backends:** fall back to Ollama only when no node has ever served
-   `nomic-embed-text` natively (recommended, avoids mixing vectors), or whenever none is online now?
-3. **Release A as 0.12.10** with the VPN-address fix already on `main`?
+Decided 2026-11-20 by the maintainer:
+
+1. **Item 4: change the default.** When some node can load the requested model without evicting,
+   load it there instead of substituting. Cross-category substitution is **off by default**, behind a
+   setting. Same-category substitution stays for the case it was built for: every load would evict.
+   The changelog says so plainly, since some requests will now wait for a load where they used to get
+   a different model.
+2. **Item 2: fall back to Ollama only when no node has ever served `nomic-embed-text` through
+   fastembed.** Once any node has served it natively, keep the native path (and its retryable 503
+   while that node is away), so one index never mixes vectors from the two backends. "Has ever
+   served" needs to survive a router restart: persist it (the trace store already records
+   `X-Fleet-Backend` per request, or a small flag), not only in memory.
+
+Open:
+
+3. Release A as 0.12.10, together with the VPN-address fix already on `main`?
