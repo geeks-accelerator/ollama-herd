@@ -144,7 +144,15 @@ async def transcribe_audio(request: Request, audio: UploadFile):
             request, response_future, entry, request.app.state.trace_store
         )
         if stream is None:
-            return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
+            # The client left, queued or mid-transcription; the trace row is
+            # written where that happened (dispatched_stream / the proxy).
+            _record_transcription(
+                model,
+                best.node_id,
+                "client_disconnected",
+                processing_ms=int((time.monotonic() - start) * 1000),
+            )
+            return Response(status_code=CLIENT_GONE_STATUS)
         result_json = ""
         async for chunk in stream:
             result_json = chunk

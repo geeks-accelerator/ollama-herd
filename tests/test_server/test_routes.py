@@ -144,9 +144,9 @@ def create_test_app(tmp_path=None) -> FastAPI:
     app.include_router(fleet.router)
     app.include_router(dashboard.router)
 
-    from fleet_manager.server.fleet_headers import RequestIdMiddleware
+    from fleet_manager.server.fleet_headers import install_request_id_header
 
-    app.add_middleware(RequestIdMiddleware)
+    install_request_id_header(app)
 
     @app.get("/")
     async def root():

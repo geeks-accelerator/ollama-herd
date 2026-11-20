@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import uuid
 
+from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -178,3 +179,23 @@ class RequestIdMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_request_id)
+
+
+def install_request_id_header(app: Starlette) -> None:
+    """Put ``RequestIdMiddleware`` outside the whole middleware stack.
+
+    ``app.add_middleware`` cannot: Starlette always wraps user middleware in
+    ``ServerErrorMiddleware``, which answers an unhandled exception's 500 by
+    calling the server's ``send`` directly -- past every layer inside it.  So
+    the response most worth looking up carried no ``X-Request-Id``.  Wrapping
+    what ``build_middleware_stack`` returns puts this layer outermost.  It is
+    still safe there: it only adds a header on ``http.response.start`` and
+    passes exceptions through untouched for ``ServerErrorMiddleware`` (inside
+    it) to have already answered.
+    """
+    build = app.build_middleware_stack
+
+    def build_with_request_id() -> ASGIApp:
+        return RequestIdMiddleware(build())
+
+    app.build_middleware_stack = build_with_request_id

@@ -327,6 +327,15 @@ class TestTraceChecks:
     @pytest.mark.asyncio
     async def test_vitals_populated_from_traces(self, store):
         engine = HealthEngine()
+        # Failed on node-b, retried, served by node-a: one request, one retry.
+        await store.record_trace(
+            request_id="r1",
+            model="phi4:14b",
+            original_model="phi4:14b",
+            node_id="node-b",
+            status="retried",
+            latency_ms=50.0,
+        )
         await store.record_trace(
             request_id="r1",
             model="phi4:14b",

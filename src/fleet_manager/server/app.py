@@ -381,10 +381,11 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
 
         return Response(status_code=200, media_type="text/plain; charset=utf-8")
 
-    # X-Request-Id on every response whose route bound one -- see fleet_headers.py.
-    from fleet_manager.server.fleet_headers import RequestIdMiddleware
+    # X-Request-Id on every response whose route bound one, unhandled 500s
+    # included -- see fleet_headers.py.
+    from fleet_manager.server.fleet_headers import install_request_id_header
 
-    app.add_middleware(RequestIdMiddleware)
+    install_request_id_header(app)
 
     # Opt-in CORS (FLEET_CORS_ORIGINS).  No-op when unset — see server/cors.py.
     from fleet_manager.server.cors import install_cors

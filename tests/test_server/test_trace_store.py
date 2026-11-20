@@ -52,6 +52,20 @@ async def _seed_traces(store: TraceStore):
             "prompt_tokens": 60,
             "completion_tokens": 150,
         },
+        # req-3's first attempt failed on node-c and was retried on node-a:
+        # every retry leaves one "retried" row, on the node that failed.
+        {
+            "request_id": "req-3",
+            "model": "llama3:8b",
+            "original_model": "llama3:70b",
+            "node_id": "node-c",
+            "status": "retried",
+            "latency_ms": 50.0,
+            "retry_count": 0,
+            "fallback_used": True,
+            "error_message": "Connection refused",
+            "original_format": "ollama",
+        },
         # Failed request on node-a, model llama3:8b, today
         {
             "request_id": "req-3",
@@ -245,11 +259,14 @@ class TestUsageStats:
     async def test_node_summary(self, store):
         await _seed_traces(store)
         summary = await store.get_node_summary()
-        assert len(summary) == 2  # node-a and node-b
+        assert len(summary) == 3  # node-a, node-b, and node-c's failed attempt
         node_a = next(s for s in summary if s["node_id"] == "node-a")
         assert node_a["total_requests"] == 2  # req-1 and req-3
         assert node_a["completed_count"] == 1
         assert node_a["failed_count"] == 1
+        assert node_a["total_retries"] == 0
+        node_c = next(s for s in summary if s["node_id"] == "node-c")
+        assert node_c["total_retries"] == 1  # req-3 failed here and was retried
 
     @pytest.mark.asyncio
     async def test_usage_overview(self, store):
@@ -625,3 +642,83 @@ class TestLastServedFormat:
         assert await store.last_served_format(names) == "embed"  # never answered
         await rec("r4", "nomic-embed-text:latest", "completed", "openai", 400.0)
         assert await store.last_served_format(names) == "openai"
+
+
+class TestRetriesBelongToTheNodeThatFailed:
+    """A request fails on node-a and is served by node-b after one retry.
+
+    Only the terminal row (node-b's) carries ``retry_count=1``, so summing
+    terminal rows per node gave node-a 0 retries and node-b 1: the healthy node
+    looked flaky and the failing one clean.  Per node a retry is the failed
+    attempt there, its ``retried`` row; fleet-wide that is still one per retry.
+    The retry *rate* divides by requests, which a ``retried`` row is not."""
+
+    @staticmethod
+    async def _failover(store, request_id="req-f"):
+        for node, status, retries in (("node-a", "retried", 0), ("node-b", "completed", 1)):
+            await store.record_trace(
+                request_id=request_id,
+                model="phi4:14b",
+                original_model="phi4:14b",
+                node_id=node,
+                status=status,
+                retry_count=retries,
+            )
+
+    @pytest.mark.asyncio
+    async def test_usage_by_node_model_day(self, store):
+        await self._failover(store)
+        rows = {r["node_id"]: r for r in await store.get_usage_by_node_model_day(days=1)}
+        assert rows["node-a"]["total_retries"] == 1
+        assert rows["node-b"]["total_retries"] == 0
+
+    @pytest.mark.asyncio
+    async def test_node_summary(self, store):
+        await self._failover(store)
+        rows = {r["node_id"]: r for r in await store.get_node_summary()}
+        assert rows["node-a"]["total_retries"] == 1
+        assert rows["node-b"]["total_retries"] == 0
+
+    @pytest.mark.asyncio
+    async def test_fleet_totals_count_requests_and_each_retry_once(self, store):
+        await self._failover(store, "req-f1")
+        await self._failover(store, "req-f2")
+        await store.record_trace(
+            request_id="req-ok",
+            model="phi4:14b",
+            original_model="phi4:14b",
+            node_id="node-b",
+            status="completed",
+        )
+        assert await store.get_retry_stats_24h() == {"total_requests": 3, "total_retries": 2}
+        overall = await store.get_overall_stats_24h()
+        assert (overall["total_requests"], overall["total_retries"]) == (3, 2)
+        assert overall["error_rate_pct"] == 0
+        overview = await store.get_usage_overview()
+        assert (overview["total_requests"], overview["total_retries"]) == (3, 2)
+        assert (await store.get_stream_reliability_24h())["total_requests"] == 3
+
+    @pytest.mark.asyncio
+    async def test_the_retry_rate_check_reads_retries_per_request(self, store):
+        """4 of 12 requests failed over once: 0.33 retries per request, over the
+        0.3 threshold.  Dividing by every row (16) read 0.25 and stayed silent."""
+        from fleet_manager.server.health_engine import HealthEngine
+
+        for i in range(12):
+            if i < 4:
+                await self._failover(store, f"req-{i}")
+            else:
+                await store.record_trace(
+                    request_id=f"req-{i}",
+                    model="phi4:14b",
+                    original_model="phi4:14b",
+                    node_id="node-b",
+                    status="completed",
+                )
+        [rec] = HealthEngine()._check_retry_rates(await store.get_retry_stats_24h())
+        assert rec.check_id == "high_retry_rate"
+        assert rec.data == {
+            "avg_retries_per_request": 0.33,
+            "total_retries": 4,
+            "total_requests": 12,
+        }

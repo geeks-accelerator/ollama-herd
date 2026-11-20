@@ -420,6 +420,11 @@ async def ollama_ps(request: Request):
 
 _SHOW_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=10.0)
 
+# Backoffs between /api/embed attempts after a ReadTimeout: Ollama queues embed
+# requests behind concurrent LLM inference, and under load a brief wait often
+# clears the slot.  One retry per entry.
+EMBED_RETRY_BACKOFFS_S = (1.0, 3.0)
+
 
 def _name_candidates(model: str) -> list[str]:
     """Names to look up for ``model`` — Ollama resolves a bare name to ``:latest``."""
@@ -920,15 +925,12 @@ async def dispatch_embed(
     embed_body.setdefault("keep_alive", -1)
 
     _EMBED_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0)
-    # Retry on ReadTimeout: Ollama queues embed requests behind concurrent LLM
-    # inference. Under load a brief backoff often clears the slot.
-    _EMBED_RETRY_BACKOFFS_S = (1.0, 3.0)
 
     start = time.time()
     last_exc: Exception | None = None
     retry_count = 0
 
-    for backoff in (*_EMBED_RETRY_BACKOFFS_S, None):
+    for backoff in (*EMBED_RETRY_BACKOFFS_S, None):
         try:
             client = proxy._get_client(winner.node_id)
             resp = await client.post(
@@ -986,8 +988,12 @@ async def dispatch_embed(
             last_exc = e
             if backoff is None:
                 break  # exhausted retries — fall through to failure path
-            # retry_count is retries before the current attempt, as on every
-            # trace row: it grows only when another attempt is about to start.
+            # Every retry leaves one "retried" row on the node that failed:
+            # the trace store counts retries by those rows, per node and
+            # fleet-wide.  retry_count is retries before the current attempt,
+            # as on every trace row: it grows only when another attempt is
+            # about to start.
+            trace("retried", error=describe_exception(e), retry_count=retry_count)
             retry_count += 1
             logger.warning(
                 f"Embed ReadTimeout on {winner.node_id} (attempt {retry_count}), "

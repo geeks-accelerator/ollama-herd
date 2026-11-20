@@ -407,9 +407,15 @@ class StreamingProxy:
                     capture_chunks.append(chunk)
                     capture_bytes += len(chunk)
                 yield chunk
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as gone:
             # Client disconnected (HTTP timeout, connection drop, etc.)
             # This is NOT a successful completion — the client never got the full response.
+            # GeneratorExit if the stream was paused at a yield, CancelledError if
+            # it was awaiting the backend: ``first_chunk`` cancels a stream whose
+            # client left during a cold load, and Starlette cancels a disconnected
+            # streaming response.  Same handling as ``_stream_with_retry``; with
+            # only GeneratorExit caught, ``FLEET_MAX_RETRIES=0`` traced those
+            # disconnects as ``incomplete``.
             error_occurred = True
             queue_manager.mark_failed(queue_key, entry)
             logger.warning(
@@ -426,6 +432,8 @@ class StreamingProxy:
             )
             self._request_tokens.pop(entry.request.request_id, None)
             self._request_done_reason.pop(entry.request.request_id, None)
+            if isinstance(gone, asyncio.CancelledError):
+                raise  # never swallow a cancellation
         except Exception as e:
             error_occurred = True
             # Invalidate stale client on connection errors so next request gets a fresh one
@@ -567,7 +575,11 @@ class StreamingProxy:
                     "retry_count": entry.retry_count,
                     "fallback_used": entry.fallback_used,
                     "excluded_nodes": entry.excluded_nodes or [],
-                    "client_body": entry.request.raw_body,
+                    # A transcription's body carries the audio itself: size, not bytes.
+                    "client_body": {
+                        k: f"<{len(v)} bytes>" if isinstance(v, bytes) else v
+                        for k, v in (entry.request.raw_body or {}).items()
+                    },
                     "ollama_body": ollama_body,
                     "response_chunks": response_chunks or [],
                 },
@@ -1355,31 +1367,62 @@ class StreamingProxy:
         proxy = self
 
         async def _generate_and_yield(entry: QueueEntry):
-            start_time = time.time()
-            try:
-                png_bytes = await proxy.generate_image_on_node(
-                    entry.assigned_node, entry.request.raw_body, timeout
-                )
-                elapsed_ms = (time.time() - start_time) * 1000
-                logger.info(
-                    f"Image {entry.request.request_id[:8]} completed "
-                    f"on {entry.assigned_node} in {elapsed_ms:.0f}ms"
-                )
-                # Image gen has no token counts — feed latency only.
-                queue_manager.mark_completed(queue_key, entry, latency_ms=elapsed_ms)
-                yield png_bytes
-            except Exception as e:
-                queue_manager.mark_failed(queue_key, entry)
-                logger.error(
-                    f"Image {entry.request.request_id[:8]} failed "
-                    f"on {entry.assigned_node}: {repr(e)}"
-                )
-                raise
+            png_bytes = await proxy._run_media_job(
+                entry,
+                queue_key,
+                queue_manager,
+                "Image",
+                proxy.generate_image_on_node(entry.assigned_node, entry.request.raw_body, timeout),
+            )
+            yield png_bytes
 
         def process(entry: QueueEntry):
             return _generate_and_yield(entry)
 
         return process
+
+    async def _run_media_job(self, entry: QueueEntry, queue_key: str, queue_manager, kind, job):
+        """Await an image or transcription ``job``; settle the queue and trace it.
+
+        One result, no stream, so the whole job is the attempt: ``completed``
+        when it returns, ``failed`` when it raises, and ``client_disconnected``
+        when it is cancelled -- ``first_chunk`` cancels it when the client
+        leaves mid-generation.  These paths used to settle the queue without a
+        trace row, so they were missing from every trace-based surface and
+        their ``X-Request-Id`` resolved to nothing.  No first-token time: the
+        "first token" is the whole result, and recording it would put
+        multi-second generations into the fleet's TTFT figures.
+        """
+        rid = entry.request.request_id
+        node_id = entry.assigned_node
+        start_time = time.time()
+        try:
+            result = await job
+        except asyncio.CancelledError:
+            queue_manager.mark_failed(queue_key, entry)
+            logger.warning(f"Client disconnected for {kind.lower()} {rid[:8]} on {node_id}")
+            self._record_trace(
+                entry,
+                node_id,
+                start_time,
+                None,
+                "client_disconnected",
+                error_message="Client disconnected before the job completed",
+            )
+            raise
+        except Exception as e:
+            queue_manager.mark_failed(queue_key, entry)
+            logger.error(f"{kind} {rid[:8]} failed on {node_id}: {repr(e)}")
+            self._record_trace(
+                entry, node_id, start_time, None, "failed", error_message=describe_exception(e)
+            )
+            raise
+        elapsed_ms = (time.time() - start_time) * 1000
+        logger.info(f"{kind} {rid[:8]} completed on {node_id} in {elapsed_ms:.0f}ms")
+        # No token counts for these jobs — feed latency only.
+        queue_manager.mark_completed(queue_key, entry, latency_ms=elapsed_ms)
+        self._record_trace(entry, node_id, start_time, None, "completed")
+        return result
 
     async def embed_image_on_node(self, node_id: str, body: dict, timeout: float = 30.0) -> dict:
         """Proxy a vision embedding request to a node's embedding server.
@@ -1445,29 +1488,16 @@ class StreamingProxy:
         proxy = self
 
         async def _transcribe_and_yield(entry: QueueEntry):
-            start_time = time.time()
-            try:
-                audio_bytes = entry.request.raw_body.get("_audio_bytes", b"")
-                filename = entry.request.raw_body.get("_filename", "audio.wav")
-                result = await proxy.transcribe_on_node(
-                    entry.assigned_node, audio_bytes, filename, timeout
-                )
-                elapsed_ms = (time.time() - start_time) * 1000
-                logger.info(
-                    f"Transcription {entry.request.request_id[:8]} completed "
-                    f"on {entry.assigned_node} in {elapsed_ms:.0f}ms"
-                )
-                queue_manager.mark_completed(queue_key, entry, latency_ms=elapsed_ms)
-                import json
-
-                yield json.dumps(result)
-            except Exception as e:
-                queue_manager.mark_failed(queue_key, entry)
-                logger.error(
-                    f"Transcription {entry.request.request_id[:8]} failed "
-                    f"on {entry.assigned_node}: {repr(e)}"
-                )
-                raise
+            audio_bytes = entry.request.raw_body.get("_audio_bytes", b"")
+            filename = entry.request.raw_body.get("_filename", "audio.wav")
+            result = await proxy._run_media_job(
+                entry,
+                queue_key,
+                queue_manager,
+                "Transcription",
+                proxy.transcribe_on_node(entry.assigned_node, audio_bytes, filename, timeout),
+            )
+            yield json.dumps(result)
 
         def process(entry: QueueEntry):
             return _transcribe_and_yield(entry)

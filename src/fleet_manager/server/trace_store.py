@@ -62,12 +62,27 @@ BACKEND_FAILURE_KINDS: dict[str, tuple[str, object]] = {
 # patience before we declare the trace lost.
 _RETRY_BACKOFFS_S = (0.2, 0.8, 2.0)
 
-# Retries a set of trace rows represents.  ``retry_count`` on a row is the
-# number of retries made *before* that attempt (0 on the first node), so a
-# request that was retried on two more nodes leaves rows 0, 1 and 2: summing
-# every row counts 3, and only its terminal row (any status but "retried")
-# carries the request's real total.
-_RETRIES_SUM = "SUM(CASE WHEN status != 'retried' THEN retry_count ELSE 0 END)"
+# Retries a set of trace rows represents: its ``retried`` rows.  Every retry
+# leaves exactly one, on the node whose attempt failed (the streaming retry
+# path and the Ollama embed path both write it), so the count is right at every
+# grouping -- one per retry fleet-wide, and per node the failed attempts *on
+# that node*.  Summing ``retry_count`` cannot do both: it is the number of
+# retries made *before* an attempt, so summing every row over-counts (a request
+# served on its third node leaves 0, 1 and 2), and summing terminal rows only
+# credits all of a request's retries to the node that finally served it.
+_RETRIES_SUM = "SUM(CASE WHEN status = 'retried' THEN 1 ELSE 0 END)"
+
+# A row that is a client request: anything but a ``retried`` attempt, which is
+# always followed by another row for the same request.  Fleet-wide request
+# counts (and the denominators of rates over them) use this; per-node counts
+# deliberately do not, because a failed attempt is work that node did.
+_IS_REQUEST = "status != 'retried'"
+_REQUESTS_COUNT = f"COUNT(CASE WHEN {_IS_REQUEST} THEN 1 END)"
+
+# Requests answered by a fallback model.  Every attempt's row carries the
+# request's ``fallback_used``, so summing a retried request's rows counted it
+# once per attempt; the request row is the one that was answered.
+_FALLBACKS_SUM = f"SUM(CASE WHEN {_IS_REQUEST} THEN fallback_used ELSE 0 END)"
 
 # The columns every per-request read returns, in ``_row_to_dict``'s order.
 _TRACE_COLUMNS = (
@@ -490,7 +505,12 @@ class TraceStore:
     # -- Usage stats queries --
 
     async def get_usage_by_node_model_day(self, days: int = 7) -> list[dict]:
-        """Per-node, per-model, per-day aggregated stats from request_traces."""
+        """Per-node, per-model, per-day aggregated stats from request_traces.
+
+        Per node, so ``request_count`` counts attempts (a ``retried`` row is
+        work that node did) and ``total_retries`` the attempts that failed
+        there and were retried elsewhere -- see ``_RETRIES_SUM``.
+        """
         if not self._db:
             return []
         cutoff = time.time() - (days * 86400)
@@ -508,7 +528,7 @@ class TraceStore:
                 SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
                 SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens,
                 {_RETRIES_SUM} AS total_retries,
-                SUM(fallback_used) AS total_fallbacks
+                {_FALLBACKS_SUM} AS total_fallbacks
             FROM request_traces
             WHERE timestamp >= ?
             GROUP BY node_id, model, day_bucket
@@ -563,7 +583,8 @@ class TraceStore:
         ]
 
     async def get_node_summary(self) -> list[dict]:
-        """Per-node all-time aggregate stats."""
+        """Per-node all-time aggregate stats (attempts and retries as in
+        ``get_usage_by_node_model_day``)."""
         if not self._db:
             return []
         cursor = await self._read_db.execute(
@@ -617,13 +638,13 @@ class TraceStore:
         cursor = await self._read_db.execute(
             f"""
             SELECT
-                COUNT(*) AS total_requests,
+                {_REQUESTS_COUNT} AS total_requests,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
                 SUM(COALESCE(prompt_tokens, 0)) AS total_prompt_tokens,
                 SUM(COALESCE(completion_tokens, 0)) AS total_completion_tokens,
                 {_RETRIES_SUM} AS total_retries,
-                SUM(fallback_used) AS total_fallbacks
+                {_FALLBACKS_SUM} AS total_fallbacks
             FROM request_traces
             """
         )
@@ -937,13 +958,18 @@ class TraceStore:
         ]
 
     async def get_retry_stats_24h(self) -> dict:
-        """Fleet-wide retry stats for the last 24 hours."""
+        """Fleet-wide retry stats for the last 24 hours.
+
+        ``total_requests`` counts requests, not attempts: the high-retry check
+        divides retries by it, and counting each ``retried`` row as a request
+        too read the rate low."""
         if not self._db:
             return {"total_requests": 0, "total_retries": 0}
         cutoff = time.time() - 86400
         cursor = await self._read_db.execute(
             f"""
-            SELECT COUNT(*) AS total, {_RETRIES_SUM} AS retries
+            SELECT {_REQUESTS_COUNT} AS total,
+                   {_RETRIES_SUM} AS retries
             FROM request_traces
             WHERE timestamp >= ?
             """,
@@ -1041,7 +1067,7 @@ class TraceStore:
         cursor = await self._read_db.execute(
             f"""
             SELECT
-                COUNT(*) AS total,
+                {_REQUESTS_COUNT} AS total,
                 SUM(CASE WHEN status != 'completed' AND status != 'retried'
                     THEN 1 ELSE 0 END) AS failed,
                 AVG(time_to_first_token_ms) AS avg_ttft,
@@ -1269,7 +1295,7 @@ class TraceStore:
 
         # Get total requests for rate calculation
         cursor2 = await self._read_db.execute(
-            "SELECT COUNT(*) FROM request_traces WHERE timestamp >= ?",
+            f"SELECT COUNT(*) FROM request_traces WHERE timestamp >= ? AND {_IS_REQUEST}",
             (cutoff,),
         )
         row = await cursor2.fetchone()

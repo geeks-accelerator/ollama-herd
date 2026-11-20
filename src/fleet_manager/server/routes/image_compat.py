@@ -219,7 +219,17 @@ async def generate_image(request: Request):
             request, response_future, entry, request.app.state.trace_store
         )
         if stream is None:
-            return Response(status_code=CLIENT_GONE_STATUS)  # client left while queued
+            # The client left, queued or mid-generation; the trace row is
+            # written where that happened (dispatched_stream / the proxy).
+            _record_image_gen(
+                model,
+                best.node_id,
+                "client_disconnected",
+                generation_ms=int((time.monotonic() - start) * 1000),
+                width=width,
+                height=height,
+            )
+            return Response(status_code=CLIENT_GONE_STATUS)
         png_bytes = b""
         async for chunk in stream:
             png_bytes = chunk  # Single chunk — the full PNG

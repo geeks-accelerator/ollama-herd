@@ -496,3 +496,74 @@ class TestNonGeneratableModels:
             "nomic-embed-text:latest", None, proxy=_Proxy(), settings=None,
         )
         assert ok is False
+
+
+class TestDisconnectBeforeFirstChunkWithoutRetries:
+    """``FLEET_MAX_RETRIES=0`` takes ``_stream_with_tracking``.  A client that
+    leaves before the first chunk makes ``first_chunk`` cancel the stream, which
+    lands as ``CancelledError`` while it awaits the backend.  That path caught
+    only ``GeneratorExit``, so the cancellation fell through to ``finally`` and
+    was traced ``incomplete`` (and logged as an error terminal) instead of
+    ``client_disconnected``, which is what the retry path records."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("max_retries", [0, 2])
+    async def test_both_paths_trace_a_disconnect(self, max_retries):
+        from types import SimpleNamespace
+
+        from fleet_manager.server.routes.routing import first_chunk
+
+        proxy = StreamingProxy(MagicMock())
+        proxy._record_trace = MagicMock()
+        queue_mgr = _mock_queue_mgr()
+        entry = _make_entry()
+        loading = asyncio.Event()
+
+        async def cold_load(node_id, request):
+            loading.set()
+            await asyncio.Event().wait()  # the model is still loading
+            yield "never"
+
+        proxy.stream_from_node = cold_load
+        process = proxy.make_process_fn(
+            "node-a:phi4:14b",
+            queue_mgr,
+            scorer=MagicMock(),
+            settings=ServerSettings(max_retries=max_retries),
+        )
+
+        async def is_disconnected():
+            return loading.is_set()
+
+        request = SimpleNamespace(is_disconnected=is_disconnected)
+        assert await first_chunk(request, process(entry), poll_s=0.01) is None
+
+        statuses = [c.args[4] for c in proxy._record_trace.call_args_list]
+        assert statuses == ["client_disconnected"]
+        queue_mgr.mark_failed.assert_called_once_with("node-a:phi4:14b", entry)
+        queue_mgr.mark_completed.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_is_re_raised(self):
+        proxy = StreamingProxy(MagicMock())
+        proxy._record_trace = MagicMock()
+        queue_mgr = _mock_queue_mgr()
+        waiting = asyncio.Event()
+
+        async def slow_backend(node_id, request):
+            waiting.set()
+            await asyncio.Event().wait()
+            yield "never"
+
+        proxy.stream_from_node = slow_backend
+
+        async def route_task():
+            async for _ in proxy._stream_with_tracking(_make_entry(), "k", queue_mgr):
+                pass
+
+        task = asyncio.create_task(route_task())
+        await waiting.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert proxy._record_trace.call_args.args[4] == "client_disconnected"

@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
 from starlette.applications import Starlette
@@ -25,8 +26,8 @@ from fleet_manager.models.node import VisionEmbeddingMetrics, VisionEmbeddingMod
 from fleet_manager.server.cors import EXPOSED_HEADERS
 from fleet_manager.server.fleet_headers import (
     REQUEST_ID_HEADER,
-    RequestIdMiddleware,
     bind_request_id,
+    install_request_id_header,
 )
 from tests.conftest import make_heartbeat
 from tests.test_server.test_client_compat import _install_mock_ollama
@@ -76,14 +77,19 @@ def _bare_app() -> Starlette:
     async def unbound(request):
         return JSONResponse({"ok": True})
 
+    async def crash(request):
+        bind_request_id(request, "rid-500")
+        raise RuntimeError("unhandled")
+
     app = Starlette(
         routes=[
             Route("/bound", bound),
             Route("/stream", bound_stream),
             Route("/unbound", unbound),
+            Route("/crash", crash),
         ]
     )
-    app.add_middleware(RequestIdMiddleware)
+    install_request_id_header(app)
     return app
 
 
@@ -105,6 +111,29 @@ class TestMiddleware:
 
     def test_browser_clients_may_read_it(self):
         assert REQUEST_ID_HEADER in EXPOSED_HEADERS
+
+    def test_an_unhandled_500_carries_it(self):
+        """Starlette's ServerErrorMiddleware answers an unhandled exception
+        itself, outside every ``add_middleware`` layer, so a 500 -- the
+        response most worth looking up -- had no ``X-Request-Id``."""
+        resp = TestClient(_bare_app(), raise_server_exceptions=False).get("/crash")
+        assert resp.status_code == 500
+        assert resp.headers[REQUEST_ID_HEADER] == "rid-500"
+
+    def test_the_router_app_is_wired_the_same_way(self):
+        from fleet_manager.models.config import ServerSettings
+        from fleet_manager.server.app import create_app
+
+        app = create_app(ServerSettings())
+
+        @app.get("/crash")
+        async def crash(request: Request):
+            bind_request_id(request, "rid-app")
+            raise RuntimeError("unhandled")
+
+        resp = TestClient(app, raise_server_exceptions=False).get("/crash")
+        assert resp.status_code == 500
+        assert resp.headers[REQUEST_ID_HEADER] == "rid-app"
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +234,40 @@ class TestEverySurface:
         assert REQUEST_ID_HEADER not in fleet.get("/api/tags").headers
 
 
+class TestOllamaEmbedRetry:
+    """The Ollama embed path retries a ReadTimeout on the same node.  Every
+    retry leaves one ``retried`` row on the node that failed -- the rule the
+    trace store counts retries by -- so a timed-out attempt is visible and the
+    request's retries are counted once, against that node."""
+
+    def test_a_timed_out_attempt_is_a_retried_row(self, fleet, monkeypatch):
+        from fleet_manager.server.routes import ollama_compat
+
+        monkeypatch.setattr(ollama_compat, "EMBED_RETRY_BACKOFFS_S", (0.0, 0.0))
+        calls = {"n": 0}
+
+        def flaky(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/embed":
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise httpx.ReadTimeout("queue full", request=request)
+            return _ollama(request)
+
+        _install_mock_ollama(fleet, "studio", flaky)
+        resp = fleet.post("/api/embed", json={"model": EMBED_MODEL, "input": "x"})
+        assert resp.status_code == 200, resp.text
+        rid = resp.headers[REQUEST_ID_HEADER]
+        deadline = time.monotonic() + 3.0
+        while len(rows := _trace_rows(fleet, rid)) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        by_status = {r["status"]: r for r in rows}
+        assert sorted(by_status) == ["completed", "retried"]
+        assert by_status["retried"]["retry_count"] == 0
+        assert by_status["completed"]["retry_count"] == 1
+        assert {r["node_id"] for r in rows} == {"studio"}
+        assert resp.headers["X-Fleet-Retries"] == "1"
+
+
 class TestDirectProxyPaths:
     """Native text embedding and vision embedding bypass the queue and write
     their own trace; the header must carry that trace's id."""
@@ -265,9 +328,9 @@ class TestDirectProxyPaths:
 
 
 class TestQueuedMediaPaths:
-    """Image generation and transcription are queued but write no trace row
-    when they complete (only a client that leaves while queued leaves one).
-    The header still carries the queue entry's id, the one in the router's log."""
+    """Image generation and transcription are queued; the header carries the
+    queue entry's id, which is the id their trace row is under (more outcomes
+    in test_media_traces.py)."""
 
     def test_image_generation(self, fleet):
         fleet.post("/dashboard/api/settings", json={"image_generation": True})
@@ -282,6 +345,8 @@ class TestQueuedMediaPaths:
         resp = fleet.post("/api/generate-image", json={"model": "z-image-turbo", "prompt": "a"})
         assert resp.status_code == 200, resp.text
         assert len(resp.headers[REQUEST_ID_HEADER]) == 36
+        [row] = _trace_rows(fleet, resp.headers[REQUEST_ID_HEADER])
+        assert row["status"] == "completed"
 
     def test_transcription(self, fleet):
         fleet.post("/dashboard/api/settings", json={"transcription": True})
@@ -298,6 +363,8 @@ class TestQueuedMediaPaths:
         resp = fleet.post("/api/transcribe", files={"audio": ("a.wav", b"RIFF", "audio/wav")})
         assert resp.status_code == 200, resp.text
         assert len(resp.headers[REQUEST_ID_HEADER]) == 36
+        [row] = _trace_rows(fleet, resp.headers[REQUEST_ID_HEADER])
+        assert row["status"] == "completed"
 
 
 # ---------------------------------------------------------------------------
