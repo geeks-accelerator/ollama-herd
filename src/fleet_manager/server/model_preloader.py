@@ -122,13 +122,16 @@ _kv_cost_mb_per_token: dict[str, float] = {}
 # without spamming a line per heartbeat.
 _kv_cost_logged: set[str] = set()
 
-# Last context window each model was actually loaded with:
-#   {model_name: context_length}
+# Last context window each model was actually loaded with, per node:
+#   {(node_id, model_name): context_length}
 # When we DON'T override num_ctx, the model gets its own default — which we
 # can't read from the manifest but can simply remember from the last time it
 # was resident.  qwen3-coder:30b defaults to 262144, and that default is the
-# entire difference between a 31GB model and a 122GB one.
-_observed_ctx: dict[str, int] = {}
+# entire difference between a 31GB model and a 122GB one.  Per node because
+# Ollama 0.40 sizes the default by the node's VRAM: in the 2026-11-20 fleet
+# benchmark qwen3-coder:30b ran at 4,096 (20 GB) on 24 GB cards and at 32,768
+# (31 GB) on a 48 GB card, so one fleet-wide value costed one of them wrong.
+_observed_ctx: dict[tuple[str, str], int] = {}
 
 # Below this, treat a measured KV cost as noise rather than signal (rounding in
 # the reported sizes can make a genuinely-tiny KV look like a small negative).
@@ -175,7 +178,7 @@ def _observe_kv_cost(node) -> None:
             # Worth remembering even if we can't derive a KV cost below: it's
             # the context this model gets when nobody overrides it, and that
             # default is the whole difference between 31GB and 122GB.
-            _observed_ctx[m.name] = ctx
+            _observed_ctx[(getattr(node, "node_id", ""), m.name)] = ctx
         if ctx <= 0 or resident <= 0 or weight <= 0:
             continue  # can't derive without all three
         kv_gb = resident - weight
@@ -267,15 +270,25 @@ def _num_ctx_override(model: str, settings) -> int | None:
     return override if override > 0 else None
 
 
-def _expected_num_ctx(model: str, settings) -> int | None:
-    """The context ``model`` will actually RUN with, override or not.
+def _expected_num_ctx(model: str, settings, node=None) -> int | None:
+    """The context ``model`` will actually RUN with on ``node``, override or not.
 
     An override is authoritative — we're about to send it.  Otherwise the model
     gets its own default, which we can't read from the manifest but have
     probably watched it use before.  That default is not a detail:
     qwen3-coder:30b defaults to 262144 and costs 122GB, versus 31GB at 32K.
+    What ``node`` itself ran it with comes first (Ollama sizes the default by
+    VRAM); without that, the largest any node ran it with, which over- rather
+    than under-states the cost.
     """
-    return _num_ctx_override(model, settings) or _observed_ctx.get(model)
+    override = _num_ctx_override(model, settings)
+    if override:
+        return override
+    node_id = getattr(node, "node_id", None)
+    if node_id and (node_id, model) in _observed_ctx:
+        return _observed_ctx[(node_id, model)]
+    seen = [ctx for (_, name), ctx in _observed_ctx.items() if name == model]
+    return max(seen) if seen else None
 
 
 async def get_cached_priorities(trace_store: TraceStore) -> list[dict]:
@@ -507,7 +520,7 @@ async def _load_model_on_best_node(
     # 122.9GB real) and twice let a load through that panicked the box.  See
     # docs/issues/model-sizing-ignores-kv-cache.md.
     send_ctx = _num_ctx_override(model, settings)  # what we'll ask Ollama for
-    num_ctx = _expected_num_ctx(model, settings)  # what it'll actually run at
+    num_ctx = _expected_num_ctx(model, settings, best)  # what it'll actually run at
     resident_gb = estimate_resident_gb(model, best, num_ctx)
     available = best.model_memory_available_gb()
     # Skip the memory gate when the model is ALREADY resident on this node — it

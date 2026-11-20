@@ -655,7 +655,7 @@ class ScoringEngine:
 
         weights = self._estimate_model_size(model, node)
         measured = measured_resident_gb(
-            model, node, _expected_num_ctx(model, self._s), weights_gb=weights
+            model, node, _expected_num_ctx(model, self._s, node), weights_gb=weights
         )
         return measured if measured is not None else weights
 

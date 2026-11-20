@@ -679,7 +679,22 @@ def test_observe_kv_cost_records_default_context():
         disk_sizes={"qwen3-coder:30b": 18.6},
     )
     _observe_kv_cost(node)
-    assert _observed_ctx["qwen3-coder:30b"] == 262144
+    assert _observed_ctx[("studio", "qwen3-coder:30b")] == 262144
+
+
+def test_expected_context_is_the_nodes_own():
+    """Ollama 0.40 sizes the default context by VRAM: 4,096 on a 24 GB card and
+    32,768 on a 48 GB one for the same model (fleet benchmark 2026-11-20)."""
+    from fleet_manager.server.model_preloader import _expected_num_ctx, _observe_kv_cost
+
+    small = _kv_node("rtx6000", loaded=[("qwen3-coder:30b", 20.0, 4096)])
+    large = _kv_node("a6000", loaded=[("qwen3-coder:30b", 31.0, 32768)])
+    for node in (small, large):
+        _observe_kv_cost(node)
+    assert _expected_num_ctx("qwen3-coder:30b", None, small) == 4096
+    assert _expected_num_ctx("qwen3-coder:30b", None, large) == 32768
+    # A node that never ran it: the largest seen, the cautious estimate.
+    assert _expected_num_ctx("qwen3-coder:30b", None, _kv_node("new")) == 32768
 
 
 def test_observe_kv_cost_ignores_incoherent_reports():

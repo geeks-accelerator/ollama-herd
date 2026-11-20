@@ -1172,14 +1172,12 @@ class StreamingProxy:
     def _resolved_num_ctx(self, model: str) -> int | None:
         """The num_ctx this model should load with, or None if unconfigured.
 
-        Single source of truth for pre-warm and the streaming injection path, so
-        a warmed model comes up at the same context a real request would ask for.
+        The preloader's ``_num_ctx_override``, so pre-warm, the streaming
+        injection path and the memory estimates agree on one rule.
         """
-        if not self._settings or not getattr(self._settings, "dynamic_num_ctx", False):
-            return None
-        overrides = getattr(self._settings, "num_ctx_overrides", None) or {}
-        value = overrides.get(model, 0)
-        return value if value > 0 else None
+        from fleet_manager.server.model_preloader import _num_ctx_override
+
+        return _num_ctx_override(model, self._settings)
 
     def is_non_generatable(self, model: str) -> bool:
         """True when the backend has said this model cannot serve /api/generate.

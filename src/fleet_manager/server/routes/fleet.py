@@ -139,7 +139,8 @@ def _pin_would_not_fit(
     # will actually run with — not on-disk weights. The KV cache is what
     # dominates: qwen3-coder:30b is 18.6GB of weights and 122.9GB resident.
     sizes = {
-        m: estimate_resident_gb(m, node, _expected_num_ctx(m, settings)) for m in [*already, model]
+        m: estimate_resident_gb(m, node, _expected_num_ctx(m, settings, node))
+        for m in [*already, model]
     }
     pinned_gb = sum(sizes[m] for m in already)
     new_gb = sizes[model]
