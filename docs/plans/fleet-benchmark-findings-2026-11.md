@@ -96,9 +96,9 @@ the `embedding` extra").
 
 Check before building: the two backends' vectors differ (fastembed runs a quantised ONNX export of
 nomic v1.5; Ollama runs its GGUF). A herd that has both, with the native server going up and down,
-would mix vectors from two models in one index. Decided (see Decisions): the safe
-one is "prefer native whenever any node has it, Ollama only when none does", plus the existing
-`X-Fleet-Backend` header so a client can tell.
+would mix vectors from two models in one index. Decided (see Decisions): Ollama only while no node
+has *ever* served it natively; after that, native only. The existing `X-Fleet-Backend` header lets a
+client tell which backend answered.
 
 **Tests:** no native node and the model in Ollama → served by Ollama with `X-Fleet-Backend: ollama`;
 a native node online → native, as today; native node offline but known → the retryable 503, as
