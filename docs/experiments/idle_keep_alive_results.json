@@ -1,0 +1,58 @@
+{
+  "date": "2026-11-20",
+  "hardware": "One Apple Silicon Mac, 128 GB unified memory, macOS; router, herd-node and Ollama on the same machine",
+  "ollama": "0.40.15, default settings (keep_alive 5 minutes)",
+  "herd": "0.12.10 from Homebrew (router and herd-node), default settings, telemetry off",
+  "method": "docs/experiments/idle-keep-alive.py: unload the model, send one request (cold), send another (warm), wait idle_s with no traffic, check /api/ps, send a third. Once straight to Ollama, once through the router. One run per model and arm. Requests: 'Reply with the word ready.', 8-token cap, temperature 0, streaming; TTFT is the first streamed line.",
+  "finding": "Ollama unloads a model after 5 idle minutes, so the next direct request reloads it. Herd sends keep_alive -1 on the requests it routes, so through Herd the model was still loaded after the same idle time. The memory stays held until something evicts the model.",
+  "runs": [
+    {
+      "arm": "direct",
+      "model": "llama3.2:1b",
+      "idle_s": 360,
+      "resident_before_cold": false,
+      "cold_ttft_ms": 1473.6,
+      "warm_ttft_ms": 7.9,
+      "resident_after_idle": false,
+      "after_idle_ttft_ms": 1094.3
+    },
+    {
+      "arm": "herd",
+      "model": "llama3.2:1b",
+      "idle_s": 360,
+      "resident_before_cold": false,
+      "cold_ttft_ms": 876.3,
+      "warm_ttft_ms": 58.2,
+      "resident_after_idle": true,
+      "after_idle_ttft_ms": 119.8
+    },
+    {
+      "arm": "direct",
+      "model": "qwen3-coder:30b",
+      "idle_s": 360,
+      "resident_before_cold": false,
+      "cold_ttft_ms": 11674.0,
+      "warm_ttft_ms": 27.8,
+      "resident_after_idle": false,
+      "after_idle_ttft_ms": 3625.2
+    },
+    {
+      "arm": "herd",
+      "model": "qwen3-coder:30b",
+      "idle_s": 360,
+      "resident_before_cold": false,
+      "cold_ttft_ms": 3394.3,
+      "warm_ttft_ms": 27.7,
+      "resident_after_idle": true,
+      "after_idle_ttft_ms": 425.3
+    }
+  ],
+  "warm_pairs_llama3_2_1b": {
+    "pairs": 20,
+    "direct_ttft_median_ms": 15.5,
+    "herd_ttft_median_ms": 18.5,
+    "direct_total_median_ms": 24.4,
+    "herd_total_median_ms": 29.6,
+    "note": "Same machine, loopback; checks that the first warm samples (58 ms) were start-up noise"
+  }
+}
