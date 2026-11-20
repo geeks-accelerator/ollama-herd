@@ -47,13 +47,20 @@ def stream_chat(url: str, model: str, max_tokens: int, timeout: float) -> dict:
         "stream": True,
         "stream_options": {"include_usage": True},
     }).encode()
-    req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
+    # Herd: answer with exactly this model or fail; never substitute another
+    # (in the 2026-11-20 fleet benchmark the default answered every request for
+    # one model with the other).  Plain Ollama ignores the header.
+    headers = {"Content-Type": "application/json", "X-Fleet-No-Fallback": "true"}
+    req = urllib.request.Request(url, body, headers)
     start = time.perf_counter()
     ttft = None
     chunks = 0
     usage = None
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         node = resp.headers.get("X-Fleet-Node")  # set when the endpoint is Ollama Herd
+        served = resp.headers.get("X-Fleet-Served-Model")
+        if served and served not in (model, f"{model}:latest"):
+            raise RuntimeError(f"served by {served}, not {model}")
         for raw in resp:
             line = raw.decode("utf-8", "replace").strip()
             if not line.startswith("data:") or line == "data: [DONE]":

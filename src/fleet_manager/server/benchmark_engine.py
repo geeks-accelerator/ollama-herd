@@ -7,6 +7,7 @@ Provides fleet discovery, concurrent request generation, and report building.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
@@ -58,7 +59,7 @@ EMBED_PATTERNS = ("embed", "nomic", "bge", "e5-")
 
 
 def is_embed_model(name: str) -> bool:
-    """True for embedding models, judged by name as discover_embed_models does."""
+    """True for embedding models, judged by name (how discover_fleet labels them)."""
     return any(p in name.lower() for p in EMBED_PATTERNS)
 
 
@@ -136,6 +137,7 @@ class RequestResult:
     success: bool
     error: str | None = None
     model_type: str = "llm"  # llm, embed, image, stt
+    served_model: str = ""  # X-Fleet-Served-Model: what actually answered
 
 
 @dataclass
@@ -156,13 +158,19 @@ class NodeInfo:
     memory_available_gb: float
     models: list[str] = field(default_factory=list)
     model_sizes: dict[str, float] = field(default_factory=dict)
+    ollama_url: str = ""  # the node's Ollama, for warming it directly
+    model_contexts: dict[str, int] = field(default_factory=dict)  # resident num_ctx
 
 
 async def discover_fleet(
     client: httpx.AsyncClient,
+    include_on_disk: tuple[str, ...] | list[str] = (),
 ) -> tuple[list[ModelTarget], list[NodeInfo]]:
-    """Auto-discover loaded models and nodes, compute concurrency per node.
+    """Discover nodes and the models to benchmark, with concurrency per model.
 
+    Targets are the models loaded on any online node, labelled ``embed`` or
+    ``llm`` by name, plus any model in ``include_on_disk`` that is not loaded
+    but is on some node's disk (its first request then includes the load).
     Concurrency is calculated per-node:
     1. Total node budget = min(available_gb / KV_CACHE, MAX_TOTAL_PER_NODE)
     2. Budget is split evenly across models on that node
@@ -174,6 +182,18 @@ async def discover_fleet(
 
     nodes_info: list[NodeInfo] = []
     model_map: dict[str, ModelTarget] = {}
+
+    def target(name: str, size_gb: float, concurrency: int) -> ModelTarget:
+        if name not in model_map:
+            model_map[name] = ModelTarget(
+                name=name,
+                size_gb=size_gb,
+                concurrency=concurrency,
+                model_type="embed" if is_embed_model(name) else "llm",
+            )
+        else:
+            model_map[name].concurrency = max(model_map[name].concurrency, concurrency)
+        return model_map[name]
 
     for node in data.get("nodes", []):
         if node.get("status") != "online":
@@ -187,10 +207,6 @@ async def discover_fleet(
         # What a model can load into: RAM plus GPU memory the OS doesn't count.
         available_gb = node.get("model_memory_available_gb", mem.get("available_gb", 0))
 
-        model_sizes = {}
-        for m in loaded:
-            model_sizes[m["name"]] = m.get("size_gb", 0)
-
         nodes_info.append(
             NodeInfo(
                 node_id=node_id,
@@ -199,67 +215,31 @@ async def discover_fleet(
                 memory_used_gb=mem.get("used_gb", 0),
                 memory_available_gb=available_gb,
                 models=[m["name"] for m in loaded],
-                model_sizes=model_sizes,
+                model_sizes={m["name"]: m.get("size_gb", 0) for m in loaded},
+                ollama_url=node.get("ollama_url", ""),
+                model_contexts={
+                    m["name"]: m["context_length"] for m in loaded if m.get("context_length")
+                },
             )
         )
 
-        if not loaded:
-            continue
+        if loaded:
+            # Available memory is already free (models are loaded and accounted for).
+            mem_budget = int(available_gb / KV_CACHE_PER_REQUEST_GB)
+            node_budget = max(MIN_CONCURRENCY, min(mem_budget, MAX_TOTAL_PER_NODE))
+            base_per_model = max(1, node_budget // len(loaded))
+            per_model_conc = min(base_per_model, MAX_CONCURRENCY_PER_MODEL)
+            for m in loaded:
+                target(m["name"], m.get("size_gb", 0), per_model_conc).nodes.append(node_id)
 
-        # Available memory is already free (models are loaded and accounted for).
-        mem_budget = int(available_gb / KV_CACHE_PER_REQUEST_GB)
-        node_budget = max(
-            MIN_CONCURRENCY,
-            min(mem_budget, MAX_TOTAL_PER_NODE),
-        )
-
-        n_models = len(loaded)
-        base_per_model = max(1, node_budget // n_models)
-        per_model_conc = min(base_per_model, MAX_CONCURRENCY_PER_MODEL)
-
-        for m in loaded:
-            name = m["name"]
-            size_gb = m.get("size_gb", 0)
-
-            if name not in model_map:
-                model_map[name] = ModelTarget(
-                    name=name, size_gb=size_gb, concurrency=per_model_conc
-                )
-            else:
-                model_map[name].concurrency = max(model_map[name].concurrency, per_model_conc)
-            model_map[name].nodes.append(node_id)
+        loaded_names = {m["name"] for m in loaded}
+        on_disk = set(ollama.get("models_available", []))
+        sizes = ollama.get("models_available_sizes", {}) or {}
+        for name in include_on_disk:
+            if name in on_disk and name not in loaded_names:
+                target(name, sizes.get(name, 0.0), MIN_CONCURRENCY).nodes.append(node_id)
 
     return list(model_map.values()), nodes_info
-
-
-async def discover_embed_models(
-    client: httpx.AsyncClient,
-) -> list[ModelTarget]:
-    """Find embedding models loaded on the fleet."""
-    resp = await client.get("/fleet/status")
-    resp.raise_for_status()
-    data = resp.json()
-
-    targets = []
-    for node in data.get("nodes", []):
-        if node.get("status") != "online":
-            continue
-        ollama = node.get("ollama") or {}
-        for m in ollama.get("models_loaded", []):
-            name = m["name"]
-            is_embed = is_embed_model(name)
-            already_found = any(t.name == name for t in targets)
-            if is_embed and not already_found:
-                targets.append(
-                    ModelTarget(
-                        name=name,
-                        size_gb=m.get("size_gb", 0),
-                        concurrency=2,
-                        nodes=[node["node_id"]],
-                        model_type="embed",
-                    )
-                )
-    return targets
 
 
 async def discover_image_models(
@@ -290,6 +270,19 @@ async def discover_image_models(
         return []
 
 
+# Every benchmark request asks for exactly the model it names: a router that
+# substitutes another model would otherwise be measured as that model.
+EXACT_MODEL_HEADERS = {"X-Fleet-No-Fallback": "true"}
+
+
+def served_mismatch(model: str, resp: httpx.Response) -> str | None:
+    """Why ``resp`` is not an answer from ``model``, or None if it is."""
+    served = resp.headers.get("x-fleet-served-model", "")
+    if not served or served == model or served == f"{model}:latest":
+        return None
+    return f"served by {served}, not {model}"
+
+
 async def send_embed_request(
     client: httpx.AsyncClient,
     model: str,
@@ -303,9 +296,12 @@ async def send_embed_request(
     }
     start = time.monotonic()
     try:
-        resp = await client.post("/api/embed", json=body, timeout=timeout)
+        resp = await client.post(
+            "/api/embed", json=body, timeout=timeout, headers=EXACT_MODEL_HEADERS
+        )
         latency_ms = (time.monotonic() - start) * 1000
-        if resp.status_code != 200:
+        mismatch = served_mismatch(model, resp)
+        if resp.status_code != 200 or mismatch:
             return RequestResult(
                 model=model,
                 node_id="unknown",
@@ -314,8 +310,9 @@ async def send_embed_request(
                 prompt_tokens=0,
                 completion_tokens=0,
                 success=False,
-                error=f"HTTP {resp.status_code}",
+                error=mismatch or f"HTTP {resp.status_code}",
                 model_type="embed",
+                served_model=resp.headers.get("x-fleet-served-model", ""),
             )
         node_id = resp.headers.get("x-fleet-node", "unknown")
         return RequestResult(
@@ -440,12 +437,16 @@ async def send_request(
     timeout: float = 300.0,
     prompt_tokens: int | None = None,
     max_tokens: int | None = None,
+    think: bool | None = None,
 ) -> RequestResult:
     """Send a streaming request via Ollama format to get token counts.
 
     ``prompt_tokens`` pads the prompt to about that length (``make_prompt``);
     ``max_tokens`` caps the reply (Ollama's ``num_predict``).  Both default to
-    the original short prompt with no cap.
+    the original short prompt with no cap.  ``think=False`` turns a thinking
+    model's reasoning off, which also stops the router raising a capped
+    ``num_predict`` to its thinking minimum.  A reply from any model other than
+    ``model`` is a failure (``EXACT_MODEL_HEADERS``).
     """
     body = {
         "model": model,
@@ -455,6 +456,8 @@ async def send_request(
     }
     if max_tokens:
         body["options"] = {"num_predict": max_tokens}
+    if think is not None:
+        body["think"] = think
 
     start = time.monotonic()
     ttft = 0.0
@@ -469,10 +472,13 @@ async def send_request(
             "/api/chat",
             json=body,
             timeout=timeout,
+            headers=EXACT_MODEL_HEADERS,
         ) as resp:
             node_id = resp.headers.get("x-fleet-node", "unknown")
+            served = resp.headers.get("x-fleet-served-model", "")
+            mismatch = served_mismatch(model, resp)
 
-            if resp.status_code != 200:
+            if resp.status_code != 200 or mismatch:
                 raw = await resp.aread()
                 return RequestResult(
                     model=model,
@@ -482,7 +488,8 @@ async def send_request(
                     prompt_tokens=0,
                     completion_tokens=0,
                     success=False,
-                    error=f"HTTP {resp.status_code}: {raw.decode()[:200]}",
+                    error=mismatch or f"HTTP {resp.status_code}: {raw.decode()[:200]}",
+                    served_model=served,
                 )
 
             async for line in resp.aiter_lines():
@@ -515,6 +522,7 @@ async def send_request(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             success=True,
+            served_model=served,
         )
 
     except Exception as e:
@@ -538,11 +546,12 @@ async def worker(
     error_backoff: float = 1.0,
     prompt_tokens: int | None = None,
     max_tokens: int | None = None,
+    think: bool | None = None,
 ):
     """Continuously send requests until stop_event is set, with error backoff."""
     while not stop_event.is_set():
         result = await send_request(
-            client, model, prompt_tokens=prompt_tokens, max_tokens=max_tokens
+            client, model, prompt_tokens=prompt_tokens, max_tokens=max_tokens, think=think
         )
         results.append(result)
         if not result.success:
@@ -553,32 +562,146 @@ async def worker(
                 pass
 
 
+async def warm_node_model(
+    ollama_url: str,
+    model: str,
+    *,
+    embed: bool = False,
+    num_ctx: int | None = None,
+    timeout: float = 900.0,
+) -> bool:
+    """One real request straight to a node's Ollama: loads ``model`` if needed and
+    runs it once.
+
+    Straight to the node, not through the router, so every node gets warmed and
+    not only the one the router picks.  A real computation, not an empty
+    prompt: the first compute on a fresh runner took ~39 s on Turing GPUs in the
+    2026-11-20 fleet benchmark, which an empty-prompt load does not trigger.
+    ``keep_alive: -1`` as the router sends, and the resident ``num_ctx`` so
+    Ollama doesn't reload the model at a different context.
+    """
+    if embed:
+        path, body = "/api/embed", {"model": model, "input": "warm", "keep_alive": -1}
+    else:
+        options: dict = {"num_predict": 1}
+        if num_ctx:
+            options["num_ctx"] = num_ctx
+        path = "/api/chat"
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "options": options,
+            "keep_alive": -1,
+        }
+    try:
+        async with httpx.AsyncClient(base_url=ollama_url, timeout=timeout) as node:
+            return (await node.post(path, json=body)).status_code == 200
+    except httpx.HTTPError as exc:
+        logger.warning(f"Warming {model} at {ollama_url} failed: {exc}")
+        return False
+
+
 async def warmup(
-    client: httpx.AsyncClient,
     targets: list[ModelTarget],
+    nodes_info: list[NodeInfo],
     log_fn=None,
 ) -> list[ModelTarget]:
-    """Send one request per model to ensure all models are hot.
-    Returns the list of targets that passed warmup (failed ones are removed).
+    """Warm every node that serves each target, directly; drop targets no node
+    could warm.  Image targets are not warmed.
 
     log_fn: optional callback(message: str) for progress reporting.
     """
     if log_fn:
-        log_fn("Warming up models...")
-    tasks = []
+        log_fn("Warming up models on every node...")
+    by_id = {ni.node_id: ni for ni in nodes_info}
+    jobs: list[tuple[ModelTarget, str]] = []
+    coros = []
     for t in targets:
-        tasks.append(send_request(client, t.name, timeout=120.0))
-    results = await asyncio.gather(*tasks)
+        if t.model_type not in ("llm", "embed"):
+            continue
+        for node_id in t.nodes:
+            ni = by_id.get(node_id)
+            if ni is None or not ni.ollama_url:
+                continue
+            jobs.append((t, node_id))
+            coros.append(
+                warm_node_model(
+                    ni.ollama_url,
+                    t.name,
+                    embed=t.model_type == "embed",
+                    num_ctx=ni.model_contexts.get(t.name),
+                )
+            )
+    outcomes = await asyncio.gather(*coros)
 
-    passed = []
-    for t, r in zip(targets, results, strict=True):
-        status = "ok" if r.success else f"FAILED: {r.error}"
+    warmed: dict[str, list[str]] = {}
+    for (t, node_id), ok in zip(jobs, outcomes, strict=True):
+        if ok:
+            warmed.setdefault(t.name, []).append(node_id)
         if log_fn:
-            log_fn(f"  {t.name}: {status} ({r.latency_ms:,.0f}ms)")
-        if r.success:
-            passed.append(t)
+            log_fn(f"  {t.name} on {node_id}: {'ok' if ok else 'FAILED'}")
+    return [t for t in targets if t.model_type not in ("llm", "embed") or t.name in warmed]
 
-    return passed
+
+async def run_load(
+    client: httpx.AsyncClient,
+    targets: list[ModelTarget],
+    duration: float,
+    stop_event: asyncio.Event,
+    results: list[RequestResult],
+    *,
+    prompt_tokens: int | None = None,
+    max_tokens: int | None = None,
+    think: bool | None = None,
+    on_tick=None,
+) -> tuple[list[dict], float]:
+    """Run each target's workers for ``duration`` (or until ``stop_event``),
+    drain in-flight requests, and return (fleet snapshots, seconds elapsed).
+
+    The one load loop the CLI and the dashboard runner share.  ``on_tick(elapsed)``
+    is called every two seconds for progress output.
+    """
+    tasks = []
+    for target in targets:
+        for _ in range(target.concurrency):
+            if target.model_type == "embed":
+                coro = embed_worker(client, target.name, results, stop_event)
+            elif target.model_type == "image":
+                coro = image_worker(client, target.name, results, stop_event)
+            else:
+                coro = worker(
+                    client,
+                    target.name,
+                    results,
+                    stop_event,
+                    prompt_tokens=prompt_tokens,
+                    max_tokens=max_tokens,
+                    think=think,
+                )
+            tasks.append(asyncio.create_task(coro))
+
+    snapshots: list[dict] = []
+    poller = asyncio.create_task(poll_fleet_status(client, stop_event, snapshots))
+    start = time.monotonic()
+    while not stop_event.is_set():
+        elapsed = time.monotonic() - start
+        if elapsed >= duration:
+            break
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop_event.wait(), timeout=min(2.0, duration - elapsed))
+        if on_tick:
+            on_tick(time.monotonic() - start)
+    stop_event.set()
+
+    # Drain in-flight requests, then stop whatever is still waiting.
+    _, pending = await asyncio.wait(tasks, timeout=30)
+    for t in pending:
+        t.cancel()
+    poller.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await poller
+    return snapshots, time.monotonic() - start
 
 
 async def poll_fleet_status(
@@ -607,8 +730,13 @@ def build_report(
     targets: list[ModelTarget],
     nodes_info: list[NodeInfo],
     fleet_snapshots: list[dict],
+    run: dict | None = None,
 ) -> dict:
-    """Build report data dict. Returns data for storage."""
+    """Build report data dict. Returns data for storage.
+
+    ``run`` (workload, mode, ...) is stored inside ``fleet_snapshot``, the one
+    free-form column a saved run keeps.
+    """
     success = [r for r in results if r.success]
     failed = [r for r in results if not r.success]
 
@@ -636,11 +764,15 @@ def build_report(
             )
             # Determine model type from results
             m_type = mr[0].model_type if mr else "llm"
+            node_counts: dict[str, int] = {}
+            for r in mr:
+                node_counts[r.node_id] = node_counts.get(r.node_id, 0) + 1
             per_model.append(
                 {
                     "model": model,
                     "model_type": m_type,
                     "requests": len(mr),
+                    "nodes": node_counts,  # where the router placed it
                     "tok_s": round(m_tok_s, 1),
                     "avg_latency_ms": round(m_lat, 1),
                     "avg_ttft_ms": round(m_ttft, 1),
@@ -720,6 +852,8 @@ def build_report(
             for t in targets
         ],
     }
+    if run:
+        fleet_snapshot["run"] = run
 
     return {
         "run_id": f"bench-{int(time.time())}",
@@ -727,6 +861,8 @@ def build_report(
         "duration_s": round(duration, 1),
         "total_requests": len(success),
         "total_failures": len(failed),
+        # Failures that were answers from another model than the one asked for.
+        "served_model_mismatches": sum(1 for r in failed if r.served_model),
         "total_prompt_tokens": total_prompt,
         "total_completion_tokens": total_completion,
         "requests_per_sec": round(req_s, 2),

@@ -27,19 +27,14 @@ Usage:
 import argparse
 import asyncio
 import sys
-import time
 
 import httpx
 
 from fleet_manager.server.benchmark_engine import (
     build_report,
     discover_fleet,
-    embed_worker,
-    is_embed_model,
-    percentile,
-    poll_fleet_status,
+    run_load,
     warmup,
-    worker,
 )
 
 
@@ -88,8 +83,14 @@ def print_report(report, targets, nodes_info):
     total_tok = report["total_prompt_tokens"] + report["total_completion_tokens"]
     print(
         f"  Tokens:         {total_tok:,} "
-        f"({report['total_prompt_tokens']:,} prompt + {report['total_completion_tokens']:,} completion)"
+        f"({report['total_prompt_tokens']:,} prompt"
+        f" + {report['total_completion_tokens']:,} completion)"
     )
+    if report.get("served_model_mismatches"):
+        print(
+            f"  Mismatches:     {report['served_model_mismatches']} answered by another model"
+            " (counted as failures)"
+        )
     if report["total_requests"]:
         print(
             f"  Throughput:     {report['requests_per_sec']:.2f} req/s"
@@ -156,29 +157,23 @@ async def run_benchmark(
     no_save: bool = False,
     prompt_tokens: int | None = None,
     max_tokens: int | None = None,
+    think: bool | None = None,
 ):
     async with httpx.AsyncClient(base_url=url) as client:
         # Discover fleet
         print(f"\nDiscovering fleet at {url}...")
         try:
-            targets, nodes_info = await discover_fleet(client)
+            targets, nodes_info = await discover_fleet(client, include_on_disk=model_filter or ())
         except httpx.HTTPError as e:
             print(f"Error: Could not connect to fleet at {url}: {e}", file=sys.stderr)
             sys.exit(1)
 
-        if not targets:
-            print("Error: No loaded models found on any online node.", file=sys.stderr)
-            sys.exit(1)
-
-        # Filter models if specified
         if model_filter:
             targets = [t for t in targets if t.name in model_filter]
-            if not targets:
-                print(
-                    f"Error: None of the specified models are loaded: {model_filter}",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
+        if not targets:
+            wanted = f": {model_filter}" if model_filter else ""
+            print(f"Error: none of the models are loaded or on disk{wanted}", file=sys.stderr)
+            sys.exit(1)
 
         # Override concurrency if specified
         if concurrency_override:
@@ -187,7 +182,7 @@ async def run_benchmark(
 
         # Print discovery
         total_conc = sum(t.concurrency for t in targets)
-        print(f"Found {len(nodes_info)} nodes, {len(targets)} loaded models\n")
+        print(f"Found {len(nodes_info)} nodes, {len(targets)} models\n")
         for ni in nodes_info:
             print(
                 f"  {ni.node_id}: {ni.cores} cores, "
@@ -198,19 +193,15 @@ async def run_benchmark(
         print()
         for t in targets:
             print(
-                f"  {t.name} ({t.size_gb:.0f} GB)"
+                f"  {t.name} ({t.size_gb:.0f} GB, {t.model_type})"
                 f" \u2014 {t.concurrency} workers"
                 f" \u2014 {', '.join(t.nodes)}"
             )
         print(f"\n  Total workers: {total_conc} across {len(targets)} models\n")
 
-        # Warmup
+        # Warmup: every node that has each model, directly
         if not skip_warmup:
-            targets = await warmup(
-                client,
-                targets,
-                log_fn=lambda msg: print(f"  {msg}"),
-            )
+            targets = await warmup(targets, nodes_info, log_fn=lambda msg: print(f"  {msg}"))
             if not targets:
                 print("\n  ERROR: All models failed warmup. Nothing to benchmark.")
                 sys.exit(1)
@@ -219,82 +210,48 @@ async def run_benchmark(
 
         print(f"Starting {duration:.0f}s benchmark with {total_conc} concurrent workers...\n")
 
-        # Run benchmark
-        results = []
-        fleet_snapshots = []
-        stop_event = asyncio.Event()
+        results: list = []
 
-        # Create worker tasks
-        tasks = []
-        # Embedding models get embedding requests: a chat request to one fails.
-        for target in targets:
-            for _ in range(target.concurrency):
-                if is_embed_model(target.name):
-                    coro = embed_worker(client, target.name, results, stop_event)
-                else:
-                    coro = worker(
-                        client,
-                        target.name,
-                        results,
-                        stop_event,
-                        prompt_tokens=prompt_tokens,
-                        max_tokens=max_tokens,
-                    )
-                tasks.append(asyncio.create_task(coro))
+        def progress(elapsed: float) -> None:
+            ok = sum(1 for r in results if r.success)
+            fail = len(results) - ok
+            tok = sum(r.completion_tokens for r in results if r.success)
+            tok_s = tok / elapsed if elapsed > 0 else 0
+            print(
+                f"\r  [{elapsed:5.1f}s / {duration:.0f}s]  {ok} ok, {fail} err"
+                f"  | {tok_s:,.0f} tok/s  ({max(0, duration - elapsed):.0f}s left)     ",
+                end="",
+                flush=True,
+            )
 
-        # Fleet status poller
-        poller_task = asyncio.create_task(poll_fleet_status(client, stop_event, fleet_snapshots))
+        fleet_snapshots, elapsed = await run_load(
+            client,
+            targets,
+            duration,
+            asyncio.Event(),
+            results,
+            prompt_tokens=prompt_tokens,
+            max_tokens=max_tokens,
+            think=think,
+            on_tick=progress,
+        )
+        print("\r  Done.                                                                         ")
 
-        # Progress ticker
-        start_time = time.monotonic()
-
-        async def progress():
-            while not stop_event.is_set():
-                elapsed = time.monotonic() - start_time
-                ok = sum(1 for r in results if r.success)
-                fail = sum(1 for r in results if not r.success)
-                tok = sum(r.completion_tokens for r in results if r.success)
-                tok_s = tok / elapsed if elapsed > 0 else 0
-                remaining = max(0, duration - elapsed)
-                print(
-                    f"\r  [{elapsed:5.1f}s / {duration:.0f}s]"
-                    f"  {ok} ok, {fail} err"
-                    f"  | {tok_s:,.0f} tok/s"
-                    f"  ({remaining:.0f}s left)     ",
-                    end="",
-                    flush=True,
-                )
-                await asyncio.sleep(2)
-
-        progress_task = asyncio.create_task(progress())
-
-        # Wait for duration
-        await asyncio.sleep(duration)
-        stop_event.set()
-
-        # Wait for in-flight to finish
-        print(f"\r  Stopping... waiting for in-flight requests.                                  ")
-        done, pending = await asyncio.wait(tasks, timeout=30)
-        for t in pending:
-            t.cancel()
-
-        progress_task.cancel()
-        poller_task.cancel()
-        try:
-            await progress_task
-        except asyncio.CancelledError:
-            pass
-        try:
-            await poller_task
-        except asyncio.CancelledError:
-            pass
-
-        # Build and print report
-        actual_duration = time.monotonic() - start_time
-        report_duration = min(actual_duration, duration * 2)
-        report = build_report(results, report_duration, targets, nodes_info, fleet_snapshots)
         # Saved with the run, so a result always says what load produced it.
-        report["workload"] = {"prompt_tokens": prompt_tokens, "max_tokens": max_tokens}
+        report = build_report(
+            results,
+            min(elapsed, duration * 2),
+            targets,
+            nodes_info,
+            fleet_snapshots,
+            run={
+                "workload": {
+                    "prompt_tokens": prompt_tokens,
+                    "max_tokens": max_tokens,
+                    "think": think,
+                }
+            },
+        )
         print_report(report, targets, nodes_info)
 
         # Save results to the router
@@ -374,6 +331,12 @@ Examples:
         help="Cap each reply at this many tokens (Ollama num_predict; default: no cap). "
         "Real replies average ~200",
     )
+    parser.add_argument(
+        "--no-think",
+        action="store_true",
+        help='Send "think": false, so a thinking model answers without reasoning and the '
+        "router does not raise --max-tokens to its thinking minimum (1,024)",
+    )
     args = parser.parse_args()
 
     asyncio.run(
@@ -386,6 +349,7 @@ Examples:
             args.no_save,
             prompt_tokens=args.prompt_tokens,
             max_tokens=args.max_tokens,
+            think=False if args.no_think else None,
         )
     )
 
