@@ -207,7 +207,9 @@ def _heartbeat_lan_ip() -> str:
 
     The heartbeat runs every few seconds, so ``get_local_ip()``'s own warning
     repeated for as long as the network was down: 274 identical lines in 9 h
-    on 2026-11-20, from Wi-Fi dropping for ~100 s every ~42 min.  Now the
+    on 2026-11-20, during a ~6 h internet outage in which the probe failed
+    for ~3 min every ~45 min (the LAN route dropping while macOS retried the
+    connection; the rest of the time it still had one).  Now the
     first failed probe warns (with its cause), the rest are silent, and the
     address coming back is logged at INFO, the same shape as the router's
     mDNS ``watch_address``.
