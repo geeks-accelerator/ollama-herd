@@ -46,8 +46,13 @@ def _node(node_id, loaded=()):
     )
 
 
-def _score(node_id, model):
-    return SimpleNamespace(node_id=node_id, queue_key=f"{node_id}:{model}", score=1.0)
+def _score(node_id, model, eviction=0.0):
+    return SimpleNamespace(
+        node_id=node_id,
+        queue_key=f"{node_id}:{model}",
+        score=1.0,
+        scores_breakdown={"eviction": eviction},
+    )
 
 
 def _rebalancer(*, queue_info, scores, nodes, settings=None, depths=None):
@@ -81,6 +86,18 @@ class TestPreWarmDecision:
         await asyncio.sleep(0.05)      # the warm runs as a logged task
         proxy.pre_warm.assert_awaited_once()
         assert proxy.pre_warm.await_args.args[0] == "b", "must warm the runner-up"
+
+    async def test_never_evicts_to_pre_warm(self):
+        """A speculative load must not push out a resident model (2026-11-20:
+        qwen3.5:9b and qwen3-coder:30b were warmed over each other in turn)."""
+        r, _qm, proxy = _rebalancer(
+            queue_info=_qinfo("a:m", "m", "a", pending=5),
+            scores=[_score("a", "m"), _score("b", "m", eviction=-40.0)],
+            nodes={"a": _node("a", ["m"]), "b": _node("b", ["busy"])},
+        )
+        await r._check_pre_warm()
+        await asyncio.sleep(0.05)
+        proxy.pre_warm.assert_not_awaited()
 
     async def test_below_the_threshold_nothing_happens(self):
         r, _qm, proxy = _rebalancer(

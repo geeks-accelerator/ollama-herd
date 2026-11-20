@@ -47,6 +47,13 @@ class Rebalancer:
                 continue
 
             runner_up = results[1]
+            # A pre-warm is a speculative load: never let one evict a resident
+            # model.  It did, back and forth, in the 2026-11-20 fleet benchmark:
+            # warming qwen3.5:9b on a node serving qwen3-coder:30b, then the
+            # coder back again, each a 15 s cold load for the next request.
+            # Request routing weighs that eviction; pre-warm just declines it.
+            if runner_up.scores_breakdown.get("eviction", 0) < 0:
+                continue
             lock_key = f"{runner_up.node_id}:{model}"
             if lock_key in self._pre_warm_locks:
                 continue
