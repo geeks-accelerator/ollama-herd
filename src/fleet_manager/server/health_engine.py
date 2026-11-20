@@ -201,6 +201,12 @@ class HealthEngine:
         # Trace-based checks (async, queries SQLite)
         if trace_store:
             recommendations.extend(await self._check_embed_error_rate(trace_store))
+            recommendations.extend(
+                self._check_parallelism_unknown(
+                    await trace_store.get_queue_wait_stats(lookback_s=self.RECENT_WINDOW_S),
+                    nodes,
+                )
+            )
             decode_stats = await trace_store.get_decode_latency_stats(recent_s=self.RECENT_WINDOW_S)
             recommendations.extend(self._check_decode_degraded(decode_stats))
             cold_loads = await trace_store.get_cold_loads_24h()
@@ -2535,6 +2541,56 @@ class HealthEngine:
                         "cached_model_count": cached_count,
                         "backend_available": False,
                     },
+                )
+            )
+        return recs
+
+    # Requests that waited a second or more in herd's queue before this check
+    # says anything; a handful in the recent window is a pattern, not noise.
+    _PARALLELISM_WAITED_MIN = 5
+
+    def _check_parallelism_unknown(self, queue_waits: dict, nodes) -> list[Recommendation]:
+        """Requests keep waiting in herd's queue on a node whose parallelism is unknown.
+
+        herd sends a node at most as many requests at once as its Ollama decodes
+        (``decode_parallelism_for``).  When the node reports no
+        ``OLLAMA_NUM_PARALLEL`` (no runner visible, nothing configured where herd
+        looks) herd assumes Ollama's default of 1.  That is right for an
+        unconfigured Ollama and wrong for one configured somewhere herd-node
+        cannot see, which serialised a 4-slot node in the 2026-11-20 fleet
+        benchmark.  Either way, queueing on that node says raising it may help.
+        """
+        recs: list[Recommendation] = []
+        for node in nodes:
+            if node.status.value != "online" or not node.ollama:
+                continue
+            if node.ollama.num_parallel > 0:
+                continue  # herd knows the real value
+            waits = queue_waits.get(node.node_id) or {}
+            waited = waits.get("waited", 0)
+            if waited < self._PARALLELISM_WAITED_MIN:
+                continue
+            recs.append(
+                Recommendation(
+                    check_id="parallelism_unknown",
+                    severity=Severity.INFO,
+                    title=f"Requests are queueing on {node.node_id}, one at a time",
+                    description=(
+                        f"{waited} of {waits.get('requests', 0)} recent requests on "
+                        f"{node.node_id} waited a second or more in herd's queue. herd "
+                        "sends this node one request at a time because it reports no "
+                        "OLLAMA_NUM_PARALLEL, so herd assumes Ollama's default of 1. "
+                        "If Ollama here is set to more, herd cannot see where."
+                    ),
+                    fix=(
+                        "Raise Ollama's parallelism if the machine has memory for it: "
+                        + set_ollama_env_howto("OLLAMA_NUM_PARALLEL", 4)
+                        + ". herd-node reads it from those places once a model is "
+                        "loaded. In a container herd-node sees neither, so also pass "
+                        "`-e OLLAMA_NUM_PARALLEL=<same value>` to the herd-node container."
+                    ),
+                    node_id=node.node_id,
+                    data={"waited": waited, "requests": waits.get("requests", 0)},
                 )
             )
         return recs

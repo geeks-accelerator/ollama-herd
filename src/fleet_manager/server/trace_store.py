@@ -765,6 +765,26 @@ class TraceStore:
             failed += row[2]
         return {"total": total, "failed": failed, "by_model": by_model}
 
+    async def get_queue_wait_stats(self, lookback_s: int = 1800, waited_ms: float = 1000.0) -> dict:
+        """Per node: completed requests and how many waited ``waited_ms`` or
+        more in herd's queue (``timings.queue_ms``), in the window."""
+        if not self._read_db:
+            return {}
+        cursor = await self._read_db.execute(
+            """
+            SELECT node_id, COUNT(*),
+                   SUM(CASE WHEN json_extract(timings, '$.queue_ms') >= ? THEN 1 ELSE 0 END)
+            FROM request_traces
+            WHERE timestamp >= ? AND status = 'completed' AND timings IS NOT NULL
+            GROUP BY node_id
+            """,
+            (waited_ms, time.time() - lookback_s),
+        )
+        return {
+            row[0]: {"requests": int(row[1]), "waited": int(row[2] or 0)}
+            for row in await cursor.fetchall()
+        }
+
     async def get_decode_latency_stats(
         self, recent_s: int = 1800, baseline_s: int = 86400
     ) -> list[dict]:

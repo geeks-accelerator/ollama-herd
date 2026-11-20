@@ -118,3 +118,58 @@ async def test_timings_round_trip_through_the_trace_store(tmp_path):
     [trace] = await store.get_trace_by_request_id("r1")
     assert trace["timings"] == timings
     await store.close()
+
+
+class TestParallelismUnknownCheck:
+    """Requests queueing on a node that reports no OLLAMA_NUM_PARALLEL."""
+
+    def _node(self, num_parallel: int):
+        from tests.conftest import make_node
+
+        node = make_node(node_id="n1")
+        node.ollama.num_parallel = num_parallel
+        return node
+
+    def test_fires_when_requests_wait_and_parallelism_is_unknown(self):
+        from fleet_manager.server.health_engine import HealthEngine
+
+        recs = HealthEngine()._check_parallelism_unknown(
+            {"n1": {"requests": 40, "waited": 12}}, [self._node(0)]
+        )
+        assert [r.check_id for r in recs] == ["parallelism_unknown"]
+        assert "systemctl edit ollama" in recs[0].fix
+
+    def test_quiet_when_herd_knows_the_value(self):
+        from fleet_manager.server.health_engine import HealthEngine
+
+        recs = HealthEngine()._check_parallelism_unknown(
+            {"n1": {"requests": 40, "waited": 12}}, [self._node(4)]
+        )
+        assert recs == []
+
+    def test_quiet_without_queueing(self):
+        from fleet_manager.server.health_engine import HealthEngine
+
+        recs = HealthEngine()._check_parallelism_unknown(
+            {"n1": {"requests": 40, "waited": 1}}, [self._node(0)]
+        )
+        assert recs == []
+
+
+@pytest.mark.asyncio
+async def test_queue_wait_stats_read_the_timings(tmp_path):
+    from fleet_manager.server.trace_store import TraceStore
+
+    store = TraceStore(data_dir=str(tmp_path))
+    await store.initialize()
+    for i, queue_ms in enumerate([0.5, 2500.0, 1200.0]):
+        await store.record_trace(
+            request_id=f"r{i}",
+            model=MODEL,
+            original_model=MODEL,
+            node_id="n1",
+            latency_ms=10.0,
+            timings={"queue_ms": queue_ms},
+        )
+    assert await store.get_queue_wait_stats() == {"n1": {"requests": 3, "waited": 2}}
+    await store.close()
