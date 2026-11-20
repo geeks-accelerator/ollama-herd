@@ -7,7 +7,9 @@ fails here rather than in a misleading measurement.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 
 import httpx
 import pytest
@@ -139,6 +141,57 @@ class TestLoadedModels:
         c.post("/api/generate", json={"model": "llava:7b", "keep_alive": 0})
         assert c.get("/api/ps").json()["models"] == []
 
+    def test_requests_release_the_model_when_they_end(self):
+        c = client(max_loaded=1, chunks=3)
+        backend = c.app.state.backend
+        lines(c.post("/api/chat", json=CHAT))
+        c.post("/api/chat", json={**CHAT, "stream": False})
+        c.post("/api/embed", json={"model": "nomic-embed-text", "input": "x"})
+        c.post("/_mock/fault", json={"die_after_chunks": 1})
+        c.post("/api/chat", json=CHAT)  # the stream that dies
+        c.post("/api/chat", json={**CHAT, "stream": False})
+        assert not any(backend.busy.values())
+
+
+class TestBusyModels:
+    """Ollama waits for a runner's requests before unloading it; so must the mock."""
+
+    def backend(self, max_loaded=1):
+        models = [mock.MockModel("a:latest", 1.0), mock.MockModel("b:latest", 1.0)]
+        return mock.Backend(models, max_loaded=max_loaded, load_ms=0.0)
+
+    @pytest.mark.asyncio
+    async def test_a_load_waits_for_the_busy_model_to_go_idle(self):
+        backend = self.backend()
+        await backend.acquire("a:latest")
+        loading = asyncio.create_task(backend.acquire("b:latest"))
+        await asyncio.sleep(0.05)
+        assert not loading.done()
+        assert list(backend.loaded) == ["a:latest"]  # still listed by /api/ps
+        backend.release("a:latest")
+        await asyncio.wait_for(loading, 1)
+        assert list(backend.loaded) == ["b:latest"]
+        assert backend.busy["b:latest"] == 1
+
+    @pytest.mark.asyncio
+    async def test_an_idle_model_is_evicted_at_once(self):
+        backend = self.backend()
+        await backend.acquire("a:latest")
+        backend.release("a:latest")
+        await asyncio.wait_for(backend.acquire("b:latest"), 1)
+        assert list(backend.loaded) == ["b:latest"]
+
+    @pytest.mark.asyncio
+    async def test_keep_alive_zero_on_a_busy_model_unloads_it_when_idle(self):
+        backend = self.backend(max_loaded=0)
+        await backend.acquire("a:latest")
+        await backend.acquire("a:latest")
+        backend.unload("a:latest")
+        backend.release("a:latest")
+        assert "a:latest" in backend.loaded
+        backend.release("a:latest")
+        assert "a:latest" not in backend.loaded
+
 
 class TestEmbed:
     def test_fixed_dimension_deterministic_vectors(self):
@@ -261,6 +314,17 @@ class TestFaults:
         self.set_fault(one, error_rate=1.0, status=503)
         assert two.post("/api/chat", json=CHAT).status_code == 503
         assert two.get("/_mock/fault").json()["status"] == 503
+
+    def test_a_fault_rewritten_within_one_mtime_tick_is_seen(self, tmp_path):
+        """Two writes in one filesystem timestamp tick (coarse on some filesystems)."""
+        path = tmp_path / "fault.json"
+        mock.write_fault_file(str(path), mock.Fault())
+        store = mock.FaultStore(mock.Fault(), str(path))
+        assert store.get().status == 500
+        before = os.stat(path).st_mtime_ns
+        mock.write_fault_file(str(path), mock.Fault(status=503))
+        os.utime(path, ns=(before, before))
+        assert store.get().status == 503
 
     def test_metadata_endpoints_ignore_faults(self):
         """A faulty backend still answers the node's polls, so it stays registered."""

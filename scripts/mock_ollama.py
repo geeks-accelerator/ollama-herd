@@ -13,7 +13,8 @@ way Ollama fails:
   ``eval_count`` is the number of chunks
 * ``/api/embed``, ``--embed-dim`` vectors (deterministic per input)
 * several models (``--model name:size_gb``, repeatable), with an optional
-  hot-model cap: ``--max-loaded N`` evicts the least recently used model, and
+  hot-model cap: ``--max-loaded N`` evicts the least recently used idle model
+  (a load waits while every resident model is serving, as Ollama does), and
   a cold model takes ``--load-ms`` to load (reported as ``load_duration``)
 * faults, at startup by flag or at runtime with ``POST /_mock/fault`` (a JSON
   object that *replaces* the current fault; ``{}`` clears it) and read back
@@ -54,8 +55,8 @@ import random
 import re
 import tempfile
 import time
-from collections import OrderedDict
-from collections.abc import AsyncIterator
+from collections import Counter, OrderedDict
+from collections.abc import AsyncIterator, Callable
 from dataclasses import asdict, dataclass, field, fields
 
 import uvicorn
@@ -194,16 +195,20 @@ class FaultStore:
     def __init__(self, fault: Fault, path: str | None = None):
         self._fault = fault
         self._path = path
-        self._mtime: int | None = None
+        self._version: tuple[int, int, int] | None = None
 
     def get(self) -> Fault:
         if self._path:
             try:
-                mtime = os.stat(self._path).st_mtime_ns
-                if mtime != self._mtime:
+                # Inode too, not only the mtime: two writes inside one timestamp
+                # tick share an mtime, but ``write_fault_file`` replaces the file,
+                # so each write is a new inode.
+                st = os.stat(self._path)
+                version = (st.st_ino, st.st_mtime_ns, st.st_size)
+                if version != self._version:
                     with open(self._path) as f:
                         self._fault = Fault.from_dict(json.load(f))
-                    self._mtime = mtime
+                    self._version = version
             except (OSError, ValueError):
                 pass  # keep the last fault that parsed
         return self._fault
@@ -237,7 +242,13 @@ class MockConfig:
 
 
 class Backend:
-    """Which models are resident, in least-recently-used order."""
+    """Which models are resident, in least-recently-used order, and which are busy.
+
+    Like Ollama, a model is unloaded only once its in-flight requests are done:
+    a load that needs a slot evicts the least recently used *idle* model, and
+    waits while every resident model is serving.  ``/api/ps`` lists a model
+    until it is really gone.
+    """
 
     def __init__(self, models: list[MockModel], max_loaded: int, load_ms: float):
         self.models = {m.name: m for m in models}
@@ -245,27 +256,68 @@ class Backend:
         self.load_ms = load_ms
         first = list(self.models)[: max_loaded or None]
         self.loaded: OrderedDict[str, None] = OrderedDict((name, None) for name in first)
+        self.busy: Counter[str] = Counter()
+        self._loading: set[str] = set()  # holds a slot while it loads
+        self._unload_when_idle: set[str] = set()
         self._locks: dict[str, asyncio.Lock] = {}
+        self._waiters: list[asyncio.Future] = []
 
-    async def ensure_loaded(self, name: str) -> float:
-        """Make ``name`` resident; returns the seconds spent loading it."""
-        if name in self.loaded:
-            self.loaded.move_to_end(name)
-            return 0.0
-        lock = self._locks.setdefault(name, asyncio.Lock())
-        async with lock:
-            if name in self.loaded:
-                self.loaded.move_to_end(name)
-                return 0.0
-            start = time.perf_counter()
+    async def acquire(self, name: str) -> float:
+        """Make ``name`` resident and count one request on it; returns the
+        seconds spent loading.  Every ``acquire`` needs a ``release``."""
+        if name not in self.loaded:
+            async with self._locks.setdefault(name, asyncio.Lock()):
+                if name not in self.loaded:
+                    return await self._load(name)
+        self.loaded.move_to_end(name)
+        self.busy[name] += 1
+        return 0.0
+
+    async def _load(self, name: str) -> float:
+        start = time.perf_counter()
+        while not self._make_room():
+            waiter = asyncio.get_running_loop().create_future()
+            self._waiters.append(waiter)
+            await waiter
+        self._loading.add(name)
+        try:
             await asyncio.sleep(self.load_ms / 1000)
-            while self.max_loaded and len(self.loaded) >= self.max_loaded:
-                self.loaded.popitem(last=False)
-            self.loaded[name] = None
-            return time.perf_counter() - start
+        finally:
+            self._loading.discard(name)
+        self.loaded[name] = None
+        self.busy[name] += 1
+        return time.perf_counter() - start
+
+    def _make_room(self) -> bool:
+        """Evict idle models, oldest first, until a slot is free; False while
+        every resident model is serving."""
+        while self.max_loaded and len(self.loaded) + len(self._loading) >= self.max_loaded:
+            idle = next((n for n in self.loaded if not self.busy[n]), None)
+            if idle is None:
+                return False
+            del self.loaded[idle]
+        return True
+
+    def release(self, name: str) -> None:
+        self.busy[name] -= 1
+        if not self.busy[name] and name in self._unload_when_idle:
+            self._unload_when_idle.discard(name)
+            self.loaded.pop(name, None)
+        self._wake()
 
     def unload(self, name: str) -> None:
+        """``keep_alive: 0``: unload now, or when its last request ends."""
+        if self.busy[name]:
+            self._unload_when_idle.add(name)
+            return
         self.loaded.pop(name, None)
+        self._wake()
+
+    def _wake(self) -> None:
+        waiters, self._waiters = self._waiters, []
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
 
 
 class _NdjsonStream(StreamingResponse):
@@ -276,9 +328,21 @@ class _NdjsonStream(StreamingResponse):
     ``RemoteProtocolError`` a crashed Ollama produces.
     """
 
-    def __init__(self, parts: AsyncIterator[bytes], drop: bool):
+    def __init__(
+        self, parts: AsyncIterator[bytes], drop: bool, on_close: Callable[[], None] | None = None
+    ):
         super().__init__(parts, media_type="application/x-ndjson")
         self.drop = drop
+        self.on_close = on_close
+
+    async def __call__(self, scope, receive, send) -> None:
+        # Here, not in the body iterator: a client gone before the first chunk
+        # never starts the iterator, and its finally would never run.
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            if self.on_close:
+                self.on_close()
 
     async def stream_response(self, send) -> None:
         await send(
@@ -424,8 +488,11 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
         tokens = [max(1, len(str(text)) // 4) for text in inputs]
         if fault and fault.context_limit and max(tokens, default=0) > fault.context_limit:
             return _error(400, context_too_long(max(tokens), fault.context_limit))
-        load_s = await backend.ensure_loaded(name)
-        await asyncio.sleep(config.delay_ms / 1000)
+        load_s = await backend.acquire(name)
+        try:
+            await asyncio.sleep(config.delay_ms / 1000)
+        finally:
+            backend.release(name)
         return {
             "model": name,
             "embeddings": [_embedding(str(text), config.embed_dim) for text in inputs],
@@ -449,7 +516,8 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
             if unload_after:
                 backend.unload(name)
             else:
-                await backend.ensure_loaded(name)
+                await backend.acquire(name)
+                backend.release(name)
             return {
                 "model": name,
                 "created_at": _now(),
@@ -473,7 +541,7 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
             # Mid-request failures arrive on a 200 stream as an error line.
             return _NdjsonStream(error_line(), drop=False)
 
-        load_s = await backend.ensure_loaded(name)
+        load_s = await backend.acquire(name)
         die_after = fault.die_after_chunks if fault else -1
         chunks = max(1, config.chunks)
         texts = ["ok" if i == 0 else " ok" for i in range(chunks)]
@@ -503,11 +571,22 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
             if unload_after:
                 backend.unload(name)
 
+        released = False
+
+        def release() -> None:
+            nonlocal released
+            if not released:
+                released = True
+                backend.release(name)
+
         if not stream:
             if die_after >= 0:
-                return _NdjsonStream(_no_parts(), drop=True)
-            await asyncio.sleep((config.delay_ms + chunks * config.chunk_delay_ms) / 1000)
-            finish()
+                return _NdjsonStream(_no_parts(), drop=True, on_close=release)
+            try:
+                await asyncio.sleep((config.delay_ms + chunks * config.chunk_delay_ms) / 1000)
+                finish()
+            finally:
+                release()
             return {**done_line(), **piece("".join(texts))}
 
         async def lines():
@@ -524,7 +603,7 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
             finish()
             yield (json.dumps(done_line()) + "\n").encode()
 
-        return _NdjsonStream(lines(), drop=die_after >= 0)
+        return _NdjsonStream(lines(), drop=die_after >= 0, on_close=release)
 
     @app.post("/api/chat")
     async def chat(request: Request):
