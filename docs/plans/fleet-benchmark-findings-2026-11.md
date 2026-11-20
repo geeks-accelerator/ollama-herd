@@ -1,277 +1,404 @@
 # Fixes from the first fleet benchmark (2026-11-20)
 
-**Created:** 2026-11-20 · **Status:** 📋 planned, nothing built; decisions 1-2 made 2026-11-20 (end). Release A (items 1, 2,
-5, 6 and the small half of 10) is small and independent; release B (items 3, 4) changes routing
-behaviour as decided.
+**Created:** 2026-11-20 · **Revised:** 2026-11-20, after a code audit of `main` (file:line below are
+`main` at `b156472`) · **Status:** 📋 planned, nothing built. Decisions made (end). Release A
+(items 1, 2, 5, 6, 10 and the debt list) is local; release B (items 3, 4, 9) changes routing.
 **Source:** a benchmark of herd 0.12.9 with Ollama 0.40.16 on rented NVIDIA machines (four Quadro
 RTX 6000 24 GB and one RTX A6000 48 GB, Ubuntu 22.04, Ollama as a systemd service, one private
 network), using `scripts/benchmark.py` at `56993ff` with `--prompt-tokens 1250 --max-tokens 200`
-and `docs/experiments/model-alternation-benchmark.py`. Code references are to the `v0.12.9` tag.
+and `docs/experiments/model-alternation-benchmark.py`.
+
+## Rules for this work
+
+herd is greenfield, so:
+- **No feature gating.** New behaviour replaces old; no setting to turn a fix on or off, and no
+  setting kept alive for behaviour that is gone. Where a fix makes a setting pointless, the setting
+  is deleted (item 4 deletes `vram_fallback`).
+- **Extend, don't add.** Every change below names the existing function it extends. A second way to
+  do the same thing (a second cache, a second client pool, a second "available memory" formula) is
+  a bug in the plan.
+- **Remove what the fix makes dead,** in the same change: code, tests, health-check text, docs.
 
 ## What the run showed
 
 Scaling is real once the router is allowed to use each machine: `qwen3-coder:30b` went from
-111.7 tok/s on one machine to 220.6 on two and 434.9 on four, with 0 failures and the router adding
-24 ms per request. But getting there took a workaround, and three of the four tests hit a bug:
+111.7 tok/s on one machine to 220.6 on two and 434.9 on four, with 0 failures. But getting there took
+a workaround, three of the four tests hit a bug, and the router added 24 ms per request across the
+network:
 
-| # | Problem | Who it hits | Size | Release |
-|---|---|---|---|---|
-| 1 | Router serialises every node whose Ollama has `OLLAMA_NUM_PARALLEL` set in a systemd unit | Linux users who raised parallelism the documented way | S | A |
-| 2 | `/api/embed` (and `/v1/embeddings`, `/api/embeddings`) for `nomic-embed-text` 503s when no node has fastembed, even with the model loaded in Ollama | Every pip/Homebrew install without the `embedding` extra, and every container | S | A |
-| 3 | Placement ignores what a cold load evicts, and the warm bonus rewards the node that just evicted | Anyone with more models than one node holds | M | B |
-| 4 | `vram_fallback` (on by default) answers a request for a model that is not loaded with *any* loaded model, across categories, even when another node could load it into free memory | Every multi-model herd | M, behaviour change | B |
-| 5 | Benchmark harness: warms one node, requires models to be loaded, cannot demand the exact model | Our own measurements | S | A |
-| 6 | Docs say things the code does not do | Readers of the Docker and Linux guides | S | A |
+| # | Problem | Who it hits | Release |
+|---|---|---|---|
+| 1 | Router serialises every node whose Ollama has `OLLAMA_NUM_PARALLEL` set in a systemd unit | Linux users who raised parallelism the documented way | A |
+| 2 | `/api/embed`, `/v1/embeddings`, `/api/embeddings` for `nomic-embed-text` 503 when no node has fastembed, even with the model loaded in Ollama | Every install without the `embedding` extra, and every container | A |
+| 3 | Placement ignores what a cold load evicts, and the warm bonus rewards the node that just evicted | Anyone with more models than one node holds | B |
+| 4 | `vram_fallback` answers a request for a model that is not loaded with *any* loaded model, across categories, even when another node could load it into free memory | Every multi-model herd | B |
+| 5 | Benchmark harness: warms one node, needs models loaded, cannot demand the exact model | Our own measurements | A |
+| 6 | Docs say things the code does not do | Docker and Linux guide readers | A |
+| 9 | Cold-load cost uses one fleet-wide context size, though Ollama sizes context by each card's VRAM | Mixed-card herds | B |
+| 10 | 24.4 ms router overhead across a network (6.5 ms on loopback), cause unknown; native backends open a client per request | Everyone, mildly | A |
 
-Items 7-9 below are investigations, not fixes; 10-11 came from comparing run 1 with published
-gateway and scaling benchmarks.
+7 and 8 are investigations; 11 is run 2's method. "Debt found by the audit" lists bugs and
+duplication to fix alongside.
 
 ---
 
-## 1. `OLLAMA_NUM_PARALLEL` is invisible on Linux when Ollama is a systemd service
+## 1. `OLLAMA_NUM_PARALLEL` is invisible when Ollama is a systemd service
 
-**Seen:** one node, `OLLAMA_NUM_PARALLEL=4` in `/etc/systemd/system/ollama.service.d/override.conf`
-(the method Ollama's Linux docs give). Throughput was flat at 77 tok/s from 1 to 8 concurrent
-requests and time to first token grew by one whole request per step (18.6 s at 8). `/fleet/queue`
-showed the node's queue at `"concurrency": 1`, 7 pending, 1 in flight; Ollama's own slots were idle
-between requests. Passing `OLLAMA_NUM_PARALLEL=4` to `herd-node` as well fixed it: 96 → 112 tok/s
-at 2 → 4, time to first token 0.9 s at 2.
+**Seen:** `OLLAMA_NUM_PARALLEL=4` in `/etc/systemd/system/ollama.service.d/override.conf` (Ollama's
+documented Linux method). One node stayed flat at 77 tok/s from 1 to 8 concurrent requests, time to
+first token growing one request per step (18.6 s at 8); `/fleet/queue` showed `"concurrency": 1`.
+Passing the variable to `herd-node` too fixed it (96 → 112 tok/s at 2 → 4). Ollama's own default is
+1, so an unconfigured install is unaffected; only a raised value goes unseen.
 
-**Cause:** `node/collector.py` `_ollama_env()` reads the variable from herd-node's own environment,
-falling back to `launchctl getenv` on macOS only. A systemd service's environment is not inherited
-by anything else, so the node reports `num_parallel: 0`; `server/serializers.py`
-`decode_parallelism_for()` then uses `OLLAMA_DEFAULT_NUM_PARALLEL = 1` and
-`queue_manager._compute_queue_concurrency()` caps the node at 1. Ollama's default really is 1, so
-**an unconfigured install is unaffected**; only a raised value goes unseen.
+**Cause:** `node/collector.py:125-151` `_ollama_env()` reads herd-node's own environment, then
+`launchctl getenv` on macOS only (`:139` gates on `darwin`). It is the only place the node reads
+Ollama's configuration (callers `:667` `OLLAMA_MAX_LOADED_MODELS`, `:683` `OLLAMA_NUM_PARALLEL`).
+Downstream (`models/node.py:265`, `serializers.py:33,58-104`, `queue_manager.py:300`) needs no change.
 
-**Fix:**
-1. On Linux, when the variable is not in herd-node's environment, read the unit's:
-   `systemctl show ollama.service -p Environment --value` (works unprivileged; confirmed on Ubuntu
-   22.04 during the run) and parse `OLLAMA_NUM_PARALLEL` (and `OLLAMA_MAX_LOADED_MODELS`, which goes
-   through the same `_ollama_env`). Cache it like the launchctl path, with a timeout, failures read
-   as "unset". Only for the default unit name; a user with a renamed unit sets the variable on
-   herd-node, as today.
-2. Investigate a second, more direct source: the running runner's command line
-   (`/proc/<pid>/cmdline` is world-readable, unlike `environ`). If Ollama 0.40's llama.cpp runner
-   carries the slot count (`--parallel N` or equivalent), it is the value Ollama actually applied
-   per model, which also covers families Ollama forces to 1. Use it if present, systemd otherwise.
-   Check what the runner command line looks like before building on it.
-3. A health check in `health_engine.py`: a Linux node reporting 0
-   while a loaded model's queue has had pending requests for a sustained period says "herd assumes
-   Ollama serves one request at a time on <node>; if you raised OLLAMA_NUM_PARALLEL, set it for
-   herd-node too".
-4. Containers: a node in a container sees neither systemd nor host processes. Document that it must
-   be given `-e OLLAMA_NUM_PARALLEL=<same value>` (item 6).
+**Build on:** `_ollama_env` and its `_LAUNCHCTL_CACHE` (`collector.py:105-107`) with the
+subprocess/timeout pattern at `:143-149`.
 
-**Tests:** collector reads the value from a faked `systemctl show` output; env wins over systemd;
-`systemctl` missing, failing or timing out reads as unset; non-Linux never calls it. If item 2
-lands, a fake `/proc` tree with a runner command line.
+**Change:**
+1. Make `_ollama_env`'s fallback per platform: `launchctl getenv` on macOS, `systemctl show
+   ollama.service -p Environment --value` on Linux (unprivileged; worked on Ubuntu 22.04 in the run),
+   parsed for the one variable. One cache for both (rename `_LAUNCHCTL_CACHE`). Both callers get it.
+2. Rewrite the comments at `:660-665` and `:678-681`, which say the node shares Ollama's environment.
+3. **Runner command line, investigated first, then either built or dropped.** `health_engine.py`
+   (`:657-659`, `:1243-1246`, `:1418-1420`) already tells users to read `-np N` from `llama-server`'s
+   arguments, so the per-model slot count is there. If 0.40's runner shows it, read it in the
+   `num_parallel` block (`:678-688`) using the `psutil.process_iter(attrs=["pid","name","cmdline"])`
+   pattern from `node/mlx_supervisor.py:307-335` (and `backend_clients.py:128`, which already knows
+   `llama-server` is Ollama's). It beats systemd: it is what Ollama applied, per model.
+4. **Warning without new plumbing.** No health check sees queue saturation today
+   (`HealthEngine.analyze` has no queue access). Item 10 writes queue wait into the trace; the warning
+   is then a trace query ("requests waited in herd's queue while the node reported `num_parallel`
+   0"), shaped like `trace_store.get_embed_error_stats` (`:716`), checked in a `_check_*` method like
+   `_check_embed_error_rate` (`health_engine.py:2922`). Built after item 10.
+5. Containers see neither systemd nor host processes: document `-e OLLAMA_NUM_PARALLEL` (item 6).
 
-**Verify:** on a Linux VM (the Lima setup from the container plan), Ollama as a systemd service with
-`OLLAMA_NUM_PARALLEL=4`, herd-node started without it: `/fleet/status` shows `num_parallel: 4` and
-`/fleet/queue` shows concurrency 4.
+**Remove / fix alongside:** the macOS-only fix text for `NUM_PARALLEL` exists three times
+(`health_engine.py:664-670`, `:2974-2977`, `routes/dashboard.py:1079`): one platform-aware string.
+`routes/fleet.py:57` documents a `num_parallel` field `/fleet/limits` does not return.
 
-## 2. `nomic-embed-text` embeddings fail without fastembed, even when Ollama has the model
+**Tests:** none exist for `_ollama_env`. Add them through `collect_heartbeat`, as
+`tests/test_server/test_gpu_memory_override.py:136-146` does: faked `systemctl` output; env wins;
+`systemctl` missing / failing / timing out reads as unset; macOS path unchanged. Clear the renamed
+cache in `tests/conftest.py:93-120` `_clear_collector_ttl_caches`. If step 3 lands, fake processes as
+`tests/test_node/test_mlx_orphan_detection.py` does.
 
-**Seen:** 1,055 of 1,055 embedding requests returned 503 "No node is running the native text
-embedding server for 'nomic-embed-text:latest'. Install fastembed…", with `nomic-embed-text:latest`
-loaded in Ollama on one node. After `uv tool install 'ollama-herd[embedding]'` on the nodes, about
-17,000 embedding requests succeeded with 0 failures.
+**Verify:** Lima Ubuntu VM, Ollama under systemd with the variable in the unit only:
+`/fleet/status` `num_parallel: 4`, `/fleet/queue` concurrency 4.
 
-**Cause:** `routes/ollama_compat.py` `dispatch_embed()` sends any model for which
-`node/text_embedding_models.is_text_embedding_model()` is true to `embed_text()`, which only knows
-the native fastembed server. That list is exactly `nomic-embed-text` and `nomic-embed-text:latest`,
-the most-used embedding model. When no online node serves it natively there is no fallback.
-`/v1/embeddings` and `/api/embeddings` both go through `dispatch_embed`, so all three endpoints fail
-the same way. The published container image installs base dependencies only, so **every container
-herd** that uses `nomic-embed-text` gets 503s, while `docs/guides/docker.md` says "embedding models
-are served through Ollama".
+## 2. `nomic-embed-text` fails without fastembed, even when Ollama has it
 
-**Fix:** in `dispatch_embed`, take the native path only when at least one online node serves it
-natively; otherwise fall through to the existing Ollama embed path, which scores nodes that have the
-model like any other. Keep the native path's "restarting, retry in 10 s" answer for a node that
-serves natively and is briefly offline (the 2026-10-04 incident in `_no_native_server`); fall back
-to Ollama only when no node has ever served it natively *and* some node has it in Ollama. If neither
-serves it, keep the 503, but say both options ("`ollama pull nomic-embed-text` on a node, or install
-the `embedding` extra").
+**Seen:** 1,055 of 1,055 embed requests 503'd ("No node is running the native text embedding
+server…") with `nomic-embed-text:latest` loaded in Ollama. With the `embedding` extra installed,
+~17,000 succeeded.
 
-Check before building: the two backends' vectors differ (fastembed runs a quantised ONNX export of
-nomic v1.5; Ollama runs its GGUF). A herd that has both, with the native server going up and down,
-would mix vectors from two models in one index. Decided (see Decisions): Ollama only while no node
-has *ever* served it natively; after that, native only. The existing `X-Fleet-Backend` header lets a
-client tell which backend answered.
+**Cause:** `routes/ollama_compat.py:817-819` `dispatch_embed` sends any name in
+`TEXT_EMBEDDING_MODEL_NAMES` (`node/text_embedding_models.py:64`: exactly `nomic-embed-text` and
+`:latest`) to `embed_text`, which only knows the native server. `/v1/embeddings`
+(`openai_compat.py:826`) and `/api/embeddings` (`ollama_compat.py:750`) share it. The container
+image has no fastembed, and `docs/guides/docker.md` says embeddings go through Ollama.
 
-**Tests:** no native node and the model in Ollama → served by Ollama with `X-Fleet-Backend: ollama`;
-a native node online → native, as today; native node offline but known → the retryable 503, as
-today; in neither → 503 naming both fixes. The same three for `/v1/embeddings`.
+**Decided:** fall back to Ollama only while no node has *ever* served it natively, surviving a router
+restart, so one index never mixes the two backends' vectors.
 
-**Verify:** the container smoke test (`scripts/docker-smoke.sh`) gains an embed request for
-`nomic-embed-text` through the router.
+**Build on:**
+- **"Ever served natively" is already in the trace store; no new state.** Native embeds are traced
+  with `original_format="embed"` under the requested name (`text_embedding_compat.py:89-104`, via
+  `routing.direct_proxy_tracer` `:457`); Ollama embeds as `ollama`/`openai`
+  (`ollama_compat.py:884-894`). One query (completed, model in `TEXT_EMBEDDING_MODEL_NAMES`,
+  `original_format='embed'`), covered by `idx_traces_model_timestamp` (`trace_store.py:137`),
+  shaped like `get_recently_used_models` (`:997`), memoised in memory once true. The registry is
+  memory-only (`registry.py:26`), so SQLite is the only thing that survives a restart anyway.
+- **The Ollama path below the branch already works** (`ollama_compat.py:821-960`): the bare name is
+  normalised to `:latest` (`models/request.py:29,106-112`) and the response already sets
+  `backend="ollama"` (`:947-954`).
+
+**Change:** extend the branch at `ollama_compat.py:817-819`: native when an online node serves it
+(`EMBED.serves`, `text_embedding_compat.py:93`) or the trace store says one ever has; otherwise fall
+through. Keep `_no_native_server` (`:140-173`) as is for the native case, and reword its last message
+(`:168-172`) to name both fixes.
+
+**Remove / fix alongside:**
+- `health_engine.py:2583-2588` `_NATIVE_TEXT_EMBED_MODELS` duplicates `TEXT_EMBEDDING_MODEL_NAMES`:
+  import it.
+- Health text that is false today or after the fix: `:2537-2538` and `:2563-2565` ("will fall back
+  to Ollama"), `_check_text_embedding_ollama_bypass` (`:2591`), `_check_nomic_loaded_in_ollama`
+  (`:2661`, "never used").
+- `ollama_compat.py:849-850` checks the raw bare name against the fleet's list, so a bare-name miss
+  returns 404 instead of 503: use `inference_req.model`.
+
+**Tests:** the 503 cases in `tests/test_server/test_native_text_proxy.py` (`:119-162`; its fixture
+mocks `record_trace` at `:30`, so stub the new query there); the path cases in
+`test_embedding_shapes.py:81,97,137`; `test_text_embedding.py:184-201` (interception by name) gains
+"no native node ever → Ollama". `scripts/docker-smoke.sh` gets an embed block after the chat block
+(`:69-78`) asserting `x-fleet-backend: ollama`; `.github/workflows/image.yml:112` pulls
+`nomic-embed-text`.
 
 ## 3. Placement is blind to evictions, and the warm bonus feeds thrashing
 
-**Seen (model-alternation test):** two nodes, two 15.7 GB models that cannot share one 24 GB card,
-20 alternating requests with fallback off. The router sent all 20 to the same node, which swapped
-models on every request (7.6-8.0 s to the first token each time, 193 s in all), while the other
-node sat empty. In the mixed-workload test the router loaded `qwen3.5:9b` onto a node that was
-serving `qwen3-coder:30b`, evicting it, although another node had `qwen3.5:9b` loaded; coder
-throughput then fell to 48 tok/s.
+**Seen:** two nodes, two 15.7 GB models that cannot share one 24 GB card, 20 alternating requests,
+fallback off: all 20 went to one node, swapping every time (7.6-8.0 s TTFT), the other node empty.
+In the mixed test the router evicted a busy `qwen3-coder:30b` to load `qwen3.5:9b`, which another node
+had loaded.
 
-**Cause, from `server/scorer.py`:**
-- `_score_thermal()`: a model unloaded in the last 30 minutes scores **warm (+30)** on that node; a
-  model merely on disk scores **cold (+10)**. After the first swap, node 1 has the evicted model
-  "warm", so node 1 wins the next request for it, evicts the other model, which becomes "warm"
-  there in turn. The signal meant "page cache is hot" ends up meaning "this node just threw it out".
-- `_score_memory_fit()` and `_eliminate()` compare the model's cost with
-  `model_memory_available_gb()` = RAM available + free GPU memory. On a discrete-GPU node with
-  52 GB of free RAM, every model "fits" with a ratio above 2 on every node, so the signal cannot
-  tell an empty card from a full one. Ollama does not spill a model that would fit after an
-  eviction into RAM; it evicts (`sched.go`: "model predicted to exceed available memory,
-  evicting", logged during the run).
-- Nothing scores what a cold load would displace.
+**Cause:** `scorer.py:283-296` `_score_thermal` gives a model unloaded in the last 30 minutes
+**warm +30** (`:289-292`, from `node.model_unloaded_at`, set at `registry.py:71-75`) and an on-disk
+model **cold +10**, so the node that just evicted a model is favoured for it. `_score_memory_fit`
+(`:298-326`) measures against RAM + free GPU, so on discrete-GPU nodes every model fits everywhere.
+Ollama evicts rather than spill a model that would fit after an eviction (`sched.go`, logged in the
+run). Nothing scores what a load displaces.
 
-**Fix (design first, in this plan's follow-up):**
-1. **Eviction cost.** For a cold load on a node, estimate whether it fits in the memory Ollama
-   will actually use without evicting: free GPU memory on a node with a discrete GPU (from the
-   0.12.9 detection), available RAM on unified-memory nodes. If it does not fit, the load evicts
-   something: subtract a penalty that grows with the evicted models' recent traffic (the queue
-   manager already tracks per-node-model completions). An idle resident model costs little to
-   evict; a busy one costs a lot.
-2. **Warm only counts if it would still fit.** Keep the +30 for a recently unloaded model only when
-   loading it back would not evict; otherwise it is a cold load with an eviction, scored as such.
-3. **Prefer free memory for cold loads.** Among nodes that can cold-load, one with room scores above
-   one that must evict, by more than the warm-versus-cold gap.
-4. Add the eviction estimate to `scores_breakdown` in the trace, so a placement can be explained.
+**Build on:**
+- `NodeState.gpu_memory_free_gb()` (`models/node.py:548-559`): exactly the memory Ollama loads into
+  without evicting on a node with GPU memory; `memory.gpu_total_gb > 0` is the switch (0 on unified
+  memory, `node.py:71-76`). Not `GpuDevice.kind`, which "decides nothing" (`:53`).
+- `_model_fit_cost_gb` (`scorer.py:635-660`) for the cost; `LoadedModel.size_vram_gb`
+  (`node.py:130-133`) for what each eviction frees.
+- `serializers.hot_model_cap_for` (`:132`) and `distinct_resident_model_names` (`:257`): a load also
+  evicts when Ollama's model-count cap is full, even with memory free (the `free_slots` arithmetic at
+  `:186-193`).
+- **Traffic, no new tracking:** `queue_depths` already passed to `score_request` (busy now) and
+  `model_preloader.get_model_priority` / `_priority_cache` (`model_preloader.py:89,291`; recent
+  traffic from `trace_store.py:1058`), already read synchronously at `routing.py:570-572`. Not
+  `QueueManager.completed_count` (cumulative, unreachable from the scorer) and not
+  `LoadedModel.requests_active` (never filled per model, `ollama_client.py:49-62`).
+- `RoutingResult.scores_breakdown` (`models/request.py:146`) is already stored in the trace
+  (`trace_store.py:324`): a new key reaches traces and logs without plumbing.
 
-**Tests:** the alternation case as a scorer test (two nodes, one with model A resident and B
-recently unloaded, one empty; a request for B goes to the empty node); a busy resident model is not
-evicted when another node has room; on a unified-memory node behaviour is unchanged; the existing
-scorer suite still passes.
+**Change:**
+1. One method on `NodeState` beside `model_memory_available_gb`: memory a load can use **without
+   evicting** (`gpu_memory_free_gb()` when `gpu_total_gb > 0`, else `memory.available_gb`), capped
+   by the capacity ceiling. It also absorbs the ceiling cap that is written out three times today
+   (`scorer.py:266-268`, `:313-315`, `routing.py:802-804`).
+2. `_score_thermal`: warm only if the model fits in that figure and a model slot is free; otherwise
+   it scores as cold.
+3. `_score_memory_fit`: fit ratio against the no-eviction figure. `_eliminate` (`:262-274`) keeps
+   RAM + GPU: it is the hard "can it run at all" gate.
+4. An `eviction` signal in `score_request` (and the total at `:86`, the log at `:102-122`,
+   `score_loaded_models`' sum at `:181`): which resident models must go, weighted by their queue
+   depth and priority. **No new weight setting**: size it from `score_model_warm` and
+   `score_model_cold` (`config.py:21-22`) so a node with room always beats a node that must evict a
+   busy model by more than the warm-cold gap.
+5. Callers that pick a node for a load use the same figure: `routing.py:777-810` `_pick_pull_node`
+   (also sizes by weights instead of `_model_fit_cost_gb`, and leaks `model_size` across loop
+   iterations) and `model_preloader.py:500-512` (picks most RAM + GPU, so it causes evictions too).
 
-**Verify:** rerun the alternation test (arm 4, fallback off): each model should settle on its own
-node after its first load, and every later request should reach its first token in under 1 s.
+**Tests:** `tests/test_server/test_gpu_memory_override.py:62-100` `TestFitGate` already builds GPU
+nodes with `size_vram_gb`: the alternation case goes there (node 1 has A resident, B recently
+unloaded; node 2 empty; B goes to node 2), plus "a busy resident model is not evicted when another
+node has room". `test_scorer.py` `test_warm_tier_scoring` (`:60`) and `test_memory_fit_scoring`
+(`:187`) are unified-memory cases and must pass unchanged. Optionally give `conftest.make_heartbeat`
+(`:133`) GPU arguments.
 
-## 4. `vram_fallback` substitutes any loaded model, even when the requested one could load
+**Verify:** alternation test, fallback on and off: each model settles on its own node; every request
+after its first load reaches its first token in under 1 s.
 
-**Seen:** with defaults, every request for `qwen2.5:14b-instruct-q8_0` was answered by
-`phi4:14b-q8_0`, which was loaded, instead of loading `qwen2.5` onto the empty second node. The
-benchmark read 66 ms to first token for the wrong model. The trace store records it
-(`original_model` ≠ `model`) and `X-Fleet-Fallback: true` is set, but the client got a different
-model from the one it named.
+## 4. Substitution: keep same-category for "every load evicts", delete the rest
 
-**Cause:** `routes/routing.py` `_try_vram_fallback()`: when the best score is a cold load, serve the
-best loaded model of the same category, and failing that **any loaded model** (cross-category,
-logged at ERROR), blocked only for image requests and by the usage-priority check. It never asks
-whether some node could load the requested model without evicting anything. The design (March 2026,
-`docs/plans/vram-aware-model-fallback.md`) was for a 512 GB machine where a cold load meant a
-10-minute swap of a 90 GB model; on a herd with an empty node, the same rule refuses to use it.
+**Seen:** with defaults every request for `qwen2.5:14b-instruct-q8_0` was answered by `phi4:14b-q8_0`
+instead of loading `qwen2.5` on the empty second node.
 
-**Fix (decided, see Decisions):**
-1. When some node can cold-load the requested model **without evicting** (item 3's estimate), load
-   it there; do not substitute. Substitution stays for the case it was designed for: every load
-   would evict.
-2. Cross-category substitution off by default (a setting to turn it back on). Answering a coding
-   request with a reasoning model, or a general model with a coder, is a quality risk the design
-   already logs as an error.
-3. No change to `X-Fleet-No-Fallback` / `"fallback": false`, which already give strict mode per
-   request.
+**Cause:** `routes/routing.py:539-667` `_try_vram_fallback`: when the best score is a cold load,
+serve the best loaded model of the same category, failing that **any** loaded model. It never asks
+whether a node could load the requested model without evicting.
 
-**Tests:** empty node available → cold load there, no fallback; every node full → same-category
-fallback as today; only cross-category available → loads (or queues) by default, substitutes with
-the setting on; image requests unchanged.
+**Decided:** load on a node with room instead of substituting; cross-category substitution removed.
+
+**Change:**
+1. At the cold-load decision (`routing.py:255-268`), if the cold winner's
+   `scores_breakdown["eviction"] == 0` (item 3), return it. Results are sorted, so the winner is a
+   node with room whenever one exists; no second fit check.
+2. `_try_vram_fallback` keeps only the same-category block (`:557-593`). Move the `has_images` guard
+   (`:618-639`) into it: that path checks nothing for images today and relies on categories.
+3. **Delete `settings.vram_fallback`.** Strict mode stays per request (`parse_allow_fallback`,
+   `:156-177`: `X-Fleet-No-Fallback: true` or `"fallback": false`); `:235-238` becomes
+   `allow_fallback is not False`, and `X-Fleet-No-Fallback: false` (force fallback) goes with it.
+4. `fallback_models` (the client's own list: `request.py:84,112`, `openai_compat.py:343`,
+   `ollama_compat.py:85,162`, stripped at `streaming.py:1724`) is a separate feature and stays.
+5. Side effect, intended: `ollama_compat.py:839` sends embeds through `score_with_fallbacks`, so an
+   embed can fall back to a chat model today. Removing cross-category ends that.
+
+**Remove:** `routing.py:595-665` (any-model pass, vision `risk_note`, the ERROR log) and the
+`cross_category` / `fallback_category` parameters and fields (`:675-693`; nothing reads them,
+`health_engine.py:784-819` reads only `requested_model`). `vram_fallback` in `config.py:46-47`,
+`dashboard.py:1290,1401,4966`, `docs/configuration-reference.md:259`,
+`docs/api-reference.md:86,1848,1872`, `docs/guides/agent-setup-guide.md:525`,
+`docs/plans/vram-aware-model-fallback.md` (mark superseded), the docstring at `routing.py:546`.
+Historical mentions (`CHANGELOG.md:816`, `docs/issues.md:2353`) stay. Changelog says plainly that
+some requests now wait for a load where they used to get a different model.
+
+**Tests:** `test_routing.py:338-455` `TestVramFallback` (`_cold_result` / `_hot_result`): add "cold
+winner with eviction 0 → no substitution"; delete `test_vram_fallback_cross_category` (`:391-416`)
+and `test_textonly_vision_model_request_may_still_fall_back` (`:550-557`); give `:541` a
+same-category variant; drop `vram_fallback=` from `ServerSettings(...)` in ~6 tests and
+`tests/test_server/test_routes.py:577,591-597`.
 
 ## 5. Benchmark harness
 
-- **Warm every node directly.** `warmup()` sends one request per model through the router, which
-  warms one node. The first request on a fresh runner took about 39 s on these Turing cards (item 8),
-  so the first 4-node arm read 211.8 tok/s with a 29 s p99, and 272.5 tok/s with a 1.1 s p99 once
-  every node was warm. Warm each node's Ollama directly (the router's `/fleet/status` gives each
-  node's Ollama URL), per model it has loaded.
-- **Ask for the exact model.** Send `X-Fleet-No-Fallback: true` on every benchmark request, and
-  count a response whose `X-Fleet-Served-Model` differs from the request as a failure. Do the same in
-  `docs/experiments/model-alternation-benchmark.py`. A benchmark that silently measures another model
-  is worse than one that fails.
-- **Models that are not loaded.** `--models` currently drops any model not loaded on some node, so a
-  one-machine mixed workload (two models that do not fit together) cannot run. Accept models that are
-  on disk, and report the cold loads.
-- **Thinking models.** The router raises a thinking model's `num_predict` to at least 1,024
-  (`thinking_min_predict`), so `--max-tokens 200` gave 1,024-token replies from `qwen3.5:9b`. Add
-  `--think false` (sends `"think": false`) and print the effective cap beside the results.
-- **Per-node outcome.** Record each response's `X-Fleet-Node` and `X-Fleet-Served-Model` in the
-  saved run, so placement is in the results and not only in the trace store.
-- Done already: Python 3.11 syntax (`af32336`).
+**Build on:** there is already one engine: `benchmark_runner.py:17-30` (dashboard) and
+`scripts/benchmark.py:34` (CLI) both import discovery, workers, `warmup` and `build_report` from
+`server/benchmark_engine.py`.
+
+**Change:**
+- **Warm every node directly** by moving the direct warm-up at `benchmark_runner.py:519-531` into
+  `benchmark_engine` as a per-(node, model) warm over `/fleet/status` `nodes[].ollama_url`
+  (`serializers.py:156`) × `models_loaded`, used by both. Fix two things on the way: send
+  `keep_alive: -1` like the router (`streaming.py:1727`), not `"60m"`, and send `num_ctx` equal to
+  the resident `context_length`, or Ollama reloads the model (`streaming.py:1551-1590`
+  `_pin_resident_num_ctx`). Not `StreamingProxy.pre_warm` (`:1079`), which sends an empty prompt and
+  never computes, so it would not cover item 8's first-compute stall.
+- **Demand the exact model:** `send_request` (`benchmark_engine.py:437-457`) sends
+  `X-Fleet-No-Fallback: true`, reads `X-Fleet-Served-Model` into a new `RequestResult.served_model`
+  (`:129`; `X-Fleet-Node` is already read at `:320,362,473`) and fails on a mismatch. The stdlib-only
+  `docs/experiments/model-alternation-benchmark.py` (`:56`) does the same with its own few lines.
+- **`think`:** an option that sends `"think": false`, which already disables the router's
+  `num_predict` inflation (`streaming.py:1916`).
+- **Models on disk:** `scripts/benchmark.py:173-181` accepts `--models` from `models_available`.
+- **Placement in results:** per-model `{node: count}` and mismatches go into `per_model_results` /
+  `per_node_results`, JSON columns already (`trace_store.py:195-198`); no schema change.
+
+**Remove / fix alongside:** the orchestration duplicated between `scripts/benchmark.py:224-298` and
+`benchmark_runner.py:265-317` (spawn, drain, report) becomes one engine function both call;
+`benchmark_runner.py:208-228` rebuilds `NodeInfo` by hand instead of `discover_fleet`;
+`benchmark_runner.py:316` passes `targets`, defined only in the LLM branch (`:189`), so a run without
+LLMs raises `NameError`; `save_benchmark_run` (`trace_store.py:1244-1281`) drops `report["workload"]`
+and `mode` / `smart_pulled_models` (nest them in `fleet_snapshot`); the embed-name patterns are
+repeated (`benchmark_engine.py:57`, `benchmark_runner.py:407`).
+
+**Tests:** extend `tests/test_server/test_benchmark_workload.py` (`httpx_mock` pattern, `:70-104`);
+add the first `BenchmarkRunner` tests, starting with the no-LLM run. Done already: Python 3.11
+syntax (`af32336`).
 
 ## 6. Docs
 
-- `docs/guides/docker.md`: the "Serve native text embeddings" bullet says embedding models are served
-  through Ollama. True after item 2; until then, say `nomic-embed-text` needs the `embedding` extra.
-  Add `-e OLLAMA_NUM_PARALLEL` to the Linux node section (item 1).
-- The Linux install / configuration guide: if you raise `OLLAMA_NUM_PARALLEL`, herd reads it from
-  the systemd unit (after item 1); in a container, pass it to herd-node too.
-- `vram_fallback`: document what it does in the configuration reference, in the terms of item 4's
-  decision, with the per-request off switch.
+- `docs/guides/docker.md`: embeddings through Ollama (true after item 2); `-e OLLAMA_NUM_PARALLEL` in
+  the Linux node section.
+- Linux configuration: herd reads `OLLAMA_NUM_PARALLEL` from the systemd unit; in a container pass it
+  to herd-node.
+- Configuration and API references: `vram_fallback` gone; substitution only within a category when
+  every load would evict; strict mode per request.
 
-## Investigations (no fix decided)
+## 7-8. Investigations
 
-7. **Uneven split at low concurrency.** Four nodes at 2 concurrent requests split 58/42 between two
-   nodes and read 129.9 tok/s, below two nodes at the same concurrency (152.9). One run; repeat
-   before treating it as real. If it holds, read the score breakdowns in the traces.
-8. **First request on a new runner.** About 39 s to the first token on each RTX 6000 the first time a
-   loaded model computed, then normal. Likely CUDA compiling kernels for compute capability 7.5 that
-   the build does not ship precompiled, and cached afterwards. Ollama's behaviour, not herd's; worth
-   knowing because herd's scorer treats a just-loaded model as hot. Check whether it recurs after an
-   unload and reload (cache) before saying anything about it.
-9. **Ollama 0.40 sizes context by VRAM.** On the 48 GB card Ollama asked for 131,072 tokens of
-   context for `qwen3.5:9b` and `qwen3-coder:30b` took 31 GB, against 20 GB on the 24 GB cards.
-   Check that `_model_fit_cost_gb()` (which uses measured context where it has it) estimates the
-   larger figure on a large card, or item 3's "fits without evicting" will be wrong exactly there.
+7. **Uneven split at low concurrency:** four nodes at 2 concurrent requests split 58/42 and read
+   129.9 tok/s, below two nodes (152.9). One run; repeat, then read `scores_breakdown` in the traces.
+8. **First request on a new runner:** ~39 s to the first token on each RTX 6000 the first time a
+   loaded model computed. Likely CUDA JIT for compute capability 7.5, cached afterwards. Ollama's
+   behaviour; check whether it recurs after unload and reload. Item 5's direct warm-up covers the
+   benchmark either way.
 
-10. **Router overhead over a network.** The router added 6.5 ms p50 on a Mac's loopback but 24.4 ms
-    p50 / 27.7 ms p95 between two datacenter machines, where the direct path crossed the same network,
-    so nearly all of it is the router. Published Python gateways (LiteLLM) add 2-7 ms p50 against a
-    mock. The chat path pools connections per node (`streaming.py` `_get_client`), so it is not new
-    handshakes. Find it: add an `X-Fleet-Overhead-Ms` response header (total time minus upstream time,
-    like LiteLLM's `x-litellm-overhead-duration-ms`) and per-stage timings in the trace (scoring,
-    queue wait, connect, first byte). Also: native embedding, speech-to-text and image requests open a
-    new `httpx.AsyncClient` per request (`streaming.py` around lines 1283, 1313, 1396 at v0.12.9);
-    pool them like the chat path.
-11. **Benchmark method for run 2.** Overhead measured the way gateway vendors do, so the number is
-    comparable: a mock upstream with a fixed delay, direct vs through herd, at fixed arrival rates
-    (k6 `constant-arrival-rate` or vegeta) of 10 / 50 / 100 RPS, thousands of samples, p50/p95/p99
-    and the rate where errors start; plus the real-model A/B with far more than 20 pairs. And a
-    prefix-sharing workload (multi-turn agent sessions with a long shared system prompt), herd's
-    routing against plain round-robin on the same machines: the published routing gains (SGLang,
-    llm-d) all come from cache reuse, and run 1's unique prompts could not show it. Also one
-    `llama-bench` run per GPU type, so per-node Ollama numbers have the card's own ceiling beside them
-    (77 tok/s single-stream on the RTX 6000 is probably below it).
+## 9. Cold-load cost uses one fleet-wide context size
+
+On the 48 GB card Ollama gave `qwen3.5:9b` a 131,072-token context and `qwen3-coder:30b` took 31 GB,
+against 20 GB on 24 GB cards. `_expected_num_ctx` (`model_preloader.py:270-278`) returns the
+override or `_observed_ctx`, keyed by model only (`:131,178`), so the last node to report wins and a
+48 GB node's cost is estimated from a 24 GB node's context (or the reverse). Item 3's "fits without
+evicting" would be wrong exactly on mixed-card herds.
+
+**Change:** key `_observed_ctx` by (node, model), falling back to the model-level value; pass `node`
+into `_expected_num_ctx` and its three callers (`scorer.py:658`, `model_preloader.py:510`,
+`routes/fleet.py:143`). Fold `streaming.py:1058` `_resolved_num_ctx` into
+`model_preloader.py:253` `_num_ctx_override`, which it mirrors. The learned KV cost per token
+(`:119,187`) is per model and stays.
+
+**Tests:** `test_model_preloader.py:620-744` (`_kv_node`, `test_observe_kv_cost_records_default_context`):
+two nodes reporting different contexts for one model, each costed by its own.
+
+## 10. Router overhead
+
+**Seen:** 6.5 ms p50 on a Mac's loopback; 24.4 ms p50 / 27.7 ms p95 between two datacenter machines,
+where the direct path crossed the same network, so nearly all of it is the router. Published Python
+gateways add 2-7 ms p50 against a mock.
+
+**Build on:**
+- Timestamps already exist and are thrown away: `InferenceRequest.created_at` (`request.py:81`),
+  `QueueEntry.enqueued_at` / `started_at` (`:123-124`, set at `queue_manager.py:400`). Scoring ≈
+  `enqueued_at − created_at`, queue wait = `started_at − enqueued_at`. Trace `latency_ms` and TTFT
+  start at the worker (`streaming.py:283,379-380`; retries `:556,752`), so they exclude both.
+- `fleet_headers(extra=…)` (`fleet_headers.py:19-75`) is the one header builder; new headers also go
+  in `cors.py:30-45` `EXPOSED_HEADERS`.
+- `_request_meta` / `pop_request_meta` (`streaming.py:221`) already carries per-request facts to the
+  response (`ollama_compat.py:48`).
+- Columns are added with `try: ALTER TABLE … ADD COLUMN` (`trace_store.py:144-172`).
+- `StreamingProxy._get_client` / `_invalidate_client` / `close` (`streaming.py:225-263, 2022`) pools
+  one client per node.
+
+**Change:**
+1. One JSON `timings` column on `request_traces` (scoring, queue wait, upstream connect and first
+   byte, total), added the existing way, written by `record_trace` (`:278-361`). Not
+   `scores_breakdown`, whose readers sum every key (`scorer.py:105-118`, `fleet_headers.py:78`,
+   `streaming.py:697`).
+2. `X-Fleet-Overhead-Ms` through `fleet_headers(extra=…)`: total minus upstream for non-streaming
+   responses; the part before upstream for streams (headers go out before the body,
+   `openai_compat.py:485-497`); the full figure always in the trace. `scripts/router_overhead.py`
+   reads it.
+3. Extend `_get_client` to key on (node, port), keeping its URL-change check, and use it for the four
+   per-request clients: vision embed (`streaming.py:1283`), speech-to-text (`:1313`), image
+   (`:1396`), native text embed / rerank (`text_embedding_compat.py:230`), plus `/api/version`
+   (`ollama_compat.py:193`). That folds the four copies of "host from `ollama_base_url`, default
+   port" (`streaming.py` ~1278, 1307, 1391; `text_embedding_compat.py:209-212`) into one.
+4. Then read the timings from a real run and fix what they show.
+
+**Fix alongside:** `streaming.py:1873` fetches image URLs with a synchronous `httpx.get` inside
+`_convert_messages_for_ollama` (`:1830`) on the request path, blocking the event loop for every
+concurrent request: make it async through the pooled client. Responses that skip the canonical header
+set (`anthropic_compat.py:316-320`, `ollama_compat.py:472,670,675,708`, `openai_compat.py:713`'s
+non-standard `X-Fleet-Model`) move to `fleet_headers`.
+
+**Tests:** `test_fleet_headers.py:13-55`, `test_trace_store.py:75-150`. Four fixtures monkeypatch
+`httpx.AsyncClient` at module level and break once clients are pooled
+(`test_native_text_proxy.py:40-53`, `test_embedding_shapes.py:76`, `test_client_compat.py:518-529`,
+`test_vision_embedding_traces.py:52-62`): move them to the `_install_mock_ollama` pattern
+(`test_client_compat.py:77-84`).
+
+## 11. Run 2's method
+
+Overhead the way gateway vendors measure it: a mock upstream with a fixed delay, direct vs through
+herd, at fixed arrival rates (k6 `constant-arrival-rate` or vegeta) of 10 / 50 / 100 RPS, thousands of
+samples, p50/p95/p99 and the rate where errors start; plus the real-model A/B with far more than 20
+pairs, reading `X-Fleet-Overhead-Ms`. A prefix-sharing workload (multi-turn agent sessions with a long
+shared system prompt), herd against plain round-robin on the same machines: published routing gains
+(SGLang, llm-d) all come from cache reuse, which run 1's unique prompts could not show. One
+`llama-bench` per GPU type for the card's own ceiling.
+
+## Debt found by the audit (fix in release A unless noted)
+
+| Where | What |
+|---|---|
+| `node/agent.py:725-756` `_restart_ollama` | Under systemd the router's `restart_ollama` command (`context_optimizer.py:245`) sets `os.environ` in herd-node (`:745-748`) and restarts nothing; with item 1, `_ollama_env` would then report a value Ollama never received. Only apply env overrides to an Ollama the node itself spawned; otherwise report that it cannot restart a service Ollama |
+| `config.py:27` `score_role_affinity_max` | Never read (only displayed, `dashboard.py:1322`): delete |
+| `health_engine.py` NUM_PARALLEL text ×3, `_NATIVE_TEXT_EMBED_MODELS` | Items 1 and 2 |
+| `benchmark_runner.py:316` | `NameError` on a run without LLMs (item 5) |
+| `trace_store.py:1244-1281` | Benchmark `workload` and `mode` silently dropped (item 5) |
+| `ollama_compat.py:849-850` | 404 instead of 503 for a bare-name miss (item 2) |
+| `streaming.py:1873` | Blocking image fetch on the event loop (item 10) |
+| `routing.py:777-810` `_pick_pull_node` | Weights instead of fit cost; `model_size` leaks across iterations (item 3, release B) |
+| `routes/fleet.py:57` | Documents a field `/fleet/limits` does not return |
 
 ## Order
 
-1. **Release A:** items 1, 2, 5, 6, plus item 10's overhead header and pooled clients for the
-   native backends. Each is local, with tests; none changes routing for a herd that is not hitting
-   the bug. Then find the 24 ms with the new header and stage timings, fix what it shows.
-2. **Design note for items 3 and 4** (scoring changes, numbers on a whiteboard first), then build,
-   then release B.
-3. **Benchmark run 2** (method in item 11) on the same hardware once release B is out, with stock
-   configuration on the nodes (no herd-node workaround, no fastembed), to show the fixes: one node scales with
-   concurrency when `OLLAMA_NUM_PARALLEL` is in the systemd unit only; embeddings succeed without
-   the extra; the alternation test settles one model per node with fallback on and off.
+1. **Release A:** debt table; items 1 (steps 1-3, 5), 2, 5, 6, 10 (steps 1-3); then item 1's warning
+   (step 4, needs item 10's timings). Then read the timings and fix the 24 ms.
+2. **Release B:** items 9, 3, 4, in that order (4 reads 3's `eviction` signal; 3's fit check needs 9's
+   per-node context). One short design note with the eviction weights worked through on run 1's two
+   cases before code.
+3. **Run 2** (item 11) on the same hardware, stock node configuration (systemd unit only, no
+   fastembed): one node scales with concurrency; embeddings succeed without the extra; the alternation
+   test settles one model per node.
 
 ## Decisions
 
-Decided 2026-11-20 by the maintainer:
+Decided by the maintainer, 2026-11-20:
 
-1. **Item 4: change the default.** When some node can load the requested model without evicting,
-   load it there instead of substituting. Cross-category substitution is **off by default**, behind a
-   setting. Same-category substitution stays for the case it was built for: every load would evict.
-   The changelog says so plainly, since some requests will now wait for a load where they used to get
-   a different model.
-2. **Item 2: fall back to Ollama only when no node has ever served `nomic-embed-text` through
-   fastembed.** Once any node has served it natively, keep the native path (and its retryable 503
-   while that node is away), so one index never mixes vectors from the two backends. "Has ever
-   served" needs to survive a router restart: persist it (the trace store already records
-   `X-Fleet-Backend` per request, or a small flag), not only in memory.
+1. **Substitution:** when a node can load the requested model without evicting, load it there.
+   Same-category substitution stays only for "every load would evict". Cross-category substitution
+   is **removed** (no setting, per the greenfield rule; this replaces "off by default behind a
+   setting" from the first draft), and the `vram_fallback` setting goes with it; strict mode stays
+   per request.
+2. **Embeddings:** Ollama serves `nomic-embed-text` only while no node has ever served it natively,
+   read from the trace store so it survives a restart.
 
-Open:
-
-3. Release A as 0.12.10, together with the VPN-address fix already on `main`?
+Open: release A as 0.12.10, together with the VPN-address fix already on `main`?
