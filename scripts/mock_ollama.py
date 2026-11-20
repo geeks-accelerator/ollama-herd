@@ -13,9 +13,12 @@ way Ollama fails:
   ``eval_count`` is the number of chunks
 * ``/api/embed``, ``--embed-dim`` vectors (deterministic per input)
 * several models (``--model name:size_gb``, repeatable), with an optional
-  hot-model cap: ``--max-loaded N`` evicts the least recently used idle model
-  (a load waits while every resident model is serving, as Ollama does), and
-  a cold model takes ``--load-ms`` to load (reported as ``load_duration``)
+  hot-model cap: ``--max-loaded N`` evicts the least recently used idle model,
+  and a cold model takes ``--load-ms`` to load (reported as ``load_duration``).
+  Loads are scheduled as Ollama schedules them (``Backend``): one at a time, a
+  load waits while every resident model is serving, and a request's
+  ``keep_alive`` re-arms a resident model an eviction is waiting for.
+  ``GET /_mock/state`` adds the model being loaded, which ``/api/ps`` omits
 * faults, at startup by flag or at runtime with ``POST /_mock/fault`` (a JSON
   object that *replaces* the current fault; ``{}`` clears it) and read back
   with ``GET /_mock/fault``:
@@ -241,13 +244,28 @@ class MockConfig:
     fault_file: str | None = None
 
 
-class Backend:
-    """Which models are resident, in least-recently-used order, and which are busy.
+def keep_alive_is_zero(value) -> bool:
+    """``keep_alive: 0`` (or ``"0"``, ``"0s"``, ``"0m"``): unload once idle."""
+    return value is not None and str(value).strip() in ("0", "0s", "0m", "0h", "0.0")
 
-    Like Ollama, a model is unloaded only once its in-flight requests are done:
-    a load that needs a slot evicts the least recently used *idle* model, and
-    waits while every resident model is serving.  ``/api/ps`` lists a model
-    until it is really gone.
+
+class Backend:
+    """Which models are resident, in least-recently-used order, and which are busy,
+    scheduled the way Ollama's ``server/sched.go`` schedules them:
+
+    * A request for a resident model is served at once (``getRunner``'s fast
+      path), and a ``keep_alive`` it carries becomes the runner's
+      (``useLoadedRunner``).  So any ``keep_alive`` but 0 cancels an eviction
+      under way.
+    * Every other request waits its turn in one queue (``processPending``) that
+      loads one model at a time.  A load that needs a slot evicts the least
+      recently used idle model; with every model busy it marks the least
+      recently used one to unload when its requests end (``sessionDuration =
+      0``) and waits for that, with no timeout, while the queue behind it waits
+      too.  A client that leaves does not end the wait.
+
+    ``/api/ps`` lists a model until it is really gone.  ``max_loaded`` 0 means
+    no cap: nothing is ever evicted for a load.
     """
 
     def __init__(self, models: list[MockModel], max_loaded: int, load_ms: float):
@@ -257,67 +275,80 @@ class Backend:
         first = list(self.models)[: max_loaded or None]
         self.loaded: OrderedDict[str, None] = OrderedDict((name, None) for name in first)
         self.busy: Counter[str] = Counter()
-        self._loading: set[str] = set()  # holds a slot while it loads
-        self._unload_when_idle: set[str] = set()
-        self._locks: dict[str, asyncio.Lock] = {}
+        self.expiring: set[str] = set()  # sessionDuration 0: unloads when idle
+        self.loading: str | None = None  # in memory, not yet in /api/ps
+        self._pending: asyncio.Lock | None = None
         self._waiters: list[asyncio.Future] = []
 
-    async def acquire(self, name: str) -> float:
+    async def acquire(self, name: str, keep_alive=None) -> float:
         """Make ``name`` resident and count one request on it; returns the
-        seconds spent loading.  Every ``acquire`` needs a ``release``."""
-        if name not in self.loaded:
-            async with self._locks.setdefault(name, asyncio.Lock()):
-                if name not in self.loaded:
-                    return await self._load(name)
-        self.loaded.move_to_end(name)
-        self.busy[name] += 1
-        return 0.0
-
-    async def _load(self, name: str) -> float:
-        start = time.perf_counter()
-        while not self._make_room():
-            waiter = asyncio.get_running_loop().create_future()
-            self._waiters.append(waiter)
-            await waiter
-        self._loading.add(name)
+        seconds spent waiting for and doing the load.  Every ``acquire`` needs a
+        ``release``."""
+        if name in self.loaded:
+            self._use(name, keep_alive)
+            return 0.0
+        self._pending = self._pending or asyncio.Lock()
+        task = asyncio.ensure_future(self._schedule(name, keep_alive))
         try:
-            await asyncio.sleep(self.load_ms / 1000)
-        finally:
-            self._loading.discard(name)
-        self.loaded[name] = None
-        self.busy[name] += 1
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # The client left; the scheduler finishes this request's turn anyway.
+            task.add_done_callback(
+                lambda t: t.cancelled() or t.exception() is not None or self.release(name)
+            )
+            raise
+
+    async def _schedule(self, name: str, keep_alive) -> float:
+        start = time.perf_counter()
+        async with self._pending:
+            full = lambda: self.max_loaded and len(self.loaded) >= self.max_loaded  # noqa: E731
+            while name not in self.loaded and full():
+                idle = next((n for n in self.loaded if not self.busy[n]), None)
+                victim = idle or next(iter(self.loaded))
+                self.expiring.add(victim)
+                self._unload_if_idle(victim)
+                while victim in self.loaded:
+                    waiter = asyncio.get_running_loop().create_future()
+                    self._waiters.append(waiter)
+                    await waiter
+            if name not in self.loaded:
+                self.loading = name
+                try:
+                    await asyncio.sleep(self.load_ms / 1000)
+                finally:
+                    self.loading = None
+                self.loaded[name] = None
+                self.expiring.discard(name)
+            self._use(name, keep_alive)
         return time.perf_counter() - start
 
-    def _make_room(self) -> bool:
-        """Evict idle models, oldest first, until a slot is free; False while
-        every resident model is serving."""
-        while self.max_loaded and len(self.loaded) + len(self._loading) >= self.max_loaded:
-            idle = next((n for n in self.loaded if not self.busy[n]), None)
-            if idle is None:
-                return False
-            del self.loaded[idle]
-        return True
+    def _use(self, name: str, keep_alive) -> None:
+        self.loaded.move_to_end(name)
+        self.busy[name] += 1
+        if keep_alive is not None:
+            if keep_alive_is_zero(keep_alive):
+                self.expiring.add(name)
+            else:
+                self.expiring.discard(name)
 
     def release(self, name: str) -> None:
         self.busy[name] -= 1
-        if not self.busy[name] and name in self._unload_when_idle:
-            self._unload_when_idle.discard(name)
-            self.loaded.pop(name, None)
-        self._wake()
+        self._unload_if_idle(name)
 
     def unload(self, name: str) -> None:
-        """``keep_alive: 0``: unload now, or when its last request ends."""
-        if self.busy[name]:
-            self._unload_when_idle.add(name)
-            return
-        self.loaded.pop(name, None)
-        self._wake()
+        """``keep_alive: 0`` on a load-only request: unload now, or when its
+        last request ends."""
+        self.expiring.add(name)
+        self._unload_if_idle(name)
 
-    def _wake(self) -> None:
-        waiters, self._waiters = self._waiters, []
-        for waiter in waiters:
-            if not waiter.done():
-                waiter.set_result(None)
+    def _unload_if_idle(self, name: str) -> None:
+        if name in self.expiring and not self.busy[name]:
+            self.expiring.discard(name)
+            self.loaded.pop(name, None)
+            waiters, self._waiters = self._waiters, []
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.set_result(None)
 
 
 class _NdjsonStream(StreamingResponse):
@@ -488,7 +519,7 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
         tokens = [max(1, len(str(text)) // 4) for text in inputs]
         if fault and fault.context_limit and max(tokens, default=0) > fault.context_limit:
             return _error(400, context_too_long(max(tokens), fault.context_limit))
-        load_s = await backend.acquire(name)
+        load_s = await backend.acquire(name, body.get("keep_alive"))
         try:
             await asyncio.sleep(config.delay_ms / 1000)
         finally:
@@ -509,14 +540,15 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
             return _error(404, model_not_found(requested))
         start = time.perf_counter()
         stream = body.get("stream", True) is not False
-        unload_after = str(body.get("keep_alive", "")) in ("0", "0s")
+        keep_alive = body.get("keep_alive")
+        unload_after = keep_alive_is_zero(keep_alive)
 
         if kind == "generate" and not body.get("prompt") and "messages" not in body:
             # Ollama's load-only request (the router's pre-warm): no output.
             if unload_after:
                 backend.unload(name)
             else:
-                await backend.acquire(name)
+                await backend.acquire(name, keep_alive)
                 backend.release(name)
             return {
                 "model": name,
@@ -541,7 +573,7 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
             # Mid-request failures arrive on a 200 stream as an error line.
             return _NdjsonStream(error_line(), drop=False)
 
-        load_s = await backend.acquire(name)
+        load_s = await backend.acquire(name, keep_alive)
         die_after = fault.die_after_chunks if fault else -1
         chunks = max(1, config.chunks)
         texts = ["ok" if i == 0 else " ok" for i in range(chunks)]
@@ -567,10 +599,6 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
                 "eval_duration": int(max(0.0, total - load_s - config.delay_ms / 1000) * 1e9),
             }
 
-        def finish() -> None:
-            if unload_after:
-                backend.unload(name)
-
         released = False
 
         def release() -> None:
@@ -584,7 +612,6 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
                 return _NdjsonStream(_no_parts(), drop=True, on_close=release)
             try:
                 await asyncio.sleep((config.delay_ms + chunks * config.chunk_delay_ms) / 1000)
-                finish()
             finally:
                 release()
             return {**done_line(), **piece("".join(texts))}
@@ -600,7 +627,6 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
                 yield (json.dumps(line) + "\n").encode()
             if die_after >= chunks:
                 return  # every chunk sent, the done line never arrives
-            finish()
             yield (json.dumps(done_line()) + "\n").encode()
 
         return _NdjsonStream(lines(), drop=die_after >= 0, on_close=release)
@@ -612,6 +638,17 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
     @app.post("/api/generate")
     async def generate(request: Request):
         return await infer(request, "generate")
+
+    @app.get("/_mock/state")
+    async def state():
+        """What the GPU holds, for a fake node standing in for nvidia-smi: the
+        resident models and the one loading, which ``/api/ps`` does not list."""
+        return {
+            "loaded": list(backend.loaded),
+            "loading": backend.loading,
+            "busy": {n: c for n, c in backend.busy.items() if c},
+            "expiring": sorted(backend.expiring),
+        }
 
     @app.get("/_mock/fault")
     async def get_fault():

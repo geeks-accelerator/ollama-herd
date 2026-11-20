@@ -80,6 +80,32 @@ class TestPayload:
         with pytest.raises(SystemExit):
             ff.parse_args(["--router", "http://r", "--nodes", "2", "--kill", "3"])
 
+    async def test_follow_ps_reports_what_the_backend_holds_on_a_gpu(self):
+        mock = load_script("mock_ollama")
+        backend_app = mock.build_app(
+            mock.MockConfig(models=["a:7b:15.0", "b:7b:18.0"], max_loaded=1)
+        )
+        config = ff.FleetConfig(nodes=1, models=[], memory_gb=55, gpu_gb=22.5, follow_ps=True)
+        (node,) = ff.build_nodes(config)
+        node.ollama_host = "http://backend"
+        transport = httpx.ASGITransport(app=backend_app)
+        async with httpx.AsyncClient(transport=transport) as client:
+            await ff.follow_backend(client, node)
+            assert node.models == [("a:7b", 15.0), ("b:7b", 18.0)]
+            assert node.loaded == [("a:7b", 15.0)]
+            await client.post("http://backend/api/generate", json={"model": "b:7b", "prompt": ""})
+            await ff.follow_backend(client, node)
+        assert node.loaded == [("b:7b", 18.0)]
+        hb = HeartbeatPayload(**ff.heartbeat_for(node, config, "10.0.0.2"))
+        assert [(m.name, m.size_vram_gb) for m in hb.ollama.models_loaded] == [("b:7b", 18.0)]
+        assert hb.ollama.models_available == ["a:7b", "b:7b"]
+        assert hb.ollama.models_available_sizes == {"a:7b": 15.0, "b:7b": 18.0}
+        assert hb.memory.gpu_total_gb == 22.5
+        assert hb.memory.gpu_used_gb == 18.0 and hb.memory.gpu_source == "detected"
+        node.loading_gb = 4.0  # mid-load: on the card, not yet in /api/ps
+        assert ff.heartbeat_for(node, config, "10.0.0.2")["memory"]["gpu_used_gb"] == 22.0
+        assert hb.memory.used_gb == 8.0  # the weights are on the card, not in RAM
+
 
 def router_app(settings: ServerSettings) -> FastAPI:
     app = FastAPI()

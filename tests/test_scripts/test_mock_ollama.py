@@ -141,6 +141,16 @@ class TestLoadedModels:
         c.post("/api/generate", json={"model": "llava:7b", "keep_alive": 0})
         assert c.get("/api/ps").json()["models"] == []
 
+    def test_state_shows_what_ps_does_not(self):
+        c = client(max_loaded=1)
+        state = c.get("/_mock/state").json()
+        assert state == {
+            "loaded": ["llama3.2:3b"],
+            "loading": None,
+            "busy": {},
+            "expiring": [],
+        }
+
     def test_requests_release_the_model_when_they_end(self):
         c = client(max_loaded=1, chunks=3)
         backend = c.app.state.backend
@@ -191,6 +201,43 @@ class TestBusyModels:
         assert "a:latest" in backend.loaded
         backend.release("a:latest")
         assert "a:latest" not in backend.loaded
+
+    @pytest.mark.asyncio
+    async def test_a_keep_alive_on_the_busy_model_cancels_the_eviction(self):
+        """sched.go: ``useLoadedRunner`` sets the runner's sessionDuration from the
+        request, undoing the 0 ``processPending`` set to evict it; the load then
+        waits for an unload that never comes, and so does every load behind it."""
+        backend = self.backend()
+        await backend.acquire("a:latest", -1)
+        loading = asyncio.create_task(backend.acquire("b:latest", -1))
+        await asyncio.sleep(0.05)
+        await backend.acquire("a:latest", -1)  # the fast path, while b waits
+        backend.release("a:latest")
+        backend.release("a:latest")
+        await asyncio.sleep(0.05)
+        assert not loading.done()
+        assert list(backend.loaded) == ["a:latest"]
+        loading.cancel()  # the client gives up; the scheduler still waits
+        behind = asyncio.create_task(backend.acquire("b:latest"))
+        await asyncio.sleep(0.05)
+        assert not behind.done()
+        backend.unload("a:latest")  # e.g. `ollama stop a`
+        await asyncio.wait_for(behind, 1)
+        assert list(backend.loaded) == ["b:latest"]
+        assert backend.busy["b:latest"] == 1  # the cancelled request was released
+
+    @pytest.mark.asyncio
+    async def test_without_keep_alive_the_eviction_waits_only_for_the_requests(self):
+        backend = self.backend()
+        await backend.acquire("a:latest", -1)
+        loading = asyncio.create_task(backend.acquire("b:latest", -1))
+        await asyncio.sleep(0.05)
+        await backend.acquire("a:latest")  # no keep_alive: the eviction stands
+        backend.release("a:latest")
+        assert not loading.done()
+        backend.release("a:latest")
+        await asyncio.wait_for(loading, 1)
+        assert list(backend.loaded) == ["b:latest"]
 
 
 class TestEmbed:

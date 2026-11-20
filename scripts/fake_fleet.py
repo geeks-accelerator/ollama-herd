@@ -17,7 +17,14 @@ to a host that does not exist.
 
 Models come from ``--model name:size_gb`` (repeatable) or, without it, from the
 first mock's ``/api/tags``.  Every model a node holds is reported loaded;
-``--models-per-node K`` gives each node a rotating K of them.
+``--models-per-node K`` gives each node a rotating K of them.  With
+``--follow-ps`` a node instead reports what its own backend says before each
+heartbeat: its ``/api/tags`` as available and its ``/api/ps`` as loaded, so a
+mock with ``--max-loaded`` drives real placement and eviction.  ``--gpu-gb G``
+makes every node a discrete-GPU node with G GB of card memory, its loaded
+models on the card.  Its use is measured, as nvidia-smi measures it: with
+``--follow-ps`` a mock's model mid-load (``/_mock/state``) counts too, the
+memory a real card shows in use before ``/api/ps`` lists the model.
 
 Churn and failure:
 
@@ -84,6 +91,8 @@ class FleetConfig:
     prefix: str = "fake"
     lan_ip: str = ""
     seed: int | None = None
+    follow_ps: bool = False
+    gpu_gb: float = 0.0
 
 
 @dataclass
@@ -91,6 +100,8 @@ class FakeNode:
     node_id: str
     ollama_host: str
     models: list[tuple[str, float]]
+    loaded: list[tuple[str, float]] | None = None  # None: every model in ``models``
+    loading_gb: float = 0.0  # a model the backend is loading (``--follow-ps``)
     up: asyncio.Event = field(default_factory=asyncio.Event)
     killed_at: float | None = None
     last_ok_at: float | None = None
@@ -140,14 +151,15 @@ def build_nodes(config: FleetConfig) -> list[FakeNode]:
 
 
 def heartbeat_for(node: FakeNode, config: FleetConfig, lan_ip: str) -> dict:
-    loaded = sum(size for _, size in node.models)
-    return make_heartbeat(
+    loaded = node.models if node.loaded is None else node.loaded
+    in_ram = 0.0 if config.gpu_gb > 0 else sum(size for _, size in loaded)
+    body = make_heartbeat(
         node_id=node.node_id,
         memory_total=config.memory_gb,
-        memory_used=min(config.memory_gb * 0.95, 8.0 + loaded),
+        memory_used=min(config.memory_gb * 0.95, 8.0 + in_ram),
         cores=config.cores,
         cpu_pct=10.0,
-        loaded_models=list(node.models),
+        loaded_models=list(loaded),
         available_models=[name for name, _ in node.models],
         lan_ip=lan_ip,
         ollama_host=node.ollama_host,
@@ -156,6 +168,36 @@ def heartbeat_for(node: FakeNode, config: FleetConfig, lan_ip: str) -> dict:
         memory_bandwidth_gbps=resolve_bandwidth(config.chip) or 0.0,
         num_parallel=config.num_parallel,
     ).model_dump()
+    body["ollama"]["models_available_sizes"] = dict(node.models)
+    if config.gpu_gb > 0:
+        used = sum(size for _, size in loaded) + node.loading_gb
+        body["memory"].update(
+            gpu_total_gb=config.gpu_gb, gpu_used_gb=min(used, config.gpu_gb), gpu_source="detected"
+        )
+        for m in body["ollama"]["models_loaded"]:
+            m["size_vram_gb"] = m["size_gb"]
+    return body
+
+
+async def follow_backend(client: httpx.AsyncClient, node: FakeNode) -> None:
+    """Report what the node's backend holds: ``/api/tags`` available, ``/api/ps``
+    loaded.  Left as it was when the backend does not answer."""
+    base = node.ollama_host.rstrip("/")
+    try:
+        tags = await discover_models(client, base)
+        resp = await client.get(f"{base}/api/ps")
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        return
+    node.models = tags
+    node.loaded = [
+        (m.get("model") or m["name"], (m.get("size") or 0) / 1e9)
+        for m in resp.json().get("models", [])
+    ]
+    with contextlib.suppress(httpx.HTTPError, ValueError):  # a real Ollama has no /_mock
+        state = await client.get(f"{base}/_mock/state")
+        loading = state.json().get("loading") if state.status_code == 200 else None
+        node.loading_gb = dict(tags).get(loading, 0.0) if loading else 0.0
 
 
 class Fleet:
@@ -198,6 +240,8 @@ class Fleet:
             await node.up.wait()
             if node.killed:
                 return
+            if cfg.follow_ps:
+                await follow_backend(self.client, node)
             ms = await self.post(heartbeat_for(node, cfg, self.lan_ip), "heartbeat")
             self.sent += 1  # counted once answered, so one cancelled at exit is not
             if ms is not None:
@@ -371,6 +415,12 @@ def parse_args(argv: list[str] | None = None) -> tuple[str, FleetConfig, str | N
     )
     p.add_argument("--models-per-node", type=int, default=0, help="Rotating subset (0 = all)")
     p.add_argument("--memory-gb", type=float, default=64.0)
+    p.add_argument(
+        "--follow-ps",
+        action="store_true",
+        help="Report each node's backend /api/tags as available and /api/ps as loaded",
+    )
+    p.add_argument("--gpu-gb", type=float, default=0.0, help="Card memory per node (0 = none)")
     p.add_argument("--chip", default="", help='e.g. "Apple M3 Ultra" (sets bandwidth)')
     p.add_argument("--cores", type=int, default=12)
     p.add_argument("--num-parallel", type=int, default=0, help="Reported OLLAMA_NUM_PARALLEL")
@@ -415,6 +465,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[str, FleetConfig, str | N
         prefix=a.prefix,
         lan_ip=a.lan_ip,
         seed=a.seed,
+        follow_ps=a.follow_ps,
+        gpu_gb=a.gpu_gb,
     )
     return a.router.rstrip("/"), config, a.output
 
