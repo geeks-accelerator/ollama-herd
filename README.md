@@ -304,7 +304,7 @@ uv run herd                          # start router
 uv run herd-node                     # start node agent
 
 uv sync --extra dev                  # install test deps
-uv run pytest                        # run all 2631 tests (~26s)
+uv run pytest                        # run all 2660 tests (~26s)
 uv run ruff check src/               # lint
 uv run ruff format src/              # format
 ```
