@@ -21,11 +21,11 @@ from fleet_manager.server.benchmark_engine import (
     build_report,
     discover_fleet,
     discover_image_models,
-    is_embed_model,
     run_load,
     warm_node_model,
     warmup,
 )
+from fleet_manager.server.model_knowledge import is_embedding_model
 
 logger = logging.getLogger(__name__)
 
@@ -319,7 +319,7 @@ class BenchmarkRunner:
                 # (skip embedding models and image models — they can't serve chat)
                 covered = set()
                 for name in loaded_names:
-                    if is_embed_model(name):
+                    if is_embedding_model(name):
                         continue
                     if is_image_model(name):
                         continue
@@ -335,7 +335,7 @@ class BenchmarkRunner:
                     if name in already_planned:
                         continue
                     lower = name.lower()
-                    if is_embed_model(name):
+                    if is_embedding_model(name):
                         continue
                     if any(p in lower for p in SKIP_PATTERNS):
                         continue

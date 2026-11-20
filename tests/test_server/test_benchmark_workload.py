@@ -17,10 +17,10 @@ import tiktoken
 from fleet_manager.server.benchmark_engine import (
     LONG_TOPICS,
     PROMPTS,
-    is_embed_model,
     make_prompt,
     send_request,
 )
+from fleet_manager.server.model_knowledge import is_embedding_model
 
 ENC = tiktoken.get_encoding("cl100k_base")
 
@@ -63,7 +63,7 @@ def test_padded_prompt_asks_for_a_long_answer():
     ],
 )
 def test_embedding_models_are_recognised(name, embed):
-    assert is_embed_model(name) is embed
+    assert is_embedding_model(name) is embed
 
 
 @pytest.mark.asyncio

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -12,7 +11,6 @@ from fleet_manager.models.node import (
     VisionEmbeddingMetrics,
     VisionEmbeddingModel,
 )
-
 
 # ---------------------------------------------------------------------------
 # Model registry & detection
@@ -285,21 +283,21 @@ class TestVisionEmbeddingCategory:
 
 class TestVisionEmbeddingRouting:
     def test_is_vision_embedding_model_canonical(self):
-        from fleet_manager.server.routes.embedding_compat import is_vision_embedding_model
+        from fleet_manager.server.model_knowledge import is_vision_embedding_model
 
         assert is_vision_embedding_model("dinov2-vit-s14")
         assert is_vision_embedding_model("clip-vit-b32")
         assert is_vision_embedding_model("siglip2-base")
 
     def test_is_vision_embedding_model_aliases(self):
-        from fleet_manager.server.routes.embedding_compat import is_vision_embedding_model
+        from fleet_manager.server.model_knowledge import is_vision_embedding_model
 
         assert is_vision_embedding_model("clip")
         assert is_vision_embedding_model("dinov2")
         assert is_vision_embedding_model("siglip")
 
     def test_is_not_vision_embedding_model(self):
-        from fleet_manager.server.routes.embedding_compat import is_vision_embedding_model
+        from fleet_manager.server.model_knowledge import is_vision_embedding_model
 
         assert not is_vision_embedding_model("nomic-embed-text")
         assert not is_vision_embedding_model("llama3.2:3b")
@@ -339,9 +337,7 @@ class TestVisionEmbeddingHeartbeat:
     def test_vision_embedding_metrics_serialization(self):
         metrics = VisionEmbeddingMetrics(
             models_available=[
-                VisionEmbeddingModel(
-                    name="dinov2-vit-s14", runtime="mlx", dimensions=384
-                )
+                VisionEmbeddingModel(name="dinov2-vit-s14", runtime="mlx", dimensions=384)
             ],
             processing=False,
         )
@@ -433,9 +429,7 @@ class TestEmbedImageFormats:
         from PIL import EpsImagePlugin
 
         called = []
-        monkeypatch.setattr(
-            EpsImagePlugin, "Ghostscript", lambda *a, **k: called.append(1)
-        )
+        monkeypatch.setattr(EpsImagePlugin, "Ghostscript", lambda *a, **k: called.append(1))
         eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 8 8\nshowpage\n"
         resp = embed_server.post("/embed", json={"images": [base64.b64encode(eps).decode()]})
         assert resp.status_code == 400

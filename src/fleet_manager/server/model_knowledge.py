@@ -7,6 +7,7 @@ Benchmark scores are approximate and sourced from public leaderboards.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -957,6 +958,71 @@ def is_image_model(name: str) -> bool:
     if not name.lower().startswith("x/"):
         return False
     return classify_model(name) == ModelCategory.IMAGE
+
+
+class ModelType(StrEnum):
+    """What kind of work a model does, which decides the endpoint that serves it.
+
+    Distinct from ``ModelCategory``, which ranks chat models by strength
+    (coding, reasoning...).  Every place that needs "is this an embedding
+    model?" or "is this speech-to-text?" asks ``model_type``.
+    """
+
+    LLM = "llm"
+    EMBED = "embed"  # text embeddings (Ollama /api/embed, fastembed)
+    EMBED_IMAGE = "embed-image"  # vision embeddings (DINOv2, CLIP, SigLIP)
+    VISION = "vision"  # image in, text out
+    IMAGE = "image"  # image generation
+    STT = "stt"  # speech to text
+
+
+# Text-embedding families by name.  The catalog has no text-embedding category,
+# so ``classify_model`` returns GENERAL for them: without this an embedding model
+# would be a chat candidate.  Covers nomic-embed, bge, gte, e5, arctic-embed,
+# all-minilm, snowflake.
+_EMBED_HINTS = ("embed", "nomic", "bge", "gte-", "e5-", "minilm", "arctic")
+_STT_HINTS = ("whisper", "asr")
+
+# Vision embedding models served by herd-node's embedding sidecar, plus the
+# short aliases clients use for them.
+VISION_EMBEDDING_MODEL_NAMES = frozenset(
+    {"dinov2-vit-s14", "siglip2-base", "clip-vit-b32", "clip", "dinov2", "siglip", "siglip2"}
+)
+
+
+def is_vision_embedding_model(name: str) -> bool:
+    """True for a vision embedding model (served at /api/embed-image)."""
+    return name.lower().strip() in VISION_EMBEDDING_MODEL_NAMES
+
+
+def is_embedding_model(name: str, capabilities: Iterable[str] = ()) -> bool:
+    """True for a text embedding model.
+
+    ``capabilities`` is what the node's Ollama reports for the model, when the
+    caller has it.  It only widens detection (Ollama under-reports on older
+    versions), never overrules the name.
+    """
+    if "embedding" in capabilities:
+        return True
+    lower = name.lower()
+    return any(h in lower for h in _EMBED_HINTS)
+
+
+def model_type(name: str, capabilities: Iterable[str] = ()) -> ModelType:
+    """The one classifier for what kind of model ``name`` is."""
+    caps = set(capabilities)
+    if is_vision_embedding_model(name):
+        return ModelType.EMBED_IMAGE
+    if is_image_model(name):
+        return ModelType.IMAGE
+    if is_embedding_model(name, caps):
+        return ModelType.EMBED
+    lower = name.lower()
+    if any(h in lower for h in _STT_HINTS):
+        return ModelType.STT
+    if "vision" in caps or is_vision_model(name):
+        return ModelType.VISION
+    return ModelType.LLM
 
 
 def models_fitting_ram(available_gb: float) -> list[ModelSpec]:

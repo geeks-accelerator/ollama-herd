@@ -801,10 +801,8 @@ async def dispatch_embed(
         return JSONResponse(status_code=400, content={"error": "model is required"})
 
     # Route vision embedding models to the embedding service
-    from fleet_manager.server.routes.embedding_compat import (
-        embed_image,
-        is_vision_embedding_model,
-    )
+    from fleet_manager.server.model_knowledge import is_vision_embedding_model
+    from fleet_manager.server.routes.embedding_compat import embed_image
 
     if is_vision_embedding_model(model):
         # Stash parsed body so embed_image doesn't re-read the stream

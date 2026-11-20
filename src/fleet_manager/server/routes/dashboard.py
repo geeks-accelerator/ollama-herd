@@ -159,6 +159,8 @@ async def favicon_alert_svg():
 @router.get("/dashboard/events")
 async def dashboard_events(request: Request):
     """SSE endpoint for real-time fleet state updates."""
+    from fleet_manager.server.model_knowledge import is_embedding_model
+    from fleet_manager.server.serializers import model_has_capability
 
     async def event_stream():
         # A client that walks away without a clean close (a laptop sleeping, a
@@ -250,9 +252,13 @@ async def dashboard_events(request: Request):
                     node_data["image_models"] = [m.name for m in node.image.models_available]
                 if node.transcription and node.transcription.models_available:
                     node_data["stt_models"] = [m.name for m in node.transcription.models_available]
-                # Embedding models: Ollama models with "embed" in the name
+                # Text embedding models: Ollama's reported capability, else the name
                 if node.ollama:
-                    embed_models = [m for m in node.ollama.models_available if "embed" in m.lower()]
+                    embed_models = [
+                        m
+                        for m in node.ollama.models_available
+                        if model_has_capability(node, m, "embedding") or is_embedding_model(m)
+                    ]
                     if embed_models:
                         node_data["embed_models"] = embed_models
                 # Vision embedding models (DINOv2, SigLIP, CLIP)

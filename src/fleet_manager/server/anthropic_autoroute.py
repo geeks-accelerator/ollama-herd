@@ -25,6 +25,7 @@ from fleet_manager.models.request import normalize_model_name
 from fleet_manager.server.model_knowledge import (
     ModelCategory,
     classify_model,
+    is_embedding_model,
     is_vision_model,
     lookup_model,
 )
@@ -75,19 +76,6 @@ _UNKNOWN_QUALITY = 50.0
 # Params assumed for an unknown model, in billions — only affects the size
 # tiebreak, and a neutral mid value keeps unknowns from dominating either tier.
 _UNKNOWN_PARAMS_B = 30.0
-
-# Text-embedding models must never serve a chat request.  The catalog has no
-# text-embedding category, so ``classify_model`` returns GENERAL for them (e.g.
-# nomic-embed-text) — which would make an embedding model a chat candidate and
-# route a Claude Code turn straight into a 500.  Exclude by name; these
-# substrings cover the common families (nomic-embed, bge, gte, e5, arctic-embed,
-# all-minilm, snowflake).
-_EMBEDDING_HINTS = ("embed", "bge-", "gte-", "e5-", "minilm", "arctic")
-
-
-def _is_embedding_name(name: str) -> bool:
-    lower = name.lower()
-    return any(h in lower for h in _EMBEDDING_HINTS)
 
 
 def _tier_of(claude_model: str) -> str:
@@ -144,7 +132,7 @@ def _candidate_score(
     reported = (
         (capabilities or {}).get(name) or (capabilities or {}).get(normalize_model_name(name)) or ()
     )
-    if "embedding" in reported or _is_embedding_name(name):
+    if is_embedding_model(name, reported):
         return None  # embedding models can't chat, and classify as GENERAL
     if "decision" in reported:
         # Decision models (Ollama 0.35 /v1/systemone: nimble, tev1) report

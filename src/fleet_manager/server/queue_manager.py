@@ -230,15 +230,13 @@ class QueueManager:
                 first_entry = next(iter(q.in_flight.values()))
                 request_type = getattr(first_entry.request, "request_type", "text")
             else:
-                from fleet_manager.server.model_knowledge import ModelCategory, classify_model
+                from fleet_manager.server.model_knowledge import ModelType, model_type
 
-                category = classify_model(q.model)
-                if category == ModelCategory.IMAGE:
-                    request_type = "image"
-                elif "asr" in q.model or "whisper" in q.model:
-                    request_type = "stt"
-                elif "embed" in q.model:
-                    request_type = "embed"
+                request_type = {
+                    ModelType.IMAGE: "image",
+                    ModelType.STT: "stt",
+                    ModelType.EMBED: "embed",
+                }.get(model_type(q.model), "text")
             # Running averages since process start.  ``stats_samples`` is the
             # honest denominator — may be below completed_count when some
             # completions didn't carry tokens (e.g. image gen).  Expose it

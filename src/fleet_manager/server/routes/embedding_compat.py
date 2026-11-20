@@ -28,23 +28,6 @@ router = APIRouter(tags=["vision-embedding"])
 _ORIGINAL_FORMAT = "embed"
 _TAGS = ("embed", "vision-embed")
 
-# Model names that are vision embedding models (not Ollama text embeddings)
-VISION_EMBEDDING_MODEL_NAMES = {
-    "dinov2-vit-s14",
-    "siglip2-base",
-    "clip-vit-b32",
-    # Common aliases
-    "clip",
-    "dinov2",
-    "siglip",
-    "siglip2",
-}
-
-
-def is_vision_embedding_model(model: str) -> bool:
-    """Check if a model name refers to a vision embedding model."""
-    return model.lower().strip() in VISION_EMBEDDING_MODEL_NAMES
-
 
 def _resolve_model_name(model: str) -> str:
     """Resolve aliases to canonical model names."""

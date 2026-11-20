@@ -37,7 +37,7 @@ import logging
 import time
 
 from fleet_manager.models.config import ServerSettings
-from fleet_manager.server.model_knowledge import lookup_model
+from fleet_manager.server.model_knowledge import is_embedding_model, lookup_model
 from fleet_manager.server.pinned_models import PinnedModelsStore
 from fleet_manager.server.registry import NodeRegistry
 from fleet_manager.server.serializers import model_resident_on_node
@@ -361,9 +361,9 @@ def _estimate_model_size(model: str, node=None) -> float:
 
     # 3. Name heuristic — last resort. Ordered biggest-first so that a name
     #    like "480b-a35b" matches 480b, not the "35b" hiding inside it.
-    lower = model.lower()
-    if "embed" in lower or "nomic" in lower:
+    if is_embedding_model(model):
         return 0.5
+    lower = model.lower()
     for token, gb in (
         ("671b", 400.0),
         ("480b", 290.0),

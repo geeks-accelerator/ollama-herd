@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from fleet_manager.common.stats import percentile
+from fleet_manager.server.model_knowledge import is_embedding_model
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +56,6 @@ _FILLER_TEXT = (
     "small models answer quick questions while large ones handle the hard reasoning work"
 )
 _FILLER_WORDS = _FILLER_TEXT.split()
-
-EMBED_PATTERNS = ("embed", "nomic", "bge", "e5-")
-
-
-def is_embed_model(name: str) -> bool:
-    """True for embedding models, judged by name (how discover_fleet labels them)."""
-    return any(p in name.lower() for p in EMBED_PATTERNS)
-
 
 # Topics for the padded workload.  PROMPTS ask for one sentence, which a model
 # obeys over any instruction to write more, so they cannot drive long replies.
@@ -206,7 +199,7 @@ async def discover_fleet(
                 name=name,
                 size_gb=size_gb,
                 concurrency=concurrency,
-                model_type="embed" if is_embed_model(name) else "llm",
+                model_type="embed" if is_embedding_model(name) else "llm",
             )
         else:
             model_map[name].concurrency = max(model_map[name].concurrency, concurrency)
