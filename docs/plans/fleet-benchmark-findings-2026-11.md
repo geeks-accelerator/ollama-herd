@@ -92,6 +92,36 @@ open-loop and seeded workloads / vision work in the benchmark engine (`4243946`,
 16. **Dashboard benchmark runner can't select vision or embed-image work.** The runner accepts
     both types since `4243946`; the checkboxes in `dashboard.py` don't offer them.
 
+Found by the local smoke test (`scripts/fake_fleet.py`, 8 fake nodes on one `scripts/mock_ollama.py`
+with runtime faults, against a real router). All fixed on `main`, unreleased:
+
+17. **Fixed (`c0dd89b`): `X-Fleet-*` named the first-choice node, not the one that served.** Every
+    route built `X-Fleet-Node` / `X-Fleet-Retries` / `X-Fleet-Score` before reading the stream,
+    while `_stream_with_retry` retries on other nodes producing the first chunk. `dispatched_stream`
+    now returns after the first chunk (`first_chunk`, still cancelling if the client leaves), and
+    routes build headers from the queue entry (`served_headers`). Re-run: 20 streaming `/api/chat`
+    at a 50% 500 rate, headers agreed with `/dashboard/api/traces?request_id=` 20 of 20 (served
+    after 0, 1 and 2 retries, and 502s after 2).
+18. **Fixed (`c0dd89b`): a streaming request that failed before its first chunk was a 200.** All
+    attempts failing (or a backend 4xx) returned 200 plus an error event. One mapping on every
+    surface, streaming or not (`backend_failure_response`): the backend's 4xx, else 502, in the
+    surface's error shape; the MLX passthroughs too (`first_mlx_chunk`). After the first chunk the
+    stream still ends in-protocol. Streaming headers now arrive with the first token.
+19. **Fixed (`c0dd89b`): Ollama's queue-full 503 came back 502 (non-streaming OpenAI, Anthropic,
+    Responses) or 200 (streaming).** Now `429` + `Retry-After: 10` on all four surfaces, both modes
+    (re-run: 8 of 8).
+20. **Fixed (`8a777aa`): `/fleet/status` `nodes_online` counted only ONLINE** while routing sends to
+    DEGRADED too. `nodes_online` is "routed to" in `/fleet/status`, `/fleet/queue` and the health
+    vitals; `/fleet/status` adds `nodes_degraded`; the dashboard figure still warns on a degraded
+    node. Re-run: 2 nodes killed, read 11 online / 2 degraded until they went offline (8 / 0).
+21. **Fixed (`9a4b870`): a failed request's trace `retry_count` counted attempts.** Rows now read
+    0, 1, 2 (retries before that attempt); `X-Fleet-Retries` is the serving attempt's value; the
+    dashboard and health retry totals sum terminal rows only; the embed path follows the same rule.
+22. **Not reproduced as reported (`e60f8d8`): "the router keeps a node's first backend URL".**
+    `ollama_base_url` is rebuilt on every heartbeat; moving a fake node from one mock port to
+    another moved `/fleet/status` and dispatch after one heartbeat. The stale thing was
+    `HardwareProfile.ollama_host`, copied at registration and never read: removed.
+
 ## Rules for this work
 
 herd is greenfield, so:
