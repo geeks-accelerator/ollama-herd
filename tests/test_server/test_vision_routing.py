@@ -412,16 +412,32 @@ class TestVisionRouting:
 
 
 class TestImageEdgeCases:
-    def test_http_url_fetched_and_converted(self):
-        """HTTP image URLs are fetched and converted to base64."""
-        from unittest.mock import MagicMock, patch
+    @staticmethod
+    def _serve(monkeypatch, handler):
+        """Answer the image fetch's outbound requests with ``handler``."""
+        import httpx
 
-        from fleet_manager.server.streaming import StreamingProxy
+        from fleet_manager.server import streaming
 
-        fake_response = MagicMock()
-        fake_response.content = b"\x89PNG\r\n\x1a\n"  # PNG header bytes
-        fake_response.raise_for_status = MagicMock()
+        real = httpx.AsyncClient
 
+        def patched(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(streaming.httpx, "AsyncClient", patched)
+
+    @pytest.mark.asyncio
+    async def test_http_url_fetched_and_converted(self, monkeypatch):
+        """HTTP image URLs are fetched (asynchronously) and sent as base64."""
+        import base64
+
+        import httpx
+
+        from fleet_manager.server.streaming import StreamingProxy, fetch_image_urls
+
+        png = b"\x89PNG\r\n\x1a\n"
+        self._serve(monkeypatch, lambda r: httpx.Response(200, content=png))
         messages = [
             {
                 "role": "user",
@@ -434,26 +450,22 @@ class TestImageEdgeCases:
                 ],
             }
         ]
-
-        with patch("httpx.get", return_value=fake_response) as mock_get:
-            converted = StreamingProxy._convert_messages_for_ollama(messages)
-            mock_get.assert_called_once_with(
-                "https://example.com/photo.png", timeout=30, follow_redirects=True
-            )
-
+        fetched = await fetch_image_urls(messages)
+        converted = StreamingProxy._convert_messages_for_ollama(messages, fetched)
         assert converted[0]["content"] == "What's in this?"
-        assert len(converted[0]["images"]) == 1
-        # Verify the PNG bytes were base64 encoded
-        import base64
+        assert converted[0]["images"] == [base64.b64encode(png).decode()]
 
-        assert converted[0]["images"][0] == base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
-
-    def test_http_url_fetch_failure_skips_image(self):
+    @pytest.mark.asyncio
+    async def test_http_url_fetch_failure_skips_image(self, monkeypatch):
         """Failed HTTP URL fetch logs warning and skips the image."""
-        from unittest.mock import patch
+        import httpx
 
-        from fleet_manager.server.streaming import StreamingProxy
+        from fleet_manager.server.streaming import StreamingProxy, fetch_image_urls
 
+        def refuse(request):
+            raise httpx.ConnectError("Connection refused")
+
+        self._serve(monkeypatch, refuse)
         messages = [
             {
                 "role": "user",
@@ -466,10 +478,9 @@ class TestImageEdgeCases:
                 ],
             }
         ]
-
-        with patch("httpx.get", side_effect=Exception("Connection refused")):
-            converted = StreamingProxy._convert_messages_for_ollama(messages)
-
+        fetched = await fetch_image_urls(messages)
+        assert fetched == {}
+        converted = StreamingProxy._convert_messages_for_ollama(messages, fetched)
         assert converted[0]["content"] == "What's in this?"
         assert "images" not in converted[0]  # Image skipped, not added
 
@@ -493,41 +504,30 @@ class TestImageEdgeCases:
         assert converted[0]["content"] == "Describe"
         assert "images" not in converted[0]  # Empty base64 skipped
 
-    def test_mixed_data_uri_and_http_url(self):
-        """Message with both data URI and HTTP URL images."""
-        from unittest.mock import MagicMock, patch
+    @pytest.mark.asyncio
+    async def test_mixed_data_uri_and_http_url(self, monkeypatch):
+        """Message with both data URI and HTTP URL images keeps both, in order."""
+        import base64
 
-        from fleet_manager.server.streaming import StreamingProxy
+        import httpx
 
-        fake_response = MagicMock()
-        fake_response.content = b"fake-image-bytes"
-        fake_response.raise_for_status = MagicMock()
+        from fleet_manager.server.streaming import StreamingProxy, fetch_image_urls
 
+        self._serve(monkeypatch, lambda r: httpx.Response(200, content=b"remote"))
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Compare these"},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "data:image/png;base64,localimg"},
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "https://example.com/remote.png"},
-                    },
+                    {"type": "text", "text": "Compare"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,localimg"}},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/b.png"}},
                 ],
             }
         ]
-
-        with patch("httpx.get", return_value=fake_response):
-            converted = StreamingProxy._convert_messages_for_ollama(messages)
-
-        assert len(converted[0]["images"]) == 2
-        assert converted[0]["images"][0] == "localimg"
-        import base64
-
-        assert converted[0]["images"][1] == base64.b64encode(b"fake-image-bytes").decode()
+        converted = StreamingProxy._convert_messages_for_ollama(
+            messages, await fetch_image_urls(messages)
+        )
+        assert converted[0]["images"] == ["localimg", base64.b64encode(b"remote").decode()]
 
     def test_image_tokens_with_http_url(self):
         """Token estimation works for HTTP URLs (counted same as data URIs)."""

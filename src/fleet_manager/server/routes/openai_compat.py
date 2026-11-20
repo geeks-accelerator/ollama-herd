@@ -38,9 +38,9 @@ from fleet_manager.server.mlx_proxy import (
 from fleet_manager.server.model_knowledge import is_vision_model
 from fleet_manager.server.queue_manager import ClientConcurrencyExceeded
 from fleet_manager.server.routes.ollama_compat import (
-    _build_thinking_headers,
     _nodes_with_model,
     _post_with_failover,
+    _stream_meta_headers,
 )
 from fleet_manager.server.routes.routing import (
     CLIENT_GONE_STATUS,
@@ -597,7 +597,7 @@ async def chat_completions(request: Request):
         cached_tok = tokens[2] if len(tokens) > 2 else None
 
         # Add thinking-aware headers
-        headers.update(_build_thinking_headers(proxy, inference_req.request_id))
+        headers.update(_stream_meta_headers(proxy, inference_req))
 
         return JSONResponse(
             content={

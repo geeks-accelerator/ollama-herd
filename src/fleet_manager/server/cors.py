@@ -37,6 +37,7 @@ EXPOSED_HEADERS = [
     "X-Fleet-Score",
     "X-Fleet-Affinity",
     "X-Fleet-Context-Overflow",
+    "X-Fleet-Overhead-Ms",
     "X-Thinking-Tokens",
     "X-Output-Tokens",
     "X-Done-Reason",

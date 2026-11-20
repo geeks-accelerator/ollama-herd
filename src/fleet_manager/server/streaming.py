@@ -179,6 +179,86 @@ def _backend_url(node, port: int) -> str:
     return f"http://{host}:{port}"
 
 
+def _image_urls(messages: list[dict]) -> list[str]:
+    """The http(s) image URLs in OpenAI-shaped messages."""
+    urls = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                url = (part.get("image_url") or {}).get("url", "")
+                if url.startswith(("http://", "https://")):
+                    urls.append(url)
+    return urls
+
+
+async def fetch_image_urls(messages: list[dict]) -> dict[str, str]:
+    """Fetch the http(s) image URLs in ``messages`` as base64, concurrently.
+
+    Ollama takes only base64 images.  This used to be a blocking ``httpx.get``
+    inside the message conversion, which stalled the router's event loop (every
+    request in flight) for up to 30 s per image.  A URL that fails is logged
+    and left out.
+    """
+    urls = list(dict.fromkeys(_image_urls(messages)))
+    if not urls:
+        return {}
+    import base64
+
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+
+        async def one(url: str) -> tuple[str, str | None]:
+            try:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return url, base64.b64encode(resp.content).decode()
+            except Exception as exc:  # noqa: BLE001 -- any failure drops the image
+                logger.warning(
+                    "Failed to fetch image URL %s: %s — use a data: URI instead", url, exc
+                )
+                return url, None
+
+        results = await asyncio.gather(*(one(u) for u in urls))
+    return {url: data for url, data in results if data}
+
+
+def _ns_to_ms(value) -> float | None:
+    """Ollama's nanosecond durations as milliseconds; None when absent."""
+    try:
+        return round(int(value) / 1e6, 1) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def request_timings(
+    entry: QueueEntry, start_time: float, end_time: float, backend_ms: float | None
+) -> dict[str, float]:
+    """Where a request's time went, in milliseconds.
+
+    ``route_ms`` from the request's arrival to its enqueue (scoring, holding
+    for a node); ``queue_ms`` waiting for a slot; ``upstream_ms`` from sending
+    to the node until the last byte; ``backend_ms`` Ollama's own
+    ``total_duration``.  ``overhead_ms`` is herd's own time: arrival to finish,
+    minus the queue wait (load, not overhead) and minus Ollama's time.  It
+    includes the network hop to the node, which herd adds by existing.
+    """
+    req = entry.request
+    started = entry.started_at or start_time
+    timings = {
+        "route_ms": round((entry.enqueued_at - req.created_at) * 1000, 1),
+        "queue_ms": round((started - entry.enqueued_at) * 1000, 1),
+        "upstream_ms": round((end_time - start_time) * 1000, 1),
+    }
+    if backend_ms is not None:
+        timings["backend_ms"] = backend_ms
+        timings["overhead_ms"] = round(
+            (end_time - req.created_at) * 1000 - timings["queue_ms"] - backend_ms, 1
+        )
+    return timings
+
+
 class StreamingProxy:
     def __init__(self, registry: NodeRegistry, latency_store=None, trace_store=None, settings=None):
         self._registry = registry
@@ -213,6 +293,10 @@ class StreamingProxy:
         # with the backend's reason.  Routes read the same line from their own
         # translator state, so nothing here races them.
         self._request_backend_error: dict[str, str] = {}
+        # Ollama's own time for a request (its final line's total_duration),
+        # owned by the trace path like _request_done_reason: the part of a
+        # request's latency that is not herd's.
+        self._request_backend_ms: dict[str, float] = {}
         # Models we've already warned about an inert num_ctx override for.
         self._inert_override_logged: set[tuple[str, int]] = set()
         # Models the backend has told us cannot serve /api/generate at all —
@@ -395,8 +479,12 @@ class StreamingProxy:
         response chunks, and error) to the debug JSONL log.  Trace recording
         always runs first so DB writes aren't blocked by debug I/O.
         """
-        elapsed_ms = (time.time() - start_time) * 1000
+        now = time.time()
+        elapsed_ms = (now - start_time) * 1000
         ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else None
+        timings = request_timings(
+            entry, start_time, now, self._request_backend_ms.pop(entry.request.request_id, None)
+        )
         prompt_tokens, completion_tokens = self._request_tokens.get(
             entry.request.request_id, (None, None)
         )
@@ -446,6 +534,7 @@ class StreamingProxy:
                     # data for a threshold -- see
                     # docs/plans/context-window-blindness.md.
                     estimated_tokens=entry.request.estimated_tokens,
+                    timings=timings,
                 ),
                 name=f"trace-record-{entry.request.request_id[:8]}",
             )
@@ -895,7 +984,9 @@ class StreamingProxy:
     async def stream_from_node(self, node_id: str, request: InferenceRequest) -> AsyncIterator[str]:
         """Stream response from a node's Ollama, converting format if needed."""
         client = self._get_client(node_id)
-        ollama_body = self._build_ollama_body(request, node_id)
+        ollama_body = self._build_ollama_body(
+            request, node_id, await fetch_image_urls(request.messages)
+        )
 
         # Determine endpoint based on original request shape
         endpoint = "/api/chat"
@@ -970,8 +1061,12 @@ class StreamingProxy:
                             completion_tok,
                         )
                         self._request_done_reason[request.request_id] = done_reason
+                        backend_ms = _ns_to_ms(parsed.get("total_duration"))
+                        if backend_ms is not None:
+                            self._request_backend_ms[request.request_id] = backend_ms
                         # Store extended metadata for headers
                         self._request_meta[request.request_id] = {
+                            "backend_ms": backend_ms,
                             "thinking_tokens": thinking_token_count,
                             "output_tokens": output_token_count,
                             "done_reason": done_reason,
@@ -1694,8 +1789,14 @@ class StreamingProxy:
             )
             _record_context_protection("warning", model, node_id, client_num_ctx, loaded_ctx)
 
-    def _build_ollama_body(self, request: InferenceRequest, node_id: str) -> dict:
-        """Convert normalized request to Ollama API format."""
+    def _build_ollama_body(
+        self, request: InferenceRequest, node_id: str, fetched_images: dict[str, str] | None = None
+    ) -> dict:
+        """Convert normalized request to Ollama API format.
+
+        ``fetched_images`` maps http(s) image URLs in the messages to base64,
+        from ``fetch_image_urls``; a URL missing from it is dropped.
+        """
         # ANTHROPIC and RESPONSES requests are pre-translated by their routes
         # into a ready-to-send body (messages, tools, options) in raw_body.
         # Treat them the same as OLLAMA for body construction.
@@ -1732,7 +1833,9 @@ class StreamingProxy:
         }
 
         if request.messages:
-            body["messages"] = self._convert_messages_for_ollama(request.messages)
+            body["messages"] = self._convert_messages_for_ollama(
+                request.messages, fetched_images or {}
+            )
         elif request.raw_body.get("prompt") is not None:
             body["prompt"] = request.raw_body["prompt"]
 
@@ -1821,7 +1924,9 @@ class StreamingProxy:
         return {**msg, "tool_calls": new_tool_calls}
 
     @classmethod
-    def _convert_messages_for_ollama(cls, messages: list[dict]) -> list[dict]:
+    def _convert_messages_for_ollama(
+        cls, messages: list[dict], fetched_images: dict[str, str] | None = None
+    ) -> list[dict]:
         """Convert OpenAI-shaped messages to Ollama's /api/chat format.
 
         OpenAI uses content as a list of typed parts:
@@ -1829,6 +1934,10 @@ class StreamingProxy:
 
         Ollama uses content as a string with a separate images field:
             {"content": "...", "images": ["base64data"]}
+
+        Ollama takes only base64 images, so an http(s) image URL is replaced by
+        its bytes from ``fetched_images`` (``fetch_image_urls``, which fetches
+        asynchronously; this method does no I/O) and dropped if absent.
 
         Also normalizes tool_calls[].function.arguments — see
         _normalize_tool_call_arguments.
@@ -1856,28 +1965,8 @@ class StreamingProxy:
                         _, _, b64 = url.partition(",")
                         if b64:
                             images.append(b64)
-                    elif url.startswith(("http://", "https://")):
-                        # Ollama doesn't support HTTP image URLs — only
-                        # base64 data URIs.  Fetch the image and convert.
-                        import base64
-
-                        import httpx
-
-                        try:
-                            resp = httpx.get(
-                                url,
-                                timeout=30,
-                                follow_redirects=True,
-                            )
-                            resp.raise_for_status()
-                            encoded = base64.b64encode(resp.content)
-                            images.append(encoded.decode())
-                        except Exception as exc:
-                            logger.warning(
-                                "Failed to fetch image URL %s: %s — use a data: URI instead",
-                                url,
-                                exc,
-                            )
+                    elif url in (fetched_images or {}):
+                        images.append(fetched_images[url])
 
             new_msg = {**msg, "content": "\n".join(text_parts)}
             if images:

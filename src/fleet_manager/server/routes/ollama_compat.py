@@ -45,17 +45,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["ollama"])
 
 
-def _build_thinking_headers(proxy, request_id: str) -> dict[str, str]:
-    """Build X-Thinking-* response headers from streaming metadata.
+def _stream_meta_headers(proxy, inference_req: InferenceRequest) -> dict[str, str]:
+    """Response headers from what the backend's stream reported, for a
+    non-streaming response: thinking/output tokens, budget, done reason, and
+    ``X-Fleet-Overhead-Ms``.
 
-    Returns headers for thinking token breakdown, budget usage, and done reason.
-    Only includes headers when there's meaningful data (thinking tokens > 0 or
-    done_reason is present).
+    The overhead is the request's time in herd minus Ollama's own
+    ``total_duration``: routing, any wait in herd's queue, translation and the
+    network hop to the node (``streaming.request_timings`` splits these in the
+    trace).  Streaming responses send headers before the backend has answered,
+    so they carry none of this; their trace has it.
     """
-    meta = proxy.pop_request_meta(request_id)
+    meta = proxy.pop_request_meta(inference_req.request_id)
     if not meta:
         return {}
     headers = {}
+    if meta.get("backend_ms") is not None:
+        elapsed_ms = (time.time() - inference_req.created_at) * 1000
+        headers["X-Fleet-Overhead-Ms"] = f"{max(0.0, elapsed_ms - meta['backend_ms']):.1f}"
     if meta.get("thinking_tokens", 0) > 0:
         headers["X-Thinking-Tokens"] = str(meta["thinking_tokens"])
     if meta.get("output_tokens", 0) > 0:
@@ -1189,7 +1196,7 @@ async def _route_and_stream(request: Request, inference_req: InferenceRequest):
             )
 
         # Add thinking-aware headers to non-streaming response
-        headers.update(_build_thinking_headers(proxy, inference_req.request_id))
+        headers.update(_stream_meta_headers(proxy, inference_req))
 
         # Clean up token tracking
         proxy.pop_token_counts(inference_req.request_id)

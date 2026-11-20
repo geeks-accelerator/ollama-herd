@@ -172,6 +172,16 @@ class TraceStore:
             logger.info("Added 'estimated_tokens' column to request_traces")
         except Exception:
             pass  # Column already exists
+        # Schema migration: where a request's time went, as JSON (route_ms,
+        # queue_ms, upstream_ms, backend_ms, overhead_ms).  The router added
+        # 24 ms per request across a network in the 2026-11-20 fleet benchmark
+        # and nothing recorded which part was its own.  Not in scores_breakdown,
+        # whose readers sum every key as a score.
+        try:
+            await self._db.execute("ALTER TABLE request_traces ADD COLUMN timings TEXT")
+            logger.info("Added 'timings' column to request_traces")
+        except Exception:
+            pass  # Column already exists
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_traces_tags ON request_traces(tags)")
 
         # Benchmark runs table
@@ -298,6 +308,7 @@ class TraceStore:
         tags: list[str] | None = None,
         finish_reason: str | None = None,
         estimated_tokens: int | None = None,
+        timings: dict | None = None,
     ):
         """Insert a single trace record.
 
@@ -338,14 +349,15 @@ class TraceStore:
             time.time(),
             finish_reason,
             estimated_tokens,
+            json.dumps(timings) if timings else None,
         )
         sql = (
             "INSERT INTO request_traces "
             "(request_id, model, original_model, node_id, score, scores_breakdown, "
             "status, latency_ms, time_to_first_token_ms, prompt_tokens, completion_tokens, "
             "retry_count, fallback_used, excluded_nodes, client_ip, original_format, "
-            "error_message, tags, timestamp, finish_reason, estimated_tokens) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "error_message, tags, timestamp, finish_reason, estimated_tokens, timings) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         # Retry-on-locked: the busy_timeout PRAGMA above absorbs short
         # contention, but a stuck-reader scenario can still expire it.
@@ -384,7 +396,8 @@ class TraceStore:
             "SELECT request_id, model, original_model, node_id, score, "
             "scores_breakdown, status, latency_ms, time_to_first_token_ms, "
             "prompt_tokens, completion_tokens, retry_count, fallback_used, "
-            "excluded_nodes, client_ip, original_format, error_message, timestamp, tags "
+            "excluded_nodes, client_ip, original_format, error_message, timestamp, tags, "
+            "timings "
             "FROM request_traces ORDER BY timestamp DESC LIMIT ?",
             (limit,),
         )
@@ -399,7 +412,8 @@ class TraceStore:
             "SELECT request_id, model, original_model, node_id, score, "
             "scores_breakdown, status, latency_ms, time_to_first_token_ms, "
             "prompt_tokens, completion_tokens, retry_count, fallback_used, "
-            "excluded_nodes, client_ip, original_format, error_message, timestamp, tags "
+            "excluded_nodes, client_ip, original_format, error_message, timestamp, tags, "
+            "timings "
             "FROM request_traces WHERE request_id = ? ORDER BY timestamp",
             (request_id,),
         )
@@ -1512,6 +1526,12 @@ class TraceStore:
             except json.JSONDecodeError:
                 logger.debug(f"Corrupt tags JSON in trace {row[0]}")
                 tags = row[18]
+        timings = None
+        if len(row) > 19 and row[19]:
+            try:
+                timings = json.loads(row[19])
+            except json.JSONDecodeError:
+                logger.debug(f"Corrupt timings JSON in trace {row[0]}")
         return {
             "request_id": row[0],
             "model": row[1],
@@ -1532,6 +1552,7 @@ class TraceStore:
             "error_message": row[16],
             "timestamp": row[17],
             "tags": tags,
+            "timings": timings,
         }
 
     async def close(self):

@@ -36,7 +36,10 @@ def percentile(values: list[float], pct: float) -> float:
     return ordered[lo] + (ordered[hi] - ordered[lo]) * (k - lo)
 
 
-async def one(client: httpx.AsyncClient, url: str, model: str, max_tokens: int) -> float:
+async def one(
+    client: httpx.AsyncClient, url: str, model: str, max_tokens: int
+) -> tuple[float, float | None]:
+    """Wall time in ms, and the router's own X-Fleet-Overhead-Ms when present."""
     body = {
         "model": model,
         "messages": [{"role": "user", "content": PROMPT}],
@@ -47,7 +50,8 @@ async def one(client: httpx.AsyncClient, url: str, model: str, max_tokens: int) 
     resp = await client.post(f"{url.rstrip('/')}/api/chat", json=body)
     elapsed = (time.perf_counter() - start) * 1000
     resp.raise_for_status()
-    return elapsed
+    reported = resp.headers.get("x-fleet-overhead-ms")
+    return elapsed, float(reported) if reported else None
 
 
 def summary(values: list[float]) -> dict:
@@ -62,6 +66,7 @@ def summary(values: list[float]) -> dict:
 async def main(args: argparse.Namespace) -> int:
     direct: list[float] = []
     routed: list[float] = []
+    reported: list[float] = []  # the router's own figure, per routed request
     async with httpx.AsyncClient(timeout=args.timeout) as client:
         # Warm both paths: the model load and the router's first-request work
         # are not overhead.
@@ -72,7 +77,10 @@ async def main(args: argparse.Namespace) -> int:
             if i % 2:
                 pair.reverse()
             for url, out in pair:
-                out.append(await one(client, url, args.model, args.max_tokens))
+                elapsed, overhead = await one(client, url, args.model, args.max_tokens)
+                out.append(elapsed)
+                if out is routed and overhead is not None:
+                    reported.append(overhead)
             print(f"\r  {i + 1}/{args.requests}", end="", flush=True)
     print()
     d, r = summary(direct), summary(routed)
@@ -85,6 +93,9 @@ async def main(args: argparse.Namespace) -> int:
         "router": r,
         "overhead_median_ms": round(r["median_ms"] - d["median_ms"], 1),
         "overhead_p95_ms": round(r["p95_ms"] - d["p95_ms"], 1),
+        # X-Fleet-Overhead-Ms: herd's time minus Ollama's own total_duration,
+        # from inside the router (includes the hop to the node).
+        "router_reported": summary(reported) if reported else None,
         "direct_raw_ms": [round(x, 1) for x in direct],
         "router_raw_ms": [round(x, 1) for x in routed],
     }
@@ -94,6 +105,12 @@ async def main(args: argparse.Namespace) -> int:
     print(
         f"  {'added':8} {report['overhead_median_ms']:>7.1f}ms {report['overhead_p95_ms']:>7.1f}ms"
     )
+    if reported:
+        rr = report["router_reported"]
+        print(
+            f"  {'reported':8} {rr['median_ms']:>7.1f}ms {rr['p95_ms']:>7.1f}ms"
+            "  (X-Fleet-Overhead-Ms)"
+        )
     if args.output:
         with open(args.output, "w") as f:
             json.dump(report, f, indent=2)
