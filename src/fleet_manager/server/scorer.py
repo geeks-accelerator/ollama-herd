@@ -374,7 +374,35 @@ class ScoringEngine:
         s = self._s
         on_gpu = bool(node.memory and node.memory.gpu_total_gb > 0)
 
+        others = [
+            n for n in self._registry.get_online_nodes() if n.node_id != node.node_id and n.ollama
+        ]
+
+        def has_another_home(m) -> bool:
+            """Could any other online node hold ``m`` (on its disk, fits its card)?
+
+            Evicting a model that nothing else can hold strands it: its next
+            request has to evict something here to load it back.  On a mixed
+            fleet that turned the one 48 GB card into a swap loop between a
+            35 GB model only it could hold and a 15 GB one the 24 GB cards
+            could have taken (2026-11-20 benchmark, run 4).  With no other node
+            every eviction is unavoidable, so nothing is stranded.
+            """
+            if not others:
+                return True
+            size = m.size_vram_gb or m.size_gb
+            for n in others:
+                if m.name not in n.ollama.models_available:
+                    continue
+                gpu = n.memory.gpu_total_gb if n.memory else 0.0
+                total = gpu if gpu > 0 else (n.memory.total_gb if n.memory else 0.0)
+                if total >= size:
+                    return True
+            return False
+
         def charge(m) -> float:
+            if not has_another_home(m):
+                return s.score_model_hot
             if queue_depths.get(f"{node.node_id}:{m.name}", 0) > 0:
                 return s.score_model_hot - s.score_model_cold
             if model_preloader.get_model_priority(m.name, model_preloader._priority_cache) > 0:

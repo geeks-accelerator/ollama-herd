@@ -134,3 +134,53 @@ async def test_memory_held_by_a_model_still_loading_counts(scorer, registry):
     s = ServerSettings()
     assert by_node["n1"]["eviction"] == -(s.score_model_hot - s.score_model_cold)
     assert by_node["n1"]["thermal"] == s.score_model_cold  # not warm
+
+
+@pytest.mark.asyncio
+class TestStrandedModels:
+    """Run 4 (2026-11-20): two 24 GB cards and one 48 GB card, four models.
+    Herd sent phi4 to the 48 GB card, evicting the 35 GB model nothing else
+    could hold, and the big card swapped the two for the whole run."""
+
+    BIG = "qwen2.5:32b-instruct-q8_0"
+
+    def _hb(self, node_id, loaded, gpu_gb, has_big):
+        sizes = {**SIZES, "qwen3-coder:30b": 18.6, self.BIG: 35.2}
+        available = [A, B, "qwen3-coder:30b"] + ([self.BIG] if has_big else [])
+        hb = make_heartbeat(
+            node_id=node_id,
+            memory_total=64.0,
+            memory_used=12.0,
+            loaded_models=[(m, sizes[m]) for m in loaded],
+            available_models=available,
+        )
+        hb.ollama.models_available_sizes = {m: sizes[m] for m in available}
+        for m in hb.ollama.models_loaded:
+            m.size_vram_gb = m.size_gb
+        hb.memory.gpu_total_gb = gpu_gb
+        return hb
+
+    async def _fleet(self, registry, big_elsewhere=False):
+        await registry.update_from_heartbeat(
+            self._hb("small-1", ["qwen3-coder:30b"], 22.5, big_elsewhere)
+        )
+        await registry.update_from_heartbeat(self._hb("small-2", [A], 22.5, big_elsewhere))
+        await registry.update_from_heartbeat(self._hb("big", [self.BIG], 45.0, True))
+
+    async def test_a_model_only_one_card_can_hold_is_not_evicted(self, scorer, registry):
+        await self._fleet(registry)
+        busy = {"small-1:qwen3-coder:30b": 2, f"small-2:{A}": 2, f"big:{self.BIG}": 2}
+        results = scorer.score_request(B, busy)
+        assert results[0].node_id != "big"
+        by_node = {r.node_id: r.scores_breakdown["eviction"] for r in results}
+        assert by_node["big"] < by_node["small-1"]
+
+    async def test_stranding_only_counts_when_no_other_node_can_hold_it(self, scorer, registry):
+        """Give a small card room for the big model's size: then it has another home."""
+        await self._fleet(registry, big_elsewhere=True)
+        for n in ("small-1", "small-2"):
+            registry.get_node(n).memory.gpu_total_gb = 40.0
+        busy = {"small-1:qwen3-coder:30b": 2, f"small-2:{A}": 2, f"big:{self.BIG}": 2}
+        by_node = {r.node_id: r.scores_breakdown["eviction"] for r in scorer.score_request(B, busy)}
+        s = ServerSettings()
+        assert by_node["big"] >= -(s.score_model_hot - s.score_model_cold)
