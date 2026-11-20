@@ -289,7 +289,6 @@ def _build_ollama_request_body(
         "_clearing_report": clearing_report,
         "messages": ollama_messages,
         "stream": True,
-        "keep_alive": -1,
     }
     if options:
         out["options"] = options

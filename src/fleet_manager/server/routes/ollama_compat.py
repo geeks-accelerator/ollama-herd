@@ -922,7 +922,8 @@ async def dispatch_embed(
     # managed HTTP client (handles LAN IP rewriting, connection pooling).
     embed_body = dict(body)
     embed_body.pop("metadata", None)
-    embed_body.setdefault("keep_alive", -1)
+    if not queue_mgr.load_pending_on(winner.node_id, actual_model):  # see _build_ollama_body
+        embed_body.setdefault("keep_alive", -1)
 
     _EMBED_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0)
 

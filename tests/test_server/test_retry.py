@@ -107,7 +107,7 @@ class TestStreamWithRetry:
         scorer = _mock_scorer()
         entry = _make_entry()
 
-        async def fake_stream(node_id, request):
+        async def fake_stream(node_id, request, pin=True):
             yield "data: {}\n\n"
             yield "data: [DONE]\n\n"
             # Simulate done:true token extraction (normally done in stream_from_node)
@@ -143,7 +143,7 @@ class TestStreamWithRetry:
 
         call_count = 0
 
-        async def failing_then_succeeding(node_id, request):
+        async def failing_then_succeeding(node_id, request, pin=True):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -177,7 +177,7 @@ class TestStreamWithRetry:
         scorer = _mock_scorer()
         entry = _make_entry()
 
-        async def fail_after_chunk(node_id, request):
+        async def fail_after_chunk(node_id, request, pin=True):
             yield "data: partial\n\n"
             raise httpx.ReadTimeout("timeout mid-stream")
 
@@ -208,7 +208,7 @@ class TestStreamWithRetry:
         scorer = _mock_scorer(score_fn=lambda model, depths: [node_b_result])
         entry = _make_entry(node_id="node-a")
 
-        async def always_fail(node_id, request):
+        async def always_fail(node_id, request, pin=True):
             raise httpx.ConnectError("refused")
             yield  # makes this an async generator
 
@@ -236,7 +236,7 @@ class TestStreamWithRetry:
         response = MagicMock()
         response.status_code = 400
 
-        async def client_error(node_id, request):
+        async def client_error(node_id, request, pin=True):
             raise httpx.HTTPStatusError(
                 "bad request", request=MagicMock(), response=response
             )
@@ -276,7 +276,7 @@ class TestStreamWithRetry:
 
         fail_count = 0
 
-        async def fail_then_succeed(node_id, request):
+        async def fail_then_succeed(node_id, request, pin=True):
             nonlocal fail_count
             fail_count += 1
             if fail_count <= 2:
@@ -308,7 +308,7 @@ class TestStreamWithRetry:
         scorer.score_request.return_value = []
         entry = _make_entry(node_id="node-a")
 
-        async def fail(node_id, request):
+        async def fail(node_id, request, pin=True):
             raise httpx.ConnectError("refused")
             yield  # makes this an async generator
 
@@ -371,7 +371,7 @@ class TestTraceReliability:
         scorer = _mock_scorer(score_fn=lambda model, depths: [node_b])
         entry = _make_entry(node_id="node-a")
 
-        async def always_fail(node_id, request):
+        async def always_fail(node_id, request, pin=True):
             raise httpx.ConnectError("refused")
             yield  # makes this an async generator
 
@@ -408,7 +408,7 @@ class TestClientDisconnectMidGeneration:
         entry = _make_entry()
         waiting = asyncio.Event()
 
-        async def slow_backend(node_id, request):
+        async def slow_backend(node_id, request, pin=True):
             yield "data: {}\n\n"
             waiting.set()
             await asyncio.Event().wait()  # generation still running
@@ -453,7 +453,7 @@ class TestRetryCountIsRetriesBeforeThisAttempt:
 
     @staticmethod
     async def _rows(proxy, entry, *, succeed_on=None):
-        async def backend(node_id, request):
+        async def backend(node_id, request, pin=True):
             if node_id != succeed_on:
                 raise httpx.ConnectError("refused")
             yield "data: ok\n\n"

@@ -395,7 +395,8 @@ class StreamingProxy:
         capture_bytes = 0
         DEBUG_CAPTURE_MAX_BYTES = 2 * 1024 * 1024
         try:
-            async for chunk in self.stream_from_node(entry.assigned_node, entry.request):
+            pin = not queue_manager.load_pending_on(entry.assigned_node, entry.request.model)
+            async for chunk in self.stream_from_node(entry.assigned_node, entry.request, pin):
                 if first_token_time is None:
                     first_token_time = time.time()
                 # Progress stamp for the stale reaper.  One float write per
@@ -677,7 +678,8 @@ class StreamingProxy:
             capture_chunks: list[str] = []
             capture_bytes = 0
             try:
-                async for chunk in self.stream_from_node(current_node, entry.request):
+                pin = not queue_manager.load_pending_on(current_node, entry.request.model)
+                async for chunk in self.stream_from_node(current_node, entry.request, pin):
                     entry.last_progress_at = time.time()
                     if not first_chunk_sent:
                         first_chunk_sent = True
@@ -998,11 +1000,14 @@ class StreamingProxy:
             response_chunks=capture_chunks,
         )
 
-    async def stream_from_node(self, node_id: str, request: InferenceRequest) -> AsyncIterator[str]:
-        """Stream response from a node's Ollama, converting format if needed."""
+    async def stream_from_node(
+        self, node_id: str, request: InferenceRequest, pin: bool = True
+    ) -> AsyncIterator[str]:
+        """Stream response from a node's Ollama, converting format if needed.
+        ``pin``: see ``_build_ollama_body``."""
         client = self._get_client(node_id)
         ollama_body = self._build_ollama_body(
-            request, node_id, await fetch_image_urls(request.messages)
+            request, node_id, await fetch_image_urls(request.messages), pin=pin
         )
 
         # Determine endpoint based on original request shape
@@ -1823,12 +1828,26 @@ class StreamingProxy:
             _record_context_protection("warning", model, node_id, client_num_ctx, loaded_ctx)
 
     def _build_ollama_body(
-        self, request: InferenceRequest, node_id: str, fetched_images: dict[str, str] | None = None
+        self,
+        request: InferenceRequest,
+        node_id: str,
+        fetched_images: dict[str, str] | None = None,
+        pin: bool = True,
     ) -> dict:
         """Convert normalized request to Ollama API format.
 
         ``fetched_images`` maps http(s) image URLs in the messages to base64,
         from ``fetch_image_urls``; a URL missing from it is dropped.
+
+        ``pin`` adds ``keep_alive: -1`` (unless the client sent its own): herd
+        keeps models loaded, not Ollama's idle timeout.  The caller passes
+        False while a load may be waiting on the node
+        (``QueueManager.load_pending_on``), because Ollama takes a request's
+        ``keep_alive`` as the runner's (``useLoadedRunner``): it cancels an
+        eviction under way, and the load, and every load behind it, then wait
+        with no timeout for an unload that never comes.  Sent on every request,
+        it stopped two nodes loading anything for the rest of a run (2026-11-20
+        fleet benchmark, run 4).  The runner keeps the ``-1`` it had.
         """
         # ANTHROPIC and RESPONSES requests are pre-translated by their routes
         # into a ready-to-send body (messages, tools, options) in raw_body.
@@ -1850,20 +1869,17 @@ class StreamingProxy:
             # Strip tagging fields that Ollama doesn't understand
             body.pop("metadata", None)
             body.pop("fallback_models", None)
-            # Keep models loaded permanently — the router manages model lifecycle,
-            # not Ollama's idle timeout. Prevents costly cold loads on high-memory machines.
-            body.setdefault("keep_alive", -1)
+            if pin:
+                body.setdefault("keep_alive", -1)
             # Protect against num_ctx triggering expensive model reloads
             self._apply_context_protection(body, request.model, node_id)
             # Auto-inflate num_predict for thinking models
             self._apply_thinking_overhead(body, request.model, node_id)
             return body
 
-        body = {
-            "model": request.model,
-            "stream": True,
-            "keep_alive": -1,
-        }
+        body = {"model": request.model, "stream": True}
+        if pin:
+            body["keep_alive"] = -1
 
         if request.messages:
             body["messages"] = self._convert_messages_for_ollama(

@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 
 from fleet_manager.models.request import QueueEntry, RequestStatus
-from fleet_manager.server.serializers import decode_parallelism_for
+from fleet_manager.server.serializers import decode_parallelism_for, model_resident_on_node
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,15 @@ _STALE_NO_PROGRESS_SECONDS = 600.0
 # How often to run the stale reaper (seconds).
 _REAPER_INTERVAL_SECONDS = 60
 
+# How often a request held for a load on its node checks whether it may go.
+_LOAD_HOLD_POLL_SECONDS = 0.25
+
+# The longest a load that must evict a busy model waits for one to go idle
+# before it is sent anyway, and the resident models make room for it
+# (``QueueManager._must_wait``).  Long enough that a node does not swap models
+# on every request, short next to a client's timeout: a few cold loads.
+_LOAD_WAIT_SECONDS = 30.0
+
 
 def compute_concurrency(available_memory_gb: float, model_size_gb: float) -> int:
     """Calculate how many concurrent requests a node can handle for a model.
@@ -78,6 +87,9 @@ class DeviceModelQueue:
     # request's whole duration — that is what makes `concurrency` a real limit.
     slots: dict[str, asyncio.Event] = field(default_factory=dict)  # keyed by request_id
     worker_tasks: list[asyncio.Task] = field(default_factory=list)
+    # Taken by a worker but held back for a load on this node
+    # (``QueueManager._must_wait``); counted as pending.
+    held: int = 0
     concurrency: int = _MIN_CONCURRENCY
     completed_count: int = 0
     failed_count: int = 0
@@ -218,7 +230,9 @@ class QueueManager:
 
     def get_queue_depths(self) -> dict[str, int]:
         """Return current depth (pending + in_flight) for all queues."""
-        return {key: q.pending.qsize() + len(q.in_flight) for key, q in self._queues.items()}
+        return {
+            key: q.pending.qsize() + q.held + len(q.in_flight) for key, q in self._queues.items()
+        }
 
     def get_queue_info(self) -> dict[str, dict]:
         """Return detailed queue information for the fleet status endpoint."""
@@ -249,7 +263,7 @@ class QueueManager:
             info[key] = {
                 "node_id": q.node_id,
                 "model": q.model,
-                "pending": q.pending.qsize(),
+                "pending": q.pending.qsize() + q.held,
                 "in_flight": len(q.in_flight),
                 "completed": q.completed_count,
                 "failed": q.failed_count,
@@ -385,6 +399,14 @@ class QueueManager:
                 logger.debug(f"Queue {q.node_id}:{q.model} worker {worker_id} idle, stopping")
                 break
 
+            if self._must_wait(q, entry):
+                q.held += 1
+                try:
+                    while self._must_wait(q, entry) and not future.cancelled():
+                        await asyncio.sleep(_LOAD_HOLD_POLL_SECONDS)
+                finally:
+                    q.held -= 1
+
             if future.cancelled():
                 # The caller went away while queued (a client disconnect cancels
                 # the route awaiting this future).  Don't start work nobody will
@@ -456,6 +478,76 @@ class QueueManager:
                             break
             finally:
                 q.slots.pop(rid, None)
+
+    def load_pending_on(self, node_id: str, model: str) -> bool:
+        """Is a request for another model on ``node_id`` at the node and still
+        waiting for its first token?  It may be a load waiting for a resident
+        model to go idle, which a ``keep_alive`` sent to that model now would
+        cancel (``StreamingProxy._build_ollama_body``).  From herd's own queue,
+        not from heartbeats, which lag a load by up to one interval: deciding
+        from residency let a request herd took for a load re-arm a model that
+        had just loaded and that a later load was waiting to evict."""
+        return any(
+            e.last_progress_at is None
+            for q in self._queues.values()
+            if q.node_id == node_id and q.model != model
+            for e in q.in_flight.values()
+        )
+
+    def _evicting_load(self, e: QueueEntry) -> bool:
+        """Was ``e`` routed as a load that evicts?  A negative ``eviction`` score,
+        or routed to its model resident (``thermal`` hot): asked about once that
+        model is no longer resident, loading it back evicts what took its place."""
+        b = e.routing_breakdown or {}
+        hot = getattr(self._settings, "score_model_hot", 50.0)
+        return b.get("eviction", 0) < 0 or b.get("thermal", 0) >= hot
+
+    def _must_wait(self, q: DeviceModelQueue, entry: QueueEntry) -> bool:
+        """Should ``entry`` stay in herd's queue rather than go to its node now?
+
+        Ollama evicts a busy model by waiting, with no timeout, until its
+        requests are done, and serves new requests for it meanwhile; while it
+        waits it loads nothing else on that node.  So a load sent to a node
+        whose models are all busy waits for as long as herd keeps sending them
+        work: on the 2026-11-20 fleet benchmark (run 4) phi4 and qwen2.5:14b,
+        steadily busy on the two 24 GB cards, kept ``qwen3-coder:30b`` off both
+        until 25 of its 27 requests timed out.  Two rules bound that wait
+        without swapping models on every request:
+
+        * **A load waits its turn**: a request that must evict a busy model
+          stays here until a model on its node goes idle (Ollama evicts an idle
+          one at once), its model is loaded, or it has waited
+          ``_LOAD_WAIT_SECONDS``.  Requests for the same model that arrive
+          meanwhile join it, and go with it.
+        * **Then it gets the room**: while that load is at the node and has
+          produced nothing, new requests for the models it will evict stay
+          here, so the ones already running are the last.
+
+        Nothing waits on a node with an idle model, or for a load that fits
+        beside the resident models.
+        """
+        if self._registry is None:
+            return False
+        node = self._registry.get_node(q.node_id)
+        if node is None or node.ollama is None:
+            return False
+        depths = self.get_queue_depths()
+        if any(not depths.get(f"{q.node_id}:{m.name}") for m in node.ollama.models_loaded):
+            return False
+        if model_resident_on_node(q.model, node):
+            return any(
+                e.last_progress_at is None and self._evicting_load(e)
+                for other in self._queues.values()
+                if other is not q
+                and other.node_id == q.node_id
+                and not model_resident_on_node(other.model, node)
+                for e in other.in_flight.values()
+            )
+        if not self._evicting_load(entry):
+            return False
+        if any(e.last_progress_at is None for e in q.in_flight.values()):
+            return False  # this model's load is under way: join it
+        return time.time() - entry.enqueued_at < _LOAD_WAIT_SECONDS
 
     def mark_completed(
         self,

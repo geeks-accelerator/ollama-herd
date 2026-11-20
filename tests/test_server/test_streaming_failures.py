@@ -65,7 +65,7 @@ def _make_fake_stream(proxy, chunks, request_id=None):
     """Create a fake stream_from_node that yields chunks and populates _request_tokens
     just like the real stream_from_node does when it parses done:true."""
 
-    async def fake_stream(node_id, request):
+    async def fake_stream(node_id, request, pin=True):
         for chunk_str in chunks:
             try:
                 parsed = json.loads(chunk_str)
@@ -519,7 +519,7 @@ class TestDisconnectBeforeFirstChunkWithoutRetries:
         entry = _make_entry()
         loading = asyncio.Event()
 
-        async def cold_load(node_id, request):
+        async def cold_load(node_id, request, pin=True):
             loading.set()
             await asyncio.Event().wait()  # the model is still loading
             yield "never"
@@ -550,7 +550,7 @@ class TestDisconnectBeforeFirstChunkWithoutRetries:
         queue_mgr = _mock_queue_mgr()
         waiting = asyncio.Event()
 
-        async def slow_backend(node_id, request):
+        async def slow_backend(node_id, request, pin=True):
             waiting.set()
             await asyncio.Event().wait()
             yield "never"

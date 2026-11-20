@@ -121,6 +121,29 @@ class TestUnchanged:
 
 
 @pytest.mark.asyncio
+class TestJoiningALoad:
+    """Requests for a model herd has already sent to a node to load go there
+    too.  Each one scored that load as a fresh eviction, so concurrent requests
+    for a model with no home started loads on every node at once."""
+
+    async def test_a_model_on_its_way_to_a_node_is_charged_nothing_more(self, scorer, registry):
+        await registry.update_from_heartbeat(_gpu_heartbeat("n1", loaded=[B]))
+        await registry.update_from_heartbeat(_gpu_heartbeat("n2", loaded=[A]))
+        busy = {f"n1:{B}": 2, f"n2:{A}": 2}
+        before = {
+            r.node_id: r.scores_breakdown["eviction"]
+            for r in scorer.score_request("qwen3-coder:30b", busy)
+        }
+        assert before["n1"] < 0 and before["n2"] < 0
+        busy["n1:qwen3-coder:30b"] = 1  # one coder request already sent to n1
+        results = scorer.score_request("qwen3-coder:30b", busy)
+        assert results[0].node_id == "n1"
+        b = results[0].scores_breakdown
+        assert b["eviction"] == before["n1"], "the eviction stays on record for the queue"
+        assert b["joins_load"] == -b["eviction"]
+
+
+@pytest.mark.asyncio
 async def test_memory_held_by_a_model_still_loading_counts(scorer, registry):
     """Mid-swap, /api/ps lists nothing while the card is full: that is a load
     in progress, not free room, and must not earn the warm bonus."""
@@ -171,9 +194,23 @@ class TestStrandedModels:
         await self._fleet(registry)
         busy = {"small-1:qwen3-coder:30b": 2, f"small-2:{A}": 2, f"big:{self.BIG}": 2}
         results = scorer.score_request(B, busy)
-        assert results[0].node_id != "big"
-        by_node = {r.node_id: r.scores_breakdown["eviction"] for r in results}
-        assert by_node["big"] < by_node["small-1"]
+        assert "big" not in {r.node_id for r in results}, "never a candidate while others are"
+
+    async def test_no_signal_outweighs_stranding(self, scorer, registry):
+        """The small cards' queues are deep and the big card's is empty: still
+        not the big card.  A charge alone lost to two queue penalties."""
+        await self._fleet(registry)
+        busy = {"small-1:qwen3-coder:30b": 8, f"small-2:{A}": 8, f"big:{self.BIG}": 0}
+        assert {r.node_id for r in scorer.score_request(B, busy)} == {"small-1", "small-2"}
+
+    async def test_stranding_is_allowed_when_it_is_the_only_choice(self, scorer, registry):
+        """The small cards are up but do not have B on disk."""
+        await self._fleet(registry)
+        for n in ("small-1", "small-2"):
+            registry.get_node(n).ollama.models_available.remove(B)
+        (only,) = scorer.score_request(B, {f"big:{self.BIG}": 2})
+        assert only.node_id == "big"
+        assert only.scores_breakdown["eviction"] == -ServerSettings().score_model_hot
 
     async def test_stranding_only_counts_when_no_other_node_can_hold_it(self, scorer, registry):
         """Give a small card room for the big model's size: then it has another home."""

@@ -12,6 +12,8 @@ from fleet_manager.models.request import (
     RequestFormat,
     RequestStatus,
 )
+from fleet_manager.server import queue_manager
+from fleet_manager.server.queue_manager import _LOAD_WAIT_SECONDS as _LOAD_WAIT
 from fleet_manager.server.queue_manager import QueueManager
 
 
@@ -786,4 +788,181 @@ async def test_client_leaving_while_queued_is_never_dispatched():
     kwargs = traces.call_args.kwargs
     assert kwargs["status"] == "client_disconnected"
     assert "queued" in kwargs["error_message"]
+    await qm.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# A load that must evict a busy model gets its turn, after a bounded wait.
+#
+# Ollama evicts a busy model by waiting for its requests to end, while it
+# serves new ones on its fast path.  So when herd kept sending phi4 to the card
+# it had to leave, the qwen3-coder:30b load sent there never happened, and 25
+# of 27 coder requests timed out (2026-11-20 fleet benchmark, run 4).
+# ---------------------------------------------------------------------------
+
+
+def _card(*resident):
+    from types import SimpleNamespace
+
+    from fleet_manager.models.node import LoadedModel
+
+    node = SimpleNamespace(
+        memory=SimpleNamespace(available_gb=50.0),
+        capacity=None,
+        ollama=SimpleNamespace(
+            num_parallel=4,
+            models_loaded=[LoadedModel(name=m, size_gb=15.6) for m in resident],
+            models_available_meta={},
+        ),
+        mlx_servers=[],
+    )
+    return node, SimpleNamespace(get_node=lambda node_id: node)
+
+
+def _recording(calls):
+    def process(entry):
+        calls.append(entry.request.model)
+        return _sync_process(entry)
+
+    return process
+
+
+def _coder(*, eviction=-40.0, waited=0.0):
+    """A coder request routed to card m1 to load there, evicting phi4."""
+    load = _make_entry(model="qwen3-coder:30b", node_id="m1")
+    load.routing_breakdown = {"eviction": eviction}
+    load.enqueued_at -= waited
+    return load
+
+
+async def _busy_card(*resident):
+    """Card m1 with ``resident`` loaded, each serving one request."""
+    node, registry = _card(*resident)
+    qm = QueueManager(registry=registry)
+    _fixed_concurrency(qm, 4)
+    calls = []
+    running = {}
+    for m in resident:
+        running[m] = _make_entry(model=m, node_id="m1")
+        await qm.enqueue(running[m], _recording(calls))
+    await _settle()
+    return node, qm, calls, running
+
+
+@pytest.fixture(autouse=True)
+def _fast_hold_poll(monkeypatch):
+    monkeypatch.setattr(queue_manager, "_LOAD_HOLD_POLL_SECONDS", 0.005)
+
+
+async def _wait_a_poll():
+    await asyncio.sleep(0.03)
+
+
+async def test_a_load_that_must_evict_a_busy_model_waits_its_turn():
+    node, qm, calls, running = await _busy_card("phi4:14b")
+    await qm.enqueue(_coder(), _recording(calls))
+    await _wait_a_poll()
+    assert calls == ["phi4:14b"], "the coder load waits while phi4 is busy"
+    assert qm.get_queue_depths()["m1:qwen3-coder:30b"] == 1, "a held request still counts"
+    qm.mark_completed("m1:phi4:14b", running["phi4:14b"])  # phi4 goes idle
+    await _wait_a_poll()
+    assert calls[-1] == "qwen3-coder:30b"
+    await qm.shutdown()
+
+
+async def test_the_wait_is_bounded():
+    node, qm, calls, running = await _busy_card("phi4:14b")
+    await qm.enqueue(_coder(waited=_LOAD_WAIT), _recording(calls))
+    await _wait_a_poll()
+    assert calls[-1] == "qwen3-coder:30b", "phi4 never went idle, and the coder went anyway"
+    await qm.shutdown()
+
+
+async def test_requests_for_a_load_under_way_join_it():
+    node, qm, calls, running = await _busy_card("phi4:14b")
+    await qm.enqueue(_coder(waited=_LOAD_WAIT), _recording(calls))
+    await _settle()
+    await qm.enqueue(_coder(), _recording(calls))  # just arrived
+    await _wait_a_poll()
+    assert calls.count("qwen3-coder:30b") == 2
+    await qm.shutdown()
+
+
+async def test_then_the_busy_model_makes_room():
+    node, qm, calls, running = await _busy_card("phi4:14b")
+    load = _coder(waited=_LOAD_WAIT)
+    await qm.enqueue(load, _recording(calls))
+    await _settle()
+    await qm.enqueue(_make_entry(model="phi4:14b", node_id="m1"), _recording(calls))
+    await _wait_a_poll()
+    assert calls == ["phi4:14b", "qwen3-coder:30b"], "no new phi4 while the coder waits for it"
+    assert qm.get_queue_depths()["m1:phi4:14b"] == 2, "held requests still count"
+    qm.mark_completed("m1:phi4:14b", running["phi4:14b"])  # Ollama can evict phi4 now
+    load.last_progress_at = 1.0  # ...and the coder's first token arrives
+    await _wait_a_poll()
+    assert calls[-1] == "phi4:14b"
+    await qm.shutdown()
+
+
+async def test_the_room_is_given_back_if_the_load_leaves():
+    node, qm, calls, running = await _busy_card("phi4:14b")
+    load = _coder(waited=_LOAD_WAIT)
+    await qm.enqueue(load, _recording(calls))
+    await _settle()
+    await qm.enqueue(_make_entry(model="phi4:14b", node_id="m1"), _recording(calls))
+    await _wait_a_poll()
+    assert calls.count("phi4:14b") == 1
+    qm.mark_failed("m1:qwen3-coder:30b", load)  # e.g. the client gave up
+    await _wait_a_poll()
+    assert calls.count("phi4:14b") == 2
+    await qm.shutdown()
+
+
+async def test_a_request_routed_hot_whose_model_was_evicted_since_is_a_load():
+    """It was sent to its resident model, which another load evicted before it
+    reached the card: loading it back evicts the model that took its place."""
+    node, qm, calls, running = await _busy_card("phi4:14b")
+    reload = _make_entry(model="qwen3-coder:30b", node_id="m1")
+    reload.routing_breakdown = {"thermal": 50.0, "eviction": 0.0}
+    await qm.enqueue(reload, _recording(calls))
+    await _wait_a_poll()
+    assert calls == ["phi4:14b"]
+    await qm.shutdown()
+
+
+@pytest.mark.parametrize(
+    "case", ["load_fits", "idle_resident", "load_resident", "other_node", "load_has_output"]
+)
+async def test_nothing_waits_for_a_load_that_waits_for_nothing(case):
+    """Ollama starts these loads at once: holding anything would only delay it."""
+    resident = ("phi4:14b",) if case == "idle_resident" else ("phi4:14b", "qwen2.5:14b")
+    node, qm, calls, running = await _busy_card(*resident)
+    if case == "idle_resident":
+        from fleet_manager.models.node import LoadedModel
+
+        node.ollama.models_loaded.append(LoadedModel(name="qwen2.5:14b", size_gb=15.7))
+    load = _coder(eviction=0.0 if case == "load_fits" else -40.0, waited=_LOAD_WAIT)
+    await qm.enqueue(load, _recording(calls))
+    await _settle()
+    if case == "load_resident":
+        from fleet_manager.models.node import LoadedModel
+
+        node.ollama.models_loaded.append(LoadedModel(name="qwen3-coder:30b", size_gb=18.6))
+    if case == "load_has_output":
+        load.last_progress_at = 1.0
+    target = "m2" if case == "other_node" else "m1"
+    await qm.enqueue(_make_entry(model="phi4:14b", node_id=target), _recording(calls))
+    await _wait_a_poll()
+    assert calls.count("phi4:14b") == 2
+    await qm.shutdown()
+
+
+async def test_a_fresh_load_does_not_wait_beside_an_idle_model():
+    node, qm, calls, running = await _busy_card("phi4:14b")
+    from fleet_manager.models.node import LoadedModel
+
+    node.ollama.models_loaded.append(LoadedModel(name="qwen2.5:14b", size_gb=15.7))
+    await qm.enqueue(_coder(), _recording(calls))
+    await _wait_a_poll()
+    assert calls[-1] == "qwen3-coder:30b"
     await qm.shutdown()

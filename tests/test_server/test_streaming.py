@@ -104,6 +104,75 @@ class TestOllamaToOpenAIConversion:
         assert data["choices"][0]["delta"]["content"] == ""
 
 
+class TestKeepAlivePin:
+    """``keep_alive: -1`` keeps herd's models loaded, except while a load may be
+    waiting on the node: Ollama takes a request's keep_alive as the runner's,
+    which cancels an eviction under way.  Sent on every request it stopped two
+    nodes loading anything for the rest of a run (2026-11-20 benchmark, run 4)."""
+
+    def _req(self, fmt, raw=None):
+        msgs = [{"role": "user", "content": "Hi"}]
+        return InferenceRequest(
+            model="phi4:14b",
+            messages=msgs,
+            original_format=fmt,
+            raw_body=raw if raw is not None else {"model": "phi4:14b", "messages": msgs},
+        )
+
+    @pytest.mark.parametrize("fmt", [RequestFormat.OPENAI, RequestFormat.OLLAMA])
+    def test_pinned_by_default(self, proxy, fmt):
+        assert proxy._build_ollama_body(self._req(fmt), "n")["keep_alive"] == -1
+
+    @pytest.mark.parametrize("fmt", [RequestFormat.OPENAI, RequestFormat.OLLAMA])
+    def test_not_while_a_load_may_be_waiting(self, proxy, fmt):
+        assert "keep_alive" not in proxy._build_ollama_body(self._req(fmt), "n", pin=False)
+
+    def test_a_clients_keep_alive_is_sent_as_given(self, proxy):
+        raw = {"model": "phi4:14b", "messages": [], "keep_alive": "10m"}
+        body = proxy._build_ollama_body(self._req(RequestFormat.OLLAMA, raw), "n")
+        assert body["keep_alive"] == "10m"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("retry", [True, False])
+    async def test_the_queue_decides(self, proxy, retry):
+        """Both dispatch paths ask the queue whether another model's request on
+        the node is still waiting for its first token."""
+        from fleet_manager.models.request import QueueEntry
+        from fleet_manager.server.queue_manager import DeviceModelQueue, QueueManager
+
+        qm = QueueManager()
+        waiting = QueueEntry(request=self._req(RequestFormat.OPENAI), assigned_node="n")
+        waiting.request.model = "qwen3-coder:30b"
+        coder = DeviceModelQueue(node_id="n", model="qwen3-coder:30b")
+        coder.in_flight["w"] = waiting
+        qm._queues["n:qwen3-coder:30b"] = coder
+        entry = QueueEntry(request=self._req(RequestFormat.OPENAI), assigned_node="n")
+        seen = []
+
+        async def fake_stream(node_id, request, pin=True):
+            seen.append(pin)
+            return
+            yield
+
+        proxy.stream_from_node = fake_stream
+        settings = ServerSettings(max_retries=0)
+        if retry:
+            gen = proxy._stream_with_retry(entry, "n:phi4:14b", qm, None, settings)
+        else:
+            gen = proxy._stream_with_tracking(entry, "n:phi4:14b", qm)
+        async for _ in gen:
+            pass
+        waiting.last_progress_at = 1.0  # its first token: nothing waits now
+        gen = (
+            proxy._stream_with_retry(entry, "n:phi4:14b", qm, None, settings)
+            if retry
+            else proxy._stream_with_tracking(entry, "n:phi4:14b", qm)
+        )
+        async for _ in gen:
+            pass
+        assert seen == [False, True]
+
+
 class TestBuildOllamaBody:
     def test_passthrough_ollama_format(self, proxy):
         req = InferenceRequest(

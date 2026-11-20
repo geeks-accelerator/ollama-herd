@@ -54,14 +54,30 @@ class ScoringEngine:
             return []
 
         results = []
+        stranding: set[str] = set()
         for node in candidates:
             breakdown = {}
 
             # What loading the model here would push out of memory, if anything.
             # Thermal and memory fit both depend on it: a "warm" model that only
             # fits by evicting another is a cold load with an eviction.
-            s0 = self._score_eviction(node, model, queue_depths)
+            s0, strands = self._score_eviction(node, model, queue_depths)
             breakdown["eviction"] = s0
+            if strands:
+                stranding.add(node.node_id)
+
+            queue_key = f"{node.node_id}:{model}"
+            depth = queue_depths.get(queue_key, 0)
+
+            # Herd has already sent this model here to load (requests queued or
+            # in flight for it, not resident yet): join that load rather than
+            # start a second one, and a second eviction, on another node.
+            # Concurrent requests for a model with no home each scored the load
+            # as a fresh eviction and sprayed loads across every node.  The
+            # eviction stays in the breakdown: the queue reads it to give the
+            # load its turn (``QueueManager._must_wait``).
+            joins = -s0 if depth and s0 < 0 else 0.0
+            breakdown["joins_load"] = joins
 
             s1 = self._score_thermal(node, model, evicts=s0 < 0)
             breakdown["thermal"] = s1
@@ -69,8 +85,6 @@ class ScoringEngine:
             s2 = self._score_memory_fit(node, model)
             breakdown["memory_fit"] = s2
 
-            queue_key = f"{node.node_id}:{model}"
-            depth = queue_depths.get(queue_key, 0)
             s3 = self._score_queue_depth(depth, node=node, queue_depths=queue_depths)
             breakdown["queue_depth"] = s3
 
@@ -93,7 +107,7 @@ class ScoringEngine:
             s8p = 0.0 if s8 else self._score_prefix_affinity(node, prefix_key, depth)
             breakdown["prefix_affinity"] = s8p
 
-            total = s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s8p
+            total = s0 + joins + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s8p
             breakdown["total"] = total
 
             results.append(
@@ -104,6 +118,15 @@ class ScoringEngine:
                     scores_breakdown=breakdown,
                 )
             )
+
+        # Never strand a model while another node can take this one, whatever
+        # the other signals say.  As a charge alone it was outweighed: with
+        # evictions that really happen, a queue penalty or two sent
+        # qwen3-coder:30b to the 48 GB card, evicting the 35 GB model no other
+        # node could hold.  Kept when it is the only choice, and on a retry
+        # that has excluded the rest.
+        if stranding and len(stranding) < len(results):
+            results = [r for r in results if r.node_id not in stranding]
 
         results.sort(key=lambda r: r.score, reverse=True)
 
@@ -122,6 +145,11 @@ class ScoringEngine:
                 + (
                     f", evict={winner.scores_breakdown['eviction']:.0f}"
                     if winner.scores_breakdown.get("eviction", 0)
+                    else ""
+                )
+                + (
+                    f", joins={winner.scores_breakdown['joins_load']:.0f}"
+                    if winner.scores_breakdown.get("joins_load", 0)
                     else ""
                 )
                 # Only shown when non-zero — most requests have no session, and
@@ -344,8 +372,11 @@ class ScoringEngine:
             return 3.0
         return 0.0
 
-    def _score_eviction(self, node: NodeState, model: str, queue_depths: dict[str, int]) -> float:
-        """Signal 0: what loading ``model`` here would push out of memory (<= 0).
+    def _score_eviction(
+        self, node: NodeState, model: str, queue_depths: dict[str, int]
+    ) -> tuple[float, bool]:
+        """Signal 0: what loading ``model`` here would push out of memory (<= 0),
+        and whether that strands a model no other online node can hold.
 
         Nothing when it is resident or fits in the memory free without
         evicting (``NodeState.memory_free_without_evicting_gb``) and a model
@@ -362,12 +393,12 @@ class ScoringEngine:
         """
         loaded = distinct_resident_models(node)
         if any(m.name == model for m in loaded):
-            return 0.0
+            return 0.0, False
         cost = self._model_fit_cost_gb(model, node)
         free = node.memory_free_without_evicting_gb()
         slots_full = len(loaded) >= hot_model_cap_for(node)
         if free >= cost and not slots_full:
-            return 0.0
+            return 0.0, False
 
         from fleet_manager.server import model_preloader
 
@@ -410,11 +441,13 @@ class ScoringEngine:
             return (s.score_model_warm - s.score_model_cold) / 2
 
         penalty = 0.0
+        strands = False
         need = cost - free
         for m in sorted(loaded, key=charge):
             if need <= 0 and not slots_full:
                 break
             penalty += charge(m)
+            strands = strands or not has_another_home(m)
             need -= (m.size_vram_gb or m.size_gb) if on_gpu else m.size_gb
             slots_full = False  # one eviction frees one slot
         if need > 0:
@@ -424,7 +457,7 @@ class ScoringEngine:
             # Mid-swap heartbeats listed nothing while nvidia-smi showed 17 GB
             # in use, and this branch charged 0 (2026-11-20 benchmark, run 2).
             penalty += s.score_model_hot - s.score_model_cold
-        return -min(penalty, s.score_model_hot)
+        return -min(penalty, s.score_model_hot), strands
 
     def _score_queue_depth(
         self,
