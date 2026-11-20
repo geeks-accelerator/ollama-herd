@@ -61,6 +61,37 @@ Open, from run 2:
     over four turns against +171 %), and p95 is 23 % better. Read Ollama's per-request
     prompt-eval counts and slot assignment for first turns placed by prefix affinity.
 
+## From the website's benchmark review (2026-11-20)
+
+The private plan `benchmark-page-feedback.md` (ollama-herd-private) triaged three reviews of the
+published benchmark and audited this repo's tooling. Its OSS tooling items landed on `main`:
+one `model_type()` classifier (`a3fc4db`), `X-Request-Id` + filtered `/dashboard/api/traces`
+(`7111ee4`), one percentile function (`796fd4b`), per-request records / manifest / model events /
+open-loop and seeded workloads / vision work in the benchmark engine (`4243946`, `aa652ef`),
+`agent_version` in `/fleet/status` (`c688882`), fake herd-nodes and a fuller mock Ollama
+(`3278ebd` and after). Items it hands to this plan:
+
+14. **Error-class test matrix.** Community telemetry's errors (30 days to 2026-11-20, 0.7% of
+    392,874 requests): `model_not_found` 55.5%, `bad_request` 30.1%, `context_too_long` 5.7%.
+    Mostly client errors, so the question is whether herd's answer is correct and actionable.
+    Map each matrix onto the existing tests first, add only gaps:
+    - model not found: on no node / on disk not loaded / on one busy node / tag omitted or
+      `latest` / alias differs between nodes / strict mode on and off / holder disconnects;
+      the error names what *is* available; no wrong substitution in strict mode
+      (existing: `test_backend_model_not_found.py`, 42 tests);
+    - bad request: one parametrized matrix over the four protocols plus embed, vision, STT
+      (malformed tools, missing fields, unsupported content blocks, oversized base64, invalid
+      stream options) built on the existing compat fixtures, not a new suite;
+    - context too long: prompts at 90/100/101/125% of a model's window, rejected before dispatch
+      or sent to a node with a bigger window (existing: `test_context_protection_every_format.py`,
+      `test_context_window_visibility.py`).
+15. **Image generation and transcription write no trace row.** Since `7111ee4` they return
+    `X-Request-Id`, but `/dashboard/api/traces?request_id=` finds nothing for them, and they are
+    missing from the dashboard's usage and from community error counts. Trace them like the
+    embedding paths (`direct_proxy_tracer`).
+16. **Dashboard benchmark runner can't select vision or embed-image work.** The runner accepts
+    both types since `4243946`; the checkboxes in `dashboard.py` don't offer them.
+
 ## Rules for this work
 
 herd is greenfield, so:
