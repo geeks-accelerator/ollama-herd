@@ -36,6 +36,90 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### A retried request runs outside its new node's worker limit `OPEN` (found 2026-11-21)
+
+**What remains after `70b4cd8`.** When a request fails on one node before its first chunk
+and `_stream_with_retry` sends it to another, `QueueManager.move_in_flight` now moves it
+into the new node's queue, so it counts in that node's depth, the keep-alive pin and the
+load hold. It does not take one of that queue's worker slots: the attempt runs inside the
+first queue's worker, which has already been released. Under load a node can briefly run
+one more request per retry than its concurrency allows. Rare (retries happen only before
+the first chunk) and bounded, but the count is wrong while it lasts.
+
+**Direction.** Acquire a slot on the target queue before the retry dispatches (waiting for
+one is acceptable: no tokens have reached the client), or hand the retry back to the target
+queue's worker instead of running it in place.
+
+### A retried request stayed counted on the node that failed `FIXED` (2026-11-21, unreleased)
+
+**Symptom.** A request that failed on node A before its first chunk was retried on node B,
+but its queue entry stayed in A's `in_flight`. `load_pending_on`, `should_pin` and
+`_must_wait` group by the queue's node, so B kept sending `keep_alive: -1` with requests
+for its resident models, cancelling the eviction the retried load was waiting for (the
+stall the load hold was built to prevent, back on the retry path), and the load got no
+room on B. A showed a phantom load and could hold its own traffic for it. The 120 s room
+limit counted from the first attempt.
+
+**Fix.** `QueueManager.move_in_flight(source_key, target_key, request_id)`, the in-flight
+sibling of `move_pending`, moves the entry under the lock, sets `assigned_node`, frees A's
+slot and restarts `started_at`. `_stream_with_retry` calls it when a retry picks another
+node, and `_settle_on_exit` settles the request in whichever queue holds it at the end.
+Tests cover retry with the pin, retry with the hold, the move and the restarted clock.
+Commit `70b4cd8`. The worker-slot gap that remains is the `OPEN` entry above.
+
+**Generalized:** state keyed by *where an entry sits* must move when the entry's assignment
+moves. Changing `entry.assigned_node` alone left every per-queue question answered for the
+wrong node.
+
+### A small idle model cancelled "a load waits its turn" `FIXED` (2026-11-21, unreleased)
+
+**Symptom.** `_must_wait` let a load that had to evict a busy model go straight to Ollama
+whenever any loaded model on the node was idle, whether or not evicting that idle model
+could free enough memory. A pinned `nomic-embed-text` sitting idle let a large load
+through; Ollama unloaded the embedder and then blocked on the busy LLM anyway.
+
+**Fix.** `_idle_room_for` checks that free memory plus what the idle models hold fits the
+load, sized the way the scorer sizes it; it applies to both the wait rule and the room
+rule. Commit `70b4cd8`.
+
+### Traces queued at shutdown were lost; a failed batch could be committed later `FIXED` (2026-11-21, unreleased)
+
+**Symptom.** Since the group commit (`f2d29e5`), `TraceStore.close()` closed the database
+without waiting for `_flusher` or draining `_pending`, so rows queued at shutdown were
+dropped without a word, and a close during a write could hit a `None` connection. Neither
+counted in `_write_failure_times`, so `trace_store_write_failures` never saw them.
+Separately, `_write_batch` rolled back only on `OperationalError`: any other error left the
+batch's inserted rows in the open transaction for the next commit to save, and every
+caller in the batch got the error.
+
+**Fix.** `close()` awaits `_flusher`, then writes what is left in `_pending`; every lost row
+goes through one place (`_fail`) into `_write_failure_times`, and a retried row is never
+counted twice. `_write_batch` rolls back on any exception, and a batch the database refuses
+for another reason is retried row by row so only the bad row's caller fails. Four tests.
+Commit `01ea2ec`.
+
+**Generalized:** batching moves a failure from one caller to many and from now to later.
+Shutdown and rollback paths have to be rewritten with it, not left as they were for single
+writes.
+
+### A request that failed before dispatch had no trace and stayed in flight `FIXED` (2026-11-21, unreleased)
+
+**Symptom.** If the proxy's process function raised synchronously in the worker, the client
+got a 502 but no trace row was written (its `X-Request-Id` resolved to nothing), and the
+request stayed in the queue's `in_flight` until the stale reaper, up to ten minutes,
+holding its client slot.
+
+**Fix.** `StreamingProxy._traced` wraps the chat, image and transcription process functions
+and records a failed trace through `_record_trace`; the worker calls `mark_failed()` so the
+request leaves the queue at once. Two tests. Commit `70b4cd8`.
+
+### Dashboard settings listed embedding models by name substring `FIXED` (2026-11-21, unreleased)
+
+`server/routes/dashboard.py` still used `"embed" in m.lower()` after `a3fc4db` moved every
+other check to `model_knowledge.model_type()`, so `bge-m3`, `all-minilm` and models whose
+Ollama reports the `embedding` capability were missing from the list. It now uses
+`model_type()` with the node's reported capabilities. Commit `b9d9982`.
+
 ### Installing the embedding extra silently switched an index's `nomic-embed-text` backend `FIXED` (2026-11-19, unreleased)
 
 **Symptom (none visible, which is the bug).** fastembed and Ollama produce different
