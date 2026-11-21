@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from fleet_manager.models.request import QueueEntry, RequestStatus
@@ -90,6 +91,9 @@ class DeviceModelQueue:
     # Taken by a worker but held back for a load on this node
     # (``QueueManager._must_wait``); counted as pending.
     held: int = 0
+    # Requests herd sends to the node itself, not through a worker (embeddings,
+    # ``QueueManager.direct``): counted in the depth, never in ``in_flight``.
+    direct: int = 0
     concurrency: int = _MIN_CONCURRENCY
     completed_count: int = 0
     failed_count: int = 0
@@ -229,9 +233,10 @@ class QueueManager:
                 logger.exception("Error in stale in-flight reaper")
 
     def get_queue_depths(self) -> dict[str, int]:
-        """Return current depth (pending + in_flight) for all queues."""
+        """Return current depth (pending + held + in flight + direct) for all queues."""
         return {
-            key: q.pending.qsize() + q.held + len(q.in_flight) for key, q in self._queues.items()
+            key: q.pending.qsize() + q.held + len(q.in_flight) + q.direct
+            for key, q in self._queues.items()
         }
 
     def get_queue_info(self) -> dict[str, dict]:
@@ -264,7 +269,7 @@ class QueueManager:
                 "node_id": q.node_id,
                 "model": q.model,
                 "pending": q.pending.qsize() + q.held,
-                "in_flight": len(q.in_flight),
+                "in_flight": len(q.in_flight) + q.direct,
                 "completed": q.completed_count,
                 "failed": q.failed_count,
                 "concurrency": q.concurrency,
@@ -478,6 +483,29 @@ class QueueManager:
                             break
             finally:
                 q.slots.pop(rid, None)
+
+    @contextmanager
+    def direct(self, node_id: str, model: str):
+        """Count a request herd sends to ``node_id`` itself rather than through a
+        queue worker (embeddings) in that node and model's depth while it runs.
+
+        Without it the scorer saw no load from embeddings at all: on the
+        2026-11-21 fleet benchmark (run 5) the first embeddings of a run went to
+        an A10 that also held the coding and image models, each then took about
+        15 s there, and every later one followed them (queue 0, affinity) while
+        the A100 had the model loaded and idle: 50 answered in 180 s against
+        about 10,300 when the first went to the A100.  Kept out of ``in_flight``:
+        an embedding is never a load to wait for or to join.
+        """
+        key = f"{node_id}:{model}"
+        q = self._queues.get(key)
+        if q is None:
+            q = self._queues[key] = DeviceModelQueue(node_id=node_id, model=model)
+        q.direct += 1
+        try:
+            yield
+        finally:
+            q.direct -= 1
 
     def load_pending_on(self, node_id: str, model: str) -> bool:
         """Is a request for another model on ``node_id`` at the node and still

@@ -925,115 +925,122 @@ async def dispatch_embed(
     if not queue_mgr.load_pending_on(winner.node_id, actual_model):  # see _build_ollama_body
         embed_body.setdefault("keep_alive", -1)
 
-    _EMBED_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0)
+    # Counted in the node's queue depth while it runs, so the scorer sees an
+    # embedding backlog (QueueManager.direct).
+    with queue_mgr.direct(winner.node_id, actual_model):
+        _EMBED_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0)
 
-    start = time.time()
-    last_exc: Exception | None = None
-    retry_count = 0
+        start = time.time()
+        last_exc: Exception | None = None
+        retry_count = 0
 
-    for backoff in (*EMBED_RETRY_BACKOFFS_S, None):
-        try:
-            client = proxy._get_client(winner.node_id)
-            resp = await client.post(
-                "/api/embed",
-                json=embed_body,
-                timeout=_EMBED_TIMEOUT,
-            )
-            resp.raise_for_status()
-            elapsed_ms = (time.time() - start) * 1000
-
-            result = resp.json()
-            mismatch = embedding_count_mismatch(embed_body, result)
-            if mismatch:
-                expected, got = mismatch
-                logger.error(
-                    f"Embed {inference_req.request_id[:8]} on {winner.node_id}: backend "
-                    f"returned {got} embedding(s) for {expected} input(s) model={actual_model}"
+        for backoff in (*EMBED_RETRY_BACKOFFS_S, None):
+            try:
+                client = proxy._get_client(winner.node_id)
+                resp = await client.post(
+                    "/api/embed",
+                    json=embed_body,
+                    timeout=_EMBED_TIMEOUT,
                 )
-                trace("failed", error=EMBEDDING_COUNT_MISMATCH, retry_count=retry_count)
+                resp.raise_for_status()
+                elapsed_ms = (time.time() - start) * 1000
+
+                result = resp.json()
+                mismatch = embedding_count_mismatch(embed_body, result)
+                if mismatch:
+                    expected, got = mismatch
+                    logger.error(
+                        f"Embed {inference_req.request_id[:8]} on {winner.node_id}: backend "
+                        f"returned {got} embedding(s) for {expected} input(s) model={actual_model}"
+                    )
+                    trace("failed", error=EMBEDDING_COUNT_MISMATCH, retry_count=retry_count)
+                    return JSONResponse(
+                        status_code=502,
+                        content={
+                            "error": f"backend returned {got} embedding(s) for {expected} input(s)"
+                        },
+                    )
+                logger.info(
+                    f"Embed {inference_req.request_id[:8]} completed on {winner.node_id} "
+                    f"in {elapsed_ms:.0f}ms model={actual_model}"
+                    + (f" (retry #{retry_count})" if retry_count else "")
+                )
+                trace("completed", retry_count=retry_count)
+
+                return JSONResponse(
+                    content=result,
+                    headers=fleet_headers(
+                        node_id=winner.node_id,
+                        served_model=actual_model,
+                        requested_model=model,
+                        backend="ollama",
+                        score=winner.score,
+                        retries=retry_count,
+                    ),
+                )
+
+            except httpx.HTTPStatusError as e:
+                err_msg = describe_exception(e)
+                logger.error(f"Embed failed on {winner.node_id}: {err_msg}")
+                trace("failed", error=err_msg, retry_count=retry_count)
+                return JSONResponse(
+                    status_code=e.response.status_code,
+                    content={"error": client_error_message(e)},
+                )
+
+            except httpx.ReadTimeout as e:
+                last_exc = e
+                if backoff is None:
+                    break  # exhausted retries — fall through to failure path
+                # Every retry leaves one "retried" row on the node that failed:
+                # the trace store counts retries by those rows, per node and
+                # fleet-wide.  retry_count is retries before the current attempt,
+                # as on every trace row: it grows only when another attempt is
+                # about to start.
+                trace("retried", error=describe_exception(e), retry_count=retry_count)
+                retry_count += 1
+                logger.warning(
+                    f"Embed ReadTimeout on {winner.node_id} (attempt {retry_count}), "
+                    f"retrying in {backoff}s — Ollama queue likely full"
+                )
+                await asyncio.sleep(backoff)
+
+            except Exception as e:
+                error_detail = str(e) or repr(e)
+                logger.error(
+                    f"Embed failed on {winner.node_id}: {type(e).__name__}: {error_detail}"
+                )
+                trace(
+                    "failed", error=f"{type(e).__name__}: {error_detail}", retry_count=retry_count
+                )
                 return JSONResponse(
                     status_code=502,
                     content={
-                        "error": f"backend returned {got} embedding(s) for {expected} input(s)"
+                        "error": f"Failed to reach Ollama on {winner.node_id}: "
+                        f"{type(e).__name__}: {error_detail}"
                     },
                 )
-            logger.info(
-                f"Embed {inference_req.request_id[:8]} completed on {winner.node_id} "
-                f"in {elapsed_ms:.0f}ms model={actual_model}"
-                + (f" (retry #{retry_count})" if retry_count else "")
-            )
-            trace("completed", retry_count=retry_count)
 
-            return JSONResponse(
-                content=result,
-                headers=fleet_headers(
-                    node_id=winner.node_id,
-                    served_model=actual_model,
-                    requested_model=model,
-                    backend="ollama",
-                    score=winner.score,
-                    retries=retry_count,
-                ),
-            )
-
-        except httpx.HTTPStatusError as e:
-            err_msg = describe_exception(e)
-            logger.error(f"Embed failed on {winner.node_id}: {err_msg}")
-            trace("failed", error=err_msg, retry_count=retry_count)
-            return JSONResponse(
-                status_code=e.response.status_code,
-                content={"error": client_error_message(e)},
-            )
-
-        except httpx.ReadTimeout as e:
-            last_exc = e
-            if backoff is None:
-                break  # exhausted retries — fall through to failure path
-            # Every retry leaves one "retried" row on the node that failed:
-            # the trace store counts retries by those rows, per node and
-            # fleet-wide.  retry_count is retries before the current attempt,
-            # as on every trace row: it grows only when another attempt is
-            # about to start.
-            trace("retried", error=describe_exception(e), retry_count=retry_count)
-            retry_count += 1
-            logger.warning(
-                f"Embed ReadTimeout on {winner.node_id} (attempt {retry_count}), "
-                f"retrying in {backoff}s — Ollama queue likely full"
-            )
-            await asyncio.sleep(backoff)
-
-        except Exception as e:
-            error_detail = str(e) or repr(e)
-            logger.error(f"Embed failed on {winner.node_id}: {type(e).__name__}: {error_detail}")
-            trace("failed", error=f"{type(e).__name__}: {error_detail}", retry_count=retry_count)
-            return JSONResponse(
-                status_code=502,
-                content={
-                    "error": f"Failed to reach Ollama on {winner.node_id}: "
-                    f"{type(e).__name__}: {error_detail}"
-                },
-            )
-
-    # ReadTimeout exhausted all retries
-    elapsed_ms = (time.time() - start) * 1000
-    error_detail = str(last_exc) or repr(last_exc)
-    attempts = retry_count + 1
-    logger.error(
-        f"Embed ReadTimeout on {winner.node_id} after {attempts} attempt(s) "
-        f"({elapsed_ms:.0f}ms total) — Ollama queue saturated"
-    )
-    trace(
-        "failed",
-        error=f"ReadTimeout after {attempts} attempt(s): {error_detail}",
-        retry_count=retry_count,
-    )
-    return JSONResponse(
-        status_code=504,
-        content={
-            "error": f"Embed timed out on {winner.node_id} after {attempts} attempt(s). "
-            f"Ollama may be saturated with concurrent inference. Try again shortly."
-        },
-    )
+        # ReadTimeout exhausted all retries
+        elapsed_ms = (time.time() - start) * 1000
+        error_detail = str(last_exc) or repr(last_exc)
+        attempts = retry_count + 1
+        logger.error(
+            f"Embed ReadTimeout on {winner.node_id} after {attempts} attempt(s) "
+            f"({elapsed_ms:.0f}ms total) — Ollama queue saturated"
+        )
+        trace(
+            "failed",
+            error=f"ReadTimeout after {attempts} attempt(s): {error_detail}",
+            retry_count=retry_count,
+        )
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": f"Embed timed out on {winner.node_id} after {attempts} attempt(s). "
+                f"Ollama may be saturated with concurrent inference. Try again shortly."
+            },
+        )
 
 
 async def _route_and_stream(request: Request, inference_req: InferenceRequest):

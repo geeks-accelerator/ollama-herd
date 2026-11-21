@@ -266,8 +266,12 @@ From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-h
     to the second card. Apply `joins_load` only while that model's load is at the node without
     output; the scorer needs a "load under way" input from the queue manager (it only sees
     combined depths today).
-31. **Open, from run 5 (2026-11-21, released 0.12.11): a model's first routing decision can
-    strand it for the whole run.** Vision test on two A10 24 GB (m1, m2) and one A100 40 GB (m5),
+31. **Fixed on `main` (unreleased), from run 5 (2026-11-21, released 0.12.11): a model's first
+    routing decision could strand it for the whole run.** Cause: `dispatch_embed` sent embeddings
+    straight to Ollama, outside the queue manager, so the scorer saw `queue=0, wait=0` on a node
+    with a backlog of them; now `QueueManager.direct` counts each in its node's depth while it runs
+    (not as an in-flight entry, so it is never taken for a load). Verify on the next fleet run:
+    vision with `--skip-warmup` right after a reset, three repetitions. Vision test on two A10 24 GB (m1, m2) and one A100 40 GB (m5),
     each run starting from a reset that loads nomic-embed-text and moondream on m5 and the coder on
     m1 and m2, `--skip-warmup`. In repetition 1 the router's view of m5 did not yet list nomic (the
     reset had just loaded it; heartbeats are every 5 s), so the first embeddings went to m1 cold

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Embeddings no longer get stuck on a backed-up node.** Embeddings go straight to the node's Ollama rather than through a queue worker, so the router counted none of them as load: a node with a backlog of embeddings still scored as idle. On a fleet benchmark of two A10 24 GB and one A100 40 GB, the first embeddings of one run went to an A10 that also held the coding and image models, each then took about 15 s there, and every later one followed them while the A100 had the model loaded and idle: 50 answered in three minutes instead of about 10,300. Each embedding now counts in its node's queue depth while it runs (`/api/embed`, `/api/embeddings`, `/v1/embeddings`), so the next one goes where it can be served; it never counts as a model load.
+
 ## [0.12.11] - 2026-11-20
 
 ### Added
