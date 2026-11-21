@@ -19,7 +19,8 @@ multi-repetition arm or cell gets its ``spread``: ``<name>_median``, ``_min``,
 ``_max``. A one-report arm keeps its figures bare. First-token percentiles come from
 successful chat requests with a first token (the engine's rule, ``CHAT_WORKLOADS``)
 through the engine's own ``percentile_fields``. ``usd_per_hour`` is the machines in the
-report's manifest priced by ``prices_usd_per_hour`` (keys are chip-name substrings);
+report's manifest priced by ``prices_usd_per_hour`` (a key names the end of the chip
+string, the GPU: "A10" matches "... + NVIDIA A10", not "... + NVIDIA A100-SXM4-40GB");
 ``tokens_per_usd`` is chat tokens per dollar of those machines. Events are placed in the
 repetition whose run window holds them, at ``t_s`` seconds from that run's
 ``manifest.started_at`` (the run clock's zero; request ``started_ms`` count from it).
@@ -99,7 +100,7 @@ def usd_per_hour(report: dict, prices: dict[str, float]) -> float:
     total = 0.0
     for node in report["manifest"]["nodes"]:
         chip = node.get("chip") or ""
-        match = [k for k in prices if k in chip]
+        match = [k for k in prices if chip.endswith(k)]
         if len(match) != 1:
             raise SystemExit(
                 f"{report.get('_file', 'report')}: node {node['node_id']} chip {chip!r} matches "

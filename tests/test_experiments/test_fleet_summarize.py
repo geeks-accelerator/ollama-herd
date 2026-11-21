@@ -125,6 +125,14 @@ class TestArm:
         with pytest.raises(SystemExit, match="price keys"):
             fs.arm(report([req()]), "herd", {**PRICES, "RTX 6000": 0.5})
 
+    def test_price_key_matches_the_end_of_the_chip(self):
+        """A10 and A100 share a prefix; a key names the GPU at the end of the chip string."""
+        a10 = "Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz + NVIDIA A10"
+        a100 = "AMD EPYC 7J13 64-Core Processor + NVIDIA A100-SXM4-40GB"
+        prices = {"A10": 1.29, "A100-SXM4-40GB": 1.99}
+        a = fs.arm(report([req()], chips=(a10, a10, a100), tps=100.0), "herd", prices)
+        assert a["usd_per_hour"] == 4.57
+
     def test_requests_kept_only_when_asked(self):
         assert "requests" not in fs.arm(report([req()]), "herd", PRICES)
         kept = fs.arm(report([req()]), "herd", PRICES, keep_requests=True)
