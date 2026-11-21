@@ -1,0 +1,149 @@
+{
+ "output": "fleet_run4_results.json",
+ "run": {
+  "date": "2026-11-20",
+  "machines": "Lambda Cloud us-south-2: m1-m4 NVIDIA Quadro RTX 6000 24 GB, m5 RTX A6000 48 GB; Ubuntu 22.04; one private network",
+  "ollama": "0.40.16, OLLAMA_NUM_PARALLEL=4 in its systemd unit, nothing else changed",
+  "workload": "about 1,250 prompt and 200 completion tokens per chat request",
+  "telemetry": "off on every router and node",
+  "harness": "scripts/benchmark.py from OSS main (per-request records, in-band errors and drained requests counted as failures, rates over the load phase)",
+  "prices_usd_per_hour": {
+   "Quadro RTX 6000": 0.69,
+   "RTX A6000": 1.09
+  }
+ },
+ "sections": {
+  "scaling": {
+   "router": "ollama-herd 0.12.10 from PyPI",
+   "model": "qwen3-coder:30b",
+   "seconds_per_cell": 120,
+   "cells": "b1/b1r*_n*_c*.json"
+  },
+  "failure": {
+   "files": "b6_failure.json",
+   "router": "ollama-herd 0.12.10 from PyPI",
+   "keep_requests": true,
+   "what": "4 machines, 8 concurrent qwen3-coder:30b for 240 s; Ollama stopped on m3, then herd-node killed with -9 and Ollama stopped on m4 (events: seconds from the run clock's zero; kill times from the operator's log, to the second)",
+   "events": [
+    {
+     "at": "2026-11-20T17:40:14+00:00",
+     "what": "stopped Ollama on m3"
+    },
+    {
+     "at": "2026-11-20T17:41:47+00:00",
+     "what": "killed herd-node -9 and stopped Ollama on m4 (machine gone)"
+    }
+   ]
+  },
+  "identical_machines": {
+   "what": "one model on four identical machines, 8 concurrent, 120 s",
+   "herd": {
+    "files": "m1/tie_herd.json",
+    "router": "ollama-herd 0.12.10 from PyPI"
+   },
+   "haproxy_roundrobin": {
+    "files": "m1/tie_haproxy_rr.json",
+    "router": "HAProxy 2.4 roundrobin"
+   }
+  },
+  "mixed_fleet": {
+   "what": "m1, m2 (24 GB) and m5 (48 GB); qwen3-coder:30b, qwen2.5:14b-instruct-q8_0, phi4:14b-q8_0 and qwen2.5:32b-instruct-q8_0 (35 GB, only m5 has it and can hold it), model chosen at random per request, open loop for 180 s, client timeout 300 s; start state m1 coder, m2 qwen2.5:14b, m5 the 32b",
+   "rate_0_25": {
+    "herd": {
+     "files": "b4q_herd_s7.json",
+     "router": "1e7cdb2 (both placement fixes; the code released as 0.12.11)",
+     "keep_requests": true
+    },
+    "haproxy_leastconn": {
+     "files": "b4q_haproxy_lc_s7.json",
+     "router": "HAProxy 2.4 leastconn",
+     "keep_requests": true
+    },
+    "haproxy_roundrobin": {
+     "files": "b4q_haproxy_rr_s7.json",
+     "router": "HAProxy 2.4 roundrobin",
+     "keep_requests": true
+    }
+   },
+   "rate_0_5": {
+    "herd_seed7": {
+     "files": "b4o_herd_fix2_s7.json",
+     "router": "1e7cdb2 (both placement fixes; the code released as 0.12.11)",
+     "keep_requests": true
+    },
+    "herd_seed8": {
+     "files": "b4o_herd_fix2_s8.json",
+     "router": "1e7cdb2 (both placement fixes; the code released as 0.12.11)",
+     "keep_requests": true
+    },
+    "herd_0_12_10_seed7": {
+     "files": "b4o_herd_0_12_10.json",
+     "router": "ollama-herd 0.12.10 from PyPI",
+     "keep_requests": true
+    },
+    "herd_strand_fix_only_seed7": {
+     "files": "b4o_herd_fixed.json",
+     "router": "dc5779c (first placement fix, released in 0.12.11)",
+     "keep_requests": true
+    },
+    "haproxy_leastconn_seed7": {
+     "files": "b4o_haproxy_lc.json",
+     "router": "HAProxy 2.4 leastconn",
+     "keep_requests": true
+    },
+    "haproxy_leastconn_seed8": {
+     "files": "b4o_haproxy_lc_s8.json",
+     "router": "HAProxy 2.4 leastconn",
+     "keep_requests": true
+    },
+    "haproxy_roundrobin_seed7": {
+     "files": "b4o_haproxy_rr.json",
+     "router": "HAProxy 2.4 roundrobin",
+     "keep_requests": true
+    }
+   }
+  },
+  "one_large_vs_two_small": {
+   "what": "one RTX A6000 48 GB against two Quadro RTX 6000 24 GB, same router; mix = qwen3-coder:30b, qwen3.5:9b and nomic-embed-text, 4 workers each, 180 s",
+   "large": {
+    "coder_c1": {
+     "files": "b5r_large_coder_c1.json",
+     "router": "dc5779c (first placement fix, released in 0.12.11)"
+    },
+    "coder_c8": {
+     "files": "b5r_large_coder_c8.json",
+     "router": "dc5779c (first placement fix, released in 0.12.11)"
+    },
+    "mix": {
+     "files": "b5r_large_mix.json",
+     "router": "dc5779c (first placement fix, released in 0.12.11)"
+    }
+   },
+   "small": {
+    "coder_c1": {
+     "files": "b5r_small_coder_c1.json",
+     "router": "dc5779c (first placement fix, released in 0.12.11)"
+    },
+    "coder_c8": {
+     "files": "b5r_small_coder_c8.json",
+     "router": "dc5779c (first placement fix, released in 0.12.11)"
+    },
+    "mix": {
+     "files": "b5r_small_mix.json",
+     "router": "dc5779c (first placement fix, released in 0.12.11)"
+    }
+   }
+  },
+  "vision": {
+   "what": "qwen3-coder:30b, nomic-embed-text and moondream (an image question per request), 4 workers each, 180 s; one RTX 6000 with all three loaded, against m1, m2 and m5",
+   "one_machine": {
+    "files": "b8r_one.json",
+    "router": "dc5779c (first placement fix, released in 0.12.11)"
+   },
+   "three_machines": {
+    "files": "b8r_three.json",
+    "router": "dc5779c (first placement fix, released in 0.12.11)"
+   }
+  }
+ }
+}

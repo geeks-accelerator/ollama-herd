@@ -1,0 +1,86 @@
+{
+ "output": "fleet_run5_results.json",
+ "run": {
+  "date": "2026-11-21",
+  "machines": "Lambda Cloud: m1, m2 NVIDIA Quadro RTX 6000 24 GB, m5 RTX A6000 48 GB; m3, m4 Quadro RTX 6000 24 GB for the failure test only; Ubuntu 22.04; one private network",
+  "ollama": null,
+  "workload": "about 1,250 prompt and 200 completion tokens per chat request",
+  "telemetry": "off on every router and node",
+  "harness": null,
+  "prices_usd_per_hour": {
+   "Quadro RTX 6000": 0.69,
+   "RTX A6000": 1.09
+  }
+ },
+ "sections": {
+  "failure": {
+   "files": "b6_r*.json",
+   "router": "ollama-herd 0.12.11 from PyPI",
+   "keep_requests": true,
+   "what": "4 machines, 8 concurrent qwen3-coder:30b for 240 s, 3 repetitions; a script on the router machine stopped Ollama on m3 60 s after the run's start line, then 90 s later killed herd-node with -9 and stopped Ollama on m4 (events: seconds from the run clock's zero; kill times logged on the machines, to the millisecond)",
+   "events": []
+  },
+  "mixed_fleet": {
+   "what": "m1, m2 (24 GB) and m5 (48 GB); qwen3-coder:30b, qwen2.5:14b-instruct-q8_0, phi4:14b-q8_0 and qwen2.5:32b-instruct-q8_0 (35 GB, only m5 has it and can hold it), model chosen at random per request, open loop at 0.25 requests/s for 180 s, client timeout 300 s; start state m1 coder, m2 qwen2.5:14b, m5 the 32b; repetitions 1-3 are seeds 7, 11, 13, the same seeds for every front door",
+   "rate_0_25": {
+    "herd": {
+     "files": "b4_herd_s*.json",
+     "router": "ollama-herd 0.12.11 from PyPI",
+     "keep_requests": true
+    },
+    "haproxy_leastconn": {
+     "files": "b4_haproxy_lc_s*.json",
+     "router": "HAProxy 2.4 leastconn",
+     "keep_requests": true
+    },
+    "haproxy_roundrobin": {
+     "files": "b4_haproxy_rr_s*.json",
+     "router": "HAProxy 2.4 roundrobin",
+     "keep_requests": true
+    }
+   }
+  },
+  "one_large_vs_two_small": {
+   "what": "one RTX A6000 48 GB against two Quadro RTX 6000 24 GB, each behind its own router; mix = qwen3-coder:30b, qwen3.5:9b and nomic-embed-text, 4 workers each, 180 s; 3 repetitions",
+   "large": {
+    "coder_c1": {
+     "files": "b5_large_coder_c1_r*.json",
+     "router": "ollama-herd 0.12.11 from PyPI"
+    },
+    "coder_c8": {
+     "files": "b5_large_coder_c8_r*.json",
+     "router": "ollama-herd 0.12.11 from PyPI"
+    },
+    "mix": {
+     "files": "b5_large_mix_r*.json",
+     "router": "ollama-herd 0.12.11 from PyPI"
+    }
+   },
+   "small": {
+    "coder_c1": {
+     "files": "b5_small_coder_c1_r*.json",
+     "router": "ollama-herd 0.12.11 from PyPI"
+    },
+    "coder_c8": {
+     "files": "b5_small_coder_c8_r*.json",
+     "router": "ollama-herd 0.12.11 from PyPI"
+    },
+    "mix": {
+     "files": "b5_small_mix_r*.json",
+     "router": "ollama-herd 0.12.11 from PyPI"
+    }
+   }
+  },
+  "vision": {
+   "what": "qwen3-coder:30b, nomic-embed-text and moondream (an image question per request), 4 workers each, 180 s; one RTX 6000 with all three loaded, against m1, m2 and m5; 3 repetitions",
+   "one_machine": {
+    "files": "b8_one_r*.json",
+    "router": "ollama-herd 0.12.11 from PyPI"
+   },
+   "three_machines": {
+    "files": "b8_three_r*.json",
+    "router": "ollama-herd 0.12.11 from PyPI"
+   }
+  }
+ }
+}

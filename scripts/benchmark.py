@@ -286,7 +286,7 @@ async def run_benchmark(args: argparse.Namespace) -> None:
         stop = f"{args.requests} requests" if args.requests else ""
         if math.isfinite(duration):
             stop = f"{stop} or {duration:.0f}s" if stop else f"{duration:.0f}s"
-        print(f"Starting benchmark: {stop}...\n")
+        print(f"Starting benchmark: {stop}...\n", flush=True)
 
         results: list = []
 

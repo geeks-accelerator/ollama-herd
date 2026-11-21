@@ -3,11 +3,13 @@
   "hardware": "One Apple Silicon Mac, 128 GB unified memory, macOS; router, herd-node and Ollama on the same machine",
   "ollama": "0.40.15, default settings (keep_alive 5 minutes)",
   "herd": "0.12.10 from Homebrew (router and herd-node), default settings, telemetry off",
-  "method": "docs/experiments/idle-keep-alive.py: unload the model, send one request (cold), send another (warm), wait idle_s with no traffic, check /api/ps, send a third. Once straight to Ollama, once through the router. One run per model and arm. Requests: 'Reply with the word ready.', 8-token cap, temperature 0, streaming; TTFT is the first streamed line.",
+  "method": "docs/experiments/idle-keep-alive.py: unload the model, send one request (cold), send another (warm), wait idle_s with no traffic, check /api/ps, send a third. The arms alternate (direct, herd, direct, herd), one at a time on the same Ollama; each run records its repetition and its start time (started_at, UTC). The runs below are one per model and arm (repetition 1), from before start times were recorded. Requests: 'Reply with the word ready.', 8-token cap, temperature 0, streaming; TTFT is the first streamed line.",
   "finding": "Ollama unloads a model after 5 idle minutes, so the next direct request reloads it. Herd sends keep_alive -1 on the requests it routes, so through Herd the model was still loaded after the same idle time. The memory stays held until something evicts the model.",
   "runs": [
     {
       "arm": "direct",
+      "repetition": 1,
+      "started_at": null,
       "model": "llama3.2:1b",
       "idle_s": 360,
       "resident_before_cold": false,
@@ -18,6 +20,8 @@
     },
     {
       "arm": "herd",
+      "repetition": 1,
+      "started_at": null,
       "model": "llama3.2:1b",
       "idle_s": 360,
       "resident_before_cold": false,
@@ -28,6 +32,8 @@
     },
     {
       "arm": "direct",
+      "repetition": 1,
+      "started_at": null,
       "model": "qwen3-coder:30b",
       "idle_s": 360,
       "resident_before_cold": false,
@@ -38,6 +44,8 @@
     },
     {
       "arm": "herd",
+      "repetition": 1,
+      "started_at": null,
       "model": "qwen3-coder:30b",
       "idle_s": 360,
       "resident_before_cold": false,

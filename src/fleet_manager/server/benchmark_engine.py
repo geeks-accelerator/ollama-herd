@@ -1529,10 +1529,14 @@ def _ttft_by_turn(results: list[RequestResult]) -> dict:
 REPORT_PERCENTILES = (50, 90, 95, 99)
 
 
-def _percentiles(values: list[float], name: str) -> dict:
-    """``{name_p50_ms: ..., name_p90_ms: ...}``; ``None`` for no samples."""
+def percentile_fields(
+    values: list[float], name: str, pcts: tuple[int, ...] = REPORT_PERCENTILES
+) -> dict:
+    """``{name_p50_ms: ..., name_p90_ms: ...}`` rounded to 0.1 ms; ``None`` for no
+    samples.  ``docs/experiments/fleet-summarize.py`` uses it too, so a published
+    summary rounds the way the report does."""
     out = {}
-    for p in REPORT_PERCENTILES:
+    for p in pcts:
         v = percentile(values, p)
         out[f"{name}_p{p}_ms"] = round(v, 1) if v is not None else None
     return out
@@ -1704,12 +1708,12 @@ def build_report(
             "requests": len(ok),
             "failures": sum(1 for r in failed if r.model_type == kind),
             "requests_per_sec": round(len(ok) / duration, 2) if duration > 0 else 0,
-            **_percentiles([r.latency_ms for r in ok], "latency"),
+            **percentile_fields([r.latency_ms for r in ok], "latency"),
         }
         if kind in CHAT_WORKLOADS:
             tokens = sum(r.completion_tokens for r in ok)
             entry["tok_s"] = round(tokens / duration, 1) if duration > 0 else 0
-            entry.update(_percentiles([r.ttft_ms for r in ok if r.ttft_ms > 0], "ttft"))
+            entry.update(percentile_fields([r.ttft_ms for r in ok if r.ttft_ms > 0], "ttft"))
         per_type.append(entry)
 
     # Build per-model results
@@ -1837,8 +1841,8 @@ def build_report(
         "total_completion_tokens": total_completion,
         "requests_per_sec": round(req_s, 2),
         "tokens_per_sec": round(tok_s, 1),
-        **_percentiles(latencies, "latency"),
-        **_percentiles(ttfts, "ttft"),
+        **percentile_fields(latencies, "latency"),
+        **percentile_fields(ttfts, "ttft"),
         "fleet_snapshot": fleet_snapshot,
         "per_model_results": per_model,
         "per_type_results": per_type,
