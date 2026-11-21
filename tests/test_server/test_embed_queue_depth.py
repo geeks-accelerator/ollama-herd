@@ -114,3 +114,21 @@ class TestNotABacklog:
             await r._check_pre_warm()
             await asyncio.sleep(0.05)
         proxy.pre_warm.assert_not_awaited()
+
+
+class TestUnreachableBackendText:
+    def test_client_never_sees_the_node_or_raw_exception(self, client):
+        """The generic failure branch told the client ``Failed to reach Ollama on
+        <node>: <exception>``; the trace keeps the cause, the client does not."""
+
+        def handler(request: httpx.Request):
+            raise RuntimeError("socket to http://10.0.0.5:11434 closed")
+
+        for node in ("a", "b"):
+            _install_mock_ollama(client, node, handler)
+        resp = client.post("/api/embed", json={"model": MODEL, "input": "hello"})
+        assert resp.status_code == 502
+        body = resp.json()["error"]
+        assert body.startswith("Embedding backend unreachable")
+        assert resp.headers.get("X-Fleet-Node") is None or resp.headers["X-Fleet-Node"] not in body
+        assert "on a:" not in body and "on b:" not in body

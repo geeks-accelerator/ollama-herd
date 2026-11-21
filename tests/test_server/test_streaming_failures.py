@@ -282,6 +282,7 @@ class TestPreWarmDiagnostics:
         from fleet_manager.server.streaming import StreamingProxy
 
         proxy = StreamingProxy.__new__(StreamingProxy)
+        proxy._queue_mgr = None
 
         class _EmptyMessageError(Exception):
             def __str__(self) -> str:  # what httpx.ReadTimeout() does in practice
@@ -321,6 +322,7 @@ class TestPreWarmDiagnostics:
         from fleet_manager.server.streaming import StreamingProxy
 
         proxy = StreamingProxy.__new__(StreamingProxy)
+        proxy._queue_mgr = None
         captured: dict = {}
 
         class _Resp:
@@ -335,6 +337,41 @@ class TestPreWarmDiagnostics:
         await proxy.pre_warm("bb", "gpt-oss:120b", num_ctx=131072)
 
         assert captured["json"]["options"]["num_ctx"] == 131072
+
+
+class TestPreWarmKeepAlive:
+    """Pre-warm follows the routed requests' keep-alive rule (``should_pin``):
+    sent while a load waits on the node, ``keep_alive: -1`` for a resident model
+    would cancel that load's eviction of it."""
+
+    async def _body(self, queue_mgr):
+        from fleet_manager.server.streaming import StreamingProxy
+
+        proxy = StreamingProxy.__new__(StreamingProxy)
+        proxy._queue_mgr = queue_mgr
+        captured: dict = {}
+
+        class _Resp:
+            status_code = 200
+
+        class _Client:
+            async def post(self, path, json=None, timeout=None):
+                captured["json"] = json
+                return _Resp()
+
+        proxy._get_client = lambda node_id: _Client()
+        await proxy.pre_warm("bb", "gpt-oss:120b", num_ctx=131072)
+        return captured["json"]
+
+    @pytest.mark.parametrize("pin", [True, False])
+    async def test_keep_alive_follows_should_pin(self, pin):
+        from types import SimpleNamespace
+
+        body = await self._body(SimpleNamespace(should_pin=lambda node, model: pin))
+        assert ("keep_alive" in body) is pin
+
+    async def test_pins_without_a_queue_manager(self):
+        assert (await self._body(None))["keep_alive"] == -1
 
 
 class TestPreWarmResolvesNumCtx:
@@ -353,6 +390,7 @@ class TestPreWarmResolvesNumCtx:
         from fleet_manager.server.streaming import StreamingProxy
 
         p = StreamingProxy.__new__(StreamingProxy)
+        p._queue_mgr = None
         p._settings = SimpleNamespace(
             dynamic_num_ctx=dynamic, num_ctx_overrides=overrides
         )
@@ -430,6 +468,7 @@ class TestNonGeneratableModels:
         from fleet_manager.server.streaming import StreamingProxy
 
         p = StreamingProxy.__new__(StreamingProxy)
+        p._queue_mgr = None
         p._settings = SimpleNamespace(dynamic_num_ctx=False, num_ctx_overrides={})
         p._non_generatable = set()
         return p

@@ -966,3 +966,77 @@ async def test_a_fresh_load_does_not_wait_beside_an_idle_model():
     await _wait_a_poll()
     assert calls[-1] == "qwen3-coder:30b"
     await qm.shutdown()
+
+
+async def test_the_room_is_bounded(monkeypatch):
+    """A load stuck at its node stops holding a healthy resident model's traffic
+    after ``_LOAD_ROOM_SECONDS``, not after the stale reaper's ten minutes."""
+    node, qm, calls, running = await _busy_card("phi4:14b")
+    load = _coder(waited=_LOAD_WAIT)
+    await qm.enqueue(load, _recording(calls))
+    await _settle()
+    await qm.enqueue(_make_entry(model="phi4:14b", node_id="m1"), _recording(calls))
+    await _wait_a_poll()
+    assert calls.count("phi4:14b") == 1, "held while the load is young"
+    load.started_at -= queue_manager._LOAD_ROOM_SECONDS  # still no first token
+    await _wait_a_poll()
+    assert calls.count("phi4:14b") == 2, "released once the load is more likely stuck"
+    await qm.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# should_pin: keep_alive -1 unless it could cancel a waiting load's eviction.
+# A request that is itself a load pins its own new runner, or Ollama gives it
+# OLLAMA_KEEP_ALIVE (five minutes by default) and herd's model unloads.
+# ---------------------------------------------------------------------------
+
+
+async def test_pins_when_no_load_is_waiting():
+    node, registry = _card("phi4:14b")
+    qm = QueueManager(registry=registry)
+    assert qm.should_pin("m1", "phi4:14b")
+
+
+async def test_resident_model_is_not_pinned_while_a_load_may_wait():
+    node, qm, calls, running = await _busy_card("phi4:14b", "gemma3:12b")
+    # phi4's request is at the node with no first token: possibly a load
+    assert not qm.should_pin("m1", "gemma3:12b")
+    await qm.shutdown()
+
+
+async def test_a_load_pins_its_own_runner():
+    node, qm, calls, running = await _busy_card("phi4:14b")
+    assert qm.should_pin("m1", "qwen3-coder:30b"), "not resident and herd never sent it"
+    await qm.shutdown()
+
+
+async def test_absent_from_a_heartbeat_is_not_enough(monkeypatch):
+    """Heartbeats lag a load: a model herd finished a request for seconds ago
+    may be resident though not listed, and pinning it would re-arm it."""
+    node, qm, calls, running = await _busy_card("phi4:14b")
+    coder = _coder(eviction=0.0)
+    await qm.enqueue(coder, _recording(calls))
+    await _settle()
+    qm.mark_completed("m1:qwen3-coder:30b", coder)
+    assert not qm.should_pin("m1", "qwen3-coder:30b"), "finished just now"
+    qm._queues["m1:qwen3-coder:30b"].last_finished_at -= queue_manager._RESIDENCY_LAG_SECONDS + 1
+    assert qm.should_pin("m1", "qwen3-coder:30b"), "a heartbeat since would list it"
+    await qm.shutdown()
+
+
+async def test_a_model_producing_tokens_is_resident_whatever_the_heartbeat_says():
+    node, qm, calls, running = await _busy_card("phi4:14b")
+    coder = _coder(eviction=0.0)
+    await qm.enqueue(coder, _recording(calls))
+    await _settle()
+    coder.last_progress_at = 1.0
+    assert not qm.should_pin("m1", "qwen3-coder:30b")
+    await qm.shutdown()
+
+
+async def test_an_embedding_at_the_node_counts_as_activity():
+    node, qm, calls, running = await _busy_card("phi4:14b")
+    with qm.direct("m1", "nomic-embed-text:latest"):
+        assert not qm.should_pin("m1", "nomic-embed-text:latest")
+    assert not qm.should_pin("m1", "nomic-embed-text:latest"), "and just finished"
+    await qm.shutdown()

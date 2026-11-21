@@ -63,6 +63,19 @@ _LOAD_HOLD_POLL_SECONDS = 0.25
 # on every request, short next to a client's timeout: a few cold loads.
 _LOAD_WAIT_SECONDS = 30.0
 
+# The longest requests for a resident model are held to give a load on their
+# node the room (``QueueManager._must_wait``, second rule), counted from when
+# the load reached the node.  Ollama evicts a busy model once its running
+# requests finish, so a load past this is more likely stuck than waiting, and
+# the resident model's clients should not pay for it until the stale reaper
+# (600 s).  Generous next to a cold load (gpt-oss:120b, 65 GB: 45-60 s).
+_LOAD_ROOM_SECONDS = 120.0
+
+# How long after herd's last request for a model on a node a heartbeat saying
+# it is not resident may be stale (``QueueManager.should_pin``).  Heartbeats
+# arrive every 5 s; the margin covers a slow one.
+_RESIDENCY_LAG_SECONDS = 30.0
+
 
 def compute_concurrency(available_memory_gb: float, model_size_gb: float) -> int:
     """Calculate how many concurrent requests a node can handle for a model.
@@ -94,6 +107,8 @@ class DeviceModelQueue:
     # Requests herd sends to the node itself, not through a worker (embeddings,
     # ``QueueManager.direct``): counted in the depth, never in ``in_flight``.
     direct: int = 0
+    # When a request for this model on this node last finished (``should_pin``).
+    last_finished_at: float = 0.0
     concurrency: int = _MIN_CONCURRENCY
     completed_count: int = 0
     failed_count: int = 0
@@ -514,6 +529,7 @@ class QueueManager:
             yield
         finally:
             q.direct -= 1
+            q.last_finished_at = time.time()
 
     def load_pending_on(self, node_id: str, model: str) -> bool:
         """Is a request for another model on ``node_id`` at the node and still
@@ -529,6 +545,37 @@ class QueueManager:
             if q.node_id == node_id and q.model != model
             for e in q.in_flight.values()
         )
+
+    def should_pin(self, node_id: str, model: str) -> bool:
+        """Send ``keep_alive: -1`` with a request for ``model`` on ``node_id``?
+
+        Yes unless a load may be waiting on the node (``load_pending_on``):
+        there the keep-alive would cancel that load's eviction of this model.
+        Except when ``model`` is certainly not resident, because then the
+        request is itself a load and its keep-alive only sets its own new
+        runner.  Left out, Ollama gives that runner ``OLLAMA_KEEP_ALIVE``,
+        five minutes on a default install, and the model herd just loaded
+        unloads if nothing asks for it in that time.
+
+        "Certainly" because heartbeats lag a load: a model herd loaded seconds
+        ago can still be listed as absent, and pinning it then re-arms the model
+        a waiting load must evict (the run 4 stall).  So herd's own record has
+        to agree: nothing for it at the node producing tokens or embedding, and
+        nothing finished there within ``_RESIDENCY_LAG_SECONDS``.
+        """
+        if not self.load_pending_on(node_id, model):
+            return True
+        if self._registry is None:
+            return False
+        node = self._registry.get_node(node_id)
+        if node is None or node.ollama is None or model_resident_on_node(model, node):
+            return False
+        q = self._queues.get(f"{node_id}:{model}")
+        if q is None:
+            return True
+        if q.direct or any(e.last_progress_at for e in q.in_flight.values()):
+            return False
+        return time.time() - q.last_finished_at > _RESIDENCY_LAG_SECONDS
 
     def _evicting_load(self, e: QueueEntry) -> bool:
         """Was ``e`` routed as a load that evicts?  A negative ``eviction`` score,
@@ -557,7 +604,10 @@ class QueueManager:
           meanwhile join it, and go with it.
         * **Then it gets the room**: while that load is at the node and has
           produced nothing, new requests for the models it will evict stay
-          here, so the ones already running are the last.
+          here, so the ones already running are the last.  For at most
+          ``_LOAD_ROOM_SECONDS`` from when the load reached the node: past it
+          the load is more likely stuck, and holding a healthy resident model's
+          traffic until the stale reaper took up to ten minutes.
 
         Nothing waits on a node with an idle model, or for a load that fits
         beside the resident models.
@@ -571,8 +621,11 @@ class QueueManager:
         if any(not depths.get(f"{q.node_id}:{m.name}") for m in node.ollama.models_loaded):
             return False
         if model_resident_on_node(q.model, node):
+            now = time.time()
             return any(
-                e.last_progress_at is None and self._evicting_load(e)
+                e.last_progress_at is None
+                and self._evicting_load(e)
+                and now - (e.started_at or now) < _LOAD_ROOM_SECONDS
                 for other in self._queues.values()
                 if other is not q
                 and other.node_id == q.node_id
@@ -609,6 +662,7 @@ class QueueManager:
             entry.completed_at = time.time()
             q.in_flight.pop(entry.request.request_id, None)
             self._release_slot(q, entry.request.request_id)
+            q.last_finished_at = entry.completed_at
             q.completed_count += 1
             # Accumulate stats only when at least one value is provided,
             # otherwise the averages would drift to zero for completions
@@ -658,6 +712,7 @@ class QueueManager:
             entry.completed_at = time.time()
             q.in_flight.pop(entry.request.request_id, None)
             self._release_slot(q, entry.request.request_id)
+            q.last_finished_at = entry.completed_at
             q.failed_count += 1
             logger.warning(f"Failed {entry.request.request_id[:8]} on {queue_key}")
 

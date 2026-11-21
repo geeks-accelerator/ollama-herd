@@ -260,8 +260,17 @@ def request_timings(
 
 
 class StreamingProxy:
-    def __init__(self, registry: NodeRegistry, latency_store=None, trace_store=None, settings=None):
+    def __init__(
+        self,
+        registry: NodeRegistry,
+        latency_store=None,
+        trace_store=None,
+        settings=None,
+        queue_mgr=None,
+    ):
         self._registry = registry
+        # For ``pre_warm``'s keep-alive decision (``QueueManager.should_pin``).
+        self._queue_mgr = queue_mgr
         # One pooled client per (node, backend port); port None is the node's
         # Ollama.  Native backends (embeddings, speech, images) share the pool
         # instead of opening a connection per request.
@@ -395,7 +404,7 @@ class StreamingProxy:
         capture_bytes = 0
         DEBUG_CAPTURE_MAX_BYTES = 2 * 1024 * 1024
         try:
-            pin = not queue_manager.load_pending_on(entry.assigned_node, entry.request.model)
+            pin = queue_manager.should_pin(entry.assigned_node, entry.request.model)
             async for chunk in self.stream_from_node(entry.assigned_node, entry.request, pin):
                 if first_token_time is None:
                     first_token_time = time.time()
@@ -678,7 +687,7 @@ class StreamingProxy:
             capture_chunks: list[str] = []
             capture_bytes = 0
             try:
-                pin = not queue_manager.load_pending_on(current_node, entry.request.model)
+                pin = queue_manager.should_pin(current_node, entry.request.model)
                 async for chunk in self.stream_from_node(current_node, entry.request, pin):
                     entry.last_progress_at = time.time()
                     if not first_chunk_sent:
@@ -1233,7 +1242,12 @@ class StreamingProxy:
             # settings, so it should not depend on every call site being careful.
             if num_ctx is None:
                 num_ctx = self._resolved_num_ctx(model)
-            body: dict = {"model": model, "prompt": "", "keep_alive": -1}
+            # Same keep-alive rule as a routed request (``_build_ollama_body``):
+            # a pre-warm sent while a load waits on the node would cancel that
+            # load's eviction of this model if it is resident.
+            body: dict = {"model": model, "prompt": ""}
+            if self._queue_mgr is None or self._queue_mgr.should_pin(node_id, model):
+                body["keep_alive"] = -1
             if num_ctx and num_ctx > 0:
                 body["options"] = {"num_ctx": num_ctx}
             resp = await client.post(
@@ -1842,7 +1856,7 @@ class StreamingProxy:
         ``pin`` adds ``keep_alive: -1`` (unless the client sent its own): herd
         keeps models loaded, not Ollama's idle timeout.  The caller passes
         False while a load may be waiting on the node
-        (``QueueManager.load_pending_on``), because Ollama takes a request's
+        (``QueueManager.should_pin``), because Ollama takes a request's
         ``keep_alive`` as the runner's (``useLoadedRunner``): it cancels an
         eviction under way, and the load, and every load behind it, then wait
         with no timeout for an unload that never comes.  Sent on every request,

@@ -53,7 +53,9 @@ async def lifespan(app: FastAPI):
     scorer = ScoringEngine(settings, registry, latency_store, sessions=sessions)
     app.state.sessions = sessions
     queue_mgr = QueueManager(registry=registry, settings=settings)
-    streaming_proxy = StreamingProxy(registry, latency_store, trace_store, settings=settings)
+    streaming_proxy = StreamingProxy(
+        registry, latency_store, trace_store, settings=settings, queue_mgr=queue_mgr
+    )
     rebalancer = Rebalancer(settings, registry, scorer, queue_mgr, streaming_proxy)
 
     # MLX backend — opt-in alternative serving path for models that can't fit

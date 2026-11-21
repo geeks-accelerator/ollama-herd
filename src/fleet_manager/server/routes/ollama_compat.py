@@ -922,7 +922,7 @@ async def dispatch_embed(
     # managed HTTP client (handles LAN IP rewriting, connection pooling).
     embed_body = dict(body)
     embed_body.pop("metadata", None)
-    if not queue_mgr.load_pending_on(winner.node_id, actual_model):  # see _build_ollama_body
+    if queue_mgr.should_pin(winner.node_id, actual_model):  # see _build_ollama_body
         embed_body.setdefault("keep_alive", -1)
 
     # Counted in the node's queue depth while it runs, so the scorer sees an
@@ -1006,19 +1006,14 @@ async def dispatch_embed(
                 await asyncio.sleep(backoff)
 
             except Exception as e:
-                error_detail = str(e) or repr(e)
-                logger.error(
-                    f"Embed failed on {winner.node_id}: {type(e).__name__}: {error_detail}"
-                )
-                trace(
-                    "failed", error=f"{type(e).__name__}: {error_detail}", retry_count=retry_count
-                )
+                # Full cause in the log and trace; the client gets text that
+                # never carries a backend address (same as the native path).
+                err_msg = describe_exception(e)
+                logger.error(f"Embed failed on {winner.node_id}: {err_msg}")
+                trace("failed", error=err_msg, retry_count=retry_count)
                 return JSONResponse(
                     status_code=502,
-                    content={
-                        "error": f"Failed to reach Ollama on {winner.node_id}: "
-                        f"{type(e).__name__}: {error_detail}"
-                    },
+                    content={"error": f"Embedding backend unreachable: {client_error_message(e)}"},
                 )
 
         # ReadTimeout exhausted all retries
