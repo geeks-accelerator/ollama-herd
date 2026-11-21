@@ -266,6 +266,18 @@ From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-h
     to the second card. Apply `joins_load` only while that model's load is at the node without
     output; the scorer needs a "load under way" input from the queue manager (it only sees
     combined depths today).
+31. **Open, from run 5 (2026-11-21, released 0.12.11): a model's first routing decision can
+    strand it for the whole run.** Vision test on two A10 24 GB (m1, m2) and one A100 40 GB (m5),
+    each run starting from a reset that loads nomic-embed-text and moondream on m5 and the coder on
+    m1 and m2, `--skip-warmup`. In repetition 1 the router's view of m5 did not yet list nomic (the
+    reset had just loaded it; heartbeats are every 5 s), so the first embeddings went to m1 cold
+    (score 53). After that every one of 360 nomic routings went to m1 (affinity, then the model
+    "on its way" there), where the coder, moondream and nomic do not fit a 22.5 GiB A10 together:
+    each embedding waited about 15 s and 50 were answered in 180 s. In repetitions 2 and 3 the first
+    embedding went to m5 and 10,270 and 10,306 were answered at about 70 ms. Nothing re-scored m1
+    against m5 once m5's heartbeat listed nomic hot and idle. Related to item 30. Data: run 5
+    `b8_three_r1` (OSS `docs/experiments/fleet_run5_results.json`, vision), router log in
+    ollama-herd-private `.bench-lambda-2026-11-21-run5/journals/m1-router.log.gz`.
 
 ## Rules for this work
 
