@@ -11,6 +11,9 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
+from fleet_manager.server.model_knowledge import ModelType, model_type
+from fleet_manager.server.serializers import _model_meta
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["dashboard"])
@@ -1379,7 +1382,12 @@ async def dashboard_settings_data(request: Request):
             stt_models = [m.name for m in node.transcription.models_available]
         embed_models = []
         if node.ollama:
-            embed_models = [m for m in node.ollama.models_available if "embed" in m.lower()]
+            embed_models = [
+                m
+                for m in node.ollama.models_available
+                if model_type(m, getattr(_model_meta(node, m), "capabilities", ()))
+                == ModelType.EMBED
+            ]
         vision_embed_models = []
         if node.vision_embedding:
             vision_embed_models = [m.name for m in node.vision_embedding.models_available]

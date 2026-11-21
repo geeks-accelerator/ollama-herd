@@ -641,6 +641,19 @@ class TestDashboardAPI:
         assert node["agent_version"] == "0.1.0"
         assert node["status"] == "online"
 
+    def test_settings_api_lists_embedding_models_by_model_type(self, client):
+        """``model_type()``, not ``"embed" in name``: bge-m3 and all-minilm are
+        embedding models whose names never say so."""
+        from tests.conftest import make_heartbeat
+
+        models = ["bge-m3:latest", "all-minilm:latest", "nomic-embed-text:latest", "phi4:14b"]
+        hb = make_heartbeat(node_id="test-node", available_models=models).model_dump()
+        client.post("/heartbeat", json=hb)
+
+        nodes = client.get("/dashboard/api/settings").json()["nodes"]
+        node = next(n for n in nodes if n["node_id"] == "test-node")
+        assert node["embed_models"] == models[:3]
+
     def test_settings_api_empty_nodes(self, client):
         resp = client.get("/dashboard/api/settings")
         assert resp.json()["nodes"] == []
