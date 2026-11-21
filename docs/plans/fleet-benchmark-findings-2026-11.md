@@ -282,7 +282,23 @@ From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-h
     `b6ee0eb` coding requests were still 154, 150, 160 against 0.12.11's 162, 183, 173, with total
     chat throughput equal (mean 400 against 401 tok/s) and image requests up 19%; the difference is
     all on m1 (router, harness and node on one machine; m2 identical at 76 coding requests every
-    run). Unexplained; repeat with the router and harness on a machine of their own. Vision test on two A10 24 GB (m1, m2) and one A100 40 GB (m5),
+    run). **Isolating check (same day, router and harness on a fourth A10 with no models, 0.12.11
+    and `b6ee0eb` alternating, three runs each, raw data in `.bench-lambda-2026-11-21-vchk2/`):**
+    the gap stayed (coding 147, 171, 181 against 146, 145, 148; total chat throughput 400.6 against
+    400.4 tok/s; embeddings all on the A100 in every run), so it was not the shared machine. It
+    follows image requests spilled onto m1: 14, 20 and 0 on 0.12.11 against 45, 46 and 38 with the
+    fix, and m1's coder decode fell with them (73.8 tok/s at 0, about 50 to 57 at 38 to 46). See
+    item 32 for the spill itself, which both versions do.
+32. **Open, from the item 31 checks: image work spills onto a card where the image model runs
+    partly on the CPU.** On an A10 next to qwen3-coder:30b (20 GB) moondream loads 59% CPU / 41%
+    GPU (`ollama ps`), and its llama-server then burns about 24 cores beside the coder. The scorer
+    still sends it image requests whenever its moondream queue is empty: score 88 (queue 0) beats
+    the A100's 82 (one in flight), so image work leaves the card that serves it in about 70 ms for
+    one where it takes seconds and slows the coder. Herd does not see CPU offload: heartbeats carry
+    loaded models, not how much of each is on the GPU (Ollama's `/api/ps` has `size_vram`). Fix
+    direction: report each loaded model's GPU share from the node and score a partly offloaded
+    model as cold (or not a candidate while a fully resident one can serve), then re-run the
+    vision check: coding requests should match 0.12.11 or beat it. Vision test on two A10 24 GB (m1, m2) and one A100 40 GB (m5),
     each run starting from a reset that loads nomic-embed-text and moondream on m5 and the coder on
     m1 and m2, `--skip-warmup`. In repetition 1 the router's view of m5 did not yet list nomic (the
     reset had just loaded it; heartbeats are every 5 s), so the first embeddings went to m1 cold
