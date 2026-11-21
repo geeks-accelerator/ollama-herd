@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -608,12 +609,38 @@ async def test_process_fn_raising_does_not_hold_the_slot():
     def boom(entry):
         raise RuntimeError("node unreachable")
 
-    bad_future = await qm.enqueue(_make_entry(), boom)
+    bad = _make_entry()
+    bad_future = await qm.enqueue(bad, boom)
     good = _make_entry()
     await qm.enqueue(good, _sync_process)
     await _settle()
     assert isinstance(bad_future.exception(), RuntimeError)
-    assert good.request.request_id in qm._queues["studio:phi4:14b"].in_flight
+    q = qm._queues["studio:phi4:14b"]
+    assert list(q.in_flight) == [good.request.request_id], "no phantom in-flight entry"
+    assert bad.status == RequestStatus.FAILED and q.failed_count == 1
+    await qm.shutdown()
+
+
+async def test_process_fn_raising_is_traced():
+    """The worker answers it with a 502; the stream that would have traced the
+    attempt never existed (``StreamingProxy._traced``)."""
+    from unittest.mock import MagicMock
+
+    from fleet_manager.server.streaming import StreamingProxy
+
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+    proxy = StreamingProxy(MagicMock())
+    proxy._stream_with_tracking = MagicMock(side_effect=RuntimeError("bad request body"))
+    proxy._record_trace = MagicMock()
+    entry = _make_entry()
+    future = await qm.enqueue(entry, proxy.make_process_fn("studio:phi4:14b", qm))
+    await _settle()
+    assert isinstance(future.exception(), RuntimeError)
+    proxy._record_trace.assert_called_once()
+    args, kwargs = proxy._record_trace.call_args
+    assert args[0] is entry and args[1] == "studio" and args[4] == "failed"
+    assert "bad request body" in kwargs["error_message"]
     await qm.shutdown()
 
 
@@ -801,21 +828,42 @@ async def test_client_leaving_while_queued_is_never_dispatched():
 # ---------------------------------------------------------------------------
 
 
+def _node(node_id, resident, *, available_gb=8.0, gpu_total_gb=0.0, sizes=None):
+    """A node with ``resident`` loaded (name -> GB, or names at 15.6 GB)."""
+    from fleet_manager.models.node import (
+        HardwareProfile,
+        LoadedModel,
+        MemoryMetrics,
+        NodeState,
+        OllamaMetrics,
+    )
+
+    if not isinstance(resident, dict):
+        resident = dict.fromkeys(resident, 15.6)
+    on_gpu = gpu_total_gb > 0
+    return NodeState(
+        node_id=node_id,
+        hardware=HardwareProfile(node_id=node_id, memory_total_gb=64.0),
+        memory=MemoryMetrics(
+            total_gb=64.0, used_gb=64.0 - available_gb, available_gb=available_gb,
+            gpu_total_gb=gpu_total_gb,
+        ),
+        ollama=OllamaMetrics(
+            num_parallel=4,
+            models_loaded=[
+                LoadedModel(name=m, size_gb=gb, size_vram_gb=gb if on_gpu else 0.0)
+                for m, gb in resident.items()
+            ],
+            models_available_sizes={"qwen3-coder:30b": 18.6, **(sizes or {})},
+        ),
+    )
+
+
 def _card(*resident):
+    """Card m1 (unified memory, 8 GB free) with ``resident`` at 15.6 GB each."""
     from types import SimpleNamespace
 
-    from fleet_manager.models.node import LoadedModel
-
-    node = SimpleNamespace(
-        memory=SimpleNamespace(available_gb=50.0),
-        capacity=None,
-        ollama=SimpleNamespace(
-            num_parallel=4,
-            models_loaded=[LoadedModel(name=m, size_gb=15.6) for m in resident],
-            models_available_meta={},
-        ),
-        mlx_servers=[],
-    )
+    node = _node("m1", resident)
     return node, SimpleNamespace(get_node=lambda node_id: node)
 
 
@@ -1039,4 +1087,149 @@ async def test_an_embedding_at_the_node_counts_as_activity():
     with qm.direct("m1", "nomic-embed-text:latest"):
         assert not qm.should_pin("m1", "nomic-embed-text:latest")
     assert not qm.should_pin("m1", "nomic-embed-text:latest"), "and just finished"
+    await qm.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# An idle model makes room for a load only if evicting it frees enough.
+# ---------------------------------------------------------------------------
+
+
+async def _gpu_card(busy_gb, idle):
+    """A 24 GB card m1: phi4 (``busy_gb``) serving one request, ``idle`` loaded
+    and doing nothing."""
+    from types import SimpleNamespace
+
+    node = _node("m1", {"phi4:14b": busy_gb, **idle}, gpu_total_gb=24.0)
+    qm = QueueManager(registry=SimpleNamespace(get_node=lambda node_id: node))
+    _fixed_concurrency(qm, 4)
+    calls = []
+    running = _make_entry(model="phi4:14b", node_id="m1")
+    await qm.enqueue(running, _recording(calls))
+    await _settle()
+    return qm, calls, running
+
+
+async def test_a_small_idle_model_does_not_cancel_the_wait():
+    """10 GB free plus a 1 GB idle model is not room for an 18.6 GB load: it
+    still has to evict phi4, so it waits its turn."""
+    qm, calls, running = await _gpu_card(13.0, {"qwen2.5:0.5b": 1.0})
+    await qm.enqueue(_coder(), _recording(calls))
+    await _wait_a_poll()
+    assert calls == ["phi4:14b"]
+    qm.mark_completed("m1:phi4:14b", running)
+    await _wait_a_poll()
+    assert calls[-1] == "qwen3-coder:30b"
+    await qm.shutdown()
+
+
+async def test_an_idle_model_that_frees_enough_lets_the_load_go():
+    qm, calls, running = await _gpu_card(4.0, {"qwen2.5:14b": 10.0})
+    await qm.enqueue(_coder(), _recording(calls))
+    await _wait_a_poll()
+    assert calls[-1] == "qwen3-coder:30b"
+    await qm.shutdown()
+
+
+async def test_a_small_idle_model_does_not_cancel_the_room():
+    qm, calls, running = await _gpu_card(13.0, {"qwen2.5:0.5b": 1.0})
+    await qm.enqueue(_coder(waited=_LOAD_WAIT), _recording(calls))
+    await _settle()
+    await qm.enqueue(_make_entry(model="phi4:14b", node_id="m1"), _recording(calls))
+    await _wait_a_poll()
+    assert calls == ["phi4:14b", "qwen3-coder:30b"], "phi4 makes room for the coder"
+    await qm.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# A retry moves the request to the next node's queue (move_in_flight), so its
+# load counts there and not on the node that failed.
+# ---------------------------------------------------------------------------
+
+
+async def _two_cards():
+    """m1 and m2, phi4 resident on m1 and gemma3 on m2, each serving one
+    request; a coder load in flight on m1, about to be retried on m2."""
+    from types import SimpleNamespace
+
+    nodes = {"m1": _node("m1", ["phi4:14b"]), "m2": _node("m2", ["gemma3:12b"])}
+    qm = QueueManager(registry=SimpleNamespace(get_node=nodes.get))
+    _fixed_concurrency(qm, 4)
+    calls = []
+    running = {}
+    for node_id, m in (("m1", "phi4:14b"), ("m2", "gemma3:12b")):
+        running[m] = _make_entry(model=m, node_id=node_id)
+        await qm.enqueue(running[m], _recording(calls))
+    load = _coder(waited=_LOAD_WAIT)
+    await qm.enqueue(load, _recording(calls))
+    await _settle()
+    for e in running.values():
+        e.last_progress_at = 1.0  # producing tokens: not loads
+    return qm, calls, load
+
+
+async def test_retry_moves_the_request_and_its_load_clock():
+    qm, calls, load = await _two_cards()
+    rid = load.request.request_id
+    load.started_at -= 100
+    assert await qm.move_in_flight("m1:qwen3-coder:30b", "m2:qwen3-coder:30b", rid)
+    assert load.assigned_node == "m2"
+    assert rid not in qm._queues["m1:qwen3-coder:30b"].in_flight
+    assert rid in qm._queues["m2:qwen3-coder:30b"].in_flight
+    assert time.time() - load.started_at < 5, "the room counts from the new node"
+    depths = qm.get_queue_depths()
+    assert depths["m1:qwen3-coder:30b"] == 0 and depths["m2:qwen3-coder:30b"] == 1
+    assert not await qm.move_in_flight("m1:qwen3-coder:30b", "m2:qwen3-coder:30b", rid)
+    await qm.shutdown()
+
+
+async def test_retry_moves_the_pin():
+    """The node the retry loads on stops pinning its resident model; the node
+    that failed pins again."""
+    qm, calls, load = await _two_cards()
+    assert not qm.should_pin("m1", "phi4:14b") and qm.should_pin("m2", "gemma3:12b")
+    await qm.move_in_flight("m1:qwen3-coder:30b", "m2:qwen3-coder:30b", load.request.request_id)
+    assert qm.should_pin("m1", "phi4:14b"), "no phantom load on the node that failed"
+    assert not qm.should_pin("m2", "gemma3:12b"), "a keep_alive would cancel the eviction"
+    await qm.shutdown()
+
+
+async def test_retry_moves_the_hold():
+    """New requests for the resident model are held on the node the retry loads
+    on, and no longer on the node that failed."""
+    qm, calls, load = await _two_cards()
+    await qm.move_in_flight("m1:qwen3-coder:30b", "m2:qwen3-coder:30b", load.request.request_id)
+    await qm.enqueue(_make_entry(model="phi4:14b", node_id="m1"), _recording(calls))
+    await qm.enqueue(_make_entry(model="gemma3:12b", node_id="m2"), _recording(calls))
+    await _wait_a_poll()
+    assert calls.count("phi4:14b") == 2, "m1 has no load to make room for"
+    assert calls.count("gemma3:12b") == 1, "m2 makes room for the coder"
+    qm.mark_failed("m2:qwen3-coder:30b", load)
+    await _wait_a_poll()
+    assert calls.count("gemma3:12b") == 2
+    await qm.shutdown()
+
+
+async def test_a_moved_request_still_leaves_the_queue_when_its_stream_ends():
+    """``_settle_on_exit`` settles it in the queue it is in now, and the failed
+    node's worker slot is free at once."""
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+    a, b = _make_entry(node_id="m1"), _make_entry(node_id="m1")
+    moved = asyncio.Event()
+
+    async def gen():
+        await qm.move_in_flight("m1:phi4:14b", "m2:phi4:14b", a.request.request_id)
+        moved.set()
+        yield "chunk"
+
+    fut = await qm.enqueue(a, lambda e: gen())
+    await qm.enqueue(b, _sync_process)
+    stream = await fut
+    async for _ in stream:
+        pass
+    await _settle()
+    assert b.request.request_id in qm._queues["m1:phi4:14b"].in_flight, "m1's slot freed"
+    m2 = qm._queues["m2:phi4:14b"]
+    assert not m2.in_flight and m2.failed_count == 1, "settled where it ran"
     await qm.shutdown()

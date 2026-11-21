@@ -386,7 +386,30 @@ class StreamingProxy:
                 return proxy._stream_with_retry(entry, queue_key, queue_manager, scorer, settings)
             return proxy._stream_with_tracking(entry, queue_key, queue_manager)
 
-        return process
+        return self._traced(process)
+
+    def _traced(self, process):
+        """``process``, with a failed trace when it raises before returning its
+        stream.  The worker answers that with a 502 and the stream that would
+        have traced the attempt never exists, so the request had no trace row
+        and its ``X-Request-Id`` resolved to nothing."""
+
+        def dispatch(entry: QueueEntry):
+            start_time = time.time()
+            try:
+                return process(entry)
+            except Exception as e:
+                self._record_trace(
+                    entry,
+                    entry.assigned_node,
+                    start_time,
+                    None,
+                    "failed",
+                    error_message=describe_exception(e),
+                )
+                raise
+
+        return dispatch
 
     async def _stream_with_tracking(
         self, entry: QueueEntry, queue_key: str, queue_manager
@@ -826,11 +849,15 @@ class StreamingProxy:
 
                 entry.retry_count += 1
                 next_winner = results[0]
-                current_node = next_winner.node_id
-                current_queue_key = next_winner.queue_key
-                entry.assigned_node = current_node
                 entry.routing_score = next_winner.score
                 entry.routing_breakdown = next_winner.scores_breakdown
+                # Into the next node's queue, so its load counts there and
+                # not on the node that failed.
+                await queue_manager.move_in_flight(
+                    current_queue_key, next_winner.queue_key, entry.request.request_id
+                )
+                entry.assigned_node = current_node = next_winner.node_id
+                current_queue_key = next_winner.queue_key
 
                 logger.info(
                     f"Retrying {entry.request.request_id[:8]} on {current_node} "
@@ -1398,7 +1425,7 @@ class StreamingProxy:
         def process(entry: QueueEntry):
             return _generate_and_yield(entry)
 
-        return process
+        return self._traced(process)
 
     async def _run_media_job(self, entry: QueueEntry, queue_key: str, queue_manager, kind, job):
         """Await an image or transcription ``job``; settle the queue and trace it.
@@ -1521,7 +1548,7 @@ class StreamingProxy:
         def process(entry: QueueEntry):
             return _transcribe_and_yield(entry)
 
-        return process
+        return self._traced(process)
 
     async def generate_image_on_node(
         self, node_id: str, body: dict, timeout: float = 120.0

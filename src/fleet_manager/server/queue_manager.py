@@ -9,7 +9,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from fleet_manager.models.request import QueueEntry, RequestStatus
-from fleet_manager.server.serializers import decode_parallelism_for, model_resident_on_node
+from fleet_manager.server.serializers import (
+    decode_parallelism_for,
+    distinct_resident_models,
+    model_resident_on_node,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -452,12 +456,15 @@ class QueueManager:
                 if not future.done():
                     future.set_result(stream)
             except Exception as e:
-                entry.status = RequestStatus.FAILED
+                # Nothing was dispatched and no stream will settle it: take it
+                # out of ``in_flight`` (a phantom load otherwise, until the
+                # reaper) and free its slot and client reservation here.  The
+                # proxy's process_fns trace it (``StreamingProxy._traced``).
+                self.mark_failed(f"{q.node_id}:{q.model}", entry)
                 if not future.done():
                     future.set_exception(e)
                 logger.error(f"Queue worker error for {rid}: {e}")
-                q.slots.pop(rid, None)
-                continue  # nothing was dispatched, so nothing will release it
+                continue
 
             # Drop our references to the stream before waiting.  The future's
             # result IS the stream, and a stream is only finalized -- its
@@ -585,6 +592,36 @@ class QueueManager:
         hot = getattr(self._settings, "score_model_hot", 50.0)
         return b.get("eviction", 0) < 0 or b.get("thermal", 0) >= hot
 
+    def _idle_room_for(self, node, node_id: str, model: str, depths: dict[str, int]) -> bool:
+        """Would evicting the idle models on ``node`` make room to load ``model``?
+
+        Ollama evicts an idle model at once, so a load that fits in the free
+        memory plus what the idle models hold never waits for a busy one.  One
+        that does not fit even then still has to evict a busy model, and waits
+        its turn like any other: a small idle model beside a busy large one
+        used to disable the wait outright.  False with no idle model, where the
+        routing verdict (``_evicting_load``) stands.  The cost is the scorer's
+        (``ScoringEngine._model_fit_cost_gb``): measured resident size when the
+        fleet has seen the model, else its weights.
+        """
+        idle = [m for m in distinct_resident_models(node) if not depths.get(f"{node_id}:{m.name}")]
+        if not idle:
+            return False
+        from fleet_manager.server.model_preloader import (
+            _estimate_model_size,
+            _expected_num_ctx,
+            measured_resident_gb,
+        )
+
+        on_gpu = bool(node.memory and node.memory.gpu_total_gb > 0)
+        freed = sum((m.size_vram_gb or m.size_gb) if on_gpu else m.size_gb for m in idle)
+        weights = _estimate_model_size(model, node)
+        cost = measured_resident_gb(
+            model, node, _expected_num_ctx(model, self._settings, node), weights_gb=weights
+        )
+        cost = weights if cost is None else cost
+        return node.memory_free_without_evicting_gb() + freed >= cost
+
     def _must_wait(self, q: DeviceModelQueue, entry: QueueEntry) -> bool:
         """Should ``entry`` stay in herd's queue rather than go to its node now?
 
@@ -609,8 +646,8 @@ class QueueManager:
           the load is more likely stuck, and holding a healthy resident model's
           traffic until the stale reaper took up to ten minutes.
 
-        Nothing waits on a node with an idle model, or for a load that fits
-        beside the resident models.
+        Nothing waits for a load that fits beside the resident models, or that
+        evicting the node's idle models makes room for (``_idle_room_for``).
         """
         if self._registry is None:
             return False
@@ -618,14 +655,13 @@ class QueueManager:
         if node is None or node.ollama is None:
             return False
         depths = self.get_queue_depths()
-        if any(not depths.get(f"{q.node_id}:{m.name}") for m in node.ollama.models_loaded):
-            return False
         if model_resident_on_node(q.model, node):
             now = time.time()
             return any(
                 e.last_progress_at is None
                 and self._evicting_load(e)
                 and now - (e.started_at or now) < _LOAD_ROOM_SECONDS
+                and not self._idle_room_for(node, q.node_id, other.model, depths)
                 for other in self._queues.values()
                 if other is not q
                 and other.node_id == q.node_id
@@ -633,6 +669,8 @@ class QueueManager:
                 for e in other.in_flight.values()
             )
         if not self._evicting_load(entry):
+            return False
+        if self._idle_room_for(node, q.node_id, q.model, depths):
             return False
         if any(e.last_progress_at is None for e in q.in_flight.values()):
             return False  # this model's load is under way: join it
@@ -692,8 +730,12 @@ class QueueManager:
             async for chunk in stream:
                 yield chunk
         finally:
-            if rid in q.in_flight:  # nothing settled it
-                self.mark_failed(f"{q.node_id}:{q.model}", entry)
+            # Where the request is now: a retry moves it to another node's
+            # queue (``move_in_flight``).
+            key = f"{entry.assigned_node}:{entry.request.model}"
+            now_in = self._queues.get(key)
+            if now_in is not None and rid in now_in.in_flight:  # nothing settled it
+                self.mark_failed(key, entry)
             self._release_slot(q, rid)
 
     @staticmethod
@@ -751,6 +793,40 @@ class QueueManager:
             self._ensure_workers(target, target_key)
 
         return moved
+
+    async def move_in_flight(self, source_key: str, target_key: str, request_id: str) -> bool:
+        """Move in-flight request ``request_id`` from the source queue to the
+        target queue: a retry sending it to another node.  The in-flight
+        sibling of ``move_pending``.  Returns whether it was moved.
+
+        Without it a retried request stayed in the failed node's ``in_flight``
+        while it ran on the next one, and everything that reads in-flight work
+        by queue node was wrong on both: the node it now loads on still pinned
+        its resident models (``should_pin``), cancelling the eviction the load
+        waits for, and gave it no room (``_must_wait``), while the node that
+        failed showed a load it did not have and could hold its own traffic
+        for it.  The failed node's worker slot is freed: the request no longer
+        runs there.  ``started_at`` restarts, because the room a load gets
+        (``_LOAD_ROOM_SECONDS``) counts from when it reached its node.
+        """
+        async with self._lock:
+            source = self._queues.get(source_key)
+            if source is None or request_id not in source.in_flight:
+                return False
+            if target_key not in self._queues:
+                parts = target_key.split(":", 1)
+                if len(parts) != 2:
+                    return False
+                self._queues[target_key] = DeviceModelQueue(node_id=parts[0], model=parts[1])
+            target = self._queues[target_key]
+            entry = source.in_flight.pop(request_id)
+            self._release_slot(source, request_id)
+            entry.assigned_node = target.node_id
+            entry.started_at = time.time()
+            entry.last_progress_at = None
+            target.in_flight[request_id] = entry
+        logger.debug(f"Moved in-flight {request_id[:8]} from {source_key} to {target_key}")
+        return True
 
     async def shutdown(self):
         """Cancel all worker tasks and the reaper."""
