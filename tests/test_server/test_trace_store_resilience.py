@@ -381,3 +381,83 @@ async def test_checkpoint_alongside_writes_loses_nothing(store: TraceStore):
     await asyncio.gather(*writes, *checkpoints)
     assert len(await store.get_recent_traces(limit=100)) == 40
     assert store.get_write_failure_count() == 0
+
+
+# -- Shutdown and bad rows (review 2026-11-21) --
+
+
+def _trace(rid):
+    return dict(request_id=rid, model="m", original_model="m", node_id="n")
+
+
+async def _row_ids(tmp_path):
+    reopened = TraceStore(data_dir=str(tmp_path))
+    await reopened.initialize()
+    try:
+        return sorted(t["request_id"] for t in await reopened.get_recent_traces(limit=100))
+    finally:
+        await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_close_commits_the_traces_already_recorded(tmp_path):
+    s = TraceStore(data_dir=str(tmp_path))
+    await s.initialize()
+    tasks = [asyncio.create_task(s.record_trace(**_trace(f"r{i}"))) for i in range(5)]
+    await asyncio.sleep(0)  # recorded: queued for the group commit
+    await s.close()
+    await asyncio.gather(*tasks)
+    assert await _row_ids(tmp_path) == [f"r{i}" for i in range(5)]
+
+
+@pytest.mark.asyncio
+async def test_close_commits_rows_a_cancelled_flusher_left(tmp_path):
+    s = TraceStore(data_dir=str(tmp_path))
+    await s.initialize()
+    tasks = [asyncio.create_task(s.record_trace(**_trace(f"r{i}"))) for i in range(3)]
+    await asyncio.sleep(0)
+    s._flusher.cancel()  # e.g. shutdown cancelling tasks before close()
+    await s.close()
+    await asyncio.gather(*tasks)
+    assert await _row_ids(tmp_path) == ["r0", "r1", "r2"]
+
+
+@pytest.mark.asyncio
+async def test_traces_lost_at_close_are_counted(tmp_path, monkeypatch):
+    s = TraceStore(data_dir=str(tmp_path))
+    await s.initialize()
+
+    async def broken(sql, params=None):
+        raise aiosqlite.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(s._db, "execute", broken)
+    tasks = [asyncio.create_task(s.record_trace(**_trace(f"r{i}"))) for i in range(4)]
+    await asyncio.sleep(0)
+    await s.close()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert all(isinstance(r, aiosqlite.OperationalError) for r in results)
+    assert s.get_write_failure_count() == 4
+
+
+@pytest.mark.asyncio
+async def test_a_bad_row_fails_only_its_own_caller(tmp_path, monkeypatch):
+    """Any error rolls the batch back (no half-written batch left for the next
+    commit, no row written twice), and the batch is retried row by row."""
+    s = TraceStore(data_dir=str(tmp_path))
+    await s.initialize()
+    real_execute = s._db.execute
+
+    async def refuses_bad(sql, params=None):
+        if params and params[0] == "bad":
+            raise ValueError("unsupported parameter type")
+        return await real_execute(sql, params) if params is not None else await real_execute(sql)
+
+    monkeypatch.setattr(s._db, "execute", refuses_bad)
+    results = await asyncio.gather(
+        *(s.record_trace(**_trace(rid)) for rid in ("a", "bad", "c")), return_exceptions=True
+    )
+    assert results[0] is None and results[2] is None
+    assert isinstance(results[1], ValueError)
+    assert s.get_write_failure_count() == 1
+    await s.close()
+    assert await _row_ids(tmp_path) == ["a", "c"]

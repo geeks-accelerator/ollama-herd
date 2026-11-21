@@ -93,6 +93,16 @@ _TRACE_COLUMNS = (
 )
 
 
+_INSERT_TRACE_SQL = (
+    "INSERT INTO request_traces "
+    "(request_id, model, original_model, node_id, score, scores_breakdown, "
+    "status, latency_ms, time_to_first_token_ms, prompt_tokens, completion_tokens, "
+    "retry_count, fallback_used, excluded_nodes, client_ip, original_format, "
+    "error_message, tags, timestamp, finish_reason, estimated_tokens, timings) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
+
 class TraceStore:
     """Records and queries per-request trace data in the same SQLite DB as LatencyStore."""
 
@@ -395,14 +405,6 @@ class TraceStore:
             estimated_tokens,
             json.dumps(timings) if timings else None,
         )
-        sql = (
-            "INSERT INTO request_traces "
-            "(request_id, model, original_model, node_id, score, scores_breakdown, "
-            "status, latency_ms, time_to_first_token_ms, prompt_tokens, completion_tokens, "
-            "retry_count, fallback_used, excluded_nodes, client_ip, original_format, "
-            "error_message, tags, timestamp, finish_reason, estimated_tokens, timings) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        )
         # Group commit: rows recorded while a commit is in progress go out
         # together in the next one.  A commit per request was a large share of
         # the router's per-request cost under load; each caller still waits for
@@ -410,46 +412,88 @@ class TraceStore:
         done = asyncio.get_running_loop().create_future()
         self._pending.append((params, done))
         if self._flusher is None or self._flusher.done():
-            self._flusher = asyncio.create_task(self._flush_pending(sql))
+            self._flusher = asyncio.create_task(self._flush_pending())
         await done
 
-    async def _flush_pending(self, sql: str) -> None:
-        """Commit pending trace rows in groups until none are left."""
+    async def _flush_pending(self) -> None:
+        """Commit pending trace rows in groups until none are left.
+
+        Every row ends written or failed: a row that fails (or is still
+        unwritten when the flush is cancelled) fails its caller and is counted
+        in ``_write_failure_times``, so ``trace_store_write_failures`` sees
+        every lost trace.  A row the database refuses outright (anything but
+        ``OperationalError``, which is the database itself failing) is isolated
+        by writing the batch again one row at a time, so only its own caller
+        fails, not every request that happened to share its commit.
+        """
         async with self._write_lock:
             while self._pending:
                 batch, self._pending = self._pending, []
                 try:
-                    await self._write_batch(sql, [params for params, _ in batch])
-                except Exception as exc:  # noqa: BLE001 -- every waiter gets it
-                    for _, done in batch:
-                        if not done.done():
-                            done.set_exception(exc)
-                else:
-                    for _, done in batch:
-                        if not done.done():
-                            done.set_result(None)
+                    try:
+                        await self._write_batch([params for params, _ in batch])
+                    except aiosqlite.OperationalError as exc:
+                        self._fail(batch, exc)
+                    except Exception as exc:  # noqa: BLE001 -- isolate the bad row
+                        if len(batch) == 1:
+                            self._fail(batch, exc)
+                            continue
+                        for item in batch:
+                            try:
+                                await self._write_batch([item[0]])
+                            except Exception as row_exc:  # noqa: BLE001
+                                self._fail([item], row_exc)
+                            else:
+                                self._written([item])
+                    else:
+                        self._written(batch)
+                except BaseException as exc:  # cancelled mid-batch
+                    self._fail([item for item in batch if not item[1].done()], exc)
+                    raise
 
-    async def _write_batch(self, sql: str, rows: list[tuple]) -> None:
+    @staticmethod
+    def _written(batch: list[tuple[tuple, asyncio.Future]]) -> None:
+        for _, done in batch:
+            if not done.done():
+                done.set_result(None)
+
+    def _fail(self, batch: list[tuple[tuple, asyncio.Future]], exc: BaseException) -> None:
+        """Count ``batch`` as lost and give each caller ``exc``."""
+        if not batch:
+            return
+        now = time.time()
+        self._write_failure_times.extend([now] * len(batch))
+        for _, done in batch:
+            if not done.done():
+                if isinstance(exc, asyncio.CancelledError):
+                    done.cancel()
+                else:
+                    done.set_exception(exc)
+
+    async def _write_batch(self, rows: list[tuple]) -> None:
         """Insert ``rows`` in one transaction, retrying the whole batch on a lock.
 
         The busy_timeout PRAGMA absorbs short contention, but a stuck reader
-        can still expire it.  Up to ``len(_RETRY_BACKOFFS_S) + 1`` attempts, then
-        the failure is counted (one per row, for the trace_store_write_failures
-        health check) and raised to every waiting caller.  A failed attempt is
-        rolled back first, so a retried batch never inserts a row twice.
+        can still expire it.  Up to ``len(_RETRY_BACKOFFS_S) + 1`` attempts,
+        then the error is raised for ``_flush_pending`` to count.  Any failed
+        attempt is rolled back first, whatever the error: a retried batch never
+        inserts a row twice, and rows of a failed batch are never left in an
+        open transaction for the next batch's commit to save.
         """
         for backoff in (*_RETRY_BACKOFFS_S, None):
             try:
                 for params in rows:
-                    await self._db.execute(sql, params)
+                    await self._db.execute(_INSERT_TRACE_SQL, params)
                 await self._db.commit()
                 return
-            except aiosqlite.OperationalError as exc:
+            except BaseException as exc:
                 with contextlib.suppress(Exception):
                     await self._db.rollback()
-                if "locked" not in str(exc).lower() or backoff is None:
-                    now = time.time()
-                    self._write_failure_times.extend([now] * len(rows))
+                if (
+                    not isinstance(exc, aiosqlite.OperationalError)
+                    or "locked" not in str(exc).lower()
+                    or backoff is None
+                ):
                     raise
                 await asyncio.sleep(backoff)
 
@@ -1663,6 +1707,16 @@ class TraceStore:
         }
 
     async def close(self):
+        # Commit the traces already recorded before the writer goes: the
+        # group-commit flusher may still hold a batch, and rows can be pending
+        # behind it (or behind a flusher that was cancelled).  Whatever cannot
+        # be written is counted in _write_failure_times by _flush_pending.
+        if self._flusher is not None and not self._flusher.done():
+            await asyncio.wait({self._flusher})
+        if self._pending and self._db:
+            with contextlib.suppress(Exception):
+                await self._flush_pending()
+        self._flusher = None
         # Close the read connection first so any in-flight read finishes
         # against a still-open writer (otherwise readers can race the
         # writer's closure and emit "connection closed" tracebacks during
