@@ -80,9 +80,13 @@ first.
    `~/.ollama/models` to an S3 bucket in the same region, with a gateway VPC endpoint so the hosts
    fetch over the AWS network for free. Pulling ~400 GB from the Ollama registry six times would
    eat hours of the block.
-3. **Bootstrap script** (`scripts/aws-mac-bootstrap.sh`, new, committed), run as EC2 user data:
+3. **Bootstrap script** (`scripts/aws-mac-bootstrap.sh`, written 2026-11-21, not yet run on an
+   EC2 Mac), run as EC2 user data or over SSH with `NODE_ID`, `ROUTER_URL`, `HERD_VERSION` and
+   `MODELS_S3` set. It exits non-zero on any failure and writes `/var/db/herd-bootstrap.done`
+   only once the router lists the node online at the expected agent version. It does:
    - Ollama from the GitHub release's `Ollama-darwin.zip`, pinned version, CLI only
-     (`ollama serve` under a launchd agent). Not Homebrew: the formula is stale (CLAUDE.md, Ollama
+     (`ollama serve` under a LaunchDaemon run as `ec2-user`: an EC2 Mac boots with nobody
+     logged in, so a launchd agent would never start). Not Homebrew: the formula is stale (CLAUDE.md, Ollama
      notes). Environment on every Mac: `OLLAMA_NUM_PARALLEL=4`, `OLLAMA_KEEP_ALIVE=-1`,
      `OLLAMA_MAX_LOADED_MODELS=10`, `OLLAMA_CONTEXT_LENGTH=32768`.
    - `uv tool install "ollama-herd[embedding]==X.Y.Z"` from PyPI (the released version, not `main`).
