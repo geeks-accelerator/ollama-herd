@@ -270,8 +270,19 @@ From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-h
     routing decision could strand it for the whole run.** Cause: `dispatch_embed` sent embeddings
     straight to Ollama, outside the queue manager, so the scorer saw `queue=0, wait=0` on a node
     with a backlog of them; now `QueueManager.direct` counts each in its node's depth while it runs
-    (not as an in-flight entry, so it is never taken for a load). Verify on the next fleet run:
-    vision with `--skip-warmup` right after a reset, three repetitions. Vision test on two A10 24 GB (m1, m2) and one A100 40 GB (m5),
+    (not as an in-flight entry, so it is never taken for a load).
+    **Hardware check (2026-11-21, 2 x A10 24 GB + A100 40 GB, Ollama 0.40.17, vision workload,
+    raw data in ollama-herd-private `.bench-lambda-2026-11-21-vchk/`):** forced stranding (nomic
+    primed onto an A10 through the router, then loaded on the A100 directly): 0.12.11 sent 4 and 0
+    embeddings to the idle A100 (10,248 and 12,742 in all), the fix 14,121 and 14,325 (24,606 and
+    25,497). The first version (`4c3b7f1`) also reported embeddings in `get_queue_info`'s
+    `in_flight`, which the rebalancer's pre-warm trigger reads: it warmed nomic onto an A10 serving
+    the coder 43 times in three normal runs (0 on 0.12.11) and coding requests fell to a median of
+    150 from 173. `b6ee0eb` reports them as `direct` instead: 0 such pre-warms. **Open:** with
+    `b6ee0eb` coding requests were still 154, 150, 160 against 0.12.11's 162, 183, 173, with total
+    chat throughput equal (mean 400 against 401 tok/s) and image requests up 19%; the difference is
+    all on m1 (router, harness and node on one machine; m2 identical at 76 coding requests every
+    run). Unexplained; repeat with the router and harness on a machine of their own. Vision test on two A10 24 GB (m1, m2) and one A100 40 GB (m5),
     each run starting from a reset that loads nomic-embed-text and moondream on m5 and the coder on
     m1 and m2, `--skip-warmup`. In repetition 1 the router's view of m5 did not yet list nomic (the
     reset had just loaded it; heartbeats are every 5 s), so the first embeddings went to m1 cold
