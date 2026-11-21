@@ -289,8 +289,9 @@ From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-h
     follows image requests spilled onto m1: 14, 20 and 0 on 0.12.11 against 45, 46 and 38 with the
     fix, and m1's coder decode fell with them (73.8 tok/s at 0, about 50 to 57 at 38 to 46). See
     item 32 for the spill itself, which both versions do.
-32. **Open, from the item 31 checks: image work spills onto a card where the image model runs
-    partly on the CPU.** On an A10 next to qwen3-coder:30b (20 GB) moondream loads 59% CPU / 41%
+32. **Fixed on `main` (unreleased; hardware check pending), from the item 31 checks: image work
+    spilled onto a card where the image model runs partly on the CPU.** `LoadedModel.offloaded`
+    (`0 < size_vram < 90%` of size, already in heartbeats since 0.12.9) scores the model as cold. On an A10 next to qwen3-coder:30b (20 GB) moondream loads 59% CPU / 41%
     GPU (`ollama ps`), and its llama-server then burns about 24 cores beside the coder. The scorer
     still sends it image requests whenever its moondream queue is empty: score 88 (queue 0) beats
     the A100's 82 (one in flight), so image work leaves the card that serves it in about 70 ms for

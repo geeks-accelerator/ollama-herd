@@ -132,6 +132,19 @@ class LoadedModel(BaseModel):
     # in RAM and already shows in the OS's available memory.  0 = not reported.
     size_vram_gb: float = 0.0
 
+    @property
+    def offloaded(self) -> bool:
+        """Ollama put part of this model in RAM, so it runs partly on the CPU.
+
+        A model that only part-fits a card serves at a fraction of its speed
+        and burns CPU next to whatever else that card runs: moondream at 59%
+        CPU beside qwen3-coder:30b on an A10 took about 24 cores and slowed
+        the coder (fleet benchmark, 2026-11-21, findings item 31-32).  Not
+        offloaded when ``size_vram_gb`` is unreported (0: older agent, or a
+        machine with no GPU) or covers the model, as on Apple Silicon.
+        """
+        return 0 < self.size_vram_gb < 0.9 * self.size_gb
+
 
 class ModelTagMeta(BaseModel):
     """Per-model metadata from a node's own Ollama ``/api/tags``.

@@ -331,8 +331,13 @@ class ScoringEngine:
         it, and the two swap on every request: 20 of 20 alternating requests
         did exactly that on one node while a second sat empty (2026-11-20).
         """
-        loaded = [m.name for m in node.ollama.models_loaded]
-        if model in loaded:
+        resident = next((m for m in node.ollama.models_loaded if m.name == model), None)
+        if resident is not None:
+            # Partly on the CPU it is no better than a cold load: a fully resident
+            # copy elsewhere should win until its queue is deep, not lose to an
+            # empty queue on a card where the model crawls (findings item 32).
+            if resident.offloaded:
+                return self._s.score_model_cold  # +10
             return self._s.score_model_hot  # +50
 
         # Warm tier: model was loaded within the last 30 minutes (OS page cache likely hot)
