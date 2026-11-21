@@ -1,0 +1,428 @@
+{
+ "date": "2026-11-21",
+ "machines": "Lambda Cloud us-east-1: NVIDIA A10 24 GB ($1.29/h) and A100 SXM4 40 GB ($1.99/h); Ubuntu 22.04; one private network",
+ "ollama": "0.40.17 for combined and stranding, 0.40.16 for slot_occupancy (run 5); OLLAMA_NUM_PARALLEL=4, OLLAMA_CONTEXT_LENGTH=4096 everywhere",
+ "workload": "qwen3-coder:30b (about 1,250 prompt and 200 completion tokens), nomic-embed-text and moondream (an image question per request), four workers each, 180 s, --skip-warmup, started right after a reset: m1 and m2 the coder, m5 nomic-embed-text and moondream",
+ "telemetry": "off on every router and node",
+ "combined": {
+  "what": "router and harness on a fourth A10 with no models; 0.12.11 from PyPI and OSS 213cdb7 (both 0.12.12 fixes) alternating, three runs each",
+  "0.12.11": {
+   "runs": [
+    {
+     "rep": 1,
+     "sent": 19535,
+     "failed": 0,
+     "chat_tokens_per_sec": 333.1,
+     "ttft_p95_ms": 647.7,
+     "answered": {
+      "coding": 146,
+      "embeddings": 16218,
+      "images": 3171
+     },
+     "answered_by_node": {
+      "coding@m1": 72,
+      "coding@m2": 74,
+      "embeddings@m5": 16218,
+      "images@m1": 18,
+      "images@m2": 27,
+      "images@m5": 3126
+     },
+     "images_on_m1_m2": 45
+    },
+    {
+     "rep": 2,
+     "sent": 21642,
+     "failed": 0,
+     "chat_tokens_per_sec": 403.8,
+     "ttft_p95_ms": 575.2,
+     "answered": {
+      "coding": 146,
+      "embeddings": 17043,
+      "images": 4453
+     },
+     "answered_by_node": {
+      "coding@m1": 74,
+      "coding@m2": 72,
+      "embeddings@m5": 17043,
+      "images@m1": 28,
+      "images@m2": 29,
+      "images@m5": 4396
+     },
+     "images_on_m1_m2": 57
+    },
+    {
+     "rep": 3,
+     "sent": 21566,
+     "failed": 0,
+     "chat_tokens_per_sec": 401.9,
+     "ttft_p95_ms": 576.9,
+     "answered": {
+      "coding": 150,
+      "embeddings": 17090,
+      "images": 4326
+     },
+     "answered_by_node": {
+      "coding@m1": 76,
+      "coding@m2": 74,
+      "embeddings@m5": 17090,
+      "images@m1": 16,
+      "images@m2": 28,
+      "images@m5": 4282
+     },
+     "images_on_m1_m2": 44
+    }
+   ],
+   "median": {
+    "chat_tokens_per_sec": 401.9,
+    "ttft_p95_ms": 576.9,
+    "failed": 0,
+    "coding_answered": 146.0,
+    "embeddings_answered": 17043.0,
+    "images_answered": 4326.0
+   }
+  },
+  "0.12.12": {
+   "runs": [
+    {
+     "rep": 1,
+     "sent": 22546,
+     "failed": 0,
+     "chat_tokens_per_sec": 500.4,
+     "ttft_p95_ms": 71.1,
+     "answered": {
+      "coding": 174,
+      "embeddings": 16649,
+      "images": 5723
+     },
+     "answered_by_node": {
+      "coding@m1": 84,
+      "coding@m2": 90,
+      "embeddings@m5": 16649,
+      "images@m1": 1,
+      "images@m2": 1,
+      "images@m5": 5721
+     },
+     "images_on_m1_m2": 2
+    },
+    {
+     "rep": 2,
+     "sent": 22614,
+     "failed": 0,
+     "chat_tokens_per_sec": 505.5,
+     "ttft_p95_ms": 70.6,
+     "answered": {
+      "coding": 176,
+      "embeddings": 16646,
+      "images": 5792
+     },
+     "answered_by_node": {
+      "coding@m1": 88,
+      "coding@m2": 88,
+      "embeddings@m5": 16646,
+      "images@m1": 1,
+      "images@m2": 1,
+      "images@m5": 5790
+     },
+     "images_on_m1_m2": 2
+    },
+    {
+     "rep": 3,
+     "sent": 22512,
+     "failed": 0,
+     "chat_tokens_per_sec": 503.1,
+     "ttft_p95_ms": 74.6,
+     "answered": {
+      "coding": 176,
+      "embeddings": 16796,
+      "images": 5540
+     },
+     "answered_by_node": {
+      "coding@m1": 88,
+      "coding@m2": 88,
+      "embeddings@m5": 16796,
+      "images@m1": 1,
+      "images@m2": 1,
+      "images@m5": 5538
+     },
+     "images_on_m1_m2": 2
+    }
+   ],
+   "median": {
+    "chat_tokens_per_sec": 503.1,
+    "ttft_p95_ms": 71.1,
+    "failed": 0,
+    "coding_answered": 176.0,
+    "embeddings_answered": 16649.0,
+    "images_answered": 5723.0
+   }
+  }
+ },
+ "stranding": {
+  "what": "nomic-embed-text primed onto an A10 through the router (six requests while only the A10s could take it), then loaded on the A100 directly; the first version of the embedding fix (4c3b7f1, the same scorer change as 0.12.12) against 0.12.11, two runs each; the router shared m1 with a node",
+  "0.12.11": {
+   "runs": [
+    {
+     "rep": 1,
+     "sent": 14475,
+     "failed": 0,
+     "chat_tokens_per_sec": 414.3,
+     "ttft_p95_ms": 630.3,
+     "answered": {
+      "coding": 178,
+      "embeddings": 10248,
+      "images": 4049
+     },
+     "answered_by_node": {
+      "coding@m1": 83,
+      "coding@m2": 95,
+      "embeddings@m1": 10244,
+      "embeddings@m5": 4,
+      "images@m2": 21,
+      "images@m5": 4028
+     },
+     "embeddings_on_m5": 4
+    },
+    {
+     "rep": 2,
+     "sent": 18042,
+     "failed": 0,
+     "chat_tokens_per_sec": 472.1,
+     "ttft_p95_ms": 534.8,
+     "answered": {
+      "coding": 177,
+      "embeddings": 12742,
+      "images": 5123
+     },
+     "answered_by_node": {
+      "coding@m1": 78,
+      "coding@m2": 99,
+      "embeddings@m1": 12742,
+      "images@m2": 52,
+      "images@m5": 5071
+     },
+     "embeddings_on_m5": 0
+    }
+   ],
+   "median": {
+    "chat_tokens_per_sec": 443.2,
+    "ttft_p95_ms": 582.5,
+    "failed": 0,
+    "coding_answered": 177.5,
+    "embeddings_answered": 11495.0,
+    "images_answered": 4586.0
+   }
+  },
+  "0.12.12": {
+   "runs": [
+    {
+     "rep": 1,
+     "sent": 29071,
+     "failed": 0,
+     "chat_tokens_per_sec": 383.6,
+     "ttft_p95_ms": 512.8,
+     "answered": {
+      "coding": 136,
+      "embeddings": 24606,
+      "images": 4329
+     },
+     "answered_by_node": {
+      "coding@m1": 60,
+      "coding@m2": 76,
+      "embeddings@m1": 10485,
+      "embeddings@m5": 14121,
+      "images@m1": 7,
+      "images@m2": 45,
+      "images@m5": 4277
+     },
+     "embeddings_on_m5": 14121
+    },
+    {
+     "rep": 2,
+     "sent": 29990,
+     "failed": 0,
+     "chat_tokens_per_sec": 400.8,
+     "ttft_p95_ms": 606.5,
+     "answered": {
+      "coding": 152,
+      "embeddings": 25497,
+      "images": 4341
+     },
+     "answered_by_node": {
+      "coding@m1": 76,
+      "coding@m2": 76,
+      "embeddings@m1": 11172,
+      "embeddings@m5": 14325,
+      "images@m2": 44,
+      "images@m5": 4297
+     },
+     "embeddings_on_m5": 14325
+    }
+   ],
+   "median": {
+    "chat_tokens_per_sec": 392.2,
+    "ttft_p95_ms": 559.6,
+    "failed": 0,
+    "coding_answered": 144.0,
+    "embeddings_answered": 25051.5,
+    "images_answered": 4335.0
+   }
+  }
+ },
+ "slot_occupancy": {
+  "what": "run 5 identical machines: four A10, qwen3-coder:30b, 8 concurrent for 120 s, Herd 0.12.11 against HAProxy 2.4 round robin, three runs each; share of each run a node spent with that many requests in Ollama",
+  "herd": {
+   "per_run": [
+    {
+     "m1": {
+      "1": 0.017,
+      "2": 0.983
+     },
+     "m2": {
+      "0": 0.002,
+      "1": 0.036,
+      "2": 0.962
+     },
+     "m3": {
+      "0": 0.002,
+      "1": 0.035,
+      "2": 0.962
+     },
+     "m4": {
+      "0": 0.002,
+      "1": 0.027,
+      "2": 0.971
+     }
+    },
+    {
+     "m1": {
+      "1": 0.02,
+      "2": 0.98
+     },
+     "m2": {
+      "1": 0.02,
+      "2": 0.98
+     },
+     "m3": {
+      "1": 0.019,
+      "2": 0.981
+     },
+     "m4": {
+      "0": 0.002,
+      "1": 0.027,
+      "2": 0.972
+     }
+    },
+    {
+     "m1": {
+      "1": 0.017,
+      "2": 0.983
+     },
+     "m2": {
+      "0": 0.002,
+      "1": 0.035,
+      "2": 0.963
+     },
+     "m3": {
+      "0": 0.001,
+      "1": 0.028,
+      "2": 0.971
+     },
+     "m4": {
+      "0": 0.002,
+      "1": 0.028,
+      "2": 0.969
+     }
+    }
+   ],
+   "mean_share": {
+    "0": 0.001,
+    "1": 0.026,
+    "2": 0.973
+   }
+  },
+  "haproxy_roundrobin": {
+   "per_run": [
+    {
+     "m1": {
+      "0": 0.0,
+      "1": 0.225,
+      "2": 0.774
+     },
+     "m2": {
+      "1": 0.004,
+      "2": 0.713,
+      "3": 0.283
+     },
+     "m3": {
+      "0": 0.001,
+      "1": 0.114,
+      "2": 0.742,
+      "3": 0.144
+     },
+     "m4": {
+      "0": 0.001,
+      "1": 0.16,
+      "2": 0.82,
+      "3": 0.02
+     }
+    },
+    {
+     "m1": {
+      "1": 0.059,
+      "2": 0.867,
+      "3": 0.074
+     },
+     "m2": {
+      "0": 0.001,
+      "1": 0.232,
+      "2": 0.767
+     },
+     "m3": {
+      "0": 0.002,
+      "1": 0.295,
+      "2": 0.698,
+      "3": 0.005
+     },
+     "m4": {
+      "1": 0.0,
+      "2": 0.559,
+      "3": 0.433,
+      "4": 0.008
+     }
+    },
+    {
+     "m1": {
+      "1": 0.01,
+      "2": 0.798,
+      "3": 0.187,
+      "4": 0.005
+     },
+     "m2": {
+      "0": 0.002,
+      "1": 0.221,
+      "2": 0.771,
+      "3": 0.006
+     },
+     "m3": {
+      "0": 0.0,
+      "1": 0.165,
+      "2": 0.823,
+      "3": 0.012
+     },
+     "m4": {
+      "1": 0.011,
+      "2": 0.852,
+      "3": 0.136
+     }
+    }
+   ],
+   "mean_share": {
+    "0": 0.001,
+    "1": 0.125,
+    "2": 0.765,
+    "3": 0.108,
+    "4": 0.001
+   }
+  }
+ }
+}
