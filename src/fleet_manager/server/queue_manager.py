@@ -269,7 +269,10 @@ class QueueManager:
                 "node_id": q.node_id,
                 "model": q.model,
                 "pending": q.pending.qsize() + q.held,
-                "in_flight": len(q.in_flight) + q.direct,
+                "in_flight": len(q.in_flight),
+                # Embeddings at the node (``direct``): load for the scorer, but not
+                # a backlog the rebalancer should pre-warm or move work for.
+                "direct": q.direct,
                 "completed": q.completed_count,
                 "failed": q.failed_count,
                 "concurrency": q.concurrency,
@@ -495,7 +498,12 @@ class QueueManager:
         15 s there, and every later one followed them (queue 0, affinity) while
         the A100 had the model loaded and idle: 50 answered in 180 s against
         about 10,300 when the first went to the A100.  Kept out of ``in_flight``:
-        an embedding is never a load to wait for or to join.
+        an embedding is never a load to wait for or to join, and never a backlog
+        for the rebalancer, which reads ``in_flight`` from ``get_queue_info``.
+        Counted there, four embeddings in flight at 70 ms each looked like a
+        deep queue: on the hardware check of this fix the rebalancer pre-warmed
+        the embedding model 43 times onto an A10 serving the coding model, and
+        coding requests fell 13%.
         """
         key = f"{node_id}:{model}"
         q = self._queues.get(key)

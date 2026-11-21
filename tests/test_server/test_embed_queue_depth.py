@@ -11,6 +11,9 @@ See docs/plans/fleet-benchmark-findings-2026-11.md, item 31.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import ExitStack
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -18,6 +21,7 @@ from fastapi.testclient import TestClient
 from fleet_manager.server.queue_manager import QueueManager
 from tests.conftest import make_heartbeat
 from tests.test_server.test_client_compat import _install_mock_ollama
+from tests.test_server.test_rebalancer_decisions import _node, _rebalancer, _score
 from tests.test_server.test_routes import create_test_app
 
 MODEL = "nomic-embed-text:latest"
@@ -31,7 +35,8 @@ class TestDirect:
             assert qm.get_queue_depths()[f"a:{MODEL}"] == 1
             with qm.direct("a", MODEL):
                 assert qm.get_queue_depths()[f"a:{MODEL}"] == 2
-            assert qm.get_queue_info()[f"a:{MODEL}"]["in_flight"] == 1
+            info = qm.get_queue_info()[f"a:{MODEL}"]
+            assert (info["direct"], info["in_flight"]) == (1, 0)
         assert qm.get_queue_depths()[f"a:{MODEL}"] == 0
 
     def test_released_when_the_request_raises(self):
@@ -90,3 +95,22 @@ class TestRouting:
         resp, _ = _route(client, status)
         assert resp.status_code == status
         assert not any(client.app.state.queue_mgr.get_queue_depths().values())
+
+
+class TestNotABacklog:
+    async def test_embeddings_in_flight_do_not_trigger_a_pre_warm(self):
+        """Four embeddings at a node is steady traffic, not a queue to spread: the
+        hardware check of the first version of this fix saw the rebalancer warm
+        the embedding model onto a busy A10 43 times, and coding fell 13%."""
+        qm = QueueManager()
+        with ExitStack() as stack:
+            for _ in range(4):
+                stack.enter_context(qm.direct("a", MODEL))
+            r, _qm, proxy = _rebalancer(
+                queue_info=qm.get_queue_info(),
+                scores=[_score("a", MODEL), _score("b", MODEL)],
+                nodes={"a": _node("a", [MODEL]), "b": _node("b", [])},
+            )
+            await r._check_pre_warm()
+            await asyncio.sleep(0.05)
+        proxy.pre_warm.assert_not_awaited()
