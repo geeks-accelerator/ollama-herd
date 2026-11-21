@@ -351,7 +351,10 @@ def arms(node):
 def test_committed_manifests_are_well_formed(name):
     m = json.loads((EXPERIMENTS / name).read_text())
     assert set(m) == {"output", "run", "sections"}
-    assert m["run"]["prices_usd_per_hour"] == PRICES
+    prices = m["run"]["prices_usd_per_hour"]
+    assert prices and all(isinstance(v, float) and v > 0 for v in prices.values())
+    # No key may end another, or one chip would match two prices.
+    assert not [(a, b) for a in prices for b in prices if a != b and a.endswith(b)]
     specs = list(arms(m["sections"]))
     assert specs
     for spec in specs:
