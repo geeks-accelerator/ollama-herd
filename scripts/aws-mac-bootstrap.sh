@@ -5,8 +5,8 @@
 # fleet runs this once; the router runs on a separate Linux instance (r1).
 #
 # What it does, in order:
-#   1. Grows the root APFS container to the EBS volume's size, or formats a
-#      dedicated model disk (MODELS_DISK).
+#   1. Grows the root APFS container to the EBS volume's size (models live
+#      there; see the note in step 1 for why not on a second disk).
 #   2. Installs Ollama from the GitHub release zip at a pinned version.  Not
 #      Homebrew: its formula is stale (CLAUDE.md, Ollama notes).
 #   3. Syncs Ollama's model store (and optionally a Hugging Face cache for MLX)
@@ -42,7 +42,6 @@ OLLAMA_VERSION="${OLLAMA_VERSION:-0.40.13}"
 OLLAMA_ZIP_SHA256="${OLLAMA_ZIP_SHA256:-}"   # optional; checked when set
 MODELS_S3="${MODELS_S3:-}"                # s3://bucket/prefix holding blobs/ and manifests/
 HF_S3="${HF_S3:-}"                        # optional s3:// Hugging Face hub cache, for MLX
-MODELS_DISK="${MODELS_DISK:-}"            # empty = root volume; auto = the one extra disk; or diskN
 MLX_SERVERS="${MLX_SERVERS:-}"            # FLEET_NODE_MLX_SERVERS JSON, empty = no MLX
 OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-32768}"
 READY_TIMEOUT="${READY_TIMEOUT:-900}"     # seconds to wait for the router to list the node
@@ -66,6 +65,7 @@ as_user() { sudo -u "$USER_NAME" -H env PATH="$USER_PATH" "$@"; }
 [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]] || die "needs macOS on Apple Silicon"
 [[ -n "$NODE_ID" ]] || die "NODE_ID is not set"
 [[ -n "$ROUTER_URL" ]] || die "ROUTER_URL is not set (mDNS does not cross a VPC)"
+[[ -z "${MODELS_DISK:-}" ]] || die "MODELS_DISK is no longer supported: a LaunchDaemon cannot write to an external volume (TCC); size the root EBS volume instead"
 [[ -n "$HERD_VERSION" ]] || die "HERD_VERSION is not set (run a release from PyPI, not main)"
 id "$USER_NAME" >/dev/null 2>&1 || die "user $USER_NAME does not exist (not an EC2 macOS AMI?)"
 rm -f "$DONE"
@@ -82,27 +82,12 @@ if [[ -n "$root_store" ]]; then
     diskutil apfs resizeContainer "$root_store" 0 >/dev/null 2>&1 || true
 fi
 
-if [[ -z "$MODELS_DISK" ]]; then
-    MODELS_DIR="$USER_HOME/.ollama/models"
-elif [[ -d /Volumes/herd-models ]]; then
-    MODELS_DIR="/Volumes/herd-models/ollama"   # formatted on an earlier run
-else
-    if [[ "$MODELS_DISK" == auto ]]; then
-        # Every external physical whole disk except the one holding the root
-        # volume.  Erasing is only safe when exactly one is left.
-        candidates=()
-        while read -r d; do
-            [[ "$d" == "$root_disk" ]] || candidates+=("$d")
-        done < <(diskutil list external physical | awk '/^\/dev\/disk/{sub("/dev/","",$1); print $1}')
-        [[ ${#candidates[@]} -eq 1 ]] \
-            || die "MODELS_DISK=auto found ${#candidates[@]} candidate disks (${candidates[*]:-none}); set MODELS_DISK=diskN"
-        MODELS_DISK="${candidates[0]}"
-    fi
-    [[ "$MODELS_DISK" != "$root_disk" ]] || die "MODELS_DISK=$MODELS_DISK holds the root volume"
-    log "formatting $MODELS_DISK as APFS herd-models"
-    diskutil eraseDisk APFS herd-models GPT "$MODELS_DISK"
-    MODELS_DIR="/Volumes/herd-models/ollama"
-fi
+# Models live on the root volume.  A dedicated disk (instance store or a second
+# EBS volume) cannot be used: macOS mounts it under /Volumes as an external
+# volume, and TCC refuses a LaunchDaemon access to it ("mkdir ...: operation not
+# permitted"), measured on mac-m4.metal, macOS 26.7.3, 2026-11-21.  Size the
+# root EBS volume for the models instead.
+MODELS_DIR="$USER_HOME/.ollama/models"
 mkdir -p "$MODELS_DIR"
 chown -R "$USER_NAME" "$(dirname "$MODELS_DIR")" "$MODELS_DIR"
 log "models in $MODELS_DIR ($(df -h "$MODELS_DIR" | awk 'NR==2{print $4}') free)"
@@ -145,8 +130,20 @@ EOF
 
 # ---- 3. Models from S3 -------------------------------------------------------
 if [[ -n "$MODELS_S3$HF_S3" ]]; then
+    # Not preinstalled: amzn-ec2-macos-26.7.3-20261120 has no aws on any
+    # PATH (checked on mac-m4.metal, 2026-11-21).  AWS's own installer.
     aws_bin="$(command -v aws || true)"
-    [[ -n "$aws_bin" ]] || die "aws CLI not found (EC2 macOS AMIs ship it; is this one?)"
+    [[ -n "$aws_bin" || ! -x /usr/local/bin/aws ]] || aws_bin=/usr/local/bin/aws
+    if [[ -z "$aws_bin" ]]; then
+        log "installing the AWS CLI"
+        tmp="$(mktemp -d)"
+        curl -fsSL --retry 5 -o "$tmp/AWSCLIV2.pkg" https://awscli.amazonaws.com/AWSCLIV2.pkg \
+            || die "AWS CLI download failed"
+        installer -pkg "$tmp/AWSCLIV2.pkg" -target / >/dev/null || die "AWS CLI install failed"
+        rm -rf "$tmp"
+        aws_bin=/usr/local/bin/aws
+    fi
+    [[ -x "$aws_bin" ]] || die "aws CLI not found at $aws_bin"
     as_user "$aws_bin" configure set default.s3.max_concurrent_requests 64
 fi
 if [[ -n "$MODELS_S3" ]]; then

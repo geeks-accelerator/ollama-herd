@@ -1,0 +1,39 @@
+{
+  "output": "fleet_run6_results.json",
+  "run": {
+    "date": "2026-11-21",
+    "machines": "AWS EC2 us-east-2a: s1, s2 mac-m4.metal (Apple M4, 10-core GPU, 24 GB, 120 GB/s) as Dedicated Hosts ($1.23/h each, 24-hour minimum), macOS 26.7.3 (amzn-ec2-macos-26.7.3-20261120), 200 GB gp3 root volumes; router, HAProxy and load generator on r1, a c7i.xlarge (Ubuntu 24.04) in the same subnet. Scaled down from docs/plans/aws-mac-fleet-benchmark.md's six-host fleet to one identical pair, by decision (the 24-hour minimum makes every host a full day's charge however short the test). mac-m4pro.metal was the first choice and had no capacity in any of 11 zones (us-east-1a-d, us-west-2a-d, us-east-2a-c) at 20:41-20:47 UTC",
+    "ollama": "0.40.13 from the GitHub release zip, run as a LaunchDaemon by scripts/aws-mac-bootstrap.sh, with OLLAMA_NUM_PARALLEL=4, OLLAMA_KEEP_ALIVE=-1, OLLAMA_MAX_LOADED_MODELS=10, OLLAMA_CONTEXT_LENGTH=4096 on both Macs (as run 5; launch args -c 16384 -np 4, ollama ps 100% GPU on both)",
+    "workload": "qwen2.5:14b (Q4_K_M, 12 GB loaded): qwen3-coder:30b does not fit a 24 GB M4's GPU; about 1,250 prompt and 200 completion tokens per chat request (--prompt-tokens 1250 --max-tokens 200)",
+    "telemetry": "off on the router and both nodes",
+    "harness": "scripts/benchmark.py at 63a125b",
+    "herd": "ollama-herd 0.12.12 from PyPI on the router and both nodes (the fixes under [Unreleased] are not in this run)",
+    "prices_usd_per_hour": {
+      "M4": 1.23
+    }
+  },
+  "sections": {
+    "scaling": {
+      "what": "qwen2.5:14b on s1 alone, then s1 + s2 (s2's herd-node stopped for the one-machine cells, its Ollama left running but unknown to the router); concurrency 1, 2, 4, 8; 60 s per cell; 3 repetitions (seeds 7, 11, 13), each repetition running all one-machine cells, then all two-machine cells",
+      "router": "ollama-herd 0.12.12 from PyPI",
+      "model": "qwen2.5:14b",
+      "seconds_per_cell": 60,
+      "cells": "sc_r*_n*_c*.json"
+    },
+    "identical_machines": {
+      "what": "one model on two identical M4 Macs, 8 concurrent qwen2.5:14b, 90 s, 3 repetitions per front door (seeds 7, 11, 13), alternating Herd and HAProxy (HAProxy 2.8.30 from Ubuntu 24.04, roundrobin over both Macs' :11434, fleet state polled through the herd router with --fleet-url)",
+      "herd": {
+        "files": "tie_herd_r*.json",
+        "router": "ollama-herd 0.12.12 from PyPI"
+      },
+      "haproxy_roundrobin": {
+        "files": "tie_haproxy_rr_r*.json",
+        "router": "HAProxy 2.8 roundrobin"
+      }
+    },
+    "router_overhead": {
+      "what": "scripts/router_overhead.py from r1 with only s1 online: 200 alternating pairs, qwen2.5:14b, 8-token replies, direct to s1's Ollama vs through the router on r1 (router off-node, as in run 2)",
+      "file": "fleet_run6_router_overhead.json"
+    }
+  }
+}

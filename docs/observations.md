@@ -1915,3 +1915,26 @@ The warnings were not continuous. They came in ten bursts: 02:50, 03:33, 04:18, 
 **Insight: a one-node fleet whose clients and router are all on `localhost` is indifferent to the internet, and that is worth knowing rather than assuming.** The node reaches the router at `http://localhost:11435`, the router reaches Ollama at `localhost:11434`, and every client was local, so nothing in the request path touched the WAN. A multi-node fleet would be different: during each 3-minute burst the node would have advertised `127.0.0.1`, which peers cannot reach.
 
 **And I misread it first.** Seen only in the logs, the bursts looked like Wi-Fi dropping for ~100 s every ~42 min, and that is what the first version of the fix (`76edbe9`) and its CHANGELOG entry said, until the operator mentioned the outage. The logs showed *when* the probe failed, not *why*; a periodic pattern in a log is a symptom of something, and the cause is often outside the machine. Fixed in the same day: the heartbeat now logs the first failed probe of an outage and an INFO line when the address returns, so this outage would have produced about 20 lines instead of 274.
+
+## 2026-11-21: EC2 Mac, first contact (run 6)
+
+**Evidence.** Run 6 asked AWS for 2x `mac-m4pro.metal` and got `InsufficientHostCapacity`
+in all 11 zones that list the type (us-east-1a-d, us-west-2a-d, us-east-2a-c) between
+20:41 and 20:47 UTC; `describe-instance-type-offerings` listed every one of them. 2x
+`mac-m4.metal` allocated at the first zone tried (us-east-2a). Quotas were already 5 per
+Mac type in each region, and the Pricing API confirmed the plan's prices ($12.50 M3
+Ultra, $6.25 M4 Max, $1.97 M4 Pro, $1.23 M4); AWS's public price-list file (the one the
+Dedicated Host pricing page reads) lists none of the M4 or M3 Ultra types at all.
+
+Instances on macOS 26.7.3 answered SSH **7 minutes** after `run-instances`, not the 20-60
+AWS quotes. On that AMI: **no AWS CLI** on any PATH; the 2 TB instance store appears as
+an external physical disk next to the EBS root (also external, the boot volume); and a
+LaunchDaemon (`UserName` ec2-user, nobody logged in) **can run Ollama on the GPU**
+(`ollama ps`: 100% GPU on both) **but cannot write to a second volume**: Ollama died
+with `mkdir /Volumes/herd-models/ollama/blobs: operation not permitted`, which is TCC
+refusing a daemon access to an external volume.
+
+**Insight: "offered in a zone" is a catalogue entry, not capacity, and for Mac hosts the
+only real check bills a day.** Plan a run around the first type that allocates, with a
+fallback type chosen in advance, and allocate the scarce types first. **Keep models on the
+root EBS volume** (size it for them); the bootstrap no longer supports `MODELS_DISK`.

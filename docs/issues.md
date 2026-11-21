@@ -36,6 +36,23 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### A vision embedding model cannot be fetched remotely, and the router tells you to try a way that fails `OPEN` (found 2026-11-21, run 6)
+
+**Severity:** medium. A node with no DINOv2/SigLIP/CLIP weights gets no vision server
+(`agent._ensure_embedding_server` starts one only when weights are cached), and
+`/api/embed-image` then answers 404 with `Download a model first: POST /api/pull
+{"model": "dinov2-vit-s14"}`. That advice fails: `/api/pull` sends the name to the
+node's Ollama, which answers `pull model manifest: file does not exist`, and the router
+logs it at **ERROR** (`Pull dinov2-vit-s14:latest on s1 failed`), so following herd's own
+instruction breaks a "zero ERROR lines" soak. Hit on both EC2 Macs in run 6; the only
+way in was running `embedding_models.download_model("dinov2-vit-s14")` in herd-node's
+Python on each machine and restarting herd-node.
+
+**Proposed fix:** `/api/pull` recognises `is_vision_embedding_model` and asks the node to
+download the weights (a heartbeat command, as the context optimizer's restarts do), after
+which the node starts its vision server without a restart. Until then the 404 should give
+the advice that works.
+
 ### A retried request runs outside its new node's worker limit `OPEN` (found 2026-11-21)
 
 **What remains after `70b4cd8`.** When a request fails on one node before its first chunk
