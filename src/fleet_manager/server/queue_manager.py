@@ -323,6 +323,19 @@ class QueueManager:
             (m.size_gb for m in node.ollama.models_loaded if m.name == model),
             default=0.0,
         )
+        backend_limit = decode_parallelism_for(node, model)
+
+        # A model resident in Ollama has already paid for every slot it admits:
+        # llama-server allocates the weights and the KV cache for all
+        # `-np` slots (`-c NumCtx x numParallel`) when it loads, and
+        # `available_gb` is measured after that.  Subtracting the model again
+        # and charging each request a fresh KV cache counted it twice, which
+        # held a 24 GB Mac to one request against Ollama's four (run 6:
+        # (8.47 - 5.22) / 2 -> 1; per-request decode flat at 22.4 tok/s while
+        # time to first token grew with concurrency).  Not `mlx:` models:
+        # mlx_lm.server grows its KV cache per request.
+        if model_size_gb > 0 and not model.startswith("mlx:") and backend_limit > 0:
+            return max(_MIN_CONCURRENCY, backend_limit)
 
         # If capacity learning is active, respect the ceiling
         if node.capacity and node.capacity.ceiling_gb > 0:
@@ -336,7 +349,6 @@ class QueueManager:
         # is Ollama's own admission cap.  Workers beyond it don't decode; they
         # block inside Ollama, invisible to the queue that is supposed to be
         # managing them.
-        backend_limit = decode_parallelism_for(node, model)
         if backend_limit > 0:
             concurrency = min(concurrency, backend_limit)
         return max(_MIN_CONCURRENCY, concurrency)

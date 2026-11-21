@@ -36,6 +36,18 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### Queue concurrency charged a resident model twice, holding small machines to one request `FIXED` (found 2026-11-21, run 6)
+
+`QueueManager._compute_queue_concurrency` computed `(available_gb - model_size_gb) / 2 GB`,
+but `available_gb` is measured after Ollama loaded the model and allocated the KV cache for
+all `-np` slots. On a 24 GB M4 with `qwen2.5:7b` resident: (8.47 - 5.22) / 2 -> **1**,
+against `num_parallel` 4. Invisible on the 512 GB Mac Studio, where the formula always
+exceeds Ollama's cap. In run 6, per-request decode stayed at 22.4 tok/s at every
+concurrency while first-token time grew linearly (5.3 s at 1, 83.8 s at 8), and HAProxy
+beat herd on the identical pair. Fixed: a resident Ollama model gets
+`decode_parallelism_for`; cold and `mlx:` models keep the memory bound. Formula dated from
+`b2c4510` (2026-03-07).
+
 ### A vision embedding model cannot be fetched remotely, and the router tells you to try a way that fails `OPEN` (found 2026-11-21, run 6)
 
 **Severity:** medium. A node with no DINOv2/SigLIP/CLIP weights gets no vision server

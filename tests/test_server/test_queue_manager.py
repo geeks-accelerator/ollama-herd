@@ -465,6 +465,43 @@ async def test_queue_concurrency_uses_the_per_model_limit():
     assert qm._compute_queue_concurrency("mini", "gemma3:27b") == 4
 
 
+def _small_mac(loaded: list[tuple[str, float]], available_gb: float = 8.47):
+    """Run 6's 24 GB M4, as its heartbeat reported it with qwen2.5:7b loaded."""
+    from types import SimpleNamespace
+
+    node = SimpleNamespace(
+        memory=SimpleNamespace(available_gb=available_gb),
+        capacity=None,
+        ollama=SimpleNamespace(
+            num_parallel=4,
+            models_loaded=[SimpleNamespace(name=n, size_gb=s) for n, s in loaded],
+            models_available_meta={},
+        ),
+    )
+    return QueueManager(registry=SimpleNamespace(get_node=lambda node_id: node))
+
+
+def test_resident_model_gets_every_slot_ollama_admits():
+    """A resident model's weights and KV for all slots are already out of
+    `available_gb`; charging them again held a 24 GB Mac to one request."""
+    qm = _small_mac([("qwen2.5:7b", 5.22)])
+    assert qm._compute_queue_concurrency("s1", "qwen2.5:7b") == 4
+
+
+def test_resident_model_never_exceeds_the_backend_limit():
+    qm = _small_mac([("qwen2.5:7b", 5.22)], available_gb=400.0)
+    assert qm._compute_queue_concurrency("s1", "qwen2.5:7b") == 4
+
+
+def test_cold_and_mlx_models_keep_the_memory_bound():
+    """Not resident: the load still has to fit, so memory math applies.
+    mlx_lm.server grows its cache per request, so it does too."""
+    qm = _small_mac([("mlx:some/model", 5.22)], available_gb=8.47)
+    assert qm._compute_queue_concurrency("s1", "mlx:some/model") == 1
+    qm = _small_mac([], available_gb=3.0)
+    assert qm._compute_queue_concurrency("s1", "qwen2.5:7b") == 1
+
+
 # ---------------------------------------------------------------------------
 # Enforcement: a worker holds its slot until the request leaves the queue.
 #
