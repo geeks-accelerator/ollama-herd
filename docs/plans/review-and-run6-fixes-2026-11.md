@@ -1,6 +1,6 @@
 # Review findings and run 6 issues: one plan
 
-**Status:** planned 2026-11-22, then audited against the code the same day (HEAD `b84c71f`). Nothing implemented.
+**Status:** implemented 2026-11-22 on `main` (unreleased), except B8, which was measured and not shipped. Hardware checks on the EC2 Macs and the Mac-fleet soak are still owed before a release. See **Results** at the end.
 
 **Sources:**
 - **A code review of the 115 commits from 2026-11-20 to 2026-11-22**, covering 0.12.11, 0.12.12 and about 730 unreleased lines. Every finding marked *confirmed* was checked against HEAD. 2768 tests pass and `health.sh` is 5/5, so these are untested paths, not red tests.
@@ -369,3 +369,35 @@ These older `OPEN` entries in `docs/issues.md` are unrelated to this review and 
 - CI on one OS.
 
 That last one is still the gap that let a whole-platform outage reach a user, and it deserves its own plan.
+
+## Results (2026-11-22)
+
+Every item landed with its tests; the suite went from 2768 to 2879 passing, `health.sh` 5/5.
+
+| Item | Commit | Notes |
+|---|---|---|
+| A1, A2, A4, A6, B3 (S1, S4, S6) | `b1bd1a4` | One "only if nothing else is left" filter; one idempotent-post retry; error-only streams answer with their status or retry |
+| A5, node side of B1, mock and fake-fleet additions | `b1bd1a4` | Metal working set reads 107.5 of 128 GiB on this Mac |
+| A3, C2 | `541f0db` | Published 0.12.10-0.12.12 figures not yet corrected |
+| A7 | `de069ce` | `_SettledStream`; `__del__` was tried and dropped (it double-settled when tests dropped futures) |
+| B9 | `a78f6d2` | `CapacityMetrics.slot_cap` from the learner's mode |
+| B4, B2 (S5) | `923b7c4` | `admit`; pre-warms as in-flight loads |
+| B5 | `4bfc44c` | `rebalance_max_per_cycle` deleted; `pre_warm_min_availability` wired |
+| B7 (S2) | `dbed3d7` | `QueueDepths.loading` |
+| B1 router side (S3) | `e9d0054` | `fit_budget`, `model_capacity_gb`, per-slot KV, `fit_cost_gb` |
+| B6 (S7) | `e42e3a9` | Prefill kept per request; bonus fades by wait vs re-read in seconds |
+| C1, docs | `e573307` | Checked in a browser under mock load |
+
+**Decisions made while implementing, against the plan as written:**
+- **B8 is not shipped.** Ported with the backlog condition and measured on the local mock (two seeds, 0.25 and 0.5 req/s): loads moved both ways and p95 at 0.5 worsened in three of four comparisons. Numbers in the findings plan, item 29.
+- **`PRE_WARM_TIMEOUT_S` stays.** The audit showed cancelling a pre-warm does not free Ollama, so the timeout only bounds herd's own HTTP read of a slow cold load; shortening it would abort real loads.
+- **The preloader and pins keep `estimate_resident_gb`'s conservative fallback.** Only the true duplicate (`_idle_room_for`'s inline copy) moved onto `fit_cost_gb`; loads nobody asked for size conservatively by decision.
+- **S2 is a `dict` subclass (`QueueDepths`)**, so every existing caller got `loading` without a parameter change; a plain dict reads as nothing loading.
+- **C1 reuses the live stream** (2 s updates) instead of a server-side sampler: the page differences `streamed_chunks` between updates.
+
+**Still owed before a release:**
+- the multi-hour soak on the Mac fleet (none since 0.12.12; `find src/ -newermt "<router start>"` first);
+- run 6's overload, pre-warm (seed 13), rejoin and eight-conversation scenarios on the EC2 M4s;
+- comparing the Metal working-set value with Ollama's `Metal total` line on a 24 GB M4;
+- correcting the published benchmark figures from A3.
+
