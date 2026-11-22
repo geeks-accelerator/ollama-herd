@@ -184,7 +184,11 @@ def _observe_kv_cost(node) -> None:
         kv_gb = resident - weight
         if kv_gb < 0:
             continue  # reported resident below weights — don't learn nonsense
-        mb_per_token = (kv_gb * 1024.0) / ctx
+        # Per token *per slot*: ``context_length`` is the per-slot window, and
+        # Ollama allocates it for every ``-np`` slot (``-c NumCtx x numParallel``),
+        # so the KV here is ``ctx x slots`` tokens.  Learned without the slots,
+        # the cost carried this node's parallelism to nodes with another one.
+        mb_per_token = (kv_gb * 1024.0) / (ctx * _slots(node, m.name))
         if mb_per_token < _KV_COST_MIN_MB_PER_TOKEN:
             continue
         _kv_cost_mb_per_token[m.name] = mb_per_token
@@ -196,6 +200,18 @@ def _observe_kv_cost(node) -> None:
                 f"resident @ {ctx} ctx). Resident/weights ratio "
                 f"{resident / weight:.1f}x."
             )
+
+
+def _slots(node, model: str) -> int:
+    """How many KV-cache slots Ollama allocates for ``model`` on ``node``: its
+    ``-np``, which is what herd decodes concurrently there too.  1 when the
+    node reports no usable value, like every other field read here (``_num``):
+    a malformed heartbeat declines to scale, never raises into routing."""
+    from fleet_manager.server.serializers import decode_parallelism_for
+
+    if _num(getattr(getattr(node, "ollama", None), "num_parallel", 0)) <= 0:
+        return 1
+    return max(1, decode_parallelism_for(node, model))
 
 
 def measured_resident_gb(
@@ -231,9 +247,29 @@ def measured_resident_gb(
     kv_mb = _kv_cost_mb_per_token.get(model)
     if kv_mb is not None and num_ctx and num_ctx > 0:
         weights = _estimate_model_size(model, node) if weights_gb is None else weights_gb
-        return weights + (kv_mb * num_ctx) / 1024.0
+        return weights + (kv_mb * num_ctx * _slots(node, model)) / 1024.0
 
     return None
+
+
+def fit_cost_gb(model: str, node, settings, weights_gb: float | None = None) -> float:
+    """What loading ``model`` on ``node`` costs, for routing's fit decisions:
+    the measured resident size when the fleet has seen the model, else its
+    plain weights.  One definition for the scorer's gate and eviction charge,
+    the load hold's idle-room check and the pull-node choice (they had three
+    copies that disagreed).
+
+    Weights, not ``weights * 1.2``, for an unmeasured model: inflating a guess
+    would refuse nodes that fit a request today on no evidence.  Loads nobody
+    asked for (the preloader, pins) size conservatively instead
+    (``estimate_resident_gb``): a wrong guess there evicts or swaps for a
+    request that may never come.
+    """
+    weights = _estimate_model_size(model, node) if weights_gb is None else weights_gb
+    measured = measured_resident_gb(
+        model, node, _expected_num_ctx(model, settings, node), weights_gb=weights
+    )
+    return measured if measured is not None else weights
 
 
 def estimate_resident_gb(
@@ -525,7 +561,11 @@ async def _load_model_on_best_node(
     send_ctx = _num_ctx_override(model, settings)  # what we'll ask Ollama for
     num_ctx = _expected_num_ctx(model, settings, best)  # what it'll actually run at
     resident_gb = estimate_resident_gb(model, best, num_ctx)
-    available = best.model_memory_available_gb()
+    # A preload is a load nobody asked for: it never evicts.  Judged by
+    # available RAM it put a third model on a busy 24 GB Mac whose GPU may
+    # keep only 17.8 GiB resident, and the Mac swapped (run 6).  The budget
+    # before eviction knows Metal's working set and the capacity ceiling.
+    available = best.memory_free_without_evicting_gb()
     # Skip the memory gate when the model is ALREADY resident on this node — it
     # is in memory by definition, so there is nothing left to "fit".  Without
     # this, warming a hot model can fail *because it's hot*: its own footprint

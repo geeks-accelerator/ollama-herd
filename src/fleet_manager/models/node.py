@@ -592,45 +592,68 @@ class NodeState(BaseModel):
             return 0.0
         return self.memory.available_gb + self.gpu_memory_free_gb()
 
-    def memory_for_load_gb(self) -> float:
-        """What a model load may use here if Ollama evicts what it must:
-        ``model_memory_available_gb`` plus what the loaded models hold, capped
-        by the learned capacity ceiling when there is one.
+    def fit_budget(self) -> tuple[float, float]:
+        """``(total, free_without_evicting)``: the one answer to "how much may a
+        model load use here", for every fit decision (the scorer's gate and
+        eviction charge, the preloader, the rebalancer's pre-warm guard).
 
-        The "can it run here at all" gate.  Whether it fits *without* evicting
-        is ``memory_free_without_evicting_gb``, and what evicting costs is
-        scored (``Scorer._score_eviction``).  Leaving the loaded models out
-        made the gate a no-eviction rule on unified memory, where available
-        RAM already excludes them: two idle models on a 24 GB Mac (3 GB free)
-        refused a third that evicting either would have fitted, with a 503
-        that said "try again shortly" (run 6).  GPU nodes hid it behind their
-        system RAM.
-        """
-        available = self.model_memory_available_gb()
-        if self.ollama:
-            available += sum(m.size_gb for m in self.ollama.models_loaded)
-        if self.capacity and self.capacity.ceiling_gb > 0:
-            available = min(available, self.capacity.ceiling_gb)
-        return available
+        * **total** -- what a load may use if Ollama evicts what it must:
+          memory available for models plus what the loaded models hold.
+        * **free without evicting** -- the free GPU memory on a GPU node (Ollama
+          evicts rather than spill to RAM), available RAM on unified memory.
 
-    def memory_free_without_evicting_gb(self) -> float:
-        """What a load can use before Ollama evicts a resident model.
+        Both are capped, the same way, by:
 
-        On a node with GPU memory that is the free GPU memory: Ollama evicts a
-        resident model rather than spill one that would fit after the eviction
-        into RAM ("model predicted to exceed available memory, evicting", seen
-        on 24 GB cards with 52 GB of free RAM in the 2026-11-20 fleet
-        benchmark).  On unified memory it is available RAM.  Capped by the
-        capacity ceiling like ``memory_for_load_gb``.
+        * **Metal's working set** (``memory.gpu_working_set_gb``) on Apple
+          Silicon: the most of RAM the GPU may keep resident, and the budget
+          Ollama itself fits models against.  Judged by available RAM, a 24 GB
+          M4 (17.8 GiB working set) took a third model, went into swap and
+          answered empty streams for ten minutes (run 6).
+        * **The capacity ceiling**, which caps the *total* a node gives models,
+          so what is free under it is the ceiling less what is loaded.
+
+        Leaving the loaded models out of ``total`` made the gate a no-eviction
+        rule on unified memory, where available RAM already excludes them: two
+        idle models on a 24 GB Mac refused a third that evicting either would
+        have fitted (run 6).  Whether evicting is worth it is scored
+        (``Scorer._score_eviction``).
         """
         if not self.memory:
-            return 0.0
-        free = (
-            self.gpu_memory_free_gb() if self.memory.gpu_total_gb > 0 else self.memory.available_gb
-        )
+            return 0.0, 0.0
+        loaded = sum(m.size_gb for m in self.ollama.models_loaded) if self.ollama else 0.0
+        total = self.model_memory_available_gb() + loaded
+        on_gpu = self.memory.gpu_total_gb > 0
+        free = self.gpu_memory_free_gb() if on_gpu else self.memory.available_gb
+        caps = []
+        if not on_gpu and self.memory.gpu_working_set_gb > 0:
+            caps.append(self.memory.gpu_working_set_gb)
         if self.capacity and self.capacity.ceiling_gb > 0:
-            free = min(free, self.capacity.ceiling_gb)
-        return free
+            caps.append(self.capacity.ceiling_gb)
+        for cap in caps:
+            total = min(total, cap)
+            free = min(free, max(0.0, cap - loaded))
+        return total, free
+
+    def memory_for_load_gb(self) -> float:
+        """What a model load may use here if Ollama evicts what it must: the
+        "can it run here at all" gate (``fit_budget``)."""
+        return self.fit_budget()[0]
+
+    def memory_free_without_evicting_gb(self) -> float:
+        """What a load can use before Ollama evicts a resident model
+        (``fit_budget``)."""
+        return self.fit_budget()[1]
+
+    def model_capacity_gb(self) -> float:
+        """The most one model could ever occupy here: the GPU's memory on a GPU
+        node, Metal's working set on Apple Silicon when reported, else RAM."""
+        if not self.memory:
+            return 0.0
+        if self.memory.gpu_total_gb > 0:
+            return self.memory.gpu_total_gb
+        if self.memory.gpu_working_set_gb > 0:
+            return self.memory.gpu_working_set_gb
+        return self.memory.total_gb
 
     def gpu_memory_free_gb(self) -> float:
         """Free GPU memory outside RAM.  Detected: the devices' own measured

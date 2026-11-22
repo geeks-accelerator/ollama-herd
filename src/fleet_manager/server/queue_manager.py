@@ -714,26 +714,18 @@ class QueueManager:
         that does not fit even then still has to evict a busy model, and waits
         its turn like any other: a small idle model beside a busy large one
         used to disable the wait outright.  False with no idle model, where the
-        routing verdict (``_evicting_load``) stands.  The cost is the scorer's
-        (``ScoringEngine._model_fit_cost_gb``): measured resident size when the
-        fleet has seen the model, else its weights.
+        routing verdict (``_evicting_load``) stands.  The cost is the one the
+        scorer uses (``model_preloader.fit_cost_gb``): measured resident size
+        when the fleet has seen the model, else its weights.
         """
         idle = [m for m in distinct_resident_models(node) if not depths.get(f"{node_id}:{m.name}")]
         if not idle:
             return False
-        from fleet_manager.server.model_preloader import (
-            _estimate_model_size,
-            _expected_num_ctx,
-            measured_resident_gb,
-        )
+        from fleet_manager.server.model_preloader import fit_cost_gb
 
         on_gpu = bool(node.memory and node.memory.gpu_total_gb > 0)
         freed = sum((m.size_vram_gb or m.size_gb) if on_gpu else m.size_gb for m in idle)
-        weights = _estimate_model_size(model, node)
-        cost = measured_resident_gb(
-            model, node, _expected_num_ctx(model, self._settings, node), weights_gb=weights
-        )
-        cost = weights if cost is None else cost
+        cost = fit_cost_gb(model, node, self._settings)
         return node.memory_free_without_evicting_gb() + freed >= cost
 
     def _must_wait(self, q: DeviceModelQueue, entry: QueueEntry) -> bool:

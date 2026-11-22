@@ -37,7 +37,9 @@ def test_parse_pinned_models_single():
 
 def test_parse_pinned_models_multiple_with_whitespace():
     assert _parse_pinned_models("gpt-oss:120b, gemma3:27b , nomic-embed-text") == [
-        "gpt-oss:120b", "gemma3:27b", "nomic-embed-text",
+        "gpt-oss:120b",
+        "gemma3:27b",
+        "nomic-embed-text",
     ]
 
 
@@ -73,8 +75,7 @@ def _node(
     n.memory_free_without_evicting_gb.return_value = mem_gb
     # Default to an empty list (not a MagicMock) so the MLX branch can iterate.
     n.mlx_servers = [
-        SimpleNamespace(model=model, status=status)
-        for model, status in (mlx_servers or [])
+        SimpleNamespace(model=model, status=status) for model, status in (mlx_servers or [])
     ]
     return n
 
@@ -107,7 +108,9 @@ def test_model_resident_on_node_mlx_healthy():
     # MLX names carry the mlx: prefix in the request; the server list stores
     # them stripped — the helper must reconcile that.
     node = _node(
-        "A", loaded_models=[], disk_models=[],
+        "A",
+        loaded_models=[],
+        disk_models=[],
         mlx_servers=[("some/Model-4bit", "healthy")],
     )
     assert _model_resident_on_node("mlx:some/Model-4bit", node) is True
@@ -115,7 +118,9 @@ def test_model_resident_on_node_mlx_healthy():
 
 def test_model_resident_on_node_mlx_not_healthy_is_false():
     node = _node(
-        "A", loaded_models=[], disk_models=[],
+        "A",
+        loaded_models=[],
+        disk_models=[],
         mlx_servers=[("some/Model-4bit", "starting")],
     )
     assert _model_resident_on_node("mlx:some/Model-4bit", node) is False
@@ -132,8 +137,7 @@ def test_model_is_loaded_anywhere_includes_mlx():
     # _model_resident_on_node, so a healthy MLX server now counts as loaded.
     nodes = [
         _node("A", loaded_models=[], disk_models=[]),
-        _node("B", loaded_models=[], disk_models=[],
-              mlx_servers=[("some/Model-4bit", "healthy")]),
+        _node("B", loaded_models=[], disk_models=[], mlx_servers=[("some/Model-4bit", "healthy")]),
     ]
     assert _model_is_loaded_anywhere("mlx:some/Model-4bit", nodes) is True
 
@@ -146,6 +150,7 @@ def test_model_is_loaded_anywhere_includes_mlx():
 @pytest.mark.asyncio
 async def test_wait_until_resident_true_when_model_appears(monkeypatch):
     import fleet_manager.server.model_preloader as mp
+
     monkeypatch.setattr(mp, "_RESIDENCY_POLL_INTERVAL", 0.001)
     calls = {"n": 0}
 
@@ -165,6 +170,7 @@ async def test_wait_until_resident_true_when_model_appears(monkeypatch):
 @pytest.mark.asyncio
 async def test_wait_until_resident_times_out(monkeypatch):
     import fleet_manager.server.model_preloader as mp
+
     monkeypatch.setattr(mp, "_RESIDENCY_POLL_INTERVAL", 0.001)
     registry = MagicMock()
     registry.get_node = lambda _nid: _node("A", loaded_models=[], disk_models=["foo:1b"])
@@ -176,6 +182,7 @@ async def test_wait_until_resident_times_out(monkeypatch):
 @pytest.mark.asyncio
 async def test_wait_until_resident_none_node_waits_anywhere(monkeypatch):
     import fleet_manager.server.model_preloader as mp
+
     monkeypatch.setattr(mp, "_RESIDENCY_POLL_INTERVAL", 0.001)
     registry = MagicMock()
     registry.get_online_nodes = lambda: [
@@ -311,15 +318,21 @@ async def test_preloader_pinned_first_then_priority_up_to_cap(monkeypatch):
 
     # One node with many models on disk, lots of memory (so memory never
     # becomes the limiting factor — we want to assert on the count cap).
-    nodes = [_node(
-        "studio",
-        loaded_models=[],
-        disk_models=[
-            "gpt-oss:120b", "gemma3:27b", "qwen3-coder:30b",
-            "qwen3:8b", "gemma3:4b", "nomic-embed-text",
-        ],
-        mem_gb=500.0,
-    )]
+    nodes = [
+        _node(
+            "studio",
+            loaded_models=[],
+            disk_models=[
+                "gpt-oss:120b",
+                "gemma3:27b",
+                "qwen3-coder:30b",
+                "qwen3:8b",
+                "gemma3:4b",
+                "nomic-embed-text",
+            ],
+            mem_gb=500.0,
+        )
+    ]
     registry = _mock_registry(nodes)
 
     # Priority scores: 6 candidate models, all eligible (score >= 1.0)
@@ -340,6 +353,7 @@ async def test_preloader_pinned_first_then_priority_up_to_cap(monkeypatch):
     # Skip the long startup waits
     async def fast_sleep(_s):
         pass
+
     monkeypatch.setattr("fleet_manager.server.model_preloader.asyncio.sleep", fast_sleep)
     # Reset the module-level priority cache so our mock returns get used
     model_preloader._priority_cache = []
@@ -347,10 +361,13 @@ async def test_preloader_pinned_first_then_priority_up_to_cap(monkeypatch):
 
     # Inject a hard stop on the while-True refresh loop
     calls = {"refresh": 0}
+
     async def _stop_refresh(*args, **kwargs):
         calls["refresh"] += 1
         raise asyncio.CancelledError
+
     import asyncio
+
     monkeypatch.setattr(
         "fleet_manager.server.model_preloader._refresh_priority_models",
         _stop_refresh,
@@ -360,6 +377,7 @@ async def test_preloader_pinned_first_then_priority_up_to_cap(monkeypatch):
 
     # The coroutine goes into the infinite refresh loop; cancel after startup
     import contextlib
+
     with contextlib.suppress(TimeoutError, asyncio.CancelledError):
         await asyncio.wait_for(
             preload_and_cancel(registry, trace, proxy, settings),
@@ -384,6 +402,7 @@ async def preload_and_cancel(registry, trace, proxy, settings):
     import asyncio as _asyncio
     import contextlib
     from fleet_manager.server.model_preloader import preload_priority_models
+
     with contextlib.suppress(_asyncio.CancelledError):
         await preload_priority_models(registry, trace, proxy, settings)
 
@@ -395,34 +414,47 @@ async def test_preloader_skips_pinned_if_already_hot(monkeypatch):
     from fleet_manager.server import model_preloader
 
     # gpt-oss:120b is ALREADY hot on startup
-    nodes = [_node(
-        "studio", loaded_models=["gpt-oss:120b"],
-        disk_models=["gpt-oss:120b", "gemma3:27b", "qwen3-coder:30b"],
-        mem_gb=500.0,
-    )]
+    nodes = [
+        _node(
+            "studio",
+            loaded_models=["gpt-oss:120b"],
+            disk_models=["gpt-oss:120b", "gemma3:27b", "qwen3-coder:30b"],
+            mem_gb=500.0,
+        )
+    ]
     registry = _mock_registry(nodes)
     trace = MagicMock()
-    trace.get_model_priority_scores = AsyncMock(return_value=[
-        {"model": "qwen3-coder:30b", "priority_score": 100},
-    ])
+    trace.get_model_priority_scores = AsyncMock(
+        return_value=[
+            {"model": "qwen3-coder:30b", "priority_score": 100},
+        ]
+    )
     proxy = MagicMock()
     proxy.pre_warm = AsyncMock()
 
-    async def fast_sleep(_s): pass
+    async def fast_sleep(_s):
+        pass
+
     monkeypatch.setattr("fleet_manager.server.model_preloader.asyncio.sleep", fast_sleep)
     model_preloader._priority_cache = []
     model_preloader._priority_cache_time = 0
     import asyncio
-    async def _stop(*a, **k): raise asyncio.CancelledError
+
+    async def _stop(*a, **k):
+        raise asyncio.CancelledError
+
     monkeypatch.setattr(
-        "fleet_manager.server.model_preloader._refresh_priority_models", _stop,
+        "fleet_manager.server.model_preloader._refresh_priority_models",
+        _stop,
     )
 
     settings = _mock_settings(pinned="gpt-oss:120b,gemma3:27b", max_count=3)
     import contextlib
+
     with contextlib.suppress(Exception):
         await asyncio.wait_for(
-            preload_and_cancel(registry, trace, proxy, settings), timeout=2.0,
+            preload_and_cancel(registry, trace, proxy, settings),
+            timeout=2.0,
         )
 
     models_loaded = [c.args[1] for c in proxy.pre_warm.call_args_list]
@@ -437,6 +469,7 @@ async def test_preloader_skips_pinned_if_already_hot(monkeypatch):
 def contextlib_suppress():
     """pytest-compatible suppressor for cancellation noise."""
     import contextlib
+
     return contextlib.suppress(Exception)
 
 
@@ -457,13 +490,20 @@ async def test_load_skips_memory_gate_when_model_already_resident():
     # Node has the model loaded, on disk, but very little free memory left
     # (precisely because the model occupies it).
     node = _node(
-        "bb", loaded_models=["gpt-oss:120b"], disk_models=["gpt-oss:120b"], mem_gb=49.0,
+        "bb",
+        loaded_models=["gpt-oss:120b"],
+        disk_models=["gpt-oss:120b"],
+        mem_gb=49.0,
     )
     proxy = MagicMock()
     proxy.pre_warm = AsyncMock()
 
     ok = await _load_model_on_best_node(
-        "gpt-oss:120b", [node], proxy, why="fleet-pin", target_node_id="bb",
+        "gpt-oss:120b",
+        [node],
+        proxy,
+        why="fleet-pin",
+        target_node_id="bb",
     )
     assert ok is True  # not refused by the gate
     proxy.pre_warm.assert_awaited_once()  # keep_alive=-1 still re-applied
@@ -479,7 +519,11 @@ async def test_load_still_gates_when_model_not_resident():
     proxy.pre_warm = AsyncMock()
 
     ok = await _load_model_on_best_node(
-        "gpt-oss:120b", [node], proxy, why="fleet-pin", target_node_id="bb",
+        "gpt-oss:120b",
+        [node],
+        proxy,
+        why="fleet-pin",
+        target_node_id="bb",
     )
     assert ok is False  # 49GB free < 72GB * 1.2 → correctly refused
     proxy.pre_warm.assert_not_awaited()
@@ -496,7 +540,7 @@ def _sized_node(sizes: dict[str, float], loaded: list[tuple[str, float]] | None 
     n.ollama = MagicMock()
     n.ollama.models_available_sizes = dict(sizes)
     ml = []
-    for name, gb in (loaded or []):
+    for name, gb in loaded or []:
         m = MagicMock()
         m.name = name
         m.size_gb = gb
@@ -574,12 +618,18 @@ async def test_memory_gate_now_refuses_the_oversized_model():
     node.memory = MagicMock()
     node.memory.available_gb = 100.0  # old math: 12GB needed → LOADS. new: 348 → refuses
     node.model_memory_available_gb.return_value = 100.0
+    # The preload gate: memory free without evicting (a preload never evicts).
+    node.memory_free_without_evicting_gb.return_value = 100.0
     node.mlx_servers = []
     proxy = MagicMock()
     proxy.pre_warm = AsyncMock()
 
     ok = await _load_model_on_best_node(
-        "qwen3-coder:480b-a35b-q4_K_M", [node], proxy, why="test", target_node_id="bb",
+        "qwen3-coder:480b-a35b-q4_K_M",
+        [node],
+        proxy,
+        why="test",
+        target_node_id="bb",
     )
     assert ok is False
     proxy.pre_warm.assert_not_awaited()
@@ -596,12 +646,18 @@ async def test_memory_gate_still_loads_when_it_genuinely_fits():
     node.memory = MagicMock()
     node.memory.available_gb = 300.0  # 65.4*1.2 = 78GB needed → fits easily
     node.model_memory_available_gb.return_value = 300.0
+    # The preload gate: memory free without evicting (a preload never evicts).
+    node.memory_free_without_evicting_gb.return_value = 300.0
     node.mlx_servers = []
     proxy = MagicMock()
     proxy.pre_warm = AsyncMock()
 
     ok = await _load_model_on_best_node(
-        "gpt-oss:120b", [node], proxy, why="test", target_node_id="bb",
+        "gpt-oss:120b",
+        [node],
+        proxy,
+        why="test",
+        target_node_id="bb",
     )
     assert ok is True
     proxy.pre_warm.assert_awaited_once()
@@ -730,10 +786,12 @@ def test_measured_resident_predicts_from_learned_kv_cost():
     from fleet_manager.server.model_preloader import measured_resident_gb, _observe_kv_cost
 
     # Learn from a node that has it hot at the default 262K context...
-    _observe_kv_cost(_kv_node(
-        loaded=[("qwen3-coder:30b", 122.9, 262144)],
-        disk_sizes={"qwen3-coder:30b": 18.6},
-    ))
+    _observe_kv_cost(
+        _kv_node(
+            loaded=[("qwen3-coder:30b", 122.9, 262144)],
+            disk_sizes={"qwen3-coder:30b": 18.6},
+        )
+    )
     # ...then predict on a node where it is NOT loaded, at a smaller context.
     cold = _kv_node("other", loaded=[], disk_sizes={"qwen3-coder:30b": 18.6})
 
@@ -771,10 +829,12 @@ async def test_memory_gate_refuses_load_that_would_not_fit_with_kv():
     """
     from fleet_manager.server.model_preloader import _load_model_on_best_node, _observe_kv_cost
 
-    _observe_kv_cost(_kv_node(
-        loaded=[("qwen3-coder:30b", 122.9, 262144)],
-        disk_sizes={"qwen3-coder:30b": 18.6},
-    ))
+    _observe_kv_cost(
+        _kv_node(
+            loaded=[("qwen3-coder:30b", 122.9, 262144)],
+            disk_sizes={"qwen3-coder:30b": 18.6},
+        )
+    )
     cold = _kv_node("cold", loaded=[], disk_sizes={"qwen3-coder:30b": 18.6}, mem_gb=40.0)
     proxy = MagicMock()
     proxy.pre_warm = AsyncMock()
@@ -791,10 +851,12 @@ async def test_memory_gate_allows_load_when_num_ctx_override_makes_it_fit():
     refuses at 262K fits comfortably at 32K, and the override says 32K."""
     from fleet_manager.server.model_preloader import _load_model_on_best_node, _observe_kv_cost
 
-    _observe_kv_cost(_kv_node(
-        loaded=[("qwen3-coder:30b", 122.9, 262144)],
-        disk_sizes={"qwen3-coder:30b": 18.6},
-    ))
+    _observe_kv_cost(
+        _kv_node(
+            loaded=[("qwen3-coder:30b", 122.9, 262144)],
+            disk_sizes={"qwen3-coder:30b": 18.6},
+        )
+    )
     cold = _kv_node("cold", loaded=[], disk_sizes={"qwen3-coder:30b": 18.6}, mem_gb=40.0)
     settings = _mock_settings()
     settings.dynamic_num_ctx = True
@@ -803,7 +865,11 @@ async def test_memory_gate_allows_load_when_num_ctx_override_makes_it_fit():
     proxy.pre_warm = AsyncMock()
 
     ok = await _load_model_on_best_node(
-        "qwen3-coder:30b", [cold], proxy, why="test", settings=settings,
+        "qwen3-coder:30b",
+        [cold],
+        proxy,
+        why="test",
+        settings=settings,
     )
 
     assert ok is True
@@ -837,7 +903,9 @@ async def test_refresh_reloads_evicted_pinned_model(monkeypatch):
     tests until ruff caught it (2026-07-17). Actually run it."""
     from fleet_manager.server import model_preloader as mp
 
-    async def fast_sleep(_s): pass
+    async def fast_sleep(_s):
+        pass
+
     monkeypatch.setattr("fleet_manager.server.model_preloader.asyncio.sleep", fast_sleep)
     mp._priority_cache = []
     mp._priority_cache_time = 0
@@ -854,7 +922,11 @@ async def test_refresh_reloads_evicted_pinned_model(monkeypatch):
     proxy.pre_warm = AsyncMock()
 
     await mp._refresh_priority_models(
-        registry, trace, proxy, pinned=["gpt-oss:120b"], max_count=3,
+        registry,
+        trace,
+        proxy,
+        pinned=["gpt-oss:120b"],
+        max_count=3,
         settings=_mock_settings(),
     )
 
