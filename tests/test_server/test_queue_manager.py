@@ -1355,3 +1355,41 @@ async def test_a_stream_handed_over_as_the_client_leaves_still_frees_its_slot():
     assert await dispatched_stream(Request(), future, entry, None, poll_s=0.01) is None
     assert entry.request.request_id not in qm._queues[key].in_flight
     assert entry.request.request_id not in qm._queues[key].slots
+
+
+class TestCapacityBackOff:
+    """A resident model gets every slot Ollama allocated (memory: ``6dbf115``),
+    and the capacity learner's back-off caps that as its own rule rather than
+    through the memory ceiling, which had made it vanish for resident models."""
+
+    async def _qm(self, mode=None):
+        from fleet_manager.models.config import ServerSettings
+        from fleet_manager.models.node import CapacityMetrics
+        from fleet_manager.server.registry import NodeRegistry
+        from fleet_manager.testing.heartbeats import make_heartbeat
+
+        registry = NodeRegistry(ServerSettings())
+        hb = make_heartbeat(
+            node_id="studio",
+            memory_total=24.0,
+            memory_used=15.0,
+            loaded_models=[("phi4:14b", 9.0)],
+            available_models=["phi4:14b", "other:7b"],
+            num_parallel=4,
+        )
+        if mode is not None:
+            hb.capacity = CapacityMetrics(mode=mode, ceiling_gb=6.0, availability_score=0.5)
+        await registry.update_from_heartbeat(hb)
+        return QueueManager(registry=registry, settings=ServerSettings())
+
+    @pytest.mark.parametrize(
+        "mode,slots",
+        [(None, 4), ("full", 4), ("learned_high", 4), ("learned_medium", 2), ("learned_low", 1)],
+    )
+    async def test_resident_model_slots_follow_the_learner(self, mode, slots):
+        qm = await self._qm(mode)
+        assert qm._compute_queue_concurrency("studio", "phi4:14b") == slots
+
+    async def test_a_cold_model_is_capped_by_the_same_rule(self):
+        qm = await self._qm("learned_low")
+        assert qm._compute_queue_concurrency("studio", "other:7b") == 1

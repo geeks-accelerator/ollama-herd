@@ -335,7 +335,7 @@ class QueueManager:
         # time to first token grew with concurrency).  Not `mlx:` models:
         # mlx_lm.server grows its KV cache per request.
         if model_size_gb > 0 and not model.startswith("mlx:") and backend_limit > 0:
-            return max(_MIN_CONCURRENCY, backend_limit)
+            return self._capacity_capped(node, backend_limit)
 
         # If capacity learning is active, respect the ceiling
         if node.capacity and node.capacity.ceiling_gb > 0:
@@ -351,7 +351,19 @@ class QueueManager:
         # managing them.
         if backend_limit > 0:
             concurrency = min(concurrency, backend_limit)
-        return max(_MIN_CONCURRENCY, concurrency)
+        return self._capacity_capped(node, concurrency)
+
+    @staticmethod
+    def _capacity_capped(node, concurrency: int) -> int:
+        """``concurrency``, lowered while the capacity learner says the
+        machine's owner is busy (``CapacityMetrics.slot_cap``).  Applied to
+        every model, resident or not, as its own rule rather than through the
+        memory ceiling.  Recomputed on each enqueue (``_ensure_workers``), so a
+        new band takes effect from the next request."""
+        concurrency = max(_MIN_CONCURRENCY, concurrency)
+        if node.capacity:
+            return max(_MIN_CONCURRENCY, min(concurrency, node.capacity.slot_cap(concurrency)))
+        return concurrency
 
     def _ensure_workers(self, q: DeviceModelQueue, queue_key: str):
         """Ensure the right number of workers are running for a queue."""

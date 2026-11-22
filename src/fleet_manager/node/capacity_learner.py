@@ -10,18 +10,21 @@ combines:
   - Current observed state (what's happening right now)
   - Trend signal (is activity rising or falling in the last few minutes)
 
-The score maps to a dynamic memory ceiling the router respects:
-  0.00–0.20  →  Ollama paused entirely
-  0.20–0.40  →  16GB ceiling, lowest priority
-  0.40–0.60  →  32GB ceiling, low priority
-  0.60–0.80  →  64GB ceiling, normal priority
-  0.80–1.00  →  total_memory ceiling, full participant
+The score maps to a mode (``_availability_to_ceiling``), which the router
+reads two ways: as a memory ceiling for model loads, and as a cap on how many
+requests run at once (``CapacityMetrics.slot_cap``):
+  0.00–0.20  →  paused: the router sends nothing
+  0.20–0.40  →  learned_low:    ceiling min(16 GB, 12.5% of RAM), 1 request at a time
+  0.40–0.60  →  learned_medium: ceiling min(32 GB, 25% of RAM), half of Ollama's slots
+  0.60–0.80  →  learned_high:   ceiling min(64 GB, 50% of RAM), every slot
+  0.80–1.00  →  full:           ceiling 80% of RAM, every slot
 
-Hard override signals (regardless of learned baseline):
-  - Camera or microphone active → hard pause (meeting)
-  - Memory pressure hits warn → drain queue, pause new requests
-  - CPU above 85% sustained 2+ minutes → drop to 16GB ceiling
-  - Thermal throttling detected → pause entirely
+Hard overrides (regardless of learned baseline), each pausing the node:
+  - Camera or microphone active (meeting)
+  - CPU above 85% sustained 2+ minutes
+  - A manual override from the dashboard
+Memory pressure is not one of them: the router reads it from the heartbeat
+itself (critical pressure withholds cold loads, ``Scorer._eliminate``).
 """
 
 from __future__ import annotations

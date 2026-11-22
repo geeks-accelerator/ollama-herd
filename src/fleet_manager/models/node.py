@@ -297,7 +297,15 @@ class OllamaMetrics(BaseModel):
 
 
 class CapacityMetrics(BaseModel):
-    """Adaptive capacity state from the node's capacity learner."""
+    """Adaptive capacity state from the node's capacity learner.
+
+    Two separate things, deliberately: ``ceiling_gb`` is memory (how much of
+    this machine a model *load* may use, ``NodeState.memory_for_load_gb``),
+    and ``slot_cap`` is back-off (how many requests may run at once while the
+    owner is busy).  The back-off used to ride on the memory ceiling by
+    accident of arithmetic, and vanished for resident models when the memory
+    calculation was corrected (``6dbf115``).
+    """
 
     mode: str = "full"
     ceiling_gb: float = 0.0
@@ -306,6 +314,24 @@ class CapacityMetrics(BaseModel):
     override_active: bool = False
     learning_confidence: float = 0.0
     days_observed: int = 0
+
+    def slot_cap(self, backend_limit: int) -> int:
+        """At most how many requests may run at once on this node, given the
+        ``backend_limit`` Ollama admits: all of them at full or high
+        availability, half in the learned-medium band, one in learned-low.
+
+        Keyed on the learner's own ``CapacityMode`` (its bands live in
+        ``CapacityLearner._availability_to_ceiling``), so the router and the
+        node read one table.  ``paused`` and ``bootstrap`` never get here: the
+        scorer eliminates those nodes.
+        """
+        if backend_limit <= 1:
+            return max(1, backend_limit)
+        if self.mode == "learned_low":
+            return 1
+        if self.mode == "learned_medium":
+            return max(1, backend_limit // 2)
+        return backend_limit
 
 
 class ImageModel(BaseModel):
