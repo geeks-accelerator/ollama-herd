@@ -345,7 +345,10 @@ async def discover_fleet(
     ``model_knowledge.model_type`` (with the capabilities Ollama reports), plus
     any model in ``include_on_disk`` that is not loaded but is on some node's
     disk (``on_disk_only``: its first request includes the load) or served by a
-    node's vision-embedding sidecar (``embed-image``).  Each target's
+    node's vision-embedding sidecar (``embed-image``) or native text-embedding
+    sidecar (``embed``; herd routes ``nomic-embed-text`` there, not to Ollama,
+    so without this the harness could not benchmark it: run 6's embeddings arm
+    printed "not loaded or on disk anywhere" and silently ran without it).  Each target's
     ``workload`` is its type's default; ``select_workloads`` sets the run's.
     Concurrency is calculated per-node:
     1. Total node budget = min(available_gb / KV_CACHE, MAX_TOTAL_PER_NODE)
@@ -361,6 +364,7 @@ async def discover_fleet(
     model_map: dict[str, ModelTarget] = {}
     on_disk_by_node: dict[str, tuple[set[str], dict]] = {}
     vision_embed_by_node: dict[str, set[str]] = {}
+    text_embed_by_node: dict[str, set[str]] = {}
 
     def target(name: str, size_gb: float, concurrency: int, **kw) -> ModelTarget:
         if name not in model_map:
@@ -405,6 +409,11 @@ async def discover_fleet(
         vision_embed_by_node[node_id] = {
             m["name"] for m in (node.get("vision_embedding") or {}).get("models_available", [])
         }
+        text_embed_by_node[node_id] = {
+            m["name"]
+            for m in (node.get("text_embedding") or {}).get("models_available", [])
+            if m.get("kind", "embed") == "embed"
+        }
 
         if loaded:
             # Available memory is already free (models are loaded and accounted for).
@@ -444,6 +453,12 @@ async def discover_fleet(
         for node_id, served in vision_embed_by_node.items():
             if name in served:
                 target(name, 0.0, MIN_CONCURRENCY, model_type="embed-image").nodes.append(node_id)
+        # Native text embeddings (fastembed) live in the other sidecar.  Only
+        # when nothing in Ollama matched: a node's Ollama copy is a target above.
+        if normalize_model_name(name) not in {normalize_model_name(k) for k in model_map}:
+            for node_id, served in text_embed_by_node.items():
+                if normalize_model_name(name) in {normalize_model_name(x) for x in served}:
+                    target(name, 0.0, MIN_CONCURRENCY, model_type="embed").nodes.append(node_id)
 
     return list(model_map.values()), nodes_info
 

@@ -516,6 +516,31 @@ class TestVision:
         }
 
     @pytest.mark.asyncio
+    async def test_native_text_embeddings_are_found_in_their_sidecar(self, httpx_mock):
+        """Run 6: herd serves nomic-embed-text from fastembed, not Ollama, and
+        the harness said "not loaded or on disk anywhere" and ran without it."""
+        a = _node("a", loaded=["qwen2.5:7b"])
+        a["text_embedding"] = {
+            "models_available": [
+                {"name": "nomic-embed-text", "kind": "embed"},
+                {"name": "ms-marco-minilm-l-6-v2", "kind": "rerank"},
+            ]
+        }
+        b = _node("b", loaded=["qwen2.5:7b"])
+        b["text_embedding"] = {"models_available": [{"name": "nomic-embed-text", "kind": "embed"}]}
+        httpx_mock.add_response(url=f"{ROUTER}/fleet/status", json=_status([a, b]))
+        httpx_mock.add_response(url=f"{ROUTER}/api/tags", json={"models": []})
+        async with httpx.AsyncClient(base_url=ROUTER) as c:
+            targets, _ = await discover_fleet(
+                c, include_on_disk=["nomic-embed-text", "ms-marco-minilm-l-6-v2"]
+            )
+        types = {t.name: (t.model_type, t.nodes) for t in targets}
+        assert types == {
+            "qwen2.5:7b": ("llm", ["a", "b"]),
+            "nomic-embed-text": ("embed", ["a", "b"]),
+        }
+
+    @pytest.mark.asyncio
     async def test_sidecar_embeddings_only_when_asked_for(self, httpx_mock):
         httpx_mock.add_response(
             url=f"{ROUTER}/fleet/status",
