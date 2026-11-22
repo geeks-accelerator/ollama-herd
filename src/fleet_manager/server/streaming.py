@@ -171,6 +171,16 @@ def _create_logged_task(coro, *, name: str = "background"):
 PRE_WARM_TIMEOUT_S = 900.0
 
 
+class EmptyUpstreamStream(Exception):
+    """The backend ended a stream with no line at all and no ``done``.
+
+    Nothing reached the client, so it is retried on another node like a refused
+    connection.  Run 6: a 24 GB Mac swapping with three models resident ended
+    request after request this way in 0.0 s, and each one failed on that node
+    while the other Mac sat idle.
+    """
+
+
 def _backend_url(node, port: int) -> str:
     """URL of a native backend on ``node``'s host (its Ollama URL's host)."""
     from urllib.parse import urlparse
@@ -673,7 +683,7 @@ class StreamingProxy:
     @staticmethod
     def _is_retryable_error(e: Exception) -> bool:
         """Return True if the error is worth retrying on another node."""
-        if StreamingProxy._is_transport_error(e):
+        if StreamingProxy._is_transport_error(e) or isinstance(e, EmptyUpstreamStream):
             return True
         if StreamingProxy._is_model_not_found_error(e):
             return True
@@ -1059,6 +1069,7 @@ class StreamingProxy:
         # a finished one -- see UPSTREAM_INCOMPLETE.
         output_chunks = 0
         saw_done = False
+        yielded_any = False
         saw_tool_calls = False
         # The message of an {"error": ...} line, which ends a stream instead of
         # done:true.  The OpenAI terminal below tells the client this, not "retry".
@@ -1135,6 +1146,7 @@ class StreamingProxy:
                 except json.JSONDecodeError:
                     logger.warning(f"Malformed JSON from Ollama on {node_id}: {line[:200]}")
                 # Yield in the appropriate format
+                yielded_any = True
                 if request.original_format == RequestFormat.OPENAI:
                     yield self._ollama_to_openai_sse(
                         line, request.model, prior_tool_calls=saw_tool_calls
@@ -1142,6 +1154,12 @@ class StreamingProxy:
                 else:
                     yield line + "\n"
 
+        if not saw_done and not yielded_any:
+            backend_error = self._request_backend_error.pop(request.request_id, None)
+            raise EmptyUpstreamStream(
+                f"{node_id} ended the stream with no output"
+                + (f": {backend_error}" if backend_error else "")
+            )
         if not saw_done:
             # The backend ended the stream without its terminal line.  Leave the
             # partial-output counts for _record_incomplete's log line.  OpenAI is
