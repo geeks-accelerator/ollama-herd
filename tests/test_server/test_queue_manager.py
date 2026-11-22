@@ -1508,3 +1508,13 @@ async def test_depths_say_which_queues_have_a_load_under_way():
     loading.last_progress_at = time.time()
     assert qm.get_queue_depths().loading == frozenset()
     await qm.shutdown()
+
+
+async def test_queue_info_carries_the_streamed_chunk_count():
+    """C1: the dashboard's live rate is the change in this cumulative count."""
+    qm = QueueManager()
+    entry = _make_entry(node_id="m1")
+    qm._queues["m1:phi4:14b"] = queue_manager.DeviceModelQueue("m1", "phi4:14b")
+    for _ in range(3):
+        qm.progress(entry)
+    assert qm.get_queue_info()["m1:phi4:14b"]["streamed_chunks"] == 3

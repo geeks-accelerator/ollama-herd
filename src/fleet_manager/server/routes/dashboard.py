@@ -2643,7 +2643,7 @@ a.score-ring:hover { text-decoration: none; }
 
 <section class="figures live" id="figures" aria-label="Key figures">
   <a class="figure" id="fig-rpm-card" href="/dashboard/models" title="Average of the last five minutes"><span class="figure-value" id="fig-rpm">—</span><span class="figure-label">Requests / min</span><div class="figure-spark" id="spark-rpm"></div></a>
-  <a class="figure" id="fig-tps-card" href="/dashboard/models" title="Generated tokens, average of the last five minutes"><span class="figure-value" id="fig-tps">—</span><span class="figure-label">Tokens / s</span><div class="figure-spark" id="spark-tps"></div></a>
+  <a class="figure" id="fig-tps-card" href="/dashboard/models" title="Generated tokens, average of the last five minutes of finished requests; the line below is what is streaming right now"><span class="figure-value" id="fig-tps">—</span><span class="figure-label">Tokens / s, 5 min</span><span class="figure-label" id="fig-tps-now"></span><div class="figure-spark" id="spark-tps"></div></a>
   <a class="figure" id="fig-ttft-card" href="/dashboard/models" title="Median, last five minutes"><span class="figure-value" id="fig-ttft">—</span><span class="figure-label">Time to first token</span><div class="figure-spark" id="spark-ttft"></div></a>
   <a class="figure" id="fig-errors-card" href="/dashboard/health"><span class="figure-value" id="fig-errors">—</span><span class="figure-label" id="fig-errors-label">Error rate</span><div class="figure-spark" id="spark-errors"></div></a>
   <div class="figure" id="fig-inflight-card"><span class="figure-value" id="fig-inflight">—</span><span class="figure-label">Running now</span><div class="figure-spark" id="spark-inflight"></div></div>
@@ -2906,9 +2906,27 @@ async function loadSeries() {
 }
 document.addEventListener('visibilitychange', function() { if (!document.hidden) loadSeries(); });
 
+// What is streaming right now: the change in every queue's cumulative
+// streamed_chunks between live updates.  The figures above average finished
+// requests over five minutes, so a one-minute burst read near zero until it
+// ended (run 6, filmed); this line moves with it.  Chunks, not tokens: a
+// chunk is usually one token, but only the finished trace says exactly.
+var _liveChunks = null;
+function updateLiveRate(data) {
+  var t = data.timestamp || Date.now() / 1000, total = 0;
+  Object.values(data.queues || {}).forEach(function(q) { total += q.streamed_chunks || 0; });
+  var el = document.getElementById('fig-tps-now');
+  if (_liveChunks && t > _liveChunks.t && el) {
+    var rate = Math.max(0, (total - _liveChunks.total) / (t - _liveChunks.t));
+    el.textContent = rate >= 1 ? 'now ' + fmtNum(Math.round(rate)) + ' chunks / s' : '';
+  }
+  _liveChunks = { t: t, total: total };
+}
+
 // Between fetches, the live stream extends the node history so CPU, memory
 // and queue sparklines move every 2 s.
 function appendLiveSample(data) {
+  if (data) updateLiveRate(data);
   if (!_nh || !data) return;
   var t = data.timestamp || Date.now() / 1000, queued = 0, running = 0, per = {};
   Object.values(data.queues || {}).forEach(function(q) {
@@ -3060,7 +3078,7 @@ function renderNodes(nodes) {
           '<div><div class="node-name">' + dot(node.status) + escapeHtml(node.node_id) + ' <span class="faint small">' + node.status + '</span></div><div class="node-chip">' + escapeHtml(chip) + '</div></div>' +
           '<div class="node-models-count"><b>' + loaded + '</b>loaded \\u00b7 ' + onDisk + ' on disk</div>' +
         '</div>' +
-        '<div class="node-metrics">' + metric('cpu', 'CPU') + metric('mem', 'Memory') + metric('tps', 'Tokens / s') + '</div>' +
+        '<div class="node-metrics">' + metric('cpu', 'CPU') + metric('mem', 'Memory') + metric('tps', 'Tokens / s, 5 min') + '</div>' +
         '<div class="meter-extra mem-extra"></div>' +
         (details ? '<div class="node-detail-wrap"><details class="disclosure" data-node="' + escapeHtml(node.node_id) + '"' + (_openNodes[node.node_id] ? ' open' : '') + '><summary>Details</summary><div class="detail-grid">' + details + '</div></details></div>' : '') +
       '</div>';

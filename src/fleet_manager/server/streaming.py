@@ -484,11 +484,10 @@ class StreamingProxy:
             async for chunk in self.stream_from_node(entry.assigned_node, entry.request, pin):
                 if first_token_time is None:
                     first_token_time = time.time()
-                # Progress stamp for the stale reaper.  One float write per
-                # chunk, which is nothing next to the parsing already happening
-                # here, and it is what lets a 12-minute legitimate generation be
-                # told apart from a stream that died silently.
-                entry.last_progress_at = time.time()
+                # Progress (``QueueManager.progress``): what lets a 12-minute
+                # legitimate generation be told apart from a stream that died
+                # silently, the live rate's count, and a load's switch.
+                queue_manager.progress(entry)
                 if debug_enabled and capture_bytes < DEBUG_CAPTURE_MAX_BYTES:
                     capture_chunks.append(chunk)
                     capture_bytes += len(chunk)
@@ -769,7 +768,7 @@ class StreamingProxy:
             try:
                 pin = queue_manager.should_pin(current_node, entry.request.model)
                 async for chunk in self.stream_from_node(current_node, entry.request, pin):
-                    entry.last_progress_at = time.time()
+                    queue_manager.progress(entry)
                     if not first_chunk_sent:
                         first_chunk_sent = True
                         first_token_time = time.time()

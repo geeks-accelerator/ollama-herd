@@ -137,6 +137,9 @@ class DeviceModelQueue:
     direct: int = 0
     # When a request for this model on this node last finished (``should_pin``).
     last_finished_at: float = 0.0
+    # Chunks streamed for this model on this node, cumulative
+    # (``QueueManager.progress``): the dashboard's live rate is its change.
+    streamed_chunks: int = 0
     concurrency: int = _MIN_CONCURRENCY
     completed_count: int = 0
     failed_count: int = 0
@@ -317,6 +320,8 @@ class QueueManager:
                 "model": q.model,
                 "pending": q.pending.qsize() + q.held,
                 "in_flight": len(q.in_flight),
+                # Cumulative; the dashboard reads its change as the live rate.
+                "streamed_chunks": q.streamed_chunks,
                 # Embeddings at the node (``direct``): load for the scorer, but not
                 # a backlog the rebalancer should pre-warm or move work for.
                 "direct": q.direct,
@@ -641,6 +646,15 @@ class QueueManager:
         if not any(depths.get(f"{node.node_id}:{m.name}") for m in node.ollama.models_loaded):
             return True  # nothing busy to wait for
         return self._idle_room_for(node, node.node_id, entry.request.model, depths)
+
+    def progress(self, entry: QueueEntry) -> None:
+        """A chunk arrived for ``entry``: stamp its progress (the stale reaper
+        and every "load under way" check read it) and count it for the
+        dashboard's live rate (``streamed_chunks``)."""
+        entry.last_progress_at = time.time()
+        q = self._queues.get(f"{entry.assigned_node}:{entry.request.model}")
+        if q is not None:
+            q.streamed_chunks += 1
 
     def free_slots(self, queue_key: str) -> int:
         """How many more requests ``queue_key``'s node would start for its

@@ -160,3 +160,16 @@ class TestOverviewPage:
             assert f'id="spark-{spark}"' in html
         # Reading pages keep their measure.
         assert '<main class="main">' in TestClient(app).get("/dashboard/settings").text
+
+
+def test_the_tokens_figure_says_it_is_an_average_and_shows_what_streams_now():
+    """C1 (run 6, filmed): the figure read 0 to 39 tok/s while about 500 were
+    streaming, because it averages finished requests over five minutes.  It now
+    says so, and a live line computed from the queues' streamed chunks moves
+    with a burst."""
+    from fleet_manager.server.routes import dashboard
+
+    src = open(dashboard.__file__).read()
+    assert "Tokens / s, 5 min" in src
+    assert 'id="fig-tps-now"' in src
+    assert "streamed_chunks" in src and "function updateLiveRate" in src

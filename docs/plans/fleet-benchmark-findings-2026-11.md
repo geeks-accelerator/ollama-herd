@@ -66,6 +66,9 @@ Open, from run 2:
     against 0.66 s), although herd's own queue wait was 3 ms. Later turns favour herd (+26 % growth
     over four turns against +171 %), and p95 is 23 % better. Read Ollama's per-request
     prompt-eval counts and slot assignment for first turns placed by prefix affinity.
+    **Still open (2026-11-22).** Related, not a fix: session and prefix affinity now fade by
+    waiting against re-reading in seconds (`e42e3a9`), and prefill time is kept per request, which
+    gives this item the per-request prompt-eval data it asks for. First turns not re-measured.
 
 ## From the website's benchmark review (2026-11-20)
 
@@ -260,8 +263,26 @@ From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-h
     lone waiting request sits out a full turn). Needs a backlog condition (waiting model's held
     count against the resident model's arrivals) and repeat runs before it ships. Patch and local
     runs: ollama-herd-private `.bench-lambda-2026-11-20-run4/switch-turn.patch` (applies to `1e7cdb2`).
-30. **Open: `joins_load` cancels the eviction charge for any queued depth, not only a load under
-    way.** On run 4 that kept phi4 on m1 (score 0 + 10 cold, minus queue penalties) while evicting
+    **Measured again 2026-11-22, not shipped.** Ported onto `main` with the backlog condition (the
+    turn counts from the switch only while the switched-to model has requests waiting), then an A/B
+    on the local mock (two nodes at `--max-loaded 1`, 8 s loads, two models alternating, 150 s,
+    seeds 7 and 11, before = `e42e3a9`):
+
+    | rate, seed | loads before -> after | p95 a / b before | p95 a / b after |
+    |---|---|---|---|
+    | 0.25, 7 | 33 -> 29 | 19.6 / 18.5 s | 19.6 / 18.8 s |
+    | 0.25, 11 | 27 -> 46 | 19.6 / 18.8 s | 15.9 / 15.9 s |
+    | 0.5, 7 | 67 -> 61 | 186 / 173 s | 173 / 200 s |
+    | 0.5, 11 | 59 -> 59 | 148 / 161 s | 169 / 178 s |
+
+    All requests answered in every cell. The backlog condition did remove the p95 doubling at
+    0.25, but the load count moved both ways and p95 at 0.5 got worse in three of four
+    comparisons, so the turn was taken back out. What stays from the port is
+    `QueueManager.progress`, the one hook both streaming loops call, which now counts streamed
+    chunks for the dashboard. Next attempt should measure on a mock with item 28's timings and more
+    repetitions per cell before reading a difference.
+30. **Fixed on `main` (`dbed3d7`, unreleased): `joins_load` cancels the eviction charge for any queued depth, not only a load under
+    way.** Queue depths now carry `loading` (`QueueDepths`), and `joins_load` applies only to a load under way. Not yet re-measured against run 4's churn. On run 4 that kept phi4 on m1 (score 0 + 10 cold, minus queue penalties) while evicting
     qwen2.5:14b on m2 cost 40 whenever one of its requests was in flight, so the churn never spread
     to the second card. Apply `joins_load` only while that model's load is at the node without
     output; the scorer needs a "load under way" input from the queue manager (it only sees
@@ -343,7 +364,7 @@ cold-cache arms (item 35).
     (3.5 GB free) answered 200 in 17.7 s. **Side effect, recorded in item 39:** it also let a
     second load of a model go to a node that must evict, where the old gate's refusal had happened
     to force a better layout.
-35. **Open, method: Ollama's prompt cache carries between back-to-back runs that reuse a seed.**
+35. **Fixed in the harness (`541f0db`, unreleased): Ollama's prompt cache carried between back-to-back runs that reuse a seed.** `scripts/benchmark.py --run-seed` derives each cell's seed (`cell_seed`); `--seed` keeps its meaning. Runs 2-5's scaling cells remain possibly warm.
     llama.cpp keeps up to 8 GiB of earlier prompts in host RAM, and the harness's prompts repeat
     by seed, so a cell run straight after another with the same seed starts warm: `scaling`
     cells at concurrency 8 ran after concurrency 4 with the same seed (18-29 of 56-60 requests
@@ -367,7 +388,7 @@ cold-cache arms (item 35).
     against HAProxy roundrobin 32, 32, 32 (40.0 tok/s in-window each), 0 failures, Ollama restarted before
     every run, each pair on one seed. The earlier gap (0.12.12: 56.7 against 75.0) was item 33 plus
     item 35's cache order. One model on identical machines is round-robin's best case.
-39. **Open: a pre-warm that must evict blocks every load on its Mac.** Mixed models (seed 13,
+39. **Fixed on `main` (`923b7c4`, `e9d0054`, unreleased): a pre-warm that must evict blocked every load on its Mac.** Pre-warms count as in-flight loads and are not sent when they would wait for a busy model; fit is judged against Metal's working set. Seed 13 on the M4s still to be repeated. Mixed models (seed 13,
     router `87e3bf0`): the rebalancer pre-warmed `gemma3:12b` onto s1; Ollama had to evict the busy
     `qwen2.5:7b`, which it does by waiting for it to go idle while loading nothing else; herd kept
     sending it work, since its load hold only covers loads in its own queues; Ollama's scheduler on

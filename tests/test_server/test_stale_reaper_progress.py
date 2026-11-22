@@ -86,7 +86,7 @@ class TestWiring:
         import pathlib
 
         src = pathlib.Path("src/fleet_manager/server/streaming.py").read_text()
-        assert src.count("entry.last_progress_at = time.time()") == 2, (
+        assert src.count("queue_manager.progress(entry)") == 2, (
             "every streaming loop must stamp progress, including the retry path"
         )
         assert src.count("async for chunk in self.stream_from_node") == 2
@@ -152,7 +152,7 @@ class TestTheWorkerUsesTheSameRule:
         import pathlib as _p
 
         src = _p.Path("src/fleet_manager/server/queue_manager.py").read_text()
-        worker = src[src.index("Belt and braces for a request"):]
+        worker = src[src.index("Belt and braces for a request") :]
         worker = worker[: worker.index("def mark_completed")]
         assert "entry.last_progress_at" in worker
         assert "entry.started_at" in worker, "must fall back to age when nothing produced"
@@ -176,7 +176,7 @@ class TestTheWorkerUsesTheSameRule:
         import pathlib as _p
 
         src = _p.Path("src/fleet_manager/server/queue_manager.py").read_text()
-        worker = src[src.index("Belt and braces for a request"):]
+        worker = src[src.index("Belt and braces for a request") :]
         worker = worker[: worker.index("def mark_completed")]
         assert "timeout=_REAPER_INTERVAL_SECONDS" in worker
         assert "while True" in worker

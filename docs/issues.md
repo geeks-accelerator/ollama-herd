@@ -36,7 +36,9 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
-### The dashboard's throughput tiles barely move during a burst `OPEN` (found 2026-11-22, run 6)
+### The dashboard's throughput tiles barely move during a burst `FIXED` (found 2026-11-22, run 6)
+
+**Fixed (2026-11-22, unreleased).** The figure is labelled as the five-minute average it is, and a "now" line under it shows chunks per second from the change in each queue's `streamed_chunks` (counted by `QueueManager.progress`) between live updates. Not yet filmed against the 96-request batch.
 
 **Evidence.** Filming herd's own Overview while 96 requests ran on two M4 Macs (about 510 tok/s measured from the batch, ~450 on the activity chart): the "Tokens / s" tile read 0 at 40 s and 23-39 afterwards, the per-node cards 11-20, and "Requests / min" 0.2 mid-batch.
 
@@ -44,7 +46,9 @@ all three.** Re-triage before planning work off this list.
 
 **Proposed fix.** Feed the "now" figures from live state instead of finished traces: the queue manager already knows what is streaming, and the proxy counts tokens as they arrive. Keep the five-minute averages, labelled as such, beside them. Measure against the same 96-request batch.
 
-### The rebalancer moves a backlog to a newly free node at 0.6 requests per second `OPEN` (found 2026-11-22, run 6)
+### The rebalancer moves a backlog to a newly free node at 0.6 requests per second `FIXED` (found 2026-11-22, run 6)
+
+**Fixed (2026-11-22, unreleased, `4bfc44c`).** Each move is sized by the target's free slots (`QueueManager.free_slots`), capped by what is pending; `rebalance_max_per_cycle` is deleted. Unit-tested; the rejoin-mid-batch run on the M4s is still to be repeated.
 
 **Evidence.** 96 requests queued on s1 with s2 out of the herd; s2 rejoined 10 s in. The rebalancer moved 3 requests every 5 s, so s2 served 33 of the 96 and the batch took 71.3 s, against 52-58 s when both Macs took the batch from the start. A free M4 completes about 2.6 of these requests per second.
 
@@ -62,7 +66,9 @@ all three.** Re-triage before planning work off this list.
 
 **Fixed (2026-11-22, unreleased).** `server/backend_failures.py`: three consecutive pre-first-chunk failures the retry blames on the node mark that `node:model` failing for 30 s after the last one (-100 in the scorer, both `score_request` and auto-routing; never an elimination), one request probes it after that, any success clears it. `backend_failing` (from traces, `get_failing_backends`) names it on the board. Verified on the M4 pair with a stand-in returning `500 Compute error.` instantly while herd-node reported the model loaded: with s1 kept busy, 8 of 10 requests went straight to s1, 2 tried s2 (before the threshold, and the post-cool-off probe), and the check fired WARNING. **Note** that a second real out-of-memory on s2 the same afternoon did *not* wedge: Ollama 0.40.13 logged "runtime OOM detected; expiring loaded models" and restarted the runner, so the morning's permanent state is one of two outcomes, not the rule.
 
-### Session affinity gives up a conversation without weighing what re-reading it costs `OPEN` (found 2026-11-22, run 6)
+### Session affinity gives up a conversation without weighing what re-reading it costs `FIXED` (found 2026-11-22, run 6)
+
+**Fixed (2026-11-22, unreleased, `e42e3a9`).** The bonus fades by `reread / (reread + wait)` in seconds: re-reading from each node's measured cold prefill rate (Ollama's `prompt_eval_duration`, now kept), waiting from the measured per-request latency. Unit-tested; the eight-conversation run on the M4s (turn-2 TTFT, share that stays) is still to be repeated.
 
 **Evidence.** Eight conversations on two M4 Macs, `qwen2.5:7b`, each opening with a ~1,500-token report and asking four follow-ups (`session:` tags). Follow-ups on the conversation's Mac answered in 0.5 s median; the opening turn, which reads the report, in 12-14 s. In one run two conversations had turn 2 sent to the other Mac while their own was busy, and paid 8.9 s and 11.1 s to re-read the report there: 77% of follow-ups stayed home in that run, 100% in the recorded one.
 
@@ -70,7 +76,9 @@ all three.** Re-triage before planning work off this list.
 
 **Proposed fix.** Scale the bonus, or the depth at which it fades, by the estimated re-prefill time: the request's token estimate over the candidate node's measured prefill rate (the latency store has TTFT per node and model). Measure on the M4 pair before and after: turn-2 TTFT median and p95, and the share of follow-ups that stay.
 
-### The startup preloader loaded a third model onto a busy 24 GB Mac and sent it into swap `OPEN` (found 2026-11-22, run 6)
+### The startup preloader loaded a third model onto a busy 24 GB Mac and sent it into swap `FIXED` (found 2026-11-22, run 6)
+
+**Fixed (2026-11-22, unreleased).** Nodes report Metal's working set (`b1bd1a4`); `NodeState.fit_budget` caps every fit decision by it, and the preloader gates on the budget before eviction (`e9d0054`); resident traffic avoids a node in critical pressure while a healthy node holds the model (`b1bd1a4`). Note `87e3bf0`, which let a full Mac evict to load, made small-Mac loads more frequent while the estimate was still wrong. Not yet replayed on the M4s; the working-set value read here (107.5 of 128 GiB) still has to be compared with Ollama's own `Metal total` line on a 24 GB M4.
 
 **Severity:** high on small Macs. Right after a router restart (05:03 UTC) the preloader logged
 `Pre-warmed gemma3:12b on s1` (the night's most-used model) while the soak then loaded
@@ -100,7 +108,9 @@ server had just closed. An embedding is idempotent, so the router can retry once
 `ReadError` / `RemoteProtocolError` before the first byte, on the same node or another,
 as chat requests already do (`StreamingProxy`'s retry before the first chunk).
 
-### A pre-warm that needs an eviction blocks every load on its node for up to 15 minutes `OPEN` (found 2026-11-22, run 6)
+### A pre-warm that needs an eviction blocks every load on its node for up to 15 minutes `FIXED` (found 2026-11-22, run 6)
+
+**Fixed (2026-11-22, unreleased, `923b7c4`, `e9d0054`).** A pre-warm counts as an in-flight load while it runs (`QueueManager.loading`), so the node stops pinning what it may evict, and one that would have to evict a busy model with no idle room is not sent (`speculative_load_allowed`); cancelling would not help, as Ollama keeps waiting after the client leaves. The guard is as good as the fit estimate, which `fit_budget` now bases on Metal's working set. Seed 13 on the M4s is still to be repeated.
 
 **Severity:** high on small Macs under mixed traffic. Run 6, mixed models on two 24 GB M4s
 (router `87e3bf0`, seed 13): at 03:25:53 the rebalancer logged `Pre-warm triggered:
@@ -175,7 +185,9 @@ the advice that works.
 and `/api/pull` and the embed-image 404 both name it (a 400, no ERROR). Still open: fetching
 it from the router without a shell on the node, and serving it without a restart.
 
-### A retried request runs outside its new node's worker limit `OPEN` (found 2026-11-21)
+### A retried request runs outside its new node's worker limit `FIXED` (found 2026-11-21)
+
+**Fixed (2026-11-22, unreleased, `923b7c4`).** `QueueManager.admit` replaces `move_in_flight`: the retried request enters the new node's queue through `pending`, and a worker applies the load hold and holds a slot until it settles.
 
 **What remains after `70b4cd8`.** When a request fails on one node before its first chunk
 and `_stream_with_retry` sends it to another, `QueueManager.move_in_flight` now moves it
