@@ -361,3 +361,20 @@ def test_committed_manifests_are_well_formed(name):
         assert "cells" in spec or spec["router"]
         for ev in spec.get("events", []):
             fs.parse_time(ev["at"])
+
+
+def test_in_window_throughput_leaves_out_requests_that_finished_late():
+    """Run 6: past saturation, requests still running when the 120 s window
+    closed were counted in tokens_per_sec, which then rose with concurrency on
+    the same two Macs (66.7 at 16, 93.3 at 32).  The in-window figure counts
+    only what finished inside the load phase."""
+    duration_ms = 240_000.0
+    inside = req(started=1_000.0, tokens=200)  # ends at 7 s
+    late = req(started=duration_ms - 2_000.0, tokens=300)  # ends 4 s after the window
+    embed = req(kind="embed", started=0.0, tokens=50)  # not chat
+    failed = req(ok=False, started=0.0)
+    r = report([inside, late, embed, failed], tps=999.0)
+    assert fs.tokens_per_sec_in_window(r) == round(200 / 240.0, 1)
+    out = fs.arm(r, "herd", PRICES)
+    assert out["chat_tokens_per_sec"] == 999.0  # the old figure is kept, comparable
+    assert out["chat_tokens_per_sec_in_window"] == round(200 / 240.0, 1)

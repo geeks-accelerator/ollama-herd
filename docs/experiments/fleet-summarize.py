@@ -56,6 +56,28 @@ REQUEST_KEYS = (
 )
 
 
+def tokens_per_sec_in_window(report: dict):
+    """Chat tokens per second from the requests that finished inside the load
+    phase.  ``tokens_per_sec`` divides every completed token by the window,
+    including requests still running when it closed, so past saturation it
+    keeps rising with concurrency (run 6: 66.7 at 16 and 93.3 at 32 on the
+    same two Macs, where the slowest first tokens came at 151 s of a 120 s
+    cell).  Compare across concurrencies with this one.
+    """
+    duration = report.get("duration_s")
+    if not duration:
+        return None
+    end_ms = duration * 1000.0
+    toks = sum(
+        q.get("completion_tokens") or 0
+        for q in report["requests"]
+        if q["success"]
+        and q.get("model_type", "llm") in CHAT_WORKLOADS
+        and q["started_ms"] + (q.get("latency_ms") or 0) <= end_ms
+    )
+    return round(toks / duration, 1)
+
+
 def is_number(v) -> bool:
     return isinstance(v, int | float) and not isinstance(v, bool)
 
@@ -172,6 +194,7 @@ def arm(report: dict, router: str, prices: dict, keep_requests: bool = False) ->
         "answered": len(ok),
         "failed": len(requests) - len(ok),
         "chat_tokens_per_sec": report["tokens_per_sec"],
+        "chat_tokens_per_sec_in_window": tokens_per_sec_in_window(report),
         "usd_per_hour": usd,
         "tokens_per_usd": tokens_per_usd(report["tokens_per_sec"], usd),
         **ttft_fields(requests),
@@ -242,6 +265,7 @@ def scaling_rep(report: dict, prices: dict) -> dict:
     return {
         "rep": report["manifest"].get("repetition"),
         "tokens_per_sec": report["tokens_per_sec"],
+        "tokens_per_sec_in_window": tokens_per_sec_in_window(report),
         "usd_per_hour": usd,
         "tokens_per_usd": tokens_per_usd(report["tokens_per_sec"], usd),
         "requests": report["total_requests"],
