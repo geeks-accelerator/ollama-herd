@@ -793,6 +793,13 @@ class StreamingProxy:
                 # tried three nodes says 2, not 3.
                 excluded_nodes.append(current_node)
                 entry.excluded_nodes = excluded_nodes
+                # Remembered across requests: excluding the node only for this
+                # one left every next request trying it first (backend_failures).
+                failures = getattr(scorer, "failures", None)
+                if failures is not None:
+                    failures.record_failure(
+                        current_node, entry.request.model, describe_exception(e)
+                    )
 
                 logger.warning(
                     f"Node {current_node} failed for {entry.request.request_id[:8]} "
@@ -875,6 +882,9 @@ class StreamingProxy:
                 )
                 continue
             else:
+                failures = getattr(scorer, "failures", None)
+                if failures is not None:
+                    failures.record_success(current_node, entry.request.model)
                 self._finish_stream(
                     entry,
                     current_node,

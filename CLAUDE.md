@@ -18,7 +18,7 @@ The `--extra embedding` now also installs `fastembed` for the **native text embe
 
 ```bash
 uv sync --extra dev              # install test deps (first time only)
-uv run pytest                    # run all 2712 tests (~25s)
+uv run pytest                    # run all 2760 tests (~25s)
 uv run pytest tests/test_server/ # run server tests only
 uv run pytest tests/test_models/ # run model tests only
 uv run ruff check src/           # lint
@@ -297,7 +297,7 @@ macOS-only features (gracefully disabled elsewhere): meeting detection, mflux/Di
 | `server/hardware_lookup.py` | Chip → memory bandwidth table (Apple Silicon + discrete GPUs) powering device-aware scoring |
 | `server/queue_manager.py` | Per `node:model` queues with dynamic concurrency + zombie reaper |
 | `server/streaming.py` | httpx proxy to Ollama + NDJSON↔SSE + auto-retry + context protection + thinking model inflate |
-| `server/health_engine.py` | 56 health checks (offline, degraded, memory, KV bloat, context waste, thrashing, timeouts, errors, retries, disconnects, streams, version, protection, zombies, connection failures, priority models) |
+| `server/health_engine.py` | 57 health checks (offline, degraded, memory, KV bloat, context waste, thrashing, timeouts, errors, retries, disconnects, streams, version, protection, zombies, connection failures, priority models) |
 | `server/context_optimizer.py` | Dynamic num_ctx: analyzes token usage, auto-calculates optimal context, queues Ollama restarts via heartbeat commands |
 | `server/benchmark_engine.py` | Benchmark core: fleet discovery, multimodal request gen (LLM + embed + image), report building |
 | `server/benchmark_runner.py` | Server-side runner: smart mode (fill memory from disk/catalog), progress tracking, model type selection |
@@ -592,7 +592,7 @@ Silent failures are dishonest. Fail fast, fail loud.
   Refresh **all four locations**, not just CLAUDE.md — the skills are where the drift hides. **`./scripts/health.sh` now checks all of them** (`scripts/check_count_quotes.py`, since 2026-11-19) and lists every stale quote as `file:line`; it used to read only the test count in CLAUDE.md and README, which is how three releases shipped with the rest stale. It skips the release-history bullets below, so keep historical numbers inside those bullets or spelled out in words.
 
 - **Three checks added 2026-10-11** — `duplicate_runners` (one name, two digests, one node; rates by reclaimable GB and carries the two-call `ollama stop` remediation), `mlx_routing_disabled` (a node running `mlx_lm.server` while the router has `FLEET_MLX_ENABLED` unset — nothing surfaced it, because `mlx_backend_active` fires INFO on that same state), and `mlx_requests_unservable` (traffic for an `mlx:` model no healthy server hosts). Runbooks for all three plus the rate-check sample floor are in `docs/troubleshooting.md`.
-- **Health:** 56 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
+- **Health:** 57 distinct checks (count via `grep -oE 'check_id="[^"]+"' src/fleet_manager/server/health_engine.py | sort -u | wc -l`). Monitor: `curl http://localhost:11435/dashboard/api/health`
 
 ## Conventions
 

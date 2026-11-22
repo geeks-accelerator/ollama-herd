@@ -1432,6 +1432,70 @@ class TraceStore:
                 row["last_ts"] = max(row["last_ts"], ts)
         return out
 
+    # Categories that describe the request, not the backend: a node answering
+    # these is working.  Everything else that fails before the first token
+    # counts against the backend in ``get_failing_backends``.
+    CLIENT_ERROR_CATEGORIES = frozenset(
+        {"bad_request", "context_too_long", "model_not_found", "permission_error"}
+    )
+
+    async def get_failing_backends(
+        self, lookback_s: int = 300, min_failures: int = 3
+    ) -> list[dict]:
+        """``node:model`` pairs whose recent attempts all failed before any output.
+
+        Counts the attempts since the pair's last completed request in the
+        window: ``retried`` rows (the retry loop writes them only for failures
+        it blames on the node) and ``failed`` rows with no first token whose
+        error is not a client error.  A pair with ``min_failures`` such attempts
+        and no success after them is failing now.  The scorer has its own,
+        faster memory of the same thing (``BackendFailureMemory``); this is the
+        durable view the health check reads.
+        """
+        from fleet_manager.common.errors import categorize_error
+
+        if not self._db:
+            return []
+        since = time.time() - lookback_s
+        cursor = await self._read_db.execute(
+            """
+            SELECT node_id, model, MAX(timestamp) FROM request_traces
+            WHERE timestamp >= ? AND status = 'completed' AND node_id != ''
+            GROUP BY node_id, model
+            """,
+            (since,),
+        )
+        last_ok = {(n, m): ts for n, m, ts in await cursor.fetchall()}
+        cursor = await self._read_db.execute(
+            """
+            SELECT node_id, model, status, error_message, timestamp FROM request_traces
+            WHERE timestamp >= ? AND status IN ('retried', 'failed') AND node_id != ''
+              AND time_to_first_token_ms IS NULL
+            ORDER BY timestamp
+            """,
+            (since,),
+        )
+        found: dict[tuple[str, str], dict] = {}
+        for node_id, model, status, message, ts in await cursor.fetchall():
+            if ts <= last_ok.get((node_id, model), 0.0):
+                continue
+            if status == "failed" and categorize_error(message) in self.CLIENT_ERROR_CATEGORIES:
+                continue
+            row = found.setdefault(
+                (node_id, model),
+                {
+                    "node_id": node_id,
+                    "model": model,
+                    "failures": 0,
+                    "last_ts": 0.0,
+                    "last_error": "",
+                },
+            )
+            row["failures"] += 1
+            row["last_ts"] = ts
+            row["last_error"] = message or ""
+        return [r for r in found.values() if r["failures"] >= min_failures]
+
     # -- Benchmark runs --
 
     async def save_benchmark_run(self, data: dict):

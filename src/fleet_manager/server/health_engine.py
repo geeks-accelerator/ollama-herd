@@ -261,6 +261,9 @@ class HealthEngine:
             recommendations.extend(
                 self._check_tools_unsupported(backend_failures["tools_unsupported"])
             )
+            recommendations.extend(
+                self._check_backend_failing(await trace_store.get_failing_backends())
+            )
 
             # Context waste analysis
             mlx_counts = await trace_store.get_request_count_by_model(seconds=86400)
@@ -2233,6 +2236,49 @@ class HealthEngine:
                     ),
                     node_id=node_id,
                     data={"models": models, "failed": failed, "retried": retried},
+                )
+            )
+        return recs
+
+    def _check_backend_failing(self, failing) -> list[Recommendation]:
+        """A node's backend failed every recent request for a model before any output.
+
+        From traces (``get_failing_backends``): three or more attempts in the
+        last five minutes ended before the first token, with no success after
+        them.  Run 6 met it as a Metal out-of-memory on a 24 GB M4: Ollama's
+        ``llama-server`` logged "backend is in error state ... recreate the
+        backend to recover" and failed everything in milliseconds while
+        ``/api/ps`` still listed the model, so the node looked idle and healthy.
+        herd routes around it (``BackendFailureMemory``) but cannot repair it.
+
+        What does it fire on when everything is working?  Nothing: a working
+        backend completes requests, and one success clears it.  A node that is
+        down is not this check's job either -- connection failures stop its
+        heartbeat and ``node_offline`` names it.
+        """
+        recs = []
+        for row in sorted(failing, key=lambda r: (r["node_id"], r["model"])):
+            node_id, model = row["node_id"], row["model"]
+            recs.append(
+                Recommendation(
+                    check_id="backend_failing",
+                    severity=Severity.WARNING,
+                    title=f"{node_id} fails every request for {model}",
+                    description=(
+                        f"The last {row['failures']} attempts to run {model} on {node_id} "
+                        "failed before producing any output, with no success since. herd "
+                        "is sending that model's requests to other nodes. Last error: "
+                        f"{row['last_error'][:200] or 'none recorded'}."
+                    ),
+                    fix=(
+                        f"Restart Ollama on {node_id}. Its runner for {model} does not "
+                        "recover by itself; Ollama's log usually names the cause (on a Mac, "
+                        "'Insufficient Memory' from Metal means the loaded models plus their "
+                        "context exceed the GPU's memory: unload one or lower "
+                        "OLLAMA_CONTEXT_LENGTH)."
+                    ),
+                    node_id=node_id,
+                    data=row,
                 )
             )
         return recs

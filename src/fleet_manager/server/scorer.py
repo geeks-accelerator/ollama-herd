@@ -8,6 +8,7 @@ import time
 from fleet_manager.models.config import ServerSettings
 from fleet_manager.models.node import MemoryPressure, NodeState, NodeStatus
 from fleet_manager.models.request import RoutingResult
+from fleet_manager.server.backend_failures import BackendFailureMemory
 from fleet_manager.server.model_knowledge import classify_model, lookup_model
 from fleet_manager.server.registry import NodeRegistry
 from fleet_manager.server.serializers import (
@@ -36,6 +37,9 @@ class ScoringEngine:
         # is what every existing caller that doesn't pass one gets, so the
         # scorer behaves exactly as before unless a session is threaded through.
         self._sessions = sessions
+        # Backends that keep failing before their first chunk.  Written by the
+        # retry loop in StreamingProxy, read here as a penalty.
+        self.failures = BackendFailureMemory()
 
     def score_request(
         self,
@@ -107,6 +111,9 @@ class ScoringEngine:
             )
             breakdown["node_load"] = s3o
 
+            failing = self._score_failing(node, model)
+            breakdown["failing"] = failing
+
             s4 = self._score_wait_time(node, model, depth)
             breakdown["wait_time"] = s4
 
@@ -126,7 +133,7 @@ class ScoringEngine:
             s8p = 0.0 if s8 else self._score_prefix_affinity(node, prefix_key, depth)
             breakdown["prefix_affinity"] = s8p
 
-            total = s0 + joins + s1 + s2 + s3 + s3o + s4 + s5 + s6 + s7 + s8 + s8p
+            total = s0 + joins + s1 + s2 + s3 + s3o + failing + s4 + s5 + s6 + s7 + s8 + s8p
             breakdown["total"] = total
 
             results.append(
@@ -179,6 +186,11 @@ class ScoringEngine:
                 + (
                     f", session={winner.scores_breakdown['session_affinity']:.0f}"
                     if winner.scores_breakdown.get("session_affinity", 0)
+                    else ""
+                )
+                + (
+                    f", failing={winner.scores_breakdown['failing']:.0f}"
+                    if winner.scores_breakdown.get("failing", 0)
                     else ""
                 )
                 + ")"
@@ -239,6 +251,7 @@ class ScoringEngine:
                     "role_affinity": self._score_role_affinity(node, model),
                     "availability_trend": self._score_availability_trend(node),
                     "context_fit": self._score_context_fit(node, model, estimated_tokens),
+                    "failing": self._score_failing(node, model),
                 }
 
                 total = sum(breakdown.values())
@@ -579,6 +592,17 @@ class ScoringEngine:
     # correct: a warm prefix cache is worth a lot, but not worth routing into a
     # node that is about to throttle.
     SESSION_AFFINITY_BONUS = 20.0
+
+    # A backend failing every request before its first chunk (see
+    # backend_failures).  Larger than any sum of the positive signals, so any
+    # working node wins; a penalty, not an elimination, so a failing node that
+    # is the only one still gets the request.
+    FAILING_BACKEND_PENALTY = 100.0
+
+    def _score_failing(self, node: NodeState, model: str) -> float:
+        if self.failures.is_failing(node.node_id, model):
+            return -self.FAILING_BACKEND_PENALTY
+        return 0.0
 
     # Other models' queued and in-flight requests on a node count at half the
     # rate of this model's own (and through the same cap, so at most -15):

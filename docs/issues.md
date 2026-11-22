@@ -36,13 +36,15 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
-### A node that fails instantly looks idle, so it keeps winning the first attempt `OPEN` (found 2026-11-22, run 6)
+### A node that fails instantly looks idle, so it keeps winning the first attempt `FIXED` (found 2026-11-22, run 6)
 
 **Evidence.** A 24 GB M4 (s2) holding `gpt-oss:20b` (13 GB) and a leftover `qwen2.5:1.5b` (4.9 GB at a 32K context) overran Metal's working set. Ollama's `llama-server` logged `kIOGPUCommandBufferCallbackErrorOutOfMemory`, then "backend is in error state from a previous command buffer failure - recreate the backend to recover", and from then on answered every request with an error in milliseconds while `/api/ps` still listed both models at 100% GPU. herd's empty-stream retry (`2b9ff02`) moved each request to s1 correctly — 29 attempts on s2 marked `retried`, none reached a client as a failure — but every *new* request still went to s2 first: it had nothing queued, because it failed everything at once. All four coding agents ended up sharing s1 and waited 85-326 s for a first token.
 
 **Cause.** Scoring reads queue depth and latency history; a backend that rejects instantly has an empty queue and no slow traces, so it scores as the idlest node. Nothing remembers that this `node:model` failed the last N attempts.
 
 **Proposed fix.** A short-lived penalty (or elimination) for a `node:model` whose recent attempts ended `retried`/`failed` with no output, cleared by a success or after a cool-off; plus a health check naming the node, since the backend needs a restart (it does not recover on its own). Restarting Ollama on s2 cleared it.
+
+**Fixed (2026-11-22, unreleased).** `server/backend_failures.py`: three consecutive pre-first-chunk failures the retry blames on the node mark that `node:model` failing for 30 s after the last one (-100 in the scorer, both `score_request` and auto-routing; never an elimination), one request probes it after that, any success clears it. `backend_failing` (from traces, `get_failing_backends`) names it on the board. Verified on the M4 pair with a stand-in returning `500 Compute error.` instantly while herd-node reported the model loaded: with s1 kept busy, 8 of 10 requests went straight to s1, 2 tried s2 (before the threshold, and the post-cool-off probe), and the check fired WARNING. **Note** that a second real out-of-memory on s2 the same afternoon did *not* wedge: Ollama 0.40.13 logged "runtime OOM detected; expiring loaded models" and restarted the runner, so the morning's permanent state is one of two outcomes, not the rule.
 
 ### Session affinity gives up a conversation without weighing what re-reading it costs `OPEN` (found 2026-11-22, run 6)
 
