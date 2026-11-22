@@ -1974,3 +1974,32 @@ rather than trusting the previous step's exit code.** The three interruptions of
 IP change, a launchd race, a self-matching `pkill`) were all in the harness around herd, and
 each was found by a watcher that reported per-arm request counts and stalls, not by reading
 logs afterwards.
+
+## 2026-11-22: Filming the herd at full speed, and two ways to measure half of it (run 6)
+
+**Evidence.** Two M4 Macs (24 GB, `OLLAMA_NUM_PARALLEL=8`), `qwen2.5:1.5b`, router on one of the
+Macs, a browser page streaming 16 requests at once. Decode per stream, measured from the token
+timestamps: 56-58 tok/s on both Macs through the router when all 16 start together, an even 8/8
+split, first token 0.1-0.2 s, about 900 tok/s for the pair, and the same 56 per stream from each
+Mac's own Ollama. Two things measured half of that, and neither was herd:
+
+1. **One SSH tunnel from a laptop.** The same 16 streams through a single `ssh -L` read 28 tok/s
+   on one Mac's eight; through four tunnels, 52-56 on both. A single tunnel multiplexes every
+   stream onto one TCP connection.
+2. **Staggered arrivals.** Each worker sending its next request as the last one finishes (the
+   shape of real traffic and of the page) gave 279 tok/s on one Mac straight at its Ollama with 8
+   workers, against 448 when the 8 start together; through the router with 16 workers on two
+   Macs, 519. So herd cost nothing, and Ollama's own aggregate drops by about a third once new
+   prompts keep landing in the middle of other streams' decoding. Longer answers (600 tokens) and
+   a 0.25 s pause between requests held the page at about 660-790 tok/s.
+
+The recordings (16 tiles, each colored by the `X-Fleet-Node` of its own response, drain and
+rejoin driven by `launchctl` and shown from `/fleet/status`): drain and rejoin, 76,838 tokens in
+125 s with 0 failed; one Mac then two, 400 → 683 tok/s, 0 failed. Captured with Chrome's
+screencast (JPEG quality 92) and encoded to H.264; Playwright's built-in recorder is about
+1 Mbps VP8 and blurs text, which is part of why the earlier run 6 videos read as dull.
+
+**Insight: before attributing a throughput gap to herd, measure the same requests at the backend
+and from the router's own machine.** Both halvings above looked like routing cost from the
+client, and both vanished one hop closer. And quote a burst figure and a steady-state figure
+separately: they differ by a third on the same hardware, and neither is wrong.
