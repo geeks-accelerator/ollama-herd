@@ -32,7 +32,6 @@ class ServerSettings(BaseSettings):
     # Rebalancer
     rebalance_interval: float = 5.0
     rebalance_threshold: int = 4
-    rebalance_max_per_cycle: int = 3
 
     # Pre-warm
     pre_warm_threshold: int = 3

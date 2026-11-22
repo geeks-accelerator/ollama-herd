@@ -1873,7 +1873,7 @@ Current router configuration, toggleable settings, and registered node list with
     "server": { "host": "Neons-Mac-Studio", "port": 11435, "data_dir": "~/.fleet-manager", "max_retries": 2 },
     "heartbeat": { "heartbeat_interval": 5.0, "heartbeat_timeout": 15.0, "heartbeat_offline": 30.0 },
     "scoring": { "score_model_hot": 50.0, "score_model_warm": 30.0, "..." : "..." },
-    "rebalancer": { "rebalance_interval": 5.0, "rebalance_threshold": 4, "rebalance_max_per_cycle": 3 },
+    "rebalancer": { "rebalance_interval": 5.0, "rebalance_threshold": 4 },
     "pre_warm": { "pre_warm_threshold": 3, "pre_warm_min_availability": 0.6 },
     "auto_pull_config": { "auto_pull_timeout": 300.0 },
     "context_protection": { "context_protection": "strip" }

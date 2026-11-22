@@ -614,6 +614,16 @@ class QueueManager:
             return True  # nothing busy to wait for
         return self._idle_room_for(node, node.node_id, entry.request.model, depths)
 
+    def free_slots(self, queue_key: str) -> int:
+        """How many more requests ``queue_key``'s node would start for its
+        model right now: its concurrency less what is in flight, queued or
+        held there.  The rebalancer moves backlog up to this, so a node that
+        frees up takes as much as it can serve at once, never more."""
+        node_id, _, model = queue_key.partition(":")
+        q = self._queues.get(queue_key)
+        busy = len(q.in_flight) + q.pending.qsize() + q.held if q else 0
+        return max(0, self._compute_queue_concurrency(node_id, model) - busy)
+
     def load_pending_on(self, node_id: str, model: str) -> bool:
         """Is a request for another model on ``node_id`` at the node and still
         waiting for its first token?  It may be a load waiting for a resident

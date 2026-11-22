@@ -28,21 +28,20 @@ import pytest
 from fleet_manager.server.rebalancer import Rebalancer
 
 
-def _settings(pre_warm_threshold=3, rebalance_threshold=5, rebalance_max_per_cycle=10):
+def _settings(pre_warm_threshold=3, rebalance_threshold=5, pre_warm_min_availability=0.6):
     return SimpleNamespace(
         rebalance_interval=1,
         pre_warm_threshold=pre_warm_threshold,
         rebalance_threshold=rebalance_threshold,
-        rebalance_max_per_cycle=rebalance_max_per_cycle,
+        pre_warm_min_availability=pre_warm_min_availability,
     )
 
 
-def _node(node_id, loaded=()):
+def _node(node_id, loaded=(), availability=None):
     return SimpleNamespace(
         node_id=node_id,
-        ollama=SimpleNamespace(
-            models_loaded=[SimpleNamespace(name=m) for m in loaded]
-        ),
+        ollama=SimpleNamespace(models_loaded=[SimpleNamespace(name=m) for m in loaded]),
+        capacity=None if availability is None else SimpleNamespace(availability_score=availability),
     )
 
 
@@ -55,8 +54,10 @@ def _score(node_id, model, eviction=0.0):
     )
 
 
-def _rebalancer(*, queue_info, scores, nodes, settings=None, depths=None):
+def _rebalancer(*, queue_info, scores, nodes, settings=None, depths=None, free=None):
     qm = MagicMock()
+    # Free slots per target queue key (QueueManager.free_slots); 4 by default.
+    qm.free_slots = MagicMock(side_effect=lambda key: (free or {}).get(key, 4))
     qm.get_queue_info = MagicMock(return_value=queue_info)
     qm.get_queue_depths = MagicMock(return_value=depths or {})
     qm.move_pending = AsyncMock(return_value=0)
@@ -70,8 +71,7 @@ def _rebalancer(*, queue_info, scores, nodes, settings=None, depths=None):
 
 
 def _qinfo(key, model, node_id, pending, in_flight=0):
-    return {key: {"model": model, "node_id": node_id,
-                  "pending": pending, "in_flight": in_flight}}
+    return {key: {"model": model, "node_id": node_id, "pending": pending, "in_flight": in_flight}}
 
 
 class TestPreWarmDecision:
@@ -83,7 +83,7 @@ class TestPreWarmDecision:
             nodes={"a": _node("a", ["m"]), "b": _node("b", [])},
         )
         await r._check_pre_warm()
-        await asyncio.sleep(0.05)      # the warm runs as a logged task
+        await asyncio.sleep(0.05)  # the warm runs as a logged task
         proxy.pre_warm.assert_awaited_once()
         assert proxy.pre_warm.await_args.args[0] == "b", "must warm the runner-up"
 
@@ -167,40 +167,64 @@ class TestPreWarmDecision:
         assert "b:m" not in r._pre_warm_locks
 
 
+class TestPreWarmAvailability:
+    async def test_never_warms_a_machine_whose_owner_is_busy(self):
+        """pre_warm_min_availability was documented and read by nothing."""
+        r, _qm, proxy = _rebalancer(
+            queue_info=_qinfo("a:m", "m", "a", pending=5),
+            scores=[_score("a", "m"), _score("b", "m")],
+            nodes={"a": _node("a", ["m"]), "b": _node("b", [], availability=0.3)},
+        )
+        await r._check_pre_warm()
+        await asyncio.sleep(0)
+        proxy.pre_warm.assert_not_awaited()
+
+
 class TestRebalanceDecision:
     async def test_moves_only_to_a_node_with_the_model_hot(self):
         """Otherwise it trades a queue wait for a cold load."""
         r, qm, _p = _rebalancer(
             queue_info=_qinfo("a:m", "m", "a", pending=10),
             scores=[_score("a", "m"), _score("b", "m")],
-            nodes={"a": _node("a", ["m"]), "b": _node("b", [])},   # b is cold
+            nodes={"a": _node("a", ["m"]), "b": _node("b", [])},  # b is cold
             depths={"b:m": 0},
         )
         await r._check_rebalance()
         qm.move_pending.assert_not_awaited()
 
-    async def test_moves_half_capped_by_max_per_cycle(self):
+    async def test_moves_as_many_as_the_target_has_free_slots(self):
+        """B5: a fixed few per tick drained a backlog onto a node that had just
+        come back at 0.6 requests a second while it could take 2.6 (run 6)."""
         r, qm, _p = _rebalancer(
             queue_info=_qinfo("a:m", "m", "a", pending=30),
             scores=[_score("a", "m"), _score("b", "m")],
             nodes={"a": _node("a", ["m"]), "b": _node("b", ["m"])},
-            depths={"b:m": 0},
-            settings=_settings(rebalance_max_per_cycle=4),
+            free={"b:m": 4},
         )
         await r._check_rebalance()
         qm.move_pending.assert_awaited_once()
-        assert qm.move_pending.await_args.args[2] == 4, "capped at max_per_cycle"
+        assert qm.move_pending.await_args.args[2] == 4, "every free slot, not a fixed cap"
 
-    async def test_moves_half_when_under_the_cap(self):
+    async def test_never_more_than_is_pending(self):
         r, qm, _p = _rebalancer(
-            queue_info=_qinfo("a:m", "m", "a", pending=8),
+            queue_info=_qinfo("a:m", "m", "a", pending=5),
             scores=[_score("a", "m"), _score("b", "m")],
             nodes={"a": _node("a", ["m"]), "b": _node("b", ["m"])},
-            depths={"b:m": 0},
-            settings=_settings(rebalance_max_per_cycle=100),
+            settings=_settings(rebalance_threshold=5),
+            free={"b:m": 8},
         )
         await r._check_rebalance()
-        assert qm.move_pending.await_args.args[2] == 4   # 8 // 2
+        assert qm.move_pending.await_args.args[2] == 5
+
+    async def test_a_target_with_no_free_slot_gets_nothing(self):
+        r, qm, _p = _rebalancer(
+            queue_info=_qinfo("a:m", "m", "a", pending=10),
+            scores=[_score("a", "m"), _score("b", "m")],
+            nodes={"a": _node("a", ["m"]), "b": _node("b", ["m"])},
+            free={"b:m": 0},
+        )
+        await r._check_rebalance()
+        qm.move_pending.assert_not_awaited()
 
     async def test_never_moves_to_itself(self):
         r, qm, _p = _rebalancer(
@@ -217,8 +241,8 @@ class TestRebalanceDecision:
             queue_info=_qinfo("a:m", "m", "a", pending=10),
             scores=[_score("a", "m"), _score("b", "m")],
             nodes={"a": _node("a", ["m"]), "b": _node("b", ["m"])},
-            depths={"b:m": 99},
             settings=_settings(rebalance_threshold=5),
+            free={"b:m": 0},  # its own queue fills every slot
         )
         await r._check_rebalance()
         qm.move_pending.assert_not_awaited()
@@ -249,9 +273,7 @@ class TestRebalanceDecision:
 class TestTheLoopSurvivesErrors:
     async def test_an_exception_in_one_pass_does_not_kill_the_loop(self):
         """`run()` catches per-iteration, or one bad cycle ends rebalancing forever."""
-        r, _qm, _p = _rebalancer(
-            queue_info={}, scores=[], nodes={}, settings=_settings()
-        )
+        r, _qm, _p = _rebalancer(queue_info={}, scores=[], nodes={}, settings=_settings())
         r._check_pre_warm = AsyncMock(side_effect=RuntimeError("boom"))
         r._check_rebalance = AsyncMock(return_value=None)
         task = asyncio.create_task(r.run())

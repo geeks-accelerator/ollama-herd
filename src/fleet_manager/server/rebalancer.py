@@ -7,6 +7,7 @@ import logging
 
 from fleet_manager.models.config import ServerSettings
 from fleet_manager.server.registry import NodeRegistry
+from fleet_manager.server.serializers import model_resident_on_node
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +63,15 @@ class Rebalancer:
             node = self._registry.get_node(runner_up.node_id)
             if not node or not node.ollama:
                 continue
-            loaded = [m.name for m in node.ollama.models_loaded]
-            if model in loaded:
+            if model_resident_on_node(model, node):
+                continue
+            # A speculative load never goes to a machine whose owner is busy
+            # (capacity learning).  Documented for this, and read by nothing
+            # until 2026-11-22.
+            if (
+                node.capacity
+                and node.capacity.availability_score < self._s.pre_warm_min_availability
+            ):
                 continue
 
             # Trigger pre-warm
@@ -110,24 +118,17 @@ class Rebalancer:
             queue_depths = self._queue_mgr.get_queue_depths()
             results = self._scorer.score_request(model, queue_depths)
 
-            # Find a node that's significantly better than staying in current queue
+            # Move to a node that has the model hot and slots free now, as many
+            # as it has free.  A fixed few per tick drained a backlog onto a
+            # node that had just come back at 0.6 requests a second while it
+            # could take 2.6 (run 6: 33 of 96 served there, 71 s against 52-58).
             for result in results:
                 if result.node_id == source_node:
                     continue
-                # Only move if the target has the model hot and has low queue
-                target_depth = queue_depths.get(result.queue_key, 0)
-                if target_depth >= self._s.rebalance_threshold:
-                    continue
-
                 target_node = self._registry.get_node(result.node_id)
-                if not target_node or not target_node.ollama:
-                    continue
-                loaded = [m.name for m in target_node.ollama.models_loaded]
-                if model not in loaded:
-                    continue  # Only rebalance to nodes with model hot
-
-                # Move pending requests
-                count = min(pending // 2, self._s.rebalance_max_per_cycle)
+                if not target_node or not model_resident_on_node(model, target_node):
+                    continue  # never trade a queue wait for a cold load
+                count = min(self._queue_mgr.free_slots(result.queue_key), pending)
                 if count <= 0:
                     continue
 

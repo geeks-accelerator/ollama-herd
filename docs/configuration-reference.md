@@ -213,7 +213,6 @@ The rebalancer runs continuously, moving pending requests from overloaded queues
 |----------|---------|-------------|
 | `FLEET_REBALANCE_INTERVAL` | `5.0` | Seconds between rebalancer scans |
 | `FLEET_REBALANCE_THRESHOLD` | `4` | Queue depth that triggers rebalancing |
-| `FLEET_REBALANCE_MAX_PER_CYCLE` | `3` | Max requests moved per rebalancer cycle |
 
 ### Auto-Pull
 

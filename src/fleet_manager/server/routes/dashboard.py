@@ -1355,7 +1355,6 @@ async def dashboard_settings_data(request: Request):
         "rebalancer": {
             "rebalance_interval": settings.rebalance_interval,
             "rebalance_threshold": settings.rebalance_threshold,
-            "rebalance_max_per_cycle": settings.rebalance_max_per_cycle,
         },
         "pre_warm": {
             "pre_warm_threshold": settings.pre_warm_threshold,

@@ -1475,3 +1475,14 @@ class TestPreWarmAsLoad:
     async def test_one_that_evicts_nothing_busy_goes(self):
         assert (await self._qm(busy=False)).speculative_load_allowed(self._warm(evicting=True))
         assert (await self._qm(busy=True)).speculative_load_allowed(self._warm(evicting=False))
+
+
+async def test_free_slots_is_concurrency_less_what_is_already_there():
+    qm = QueueManager()
+    _fixed_concurrency(qm, 4)
+    assert qm.free_slots("m2:phi4:14b") == 4, "an empty node can start four"
+    for _ in range(3):
+        await qm.enqueue(_make_entry(node_id="m2"), _sync_process)
+    await _settle()
+    assert qm.free_slots("m2:phi4:14b") == 1
+    await qm.shutdown()
