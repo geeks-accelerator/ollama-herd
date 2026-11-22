@@ -1226,8 +1226,8 @@ async def test_a_small_idle_model_does_not_cancel_the_room():
 
 
 # ---------------------------------------------------------------------------
-# A retry moves the request to the next node's queue (move_in_flight), so its
-# load counts there and not on the node that failed.
+# A retry moves the request to the next node's queue (admit), so its load
+# counts there and not on the node that failed, inside that node's slots.
 # ---------------------------------------------------------------------------
 
 
@@ -1256,14 +1256,15 @@ async def test_retry_moves_the_request_and_its_load_clock():
     qm, calls, load = await _two_cards()
     rid = load.request.request_id
     load.started_at -= 100
-    assert await qm.move_in_flight("m1:qwen3-coder:30b", "m2:qwen3-coder:30b", rid)
+    assert await qm.admit(load, "m2:qwen3-coder:30b")
     assert load.assigned_node == "m2"
     assert rid not in qm._queues["m1:qwen3-coder:30b"].in_flight
     assert rid in qm._queues["m2:qwen3-coder:30b"].in_flight
     assert time.time() - load.started_at < 5, "the room counts from the new node"
     depths = qm.get_queue_depths()
     assert depths["m1:qwen3-coder:30b"] == 0 and depths["m2:qwen3-coder:30b"] == 1
-    assert not await qm.move_in_flight("m1:qwen3-coder:30b", "m2:qwen3-coder:30b", rid)
+    load.assigned_node = "m1"  # not in m1's queue any more
+    assert not await qm.admit(load, "m2:qwen3-coder:30b")
     await qm.shutdown()
 
 
@@ -1272,7 +1273,7 @@ async def test_retry_moves_the_pin():
     that failed pins again."""
     qm, calls, load = await _two_cards()
     assert not qm.should_pin("m1", "phi4:14b") and qm.should_pin("m2", "gemma3:12b")
-    await qm.move_in_flight("m1:qwen3-coder:30b", "m2:qwen3-coder:30b", load.request.request_id)
+    await qm.admit(load, "m2:qwen3-coder:30b")
     assert qm.should_pin("m1", "phi4:14b"), "no phantom load on the node that failed"
     assert not qm.should_pin("m2", "gemma3:12b"), "a keep_alive would cancel the eviction"
     await qm.shutdown()
@@ -1282,7 +1283,7 @@ async def test_retry_moves_the_hold():
     """New requests for the resident model are held on the node the retry loads
     on, and no longer on the node that failed."""
     qm, calls, load = await _two_cards()
-    await qm.move_in_flight("m1:qwen3-coder:30b", "m2:qwen3-coder:30b", load.request.request_id)
+    await qm.admit(load, "m2:qwen3-coder:30b")
     await qm.enqueue(_make_entry(model="phi4:14b", node_id="m1"), _recording(calls))
     await qm.enqueue(_make_entry(model="gemma3:12b", node_id="m2"), _recording(calls))
     await _wait_a_poll()
@@ -1303,7 +1304,7 @@ async def test_a_moved_request_still_leaves_the_queue_when_its_stream_ends():
     moved = asyncio.Event()
 
     async def gen():
-        await qm.move_in_flight("m1:phi4:14b", "m2:phi4:14b", a.request.request_id)
+        await qm.admit(a, "m2:phi4:14b")
         moved.set()
         yield "chunk"
 
@@ -1393,3 +1394,84 @@ class TestCapacityBackOff:
     async def test_a_cold_model_is_capped_by_the_same_rule(self):
         qm = await self._qm("learned_low")
         assert qm._compute_queue_concurrency("studio", "other:7b") == 1
+
+
+async def test_a_retry_waits_for_a_slot_on_its_new_node():
+    """B4: a retried request runs inside the new node's concurrency.  It used to
+    be placed straight into ``in_flight``, so a node at its limit ran one more
+    request per retry than Ollama admits."""
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+    busy = _make_entry(node_id="m2")
+    await qm.enqueue(busy, _sync_process)
+    retried = _make_entry(node_id="m1")
+    await qm.enqueue(retried, _sync_process)
+    await _settle()
+
+    admitted = asyncio.create_task(qm.admit(retried, "m2:phi4:14b"))
+    await _settle()
+    m2 = qm._queues["m2:phi4:14b"]
+    assert not admitted.done(), "m2's only slot is busy"
+    assert retried.request.request_id not in m2.in_flight
+    assert retried.request.request_id not in qm._queues["m1:phi4:14b"].in_flight
+
+    qm.mark_completed("m2:phi4:14b", busy)
+    assert await asyncio.wait_for(admitted, 2)
+    assert retried.request.request_id in m2.in_flight
+    await qm.shutdown()
+
+
+class TestPreWarmAsLoad:
+    """B2: a pre-warm is a load herd sends itself.  Outside the queue it was
+    invisible, so the node kept pinning and feeding the model it would evict,
+    and Ollama loaded nothing else there for up to fifteen minutes (run 6)."""
+
+    async def _qm(self, busy: bool):
+        from fleet_manager.models.config import ServerSettings
+        from fleet_manager.server.registry import NodeRegistry
+        from fleet_manager.testing.heartbeats import make_heartbeat
+
+        registry = NodeRegistry(ServerSettings())
+        await registry.update_from_heartbeat(
+            make_heartbeat(
+                node_id="s1",
+                memory_total=24.0,
+                memory_used=21.0,
+                loaded_models=[("qwen2.5:7b", 9.0)],
+                available_models=["qwen2.5:7b", "gemma3:12b"],
+                num_parallel=4,
+            )
+        )
+        qm = QueueManager(registry=registry, settings=ServerSettings())
+        if busy:
+            running = _make_entry(model="qwen2.5:7b", node_id="s1")
+            qm._queues["s1:qwen2.5:7b"] = queue_manager.DeviceModelQueue(
+                node_id="s1", model="qwen2.5:7b"
+            )
+            running.last_progress_at = time.time()
+            qm._queues["s1:qwen2.5:7b"].in_flight[running.request.request_id] = running
+        return qm
+
+    def _warm(self, evicting: bool):
+        entry = _make_entry(model="gemma3:12b", node_id="s1")
+        entry.routing_breakdown = {"eviction": -40.0} if evicting else {"eviction": 0.0}
+        return entry
+
+    async def test_while_it_runs_the_node_stops_pinning_what_it_may_evict(self):
+        qm = await self._qm(busy=False)
+        assert qm.should_pin("s1", "qwen2.5:7b")
+        entry = self._warm(evicting=False)
+        with qm.loading(entry):
+            assert qm.load_pending_on("s1", "qwen2.5:7b")
+            assert not qm.should_pin("s1", "qwen2.5:7b")
+        assert qm.should_pin("s1", "qwen2.5:7b")
+        info = qm.get_queue_info()["s1:gemma3:12b"]
+        assert info["completed"] == 0 and info["failed"] == 0, "not a client request"
+
+    async def test_one_that_would_wait_for_a_busy_model_is_not_sent(self):
+        qm = await self._qm(busy=True)
+        assert not qm.speculative_load_allowed(self._warm(evicting=True))
+
+    async def test_one_that_evicts_nothing_busy_goes(self):
+        assert (await self._qm(busy=False)).speculative_load_allowed(self._warm(evicting=True))
+        assert (await self._qm(busy=True)).speculative_load_allowed(self._warm(evicting=False))

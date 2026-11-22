@@ -562,6 +562,58 @@ class QueueManager:
             q.direct -= 1
             q.last_finished_at = time.time()
 
+    @contextmanager
+    def loading(self, entry: QueueEntry):
+        """Count a load herd sends itself (a pre-warm) as what it is while it
+        runs: an in-flight request for its model on its node that has produced
+        nothing yet.
+
+        Sent outside the queue, a pre-warm was invisible: the node kept pinning
+        the model it was about to evict and kept taking that model's traffic,
+        and Ollama, which evicts a busy model by waiting for it to go idle,
+        loaded nothing else there for up to fifteen minutes (run 6).  In
+        ``in_flight`` it is a pending load to ``load_pending_on`` /
+        ``should_pin`` and the load hold, like any other.  No worker slot and no
+        completed/failed counts: it is not a client request.
+        """
+        key = f"{entry.assigned_node}:{entry.request.model}"
+        q = self._queues.get(key)
+        if q is None:
+            q = self._queues[key] = DeviceModelQueue(
+                node_id=entry.assigned_node, model=entry.request.model
+            )
+        rid = entry.request.request_id
+        entry.status = RequestStatus.IN_FLIGHT
+        entry.started_at = time.time()
+        entry.last_progress_at = None
+        q.in_flight[rid] = entry
+        try:
+            yield
+        finally:
+            q.in_flight.pop(rid, None)
+            q.last_finished_at = time.time()
+
+    def speculative_load_allowed(self, entry: QueueEntry) -> bool:
+        """May a load nobody asked for (a pre-warm) go to its node now?
+
+        Not when it would have to evict a busy model with no idle room: Ollama
+        would wait for that model to go idle and load nothing else on the node
+        meanwhile, and cancelling the request does not end Ollama's wait.  So
+        the only bound that works is not sending it.  A request that must evict
+        waits its turn (``_must_wait``); a speculative one is dropped.
+        """
+        if self._registry is None:
+            return True
+        node = self._registry.get_node(entry.assigned_node)
+        if node is None or node.ollama is None:
+            return True
+        if not self._evicting_load(entry):
+            return True
+        depths = self.get_queue_depths()
+        if not any(depths.get(f"{node.node_id}:{m.name}") for m in node.ollama.models_loaded):
+            return True  # nothing busy to wait for
+        return self._idle_room_for(node, node.node_id, entry.request.model, depths)
+
     def load_pending_on(self, node_id: str, model: str) -> bool:
         """Is a request for another model on ``node_id`` at the node and still
         waiting for its first token?  It may be a load waiting for a resident
@@ -746,7 +798,7 @@ class QueueManager:
         """Mark a request failed if nothing settled it, and free its slot.
 
         Where the request is now: a retry moves it to another node's queue
-        (``move_in_flight``).  Idempotent.
+        (``admit``).  Idempotent.
         """
         rid = entry.request.request_id
         key = f"{entry.assigned_node}:{entry.request.model}"
@@ -811,38 +863,51 @@ class QueueManager:
 
         return moved
 
-    async def move_in_flight(self, source_key: str, target_key: str, request_id: str) -> bool:
-        """Move in-flight request ``request_id`` from the source queue to the
-        target queue: a retry sending it to another node.  The in-flight
-        sibling of ``move_pending``.  Returns whether it was moved.
+    async def admit(self, entry: QueueEntry, target_key: str) -> bool:
+        """Move in-flight ``entry`` to ``target_key``'s queue the way any request
+        enters it: through ``pending``, taken by one of that queue's workers.
+        Returns once a worker has taken it (False if it was not in flight).
 
-        Without it a retried request stayed in the failed node's ``in_flight``
-        while it ran on the next one, and everything that reads in-flight work
-        by queue node was wrong on both: the node it now loads on still pinned
-        its resident models (``should_pin``), cancelling the eviction the load
-        waits for, and gave it no room (``_must_wait``), while the node that
-        failed showed a load it did not have and could hold its own traffic
-        for it.  The failed node's worker slot is freed: the request no longer
-        runs there.  ``started_at`` restarts, because the room a load gets
-        (``_LOAD_ROOM_SECONDS``) counts from when it reached its node.
+        A retry sending a request to another node uses this.  The worker
+        applies the load hold (``_must_wait``) and holds one of the target's
+        slots until the request settles there (``mark_*``), so a retried
+        request runs inside the new node's concurrency.  It used to be placed
+        straight into ``in_flight``, which counted it in the depth and the pins
+        but let a node run one more request per retry than it admits.
+
+        The old queue lets go at once: its slot is freed and the request
+        leaves its ``in_flight``, so the node that failed shows no phantom load.
+        ``started_at`` restarts when the target worker takes it, because the
+        room a load gets (``_LOAD_ROOM_SECONDS``) counts from its new node.
         """
+        rid = entry.request.request_id
+        source_key = f"{entry.assigned_node}:{entry.request.model}"
         async with self._lock:
             source = self._queues.get(source_key)
-            if source is None or request_id not in source.in_flight:
+            if source is None or rid not in source.in_flight:
                 return False
-            if target_key not in self._queues:
-                parts = target_key.split(":", 1)
-                if len(parts) != 2:
-                    return False
-                self._queues[target_key] = DeviceModelQueue(node_id=parts[0], model=parts[1])
-            target = self._queues[target_key]
-            entry = source.in_flight.pop(request_id)
-            self._release_slot(source, request_id)
+            parts = target_key.split(":", 1)
+            if len(parts) != 2:
+                return False
+            target = self._queues.get(target_key)
+            if target is None:
+                target = self._queues[target_key] = DeviceModelQueue(
+                    node_id=parts[0], model=parts[1]
+                )
+            source.in_flight.pop(rid)
+            self._release_slot(source, rid)
             entry.assigned_node = target.node_id
-            entry.started_at = time.time()
+            entry.status = RequestStatus.PENDING
             entry.last_progress_at = None
-            target.in_flight[request_id] = entry
-        logger.debug(f"Moved in-flight {request_id[:8]} from {source_key} to {target_key}")
+            future = asyncio.get_running_loop().create_future()
+            await target.pending.put((entry, future, _admitted))
+        self._ensure_workers(target, target_key)
+        try:
+            await future
+        except asyncio.CancelledError:
+            future.cancel()  # the worker skips it
+            raise
+        logger.debug(f"Admitted {rid[:8]} from {source_key} to {target_key}")
         return True
 
     async def shutdown(self):
@@ -853,6 +918,13 @@ class QueueManager:
             for task in q.worker_tasks:
                 if not task.done():
                     task.cancel()
+
+
+def _admitted(entry: QueueEntry) -> None:
+    """The process function of a request ``QueueManager.admit`` moved here: it
+    is already running, so dispatching it starts nothing.  The worker hands
+    back ``None`` and holds the slot until the request settles."""
+    return None
 
 
 class _SettledStream:

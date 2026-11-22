@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -906,11 +907,10 @@ class StreamingProxy:
                 next_winner = results[0]
                 entry.routing_score = next_winner.score
                 entry.routing_breakdown = next_winner.scores_breakdown
-                # Into the next node's queue, so its load counts there and
-                # not on the node that failed.
-                await queue_manager.move_in_flight(
-                    current_queue_key, next_winner.queue_key, entry.request.request_id
-                )
+                # Into the next node's queue through one of its workers
+                # (``admit``): its load counts there, not on the node that
+                # failed, and it runs inside that node's concurrency.
+                await queue_manager.admit(entry, next_winner.queue_key)
                 entry.assigned_node = current_node = next_winner.node_id
                 current_queue_key = next_winner.queue_key
 
@@ -1336,7 +1336,13 @@ class StreamingProxy:
         """
         return model in getattr(self, "_non_generatable", set())
 
-    async def pre_warm(self, node_id: str, model: str, num_ctx: int | None = None):
+    async def pre_warm(
+        self,
+        node_id: str,
+        model: str,
+        num_ctx: int | None = None,
+        breakdown: dict | None = None,
+    ):
         """Send a load-only request to pre-warm a model on a node.
 
         ``num_ctx`` must be the same context the streaming path will inject for
@@ -1347,6 +1353,30 @@ class StreamingProxy:
         the KV cache can be 5x the weights.  See
         docs/issues/model-sizing-ignores-kv-cache.md.
         """
+        # Through the queue manager as a load (``QueueManager.loading``), so the
+        # node stops pinning what it may evict and the load hold sees it; and
+        # not at all when it would have to wait for a busy model
+        # (``speculative_load_allowed``).  ``breakdown`` is the score that chose
+        # this node, when the caller has one (the rebalancer).
+        entry = QueueEntry(
+            request=InferenceRequest(
+                model=model,
+                original_format=RequestFormat.OLLAMA,
+                raw_body={"model": model, "prompt": ""},
+                request_type="load",
+            ),
+            assigned_node=node_id,
+            routing_breakdown=breakdown or {},
+        )
+        qm = self._queue_mgr
+        if qm is not None and not qm.speculative_load_allowed(entry):
+            logger.info(f"Pre-warm of {model} on {node_id} skipped: it would wait for a busy model")
+            return
+        with qm.loading(entry) if qm is not None else contextlib.nullcontext():
+            await self._send_pre_warm(client_node=node_id, model=model, num_ctx=num_ctx)
+
+    async def _send_pre_warm(self, client_node: str, model: str, num_ctx: int | None):
+        node_id = client_node
         try:
             client = self._get_client(node_id)
             # Resolve the override ourselves when the caller did not pass one.

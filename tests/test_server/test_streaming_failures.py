@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -43,22 +45,26 @@ def _mock_queue_mgr():
 
 def _done_chunk(model="phi4:14b"):
     """Ollama final chunk with done:true and token counts."""
-    return json.dumps({
-        "model": model,
-        "message": {"role": "assistant", "content": ""},
-        "done": True,
-        "prompt_eval_count": 10,
-        "eval_count": 20,
-    })
+    return json.dumps(
+        {
+            "model": model,
+            "message": {"role": "assistant", "content": ""},
+            "done": True,
+            "prompt_eval_count": 10,
+            "eval_count": 20,
+        }
+    )
 
 
 def _content_chunk(content="Hello", model="phi4:14b"):
     """Ollama content chunk."""
-    return json.dumps({
-        "model": model,
-        "message": {"role": "assistant", "content": content},
-        "done": False,
-    })
+    return json.dumps(
+        {
+            "model": model,
+            "message": {"role": "assistant", "content": content},
+            "done": False,
+        }
+    )
 
 
 def _make_fake_stream(proxy, chunks, request_id=None):
@@ -120,9 +126,7 @@ class TestClientDisconnect:
         proxy.stream_from_node = _make_fake_stream(proxy, chunks)
 
         # Consume only the first chunk, then stop
-        gen = proxy._stream_with_retry(
-            entry, "node-a:phi4:14b", queue_mgr, scorer, settings
-        )
+        gen = proxy._stream_with_retry(entry, "node-a:phi4:14b", queue_mgr, scorer, settings)
         await gen.__anext__()
         await gen.aclose()
 
@@ -367,7 +371,13 @@ class TestPreWarmKeepAlive:
     async def test_keep_alive_follows_should_pin(self, pin):
         from types import SimpleNamespace
 
-        body = await self._body(SimpleNamespace(should_pin=lambda node, model: pin))
+        body = await self._body(
+            SimpleNamespace(
+                should_pin=lambda node, model: pin,
+                speculative_load_allowed=lambda entry: True,
+                loading=lambda entry: contextlib.nullcontext(),
+            )
+        )
         assert ("keep_alive" in body) is pin
 
     async def test_pins_without_a_queue_manager(self):
@@ -391,9 +401,7 @@ class TestPreWarmResolvesNumCtx:
 
         p = StreamingProxy.__new__(StreamingProxy)
         p._queue_mgr = None
-        p._settings = SimpleNamespace(
-            dynamic_num_ctx=dynamic, num_ctx_overrides=overrides
-        )
+        p._settings = SimpleNamespace(dynamic_num_ctx=dynamic, num_ctx_overrides=overrides)
         return p
 
     async def _capture(self, proxy, **kw):
@@ -439,7 +447,7 @@ class TestPreWarmResolvesNumCtx:
         captured: dict = {}
 
         class _Proxy:
-            async def pre_warm(self, node_id, model, num_ctx=None):
+            async def pre_warm(self, node_id, model, num_ctx=None, breakdown=None):
                 captured["num_ctx"] = num_ctx
 
         rb = Rebalancer.__new__(Rebalancer)
@@ -532,7 +540,10 @@ class TestNonGeneratableModels:
                 raise AssertionError("pre_warm called for a non-generatable model")
 
         ok = await mp._load_model_on_best_node(
-            "nomic-embed-text:latest", None, proxy=_Proxy(), settings=None,
+            "nomic-embed-text:latest",
+            None,
+            proxy=_Proxy(),
+            settings=None,
         )
         assert ok is False
 

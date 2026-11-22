@@ -75,11 +75,13 @@ class Rebalancer:
             from fleet_manager.server.streaming import _create_logged_task
 
             _create_logged_task(
-                self._do_pre_warm(lock_key, runner_up.node_id, model),
+                self._do_pre_warm(lock_key, runner_up.node_id, model, runner_up.scores_breakdown),
                 name=f"pre-warm-{model}-{runner_up.node_id}",
             )
 
-    async def _do_pre_warm(self, lock_key: str, node_id: str, model: str):
+    async def _do_pre_warm(
+        self, lock_key: str, node_id: str, model: str, breakdown: dict | None = None
+    ):
         """Execute pre-warm and release lock when done.
 
         num_ctx is deliberately left to ``pre_warm`` to resolve: this call site
@@ -89,7 +91,7 @@ class Rebalancer:
         cold load, so the model then stays mis-sized until something unloads it.
         """
         try:
-            await self._proxy.pre_warm(node_id, model)
+            await self._proxy.pre_warm(node_id, model, breakdown=breakdown)
         finally:
             self._pre_warm_locks.discard(lock_key)
 

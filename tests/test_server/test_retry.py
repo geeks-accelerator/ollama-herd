@@ -56,7 +56,7 @@ def _mock_queue_mgr():
     mgr.get_queue_depths.return_value = {}
     mgr.mark_completed = MagicMock()
     mgr.mark_failed = MagicMock()
-    mgr.move_in_flight = AsyncMock(return_value=True)
+    mgr.admit = AsyncMock(return_value=True)
     return mgr
 
 
@@ -178,9 +178,7 @@ class TestStreamWithRetry:
         assert entry.retry_count == 1
         assert entry.assigned_node == "node-b"
         assert "node-a" in entry.excluded_nodes
-        queue_mgr.move_in_flight.assert_awaited_once_with(
-            "node-a:phi4:14b", "node-b:phi4:14b", entry.request.request_id
-        )
+        queue_mgr.admit.assert_awaited_once_with(entry, "node-b:phi4:14b")
         queue_mgr.mark_completed.assert_called_once()
 
     @pytest.mark.asyncio
