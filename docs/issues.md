@@ -36,6 +36,35 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### A pre-warm that needs an eviction blocks every load on its node for up to 15 minutes `OPEN` (found 2026-11-22, run 6)
+
+**Severity:** high on small Macs under mixed traffic. Run 6, mixed models on two 24 GB M4s
+(router `87e3bf0`, seed 13): at 03:25:53 the rebalancer logged `Pre-warm triggered:
+gemma3:12b on s1`, and the same second Ollama on s1 logged `llama-server model predicted to
+exceed available memory, evicting` (predicted 12.4 GiB, Metal total 17.8 GiB). Ollama evicts
+a busy model by waiting, with no timeout, until it goes idle, and loads nothing else on that
+node meanwhile; herd kept routing `qwen2.5:7b` (the model to evict) to s1, because the load
+hold (`QueueManager._must_wait`) only knows loads in herd's own queues and a pre-warm is sent
+outside them (`StreamingProxy.pre_warm`, `PRE_WARM_TIMEOUT_S = 900`). Ollama's scheduler on
+s1 logged nothing more until the driver restarted it at 03:32:43; every later load on s1
+(`qwen2.5:14b`, `phi4-mini`) waited until its client gave up: **11 of 27 requests failed at
+300 s**. The same seed on `6dbf115` had 0 failures (different early placement).
+
+**Why the "pre-warm never evicts" guard missed it:** the rebalancer skips a runner-up whose
+`eviction` score is negative, and that score is 0 whenever `memory_free_without_evicting_gb()
+>= _model_fit_cost_gb()`. On a Mac the first is available RAM and the second herd's own
+estimate, while Ollama sizes KV as `num_ctx x OLLAMA_NUM_PARALLEL` (16,384 here) against
+Metal's working set (`recommendedMaxWorkingSetSize`, 17.8 of 24 GiB), so herd judged "fits"
+where Ollama had to evict.
+
+**Proposed fix (needs a design pass, not a hot patch):** any of (a) give pre-warms a queue
+entry so the load hold covers them; (b) cancel a pre-warm that has produced nothing within
+`_LOAD_WAIT_SECONDS`-like bounds, which drops it from Ollama's pending list; (c) size fit on
+Apple Silicon the way Ollama does (report Metal's working-set limit in the heartbeat; KV x
+parallel). (a) or (b) bound the damage whatever the estimate; (c) makes the guard right.
+Related: findings item 30 (a load already under way on another node is invisible to the
+scorer), which put the second `gemma3:12b` on s2 at 13 s in the same run.
+
 ### The load gate refused any model that needed an eviction on unified memory `FIXED` (found 2026-11-22, run 6)
 
 `Scorer._eliminate` and `routing._pick_pull_node` eliminated a node when `memory_for_load_gb()`
