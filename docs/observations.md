@@ -1938,3 +1938,39 @@ refusing a daemon access to an external volume.
 only real check bills a day.** Plan a run around the first type that allocates, with a
 fallback type chosen in advance, and allocate the scarce types first. **Keep models on the
 root EBS volume** (size it for them); the bootstrap no longer supports `MODELS_DISK`.
+
+## 2026-11-22: Running a benchmark on EC2 Macs, overnight and unattended (run 6)
+
+**Evidence.** Run 6 drove about 18 hours of arms on two `mac-m4.metal` hosts from a Linux
+router (r1), first from a laptop over SSH, then from drivers running on r1 itself.
+
+- **A laptop that moves breaks SSH-driven runs.** The laptop's public IP changed mid-run; the
+  security group allowed SSH from the old one only, the driver's session hung until its
+  keep-alive gave up (18 minutes lost, no data lost: the benchmark on r1 finished on its own).
+  From then on every driver ran on r1 (`setsid nohup`), reaching the Macs over the private
+  network, and the laptop only watched.
+- **`launchctl bootout` returns before the service is gone.** A `bootstrap` straight after it
+  fails with `Bootstrap failed: 5: Input/output error`, and the service is simply not loaded:
+  both herd-nodes went missing at 01:10 because herd-node takes a few seconds to drain on
+  SIGTERM. Any restart recipe must poll `launchctl print system/<label>` until it fails, then
+  bootstrap with a retry. The earlier restarts only worked because warming a model took long
+  enough.
+- **Ollama's prompt cache survives between benchmark runs and is worth up to 2x.** llama.cpp's
+  host-RAM cache (`--cache-ram`, 8 GiB) keeps earlier prompts, and the harness's prompts repeat
+  by seed: a run twenty minutes after another with the same seed answered 56 of 71 requests
+  with a 0.1 s first token and finished twice the requests of a cold one. Restart Ollama before
+  every cell that compares front doors or concurrencies (findings item 35).
+- **macOS on a 24 GB M4 gives Metal 17.8 GiB.** Ollama reads the GPU working-set limit, not RAM,
+  and sizes KV as `num_ctx x OLLAMA_NUM_PARALLEL`, so a model herd judged to fit by available
+  RAM made Ollama evict (findings item 39). The deliberate pressure test (two models, 3 GB free)
+  never left `normal`; critical pressure came later, under mixed traffic, on its own.
+- **A demo is a test.** Recording the dashboard found two bugs the arms had not: per-node
+  embedding counts that were fleet totals, and a harness that had silently dropped
+  `nomic-embed-text`. The recorder itself needed `domcontentloaded`, not `networkidle`: a page
+  that streams live updates is never network-idle under load.
+
+**Insight: put the driver next to the machines, make every step idempotent, and verify state
+rather than trusting the previous step's exit code.** The three interruptions of the night (an
+IP change, a launchd race, a self-matching `pkill`) were all in the harness around herd, and
+each was found by a watcher that reported per-arm request counts and stalls, not by reading
+logs afterwards.
