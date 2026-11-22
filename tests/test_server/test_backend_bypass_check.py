@@ -134,6 +134,16 @@ class TestRemoteBypassers:
 
 
 class TestContextWasteRespectsOperatorIntent:
+    def test_a_context_already_at_the_recommendation_is_not_waste(self, engine, monkeypatch):
+        """Run 6: qwen2.5:1.5b resident at 4,096 with a 341-token p99 is "12x
+        over", but the recommender's floor is 4,096 -- the check turned two
+        24 GB Macs amber while recommending the context they already had."""
+        monkeypatch.delenv("FLEET_NUM_CTX_OVERRIDES", raising=False)
+        stats = [{"model": "qwen2.5:1.5b", "total_p99": 341, "max_total_24h": 380,
+                  "request_count": 97}]  # fmt: skip
+        nodes = [_node(loaded=[("qwen2.5:1.5b", 4096)])]
+        assert engine._check_context_waste(stats, nodes) == []
+
     @pytest.fixture
     def stats(self):
         # Live 2026-10-02 values: ratio 24.7x and 178.1x, both > the 8x

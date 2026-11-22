@@ -103,6 +103,26 @@ class TestOllamaToOpenAIConversion:
         data = json.loads(result[6:].strip())
         assert data["choices"][0]["delta"]["content"] == ""
 
+    def test_thinking_is_sent_as_reasoning(self, proxy):
+        # Run 6: gpt-oss through /v1/chat/completions sent nothing for 5 s and
+        # never its reasoning, because only content and tool calls were kept.
+        ollama_line = json.dumps({
+            "model": "gpt-oss:20b",
+            "message": {"role": "assistant", "content": "", "thinking": "User asks"},
+            "done": False,
+        })
+        data = json.loads(proxy._ollama_to_openai_sse(ollama_line, "gpt-oss:20b")[6:].strip())
+        assert data["choices"][0]["delta"] == {"reasoning": "User asks"}
+
+    def test_no_reasoning_key_without_thinking(self, proxy):
+        ollama_line = json.dumps({
+            "model": "phi4:14b",
+            "message": {"role": "assistant", "content": "Hi", "thinking": ""},
+            "done": False,
+        })
+        data = json.loads(proxy._ollama_to_openai_sse(ollama_line, "phi4:14b")[6:].strip())
+        assert data["choices"][0]["delta"] == {"content": "Hi"}
+
 
 class TestKeepAlivePin:
     """``keep_alive: -1`` keeps herd's models loaded, except while a load may be

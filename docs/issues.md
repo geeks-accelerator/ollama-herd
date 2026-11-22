@@ -36,6 +36,22 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### The dashboard's throughput tiles barely move during a burst `OPEN` (found 2026-11-22, run 6)
+
+**Evidence.** Filming herd's own Overview while 96 requests ran on two M4 Macs (about 510 tok/s measured from the batch, ~450 on the activity chart): the "Tokens / s" tile read 0 at 40 s and 23-39 afterwards, the per-node cards 11-20, and "Requests / min" 0.2 mid-batch.
+
+**Cause.** By design both are averages of *completed* requests over the last five minutes (`recent()` in the dashboard script), and they skip the bucket in progress. The top tile's tooltip says so; the node cards do not. A one-minute burst is spread over 300 s and counted only after it ends.
+
+**Proposed fix.** Feed the "now" figures from live state instead of finished traces: the queue manager already knows what is streaming, and the proxy counts tokens as they arrive. Keep the five-minute averages, labelled as such, beside them. Measure against the same 96-request batch.
+
+### The rebalancer moves a backlog to a newly free node at 0.6 requests per second `OPEN` (found 2026-11-22, run 6)
+
+**Evidence.** 96 requests queued on s1 with s2 out of the herd; s2 rejoined 10 s in. The rebalancer moved 3 requests every 5 s, so s2 served 33 of the 96 and the batch took 71.3 s, against 52-58 s when both Macs took the batch from the start. A free M4 completes about 2.6 of these requests per second.
+
+**Cause.** A fixed batch size per tick, not sized to the target's free capacity.
+
+**Proposed fix.** Move up to the target's free slots (concurrency minus in flight) per tick, never more than the source's excess, and measure the same rejoin-mid-batch scenario before and after.
+
 ### A node that fails instantly looks idle, so it keeps winning the first attempt `FIXED` (found 2026-11-22, run 6)
 
 **Evidence.** A 24 GB M4 (s2) holding `gpt-oss:20b` (13 GB) and a leftover `qwen2.5:1.5b` (4.9 GB at a 32K context) overran Metal's working set. Ollama's `llama-server` logged `kIOGPUCommandBufferCallbackErrorOutOfMemory`, then "backend is in error state from a previous command buffer failure - recreate the backend to recover", and from then on answered every request with an error in milliseconds while `/api/ps` still listed both models at 100% GPU. herd's empty-stream retry (`2b9ff02`) moved each request to s1 correctly — 29 attempts on s2 marked `retried`, none reached a client as a failure — but every *new* request still went to s2 first: it had nothing queued, because it failed everything at once. All four coding agents ended up sharing s1 and waited 85-326 s for a first token.

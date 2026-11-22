@@ -138,6 +138,16 @@ class TestPhase2Unmanaged:
         assert roomy[0].severity is Severity.INFO
         assert tight[0].severity is Severity.WARNING
 
+    def test_a_known_small_context_does_not_warn_on_a_small_node(self, engine):
+        """Run 6: 24 GB Macs with OLLAMA_CONTEXT_LENGTH=4096 have little free
+        memory by nature; the model resident at 4,096 shows Ollama's large
+        default never applied, so there is nothing to warn about."""
+        stats = [{"model": "qwen2.5:1.5b", "request_count": 97}]
+        small = _node(loaded=[("qwen2.5:1.5b", 4096)], free_gb=5.0)
+        large = _node(loaded=[("qwen2.5:1.5b", 262144)], free_gb=5.0)
+        assert engine._check_num_ctx_unmanaged([small], stats)[0].severity is Severity.INFO
+        assert engine._check_num_ctx_unmanaged([large], stats)[0].severity is Severity.WARNING
+
     def test_it_says_unmanaged_is_a_valid_choice(self, engine):
         """What does this fire on when everything is working? A deliberate
         decision. So the text must not imply breakage."""

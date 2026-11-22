@@ -539,6 +539,7 @@ async def chat_completions(request: Request):
         # text — previously only `content` was collected, so a non-streaming
         # function-calling client got the prose and lost the call entirely.
         collected_tool_calls: list[dict] = []
+        full_reasoning = ""
         # The stream says how it ended: a finish_reason on its last chunk, or an
         # in-stream error when the backend stopped before done:true.  Read both
         # from it rather than re-deriving them -- this response used to hard-code
@@ -569,6 +570,7 @@ async def chat_completions(request: Request):
                         )
                         delta = data.get("choices", [{}])[0].get("delta", {})
                         full_content += delta.get("content", "") or ""
+                        full_reasoning += delta.get("reasoning", "") or ""
                         for tc in delta.get("tool_calls") or []:
                             collected_tool_calls.append(tc)
                     except (json.JSONDecodeError, IndexError) as e:
@@ -618,7 +620,8 @@ async def chat_completions(request: Request):
                             }
                             if collected_tool_calls
                             else {"role": "assistant", "content": full_content}
-                        ),
+                        )
+                        | ({"reasoning": full_reasoning} if full_reasoning else {}),
                         "finish_reason": finish_reason,
                     }
                 ],

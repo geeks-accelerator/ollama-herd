@@ -113,6 +113,22 @@ class TestAttribution:
         assert "OLLAMA_NUM_PARALLEL" not in r.fix
         assert "context_waste" in r.fix
 
+    def test_a_small_ceiling_informs_and_does_not_warn(self, overrides):
+        """Run 6: qwen2.5:1.5b on a 24 GB M4, 1.5 GB resident against 1.0 GB on
+        disk at 4 slots -- a third of its VRAM is cache, so the share crossed
+        the WARNING line while the most a node-wide parallelism cut could ever
+        return was 0.2 GB."""
+        overrides({})
+        node = _node(
+            ("qwen2.5:1.5b", "1.5B", 1.55, 4096),
+            num_parallel=4,
+            disk_sizes={"qwen2.5:1.5b": 1.0},
+        )
+        r = HealthEngine()._check_kv_cache_bloat([node])[0]
+        assert r.data["bloated_models"][0]["cause"] == "parallelism"
+        assert r.data["recoverable_gb_max"] < HealthEngine._KV_MIN_RECOVERABLE_GB
+        assert r.severity.value == "info"
+
     def test_unmanaged_model_at_high_parallelism_blames_parallelism(self, overrides):
         """No override at all -- parallelism is the only lever herd controls."""
         overrides({})

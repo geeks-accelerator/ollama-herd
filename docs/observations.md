@@ -2057,3 +2057,36 @@ took 123 s and 10 turns.
   raise `OLLAMA_CONTEXT_LENGTH`, unload everything else first.
 - *Four agents from one machine share one session* unless each sends its own `session:` tag: herd's
   fallback key is client IP plus model, which would pin all four to one Mac.
+
+## 2026-11-22: Verifying the pushed changes on the Macs, and what filming herd's own dashboard found (run 6)
+
+**Regression check of pushed `main` against run 6's baseline (`7b365fd`)**, alternating, fresh seeds,
+both Macs on `gpt-oss:20b`: single requests and 4-turn sessions at concurrency 8, 120 s each, two
+pairs. Identical: 16 requests per run, 0 failed, 0 retried, 68.3 tok/s in window, first token p95
+13.1 s (single) and 26.3-26.4 s (sessions), 8/8 split. Coarse — gpt-oss on an M4 fits two rounds
+in 120 s and every answer ran to 512 tokens — so it shows nothing broke, not that nothing moved.
+The four coding agents passed 4/4 on `main`; the router logged no warning or error since start.
+**`uv pip install` refuses a wheel renamed `base.whl`** (a wheel filename must carry its version):
+the first A/B silently ran `main` in its baseline arm. Each arm now prints which code it runs.
+
+**Model alternation, one Mac vs two** (gpt-oss 20B 12 GB + gemma3 12B ~11 GB at 4K context: both
+cannot fit one M4's 17.8 GB working set). Eight requests alternating, one at a time: one Mac swapped
+on every switch, 20-44 s each from EBS, median first token 21.0 s, 233.7 s total; two Macs kept one
+model warm each, median 554 ms, 39.0 s. Before the reasoning fix, gpt-oss's "first token" was its
+first *answer* token (4.7-9 s); see the changelog.
+
+**Fixed batch, one Mac vs two**: 96 requests of `qwen2.5:1.5b`, 300 tokens each, sent at once.
+One Mac 94.6 s and 101.6 s (two takes), two Macs 58.1 s: 1.6-1.75x, 0 failed. Not 2x.
+
+**herd's own dashboard** turned amber on the first batch from three checks that warn about nothing
+on a small machine, counted six successful requests as failed (the rebalancer's stale queue key),
+and showed 0-39 tok/s while the Macs made ~500 (five-minute averages of completed requests). The
+first two are fixed; the tiles are an OPEN issue.
+
+**Hard kill** (SIGKILL Ollama and herd-node on s2 with 16 streams running): 4 streams in flight on s2
+failed, 4 requests that reached the dead node first were retried on s1 and completed, s2 rejoined
+cleanly — the run 6 failure result (4 lost per kill), on camera.
+
+**Insight: film the product's own screen, not only a purpose-built one.** Every custom wall looked
+fine; the first take of herd's dashboard found three check misfires and a counting bug that the
+traces and the walls never showed, because those read different numbers.

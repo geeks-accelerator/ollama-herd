@@ -90,6 +90,9 @@ def fleet_status(recommendations: list[Recommendation]) -> str:
 
 
 _OVERSIZE_HEADROOM_GB = 40.0
+# Above this resident context an unmanaged model may be holding Ollama's large
+# default window (32,768 is its own default for 24-48 GiB machines).
+_UNMANAGED_LARGE_CTX = 32768
 
 
 def _anthropic_model_map() -> dict:
@@ -515,6 +518,8 @@ class HealthEngine:
     # 1 serialises every request for the model, so 2 is the lowest value that
     # still overlaps decode with the next request's prefill.
     _KV_TARGET_PARALLELISM = 2
+    # Below this ceiling of recoverable memory the check informs, never warns.
+    _KV_MIN_RECOVERABLE_GB = 2.0
 
     def _check_kv_cache_bloat(self, nodes) -> list[Recommendation]:
         """VRAM well above model weights -- and *which* of the two causes it is.
@@ -655,6 +660,13 @@ class HealthEngine:
             # allocation is the configuration, and a standing WARNING with no
             # available action is how a board stops being read.
             if not inert and not parallel_driven:
+                severity = Severity.INFO
+            # Nor when the most it could return is small.  The share of VRAM
+            # says nothing about size: a 1.5B model's normal cache is a third
+            # of its 1.5 GB, so two 24 GB Macs each showed a WARNING advising a
+            # node-wide parallelism cut -- slower decoding for every model --
+            # to recover at most 0.2 GB (run 6).
+            if ceiling_gb < self._KV_MIN_RECOVERABLE_GB:
                 severity = Severity.INFO
 
             causes = []
@@ -1243,7 +1255,15 @@ class HealthEngine:
         # Severity follows impact, not count -- the same shape as
         # num_ctx_override_inert.  An unmanaged model on a box with headroom is
         # a note; on one without, the oversized KV is the thing that bites.
-        threatens_capacity = _free_memory_gb(nodes) < _OVERSIZE_HEADROOM_GB
+        # And only when something is actually large: the hazard is Ollama's big
+        # default window (262,144 on >=47 GiB), and a model resident at a small
+        # context shows it did not happen (an unknown one, 0, cannot).  Run 6's
+        # 24 GB Macs, with OLLAMA_CONTEXT_LENGTH=4096, warned on every batch for
+        # low free memory.
+        large = any(
+            u["resident_ctx"] == 0 or u["resident_ctx"] > _UNMANAGED_LARGE_CTX for u in unmanaged
+        )
+        threatens_capacity = large and _free_memory_gb(nodes) < _OVERSIZE_HEADROOM_GB
         lines = ", ".join(
             f"{u['model']} ({u['requests']:,} req"
             + (f", resident at {u['resident_ctx']:,}" if u["resident_ctx"] else "")
@@ -1601,6 +1621,13 @@ class HealthEngine:
 
                 max_24h = stats.get("max_total_24h", 0)
                 recommended = compute_recommended_ctx(total_p99, max_24h)
+                # The recommender never goes below its floor (4,096), so a small
+                # context can be "12x over" its prompts and still be exactly
+                # what this check would recommend: run 6 turned two 24 GB Macs
+                # amber for qwen2.5:1.5b at 4,096 while advising 4,096.
+                # Nothing to change is not waste.
+                if recommended >= alloc:
+                    continue
                 savings_pct = round((alloc - recommended) / alloc * 100)
                 wasteful.append(
                     {

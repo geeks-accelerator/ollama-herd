@@ -392,9 +392,18 @@ class StreamingProxy:
         proxy = self
 
         def process(entry: QueueEntry) -> AsyncIterator[str]:
+            # The queue the entry is in *now*, not the one it was enqueued on:
+            # the rebalancer moves pending entries (``move_pending``) and
+            # updates ``assigned_node`` but not this closure.  Using the stale
+            # key ran the request on the new node and booked it completed on
+            # the old queue and failed on the new one -- run 6's dashboard
+            # showed "6 failed" for six requests that all succeeded.
+            key = (
+                f"{entry.assigned_node}:{entry.request.model}" if entry.assigned_node else queue_key
+            )
             if scorer and settings and getattr(settings, "max_retries", 0) > 0:
-                return proxy._stream_with_retry(entry, queue_key, queue_manager, scorer, settings)
-            return proxy._stream_with_tracking(entry, queue_key, queue_manager)
+                return proxy._stream_with_retry(entry, key, queue_manager, scorer, settings)
+            return proxy._stream_with_tracking(entry, key, queue_manager)
 
         return self._traced(process)
 
@@ -2196,6 +2205,11 @@ class StreamingProxy:
             )
 
         content = msg.get("content", "") or data.get("response", "")
+        # A thinking model's reasoning, as Ollama's own /v1 endpoint and the
+        # MLX path send it: ``delta.reasoning``.  It was dropped, so an OpenAI
+        # client of gpt-oss saw nothing for the seconds the model thought and
+        # never the reasoning itself (run 6: first chunk at 5.0 s, all content).
+        thinking = msg.get("thinking") or data.get("thinking") or ""
         done = data.get("done", False)
 
         def _chunk(delta: dict, finish_reason: str | None) -> str:
@@ -2208,6 +2222,8 @@ class StreamingProxy:
             return f"data: {json.dumps(body)}\n\n"
 
         delta: dict = {}
+        if thinking:
+            delta["reasoning"] = thinking
         if content:
             delta["content"] = content
         if tool_calls:
