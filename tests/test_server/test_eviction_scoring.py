@@ -212,6 +212,18 @@ class TestStrandedModels:
         assert only.node_id == "big"
         assert only.scores_breakdown["eviction"] == -ServerSettings().score_model_hot
 
+    async def test_a_retry_reaches_the_stranding_node_once_the_rest_are_excluded(
+        self, scorer, registry
+    ):
+        """The peer retry of 0.12.5: both small cards failed this request, so
+        the big card, set aside only because it would strand a model, is what
+        is left.  The scorer used to drop it before the retry's exclusion was
+        applied, and the request failed with "No other node can serve"."""
+        await self._fleet(registry)
+        busy = {f"big:{self.BIG}": 2}
+        (only,) = scorer.score_request(B, busy, excluded=["small-1", "small-2"])
+        assert only.node_id == "big"
+
     async def test_stranding_only_counts_when_no_other_node_can_hold_it(self, scorer, registry):
         """Give a small card room for the big model's size: then it has another home."""
         await self._fleet(registry, big_elsewhere=True)

@@ -81,3 +81,65 @@ def test_every_node_empty_fails_the_request_with_the_reason(client, caplog):
         if "ended the stream with no output" in r.getMessage()
     ]
     assert {"s1", "s2"} <= {n for m in tried for n in ("s1", "s2") if f"Node {n} failed" in m}
+
+
+RUNNER_DIED = "llama runner process has terminated: exit status 2"
+TOO_LONG = "input length (40000 tokens) exceeds the model's maximum context length (32768)"
+
+
+def _error_only(message, seen=None, tag=""):
+    def handler(request):
+        if seen is not None:
+            seen.append(tag)
+        return httpx.Response(200, content=(json.dumps({"error": message}) + "\n").encode())
+
+    return handler
+
+
+def test_a_stream_with_only_the_backends_error_is_retried(client):
+    """A runner that dies in prefill after Ollama sent 200: the stream holds one
+    error line.  It produced nothing, so the request goes to the other node
+    instead of starting a 200 that ends in an error."""
+    seen = []
+    _install_mock_ollama(client, "s1", _error_only(RUNNER_DIED, seen, "s1"))
+
+    def answers(request):
+        seen.append("ok")
+        return httpx.Response(200, content=DONE.encode())
+
+    _install_mock_ollama(client, "s2", answers)
+    resp = _chat(client)
+    assert resp.status_code == 200
+    assert json.loads(resp.text.splitlines()[-1])["done"] is True
+    assert "ok" in seen
+
+
+def test_a_request_error_is_answered_with_its_status_and_not_retried(client):
+    """Context too long is about the request: every peer would refuse it, and
+    each refusal would mark that peer failing.  One node is tried, and the
+    client gets a 400 with the backend's reason instead of a 200."""
+    seen = []
+    _install_mock_ollama(client, "s1", _error_only(TOO_LONG, seen, "s1"))
+    _install_mock_ollama(client, "s2", _error_only(TOO_LONG, seen, "s2"))
+    resp = _chat(client)
+    assert resp.status_code == 400
+    assert "context length" in resp.text
+    assert len(seen) == 1
+
+
+def test_an_error_after_output_still_reaches_the_client_in_the_stream(client):
+    """Once something was sent the response has started: the error line is
+    passed through as before."""
+    partial = (
+        json.dumps(
+            {"model": MODEL, "message": {"role": "assistant", "content": "Hel"}, "done": False}
+        )
+        + "\n"
+        + json.dumps({"error": RUNNER_DIED})
+        + "\n"
+    )
+    for node in ("s1", "s2"):
+        _install_mock_ollama(client, node, lambda r: httpx.Response(200, content=partial.encode()))
+    resp = _chat(client)
+    assert resp.status_code == 200
+    assert RUNNER_DIED in resp.text

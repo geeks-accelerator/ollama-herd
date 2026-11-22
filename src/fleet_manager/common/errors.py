@@ -248,6 +248,37 @@ UPSTREAM_INCOMPLETE_MESSAGE = (
 to a truncated answer is to ask again."""
 
 
+# Error categories that describe the request, not the backend, and the status
+# a backend saying so would have answered with.  A node answering these is
+# working: they are never blamed on it (``get_failing_backends``), and an
+# Ollama stream that ends with only such an error reaches the client as that
+# status instead of a retry on every peer (``StreamingProxy.stream_from_node``).
+CLIENT_ERROR_STATUS = {
+    "bad_request": 400,
+    "context_too_long": 400,
+    "permission_error": 403,
+    "model_not_found": 404,
+}
+CLIENT_ERROR_CATEGORIES = frozenset(CLIENT_ERROR_STATUS)
+
+
+def ollama_line_has_output(chunk) -> bool:
+    """Does an Ollama stream line carry anything for the client?
+
+    Content, thinking or tool calls, or the terminal ``done``.  An
+    ``{"error": ...}`` line does not: a stream that sent only that produced
+    nothing, and is retried or answered with a status rather than started.
+    """
+    if not isinstance(chunk, dict):
+        return False
+    if chunk.get("done"):
+        return True
+    msg = chunk.get("message") or {}
+    return bool(
+        msg.get("content") or msg.get("thinking") or msg.get("tool_calls") or chunk.get("response")
+    )
+
+
 class UpstreamIncomplete(Exception):  # noqa: N818 -- named for the condition, like the constant
     """Raised when a whole non-streaming response is built from a stream that
     never completed.  There is no honest response object to return, so the

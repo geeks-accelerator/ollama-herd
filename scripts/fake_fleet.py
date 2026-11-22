@@ -26,6 +26,16 @@ models on the card.  Its use is measured, as nvidia-smi measures it: with
 ``--follow-ps`` a mock's model mid-load (``/_mock/state``) counts too, the
 memory a real card shows in use before ``/api/ps`` lists the model.
 
+Per-node memory state, each ``NODE=VALUE`` and repeatable, where NODE is a
+node's index (``0``), its node_id (``fake-000``) or ``*`` for every node (a
+named node wins over ``*``):
+
+* ``--pressure NODE=LEVEL``: the memory pressure the node reports, ``normal``,
+  ``warn`` or ``critical`` (default ``normal``).
+* ``--working-set NODE=GB``: the node's Metal working set
+  (``memory.gpu_working_set_gb``), the cap Ollama fits models into inside
+  unified RAM.  Unset, it stays 0 ("not reported"), as from a non-Apple node.
+
 Churn and failure:
 
 * ``--churn-every S``: every S seconds ``--churn-count`` nodes send the drain
@@ -65,6 +75,7 @@ import httpx
 from fleet_manager import __version__
 from fleet_manager.common.stats import percentile
 from fleet_manager.common.system_metrics import get_local_ip
+from fleet_manager.models.node import MemoryPressure
 from fleet_manager.server.hardware_lookup import resolve_bandwidth
 from fleet_manager.testing.heartbeats import make_heartbeat
 
@@ -93,6 +104,8 @@ class FleetConfig:
     seed: int | None = None
     follow_ps: bool = False
     gpu_gb: float = 0.0
+    pressure: dict[str, str] = field(default_factory=dict)  # NODE -> level
+    working_set: dict[str, float] = field(default_factory=dict)  # NODE -> GB
 
 
 @dataclass
@@ -102,6 +115,8 @@ class FakeNode:
     models: list[tuple[str, float]]
     loaded: list[tuple[str, float]] | None = None  # None: every model in ``models``
     loading_gb: float = 0.0  # a model the backend is loading (``--follow-ps``)
+    pressure: MemoryPressure = MemoryPressure.NORMAL
+    working_set_gb: float = 0.0  # 0: not reported
     up: asyncio.Event = field(default_factory=asyncio.Event)
     killed_at: float | None = None
     last_ok_at: float | None = None
@@ -124,6 +139,44 @@ def parse_model(spec: str) -> tuple[str, float]:
     raise argparse.ArgumentTypeError(f"expected NAME:SIZE_GB, got {spec!r}")
 
 
+def parse_node_value(spec: str) -> tuple[str, str]:
+    """``NODE=VALUE``: NODE is an index, a node_id or ``*``."""
+    node, sep, value = spec.partition("=")
+    if not sep or not node or not value:
+        raise argparse.ArgumentTypeError(f"expected NODE=VALUE, got {spec!r}")
+    return node, value
+
+
+def parse_pressure(spec: str) -> tuple[str, str]:
+    node, level = parse_node_value(spec)
+    try:
+        return node, MemoryPressure(level.lower()).value
+    except ValueError:
+        levels = ", ".join(p.value for p in MemoryPressure)
+        raise argparse.ArgumentTypeError(
+            f"pressure must be one of {levels}, got {level!r}"
+        ) from None
+
+
+def parse_working_set(spec: str) -> tuple[str, float]:
+    node, gb = parse_node_value(spec)
+    try:
+        value = float(gb)
+    except ValueError:
+        value = -1.0
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"working set must be a number of GB, got {gb!r}")
+    return node, value
+
+
+def for_node(per_node: dict, index: int, node_id: str, default):
+    """The value ``per_node`` gives this node: by node_id, by index, then ``*``."""
+    for key in (node_id, str(index), "*"):
+        if key in per_node:
+            return per_node[key]
+    return default
+
+
 async def discover_models(client: httpx.AsyncClient, ollama_url: str) -> list[tuple[str, float]]:
     """The models a mock (or a real Ollama) lists, with on-disk sizes in GB."""
     resp = await client.get(f"{ollama_url.rstrip('/')}/api/tags")
@@ -140,11 +193,14 @@ def build_nodes(config: FleetConfig) -> list[FakeNode]:
     nodes = []
     for i in range(config.nodes):
         held = [models[(i * per_node + j) % len(models)] for j in range(min(per_node, len(models)))]
+        node_id = f"{config.prefix}-{i:03d}"
         nodes.append(
             FakeNode(
-                node_id=f"{config.prefix}-{i:03d}",
+                node_id=node_id,
                 ollama_host=config.ollama[i % len(config.ollama)],
                 models=held,
+                pressure=MemoryPressure(for_node(config.pressure, i, node_id, "normal")),
+                working_set_gb=for_node(config.working_set, i, node_id, 0.0),
             )
         )
     return nodes
@@ -159,6 +215,7 @@ def heartbeat_for(node: FakeNode, config: FleetConfig, lan_ip: str) -> dict:
         memory_used=min(config.memory_gb * 0.95, 8.0 + in_ram),
         cores=config.cores,
         cpu_pct=10.0,
+        pressure=node.pressure,
         loaded_models=list(loaded),
         available_models=[name for name, _ in node.models],
         lan_ip=lan_ip,
@@ -169,6 +226,8 @@ def heartbeat_for(node: FakeNode, config: FleetConfig, lan_ip: str) -> dict:
         num_parallel=config.num_parallel,
     ).model_dump()
     body["ollama"]["models_available_sizes"] = dict(node.models)
+    if node.working_set_gb > 0:
+        body["memory"]["gpu_working_set_gb"] = node.working_set_gb
     if config.gpu_gb > 0:
         used = sum(size for _, size in loaded) + node.loading_gb
         body["memory"].update(
@@ -421,6 +480,22 @@ def parse_args(argv: list[str] | None = None) -> tuple[str, FleetConfig, str | N
         help="Report each node's backend /api/tags as available and /api/ps as loaded",
     )
     p.add_argument("--gpu-gb", type=float, default=0.0, help="Card memory per node (0 = none)")
+    p.add_argument(
+        "--pressure",
+        action="append",
+        type=parse_pressure,
+        default=[],
+        metavar="NODE=LEVEL",
+        help="Memory pressure a node reports (normal/warn/critical); NODE = index, id or *",
+    )
+    p.add_argument(
+        "--working-set",
+        action="append",
+        type=parse_working_set,
+        default=[],
+        metavar="NODE=GB",
+        help="Metal working set a node reports (gpu_working_set_gb); NODE = index, id or *",
+    )
     p.add_argument("--chip", default="", help='e.g. "Apple M3 Ultra" (sets bandwidth)')
     p.add_argument("--cores", type=int, default=12)
     p.add_argument("--num-parallel", type=int, default=0, help="Reported OLLAMA_NUM_PARALLEL")
@@ -467,7 +542,15 @@ def parse_args(argv: list[str] | None = None) -> tuple[str, FleetConfig, str | N
         seed=a.seed,
         follow_ps=a.follow_ps,
         gpu_gb=a.gpu_gb,
+        pressure=dict(a.pressure),
+        working_set=dict(a.working_set),
     )
+    ids = {f"{config.prefix}-{i:03d}" for i in range(config.nodes)}
+    known = {"*"} | ids | {str(i) for i in range(config.nodes)}
+    for flag, per_node in (("--pressure", config.pressure), ("--working-set", config.working_set)):
+        unknown = sorted(set(per_node) - known)
+        if unknown:
+            p.error(f"{flag} names no such node: {', '.join(unknown)}")
     return a.router.rstrip("/"), config, a.output
 
 

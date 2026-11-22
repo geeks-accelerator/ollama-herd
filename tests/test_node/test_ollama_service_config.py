@@ -17,6 +17,9 @@ import pytest
 
 from fleet_manager.node import collector
 
+LOCAL = "http://localhost:11434"
+REMOTE = "http://10.9.9.9:11434"
+
 UNIT_ENV = (
     "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin OLLAMA_HOST=0.0.0.0:11434 "
     'OLLAMA_NUM_PARALLEL=4 "OLLAMA_ORIGINS=a b"'
@@ -45,7 +48,7 @@ class TestServiceConfiguration:
         calls = []
         monkeypatch.setattr(collector.sys, "platform", "linux")
         monkeypatch.setattr(collector.subprocess, "run", _fake_run(UNIT_ENV, calls=calls))
-        assert collector._ollama_env("OLLAMA_NUM_PARALLEL") == "4"
+        assert collector._ollama_env("OLLAMA_NUM_PARALLEL", LOCAL) == "4"
         assert calls[0][:3] == ["systemctl", "show", "ollama.service"]
 
     def test_quoted_values_keep_their_spaces(self):
@@ -58,13 +61,13 @@ class TestServiceConfiguration:
         monkeypatch.setenv("OLLAMA_NUM_PARALLEL", "2")
         monkeypatch.setattr(collector.sys, "platform", "linux")
         monkeypatch.setattr(collector.subprocess, "run", _fake_run(UNIT_ENV, calls=calls))
-        assert collector._ollama_env("OLLAMA_NUM_PARALLEL") == "2"
+        assert collector._ollama_env("OLLAMA_NUM_PARALLEL", LOCAL) == "2"
         assert calls == []
 
     def test_unset_in_the_unit_reads_as_unset(self, monkeypatch, no_env):
         monkeypatch.setattr(collector.sys, "platform", "linux")
         monkeypatch.setattr(collector.subprocess, "run", _fake_run("PATH=/usr/bin"))
-        assert collector._ollama_env("OLLAMA_NUM_PARALLEL") == ""
+        assert collector._ollama_env("OLLAMA_NUM_PARALLEL", LOCAL) == ""
 
     @pytest.mark.parametrize(
         "exc",
@@ -73,28 +76,40 @@ class TestServiceConfiguration:
     def test_no_systemctl_or_a_hang_reads_as_unset(self, monkeypatch, no_env, exc):
         monkeypatch.setattr(collector.sys, "platform", "linux")
         monkeypatch.setattr(collector.subprocess, "run", _fake_run(exc=exc))
-        assert collector._ollama_env("OLLAMA_NUM_PARALLEL") == ""
+        assert collector._ollama_env("OLLAMA_NUM_PARALLEL", LOCAL) == ""
 
     def test_macos_still_asks_launchctl(self, monkeypatch, no_env):
         calls = []
         monkeypatch.setattr(collector.sys, "platform", "darwin")
         monkeypatch.setattr(collector.subprocess, "run", _fake_run("3\n", calls=calls))
-        assert collector._ollama_env("OLLAMA_NUM_PARALLEL") == "3"
+        assert collector._ollama_env("OLLAMA_NUM_PARALLEL", LOCAL) == "3"
         assert calls[0] == ["launchctl", "getenv", "OLLAMA_NUM_PARALLEL"]
 
     def test_other_platforms_shell_out_to_nothing(self, monkeypatch, no_env):
         calls = []
         monkeypatch.setattr(collector.sys, "platform", "win32")
         monkeypatch.setattr(collector.subprocess, "run", _fake_run("x", calls=calls))
-        assert collector._ollama_env("OLLAMA_NUM_PARALLEL") == ""
+        assert collector._ollama_env("OLLAMA_NUM_PARALLEL", LOCAL) == ""
         assert calls == []
+
+    def test_a_remote_ollama_reads_no_service_config(self, monkeypatch, no_env):
+        """launchd/systemd here configure this machine's Ollama, not the one we serve."""
+        calls = []
+        monkeypatch.setattr(collector.sys, "platform", "linux")
+        monkeypatch.setattr(collector.subprocess, "run", _fake_run(UNIT_ENV, calls=calls))
+        assert collector._ollama_env("OLLAMA_NUM_PARALLEL", REMOTE) == ""
+        assert calls == []
+
+    def test_a_remote_ollama_still_reads_herd_nodes_environment(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_MAX_LOADED_MODELS", "6")
+        assert collector._ollama_env("OLLAMA_MAX_LOADED_MODELS", REMOTE) == "6"
 
     def test_looked_up_once(self, monkeypatch, no_env):
         calls = []
         monkeypatch.setattr(collector.sys, "platform", "linux")
         monkeypatch.setattr(collector.subprocess, "run", _fake_run(UNIT_ENV, calls=calls))
-        collector._ollama_env("OLLAMA_NUM_PARALLEL")
-        collector._ollama_env("OLLAMA_NUM_PARALLEL")
+        collector._ollama_env("OLLAMA_NUM_PARALLEL", LOCAL)
+        collector._ollama_env("OLLAMA_NUM_PARALLEL", LOCAL)
         assert len(calls) == 1
 
 
@@ -126,6 +141,12 @@ class TestRunnerParallelism:
         """A family Ollama forces to 1 must not hide the node's real value."""
         self._with(monkeypatch, [_runner(1), _runner(4)])
         assert collector._runner_num_parallel() == 4
+
+    def test_only_runners_at_one_are_not_evidence(self, monkeypatch):
+        """Ollama forces serial models (embedders) to -np 1 whatever is configured,
+        and the command line names only a blob, so a 1 cannot be told apart."""
+        self._with(monkeypatch, [_runner(1), _runner(1)])
+        assert collector._runner_num_parallel() == 0
 
     def test_someone_elses_llama_server_is_ignored(self, monkeypatch):
         self._with(monkeypatch, [_runner(8, parent="bash")])
@@ -181,3 +202,53 @@ async def test_heartbeat_falls_back_to_the_unit_before_anything_loads(monkeypatc
     monkeypatch.setattr(collector.subprocess, "run", _fake_run(UNIT_ENV))
     payload = await collector.collect_heartbeat("n1", _ollama())
     assert payload.ollama.num_parallel == 4
+
+
+@pytest.mark.asyncio
+async def test_a_forced_np_1_runner_falls_through_to_the_config(monkeypatch, no_env):
+    """Only an embedder loaded (-np 1, forced) on a node configured for 4."""
+    psutil = pytest.importorskip("psutil")
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter([_runner(1)]))
+    monkeypatch.setattr(collector.sys, "platform", "linux")
+    monkeypatch.setattr(collector.subprocess, "run", _fake_run(UNIT_ENV))
+    payload = await collector.collect_heartbeat("n1", _ollama(), LOCAL)
+    assert payload.ollama.num_parallel == 4
+
+
+@pytest.mark.asyncio
+async def test_a_forced_np_1_runner_and_no_config_reads_unknown(monkeypatch, no_env):
+    """Unknown, not 1: so parallelism_unknown can say herd cannot see the value."""
+    psutil = pytest.importorskip("psutil")
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter([_runner(1)]))
+    monkeypatch.setattr(collector, "_service_env", lambda name: "")
+    payload = await collector.collect_heartbeat("n1", _ollama(), LOCAL)
+    assert payload.ollama.num_parallel == 0
+
+
+@pytest.mark.asyncio
+async def test_a_remote_ollama_does_not_report_this_machines_config(monkeypatch, no_env):
+    """Neither OLLAMA_NUM_PARALLEL nor OLLAMA_MAX_LOADED_MODELS from launchd/systemd here."""
+    monkeypatch.setattr(collector, "_runner_num_parallel", lambda: 0)
+    monkeypatch.setattr(collector, "_service_env", lambda name: "4")
+    payload = await collector.collect_heartbeat("n1", _ollama(), REMOTE)
+    assert payload.ollama.num_parallel == 0
+    assert payload.ollama.max_loaded_models == 0
+
+
+@pytest.mark.asyncio
+async def test_a_local_ollama_reports_its_service_cap(monkeypatch, no_env):
+    monkeypatch.setattr(collector, "_runner_num_parallel", lambda: 0)
+    monkeypatch.setattr(collector, "_service_env", lambda name: "4")
+    payload = await collector.collect_heartbeat("n1", _ollama(), LOCAL)
+    assert payload.ollama.num_parallel == 4
+    assert payload.ollama.max_loaded_models == 4
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_reports_metals_working_set(monkeypatch, no_env):
+    """Its own field, not gpu_total_gb: a cap inside RAM, not memory beside it."""
+    monkeypatch.setattr(collector, "metal_working_set_gb", lambda: 17.8)
+    monkeypatch.setattr(collector, "detect_gpu_memory", lambda: [])
+    payload = await collector.collect_heartbeat("n1", _ollama(), LOCAL)
+    assert payload.memory.gpu_working_set_gb == 17.8
+    assert payload.memory.gpu_total_gb == 0.0

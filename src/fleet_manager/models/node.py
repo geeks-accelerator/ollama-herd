@@ -80,6 +80,12 @@ class MemoryMetrics(BaseModel):
     # or "" (none).
     gpu_source: str = ""
     gpu_devices: list[GpuDevice] = Field(default_factory=list)
+    # Apple Silicon: Metal's recommendedMaxWorkingSetSize, the most of total_gb
+    # the GPU may keep resident and the budget Ollama fits models against (its
+    # "Metal total").  A cap INSIDE RAM, unlike gpu_total_gb, which is memory
+    # beside it -- never add the two.  0.0 = not reported (any other platform,
+    # Metal unavailable, an older agent).  See common/gpu_memory.metal_working_set_gb.
+    gpu_working_set_gb: float = 0.0
 
 
 class ThermalMetrics(BaseModel):

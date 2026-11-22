@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Collection
 
 from fleet_manager.models.config import ServerSettings
 from fleet_manager.models.node import MemoryPressure, NodeState, NodeStatus
@@ -38,7 +39,8 @@ class ScoringEngine:
         # scorer behaves exactly as before unless a session is threaded through.
         self._sessions = sessions
         # Backends that keep failing before their first chunk.  Written by the
-        # retry loop in StreamingProxy, read here as a penalty.
+        # retry loop in StreamingProxy; such a node is used only when nothing
+        # else is left (``_prefer``).
         self.failures = BackendFailureMemory()
 
     def score_request(
@@ -48,12 +50,17 @@ class ScoringEngine:
         estimated_tokens: int = 0,
         session_key: str = "",
         prefix_key: str = "",
+        excluded: Collection[str] = (),
     ) -> list[RoutingResult]:
         """
         Score all candidate nodes for a model request.
         Returns ranked list (highest score first), empty if no candidates survive.
+
+        ``excluded`` are nodes this request already failed on (the retry loop):
+        removed in ``_eliminate`` with the other hard filters, so every filter
+        after it, the stranding one included, sees only what is really left.
         """
-        candidates = self._eliminate(model)
+        candidates = self._eliminate(model, excluded)
         if not candidates:
             return []
 
@@ -111,9 +118,6 @@ class ScoringEngine:
             )
             breakdown["node_load"] = s3o
 
-            failing = self._score_failing(node, model)
-            breakdown["failing"] = failing
-
             s4 = self._score_wait_time(node, model, depth)
             breakdown["wait_time"] = s4
 
@@ -133,8 +137,9 @@ class ScoringEngine:
             s8p = 0.0 if s8 else self._score_prefix_affinity(node, prefix_key, depth)
             breakdown["prefix_affinity"] = s8p
 
-            total = s0 + joins + s1 + s2 + s3 + s3o + failing + s4 + s5 + s6 + s7 + s8 + s8p
+            total = s0 + joins + s1 + s2 + s3 + s3o + s4 + s5 + s6 + s7 + s8 + s8p
             breakdown["total"] = total
+            self._mark_failing(breakdown, node, model)
 
             results.append(
                 RoutingResult(
@@ -145,14 +150,16 @@ class ScoringEngine:
                 )
             )
 
-        # Never strand a model while another node can take this one, whatever
-        # the other signals say.  As a charge alone it was outweighed: with
-        # evictions that really happen, a queue penalty or two sent
+        # Nodes to use only when nothing else is left, in order (``_prefer``):
+        # a backend failing every request before its first chunk, a node in
+        # critical memory pressure while another holds the model, and a node
+        # whose load would strand a model no other node can hold.  The last:
+        # as a charge alone it was outweighed -- a queue penalty or two sent
         # qwen3-coder:30b to the 48 GB card, evicting the 35 GB model no other
-        # node could hold.  Kept when it is the only choice, and on a retry
-        # that has excluded the rest.
-        if stranding and len(stranding) < len(results):
-            results = [r for r in results if r.node_id not in stranding]
+        # node could hold.
+        results = self._prefer(results, self._failing_nodes(results, model))
+        results = self._prefer(results, self._critical_nodes(results, model))
+        results = self._prefer(results, stranding)
 
         results.sort(key=lambda r: r.score, reverse=True)
 
@@ -188,11 +195,7 @@ class ScoringEngine:
                     if winner.scores_breakdown.get("session_affinity", 0)
                     else ""
                 )
-                + (
-                    f", failing={winner.scores_breakdown['failing']:.0f}"
-                    if winner.scores_breakdown.get("failing", 0)
-                    else ""
-                )
+                + (", FAILING (only choice)" if winner.scores_breakdown.get("failing") else "")
                 + ")"
             )
 
@@ -251,7 +254,6 @@ class ScoringEngine:
                     "role_affinity": self._score_role_affinity(node, model),
                     "availability_trend": self._score_availability_trend(node),
                     "context_fit": self._score_context_fit(node, model, estimated_tokens),
-                    "failing": self._score_failing(node, model),
                 }
 
                 total = sum(breakdown.values())
@@ -264,6 +266,7 @@ class ScoringEngine:
                     breakdown["quality_bonus"] = quality_bonus
 
                 breakdown["total"] = total
+                self._mark_failing(breakdown, node, model)
                 result = RoutingResult(
                     node_id=node.node_id,
                     queue_key=queue_key,
@@ -272,14 +275,90 @@ class ScoringEngine:
                 )
                 results.append((result, model))
 
+        # The same "only if nothing else is left" rules as score_request, per
+        # node:model: a failing backend, and a node in critical pressure while
+        # another node holds the same model.  Substitution must not hand a
+        # request to a broken or swapping copy when a healthy one is loaded.
+        avoid: set[int] = set()
+        for flagged in (
+            {i for i, (r, _) in enumerate(results) if r.scores_breakdown.get("failing")},
+            self._critical_entries(results),
+        ):
+            if flagged and len(flagged | avoid) < len(results):
+                avoid |= flagged
+        results = [entry for i, entry in enumerate(results) if i not in avoid]
         results.sort(key=lambda r: r[0].score, reverse=True)
         return results
 
-    def _eliminate(self, model: str) -> list[NodeState]:
+    # -- "use only when nothing else is left" -------------------------------
+
+    @staticmethod
+    def _prefer(results: list[RoutingResult], avoid: Collection[str]) -> list[RoutingResult]:
+        """``results`` without the nodes in ``avoid``, unless that leaves none.
+
+        The one rule for a node that may serve but should not while another
+        can: it is never refused outright, so a fleet whose only candidate is
+        failing, swapping or stranding still gets an answer from it.
+        """
+        if not avoid:
+            return results
+        kept = [r for r in results if r.node_id not in avoid]
+        return kept or results
+
+    def _failing_nodes(self, results: list[RoutingResult], model: str) -> set[str]:
+        return {r.node_id for r in results if self.failures.is_failing(r.node_id, model)}
+
+    def _critical_nodes(self, results: list[RoutingResult], model: str) -> set[str]:
+        """Nodes in critical memory pressure, when another candidate not in
+        critical pressure holds ``model`` resident.
+
+        Critical pressure already withholds cold loads (``_eliminate``), so a
+        critical node here holds the model.  Sending it more decode work while
+        a healthy copy exists kept a swapping 24 GB Mac answering empty streams
+        for ten minutes (run 6).  A cold node that would have to load the model
+        is not an alternative: that load is the very thing the pressure warns
+        about, so with no healthy resident copy the critical node still serves.
+        """
+        critical: set[str] = set()
+        healthy_copy = False
+        for r in results:
+            node = self._registry.get_node(r.node_id)
+            if node is None:
+                continue
+            if node.memory and node.memory.pressure == MemoryPressure.CRITICAL:
+                critical.add(r.node_id)
+            elif model_resident_on_node(model, node):
+                healthy_copy = True
+        return critical if healthy_copy else set()
+
+    def _critical_entries(self, results: list[tuple[RoutingResult, str]]) -> set[int]:
+        """``_critical_nodes`` for auto-routing's (result, model) entries: the
+        indexes of entries on a critical node when another entry serves the
+        same model from a node that is not critical."""
+        critical: dict[str, set[int]] = {}
+        healthy: set[str] = set()
+        for i, (r, model) in enumerate(results):
+            node = self._registry.get_node(r.node_id)
+            if node and node.memory and node.memory.pressure == MemoryPressure.CRITICAL:
+                critical.setdefault(model, set()).add(i)
+            else:
+                healthy.add(model)
+        return {i for model, idx in critical.items() if model in healthy for i in idx}
+
+    def _mark_failing(self, breakdown: dict, node: NodeState, model: str) -> None:
+        """Flag a failing backend in the breakdown (not a score: ``_prefer``
+        acts on it), so the routing log and the only-choice case say so."""
+        if self.failures.is_failing(node.node_id, model):
+            breakdown["failing"] = 1.0
+
+    def _eliminate(self, model: str, excluded: Collection[str] = ()) -> list[NodeState]:
         """Stage 1: hard elimination — remove nodes that cannot serve the request."""
         survivors = []
         all_nodes = self._registry.get_all_nodes()
         for node in all_nodes:
+            if node.node_id in excluded:
+                logger.debug(f"Eliminated {node.node_id}: already failed this request")
+                continue
             if node.status == NodeStatus.OFFLINE:
                 logger.debug(f"Eliminated {node.node_id}: offline")
                 continue
@@ -592,17 +671,6 @@ class ScoringEngine:
     # correct: a warm prefix cache is worth a lot, but not worth routing into a
     # node that is about to throttle.
     SESSION_AFFINITY_BONUS = 20.0
-
-    # A backend failing every request before its first chunk (see
-    # backend_failures).  Larger than any sum of the positive signals, so any
-    # working node wins; a penalty, not an elimination, so a failing node that
-    # is the only one still gets the request.
-    FAILING_BACKEND_PENALTY = 100.0
-
-    def _score_failing(self, node: NodeState, model: str) -> float:
-        if self.failures.is_failing(node.node_id, model):
-            return -self.FAILING_BACKEND_PENALTY
-        return 0.0
 
     # Other models' queued and in-flight requests on a node count at half the
     # rate of this model's own (and through the same cap, so at most -15):

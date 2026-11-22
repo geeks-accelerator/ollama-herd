@@ -107,6 +107,56 @@ class TestPayload:
         assert hb.memory.used_gb == 8.0  # the weights are on the card, not in RAM
 
 
+class TestPerNodeMemory:
+    """``--pressure`` and ``--working-set``: per-node memory state."""
+
+    def test_defaults_report_normal_pressure_and_no_working_set(self):
+        config = ff.FleetConfig(nodes=1, models=MODELS[:1])
+        (node,) = ff.build_nodes(config)
+        body = ff.heartbeat_for(node, config, "10.0.0.2")
+        assert body["memory"]["pressure"] == "normal"
+        assert body["memory"].get("gpu_working_set_gb", 0.0) == 0.0  # 0: not reported
+
+    def test_by_index_by_id_and_star(self):
+        _, config, _ = ff.parse_args(
+            [
+                "--router", "http://r", "--nodes", "3", "--model", "a:1b:1.0",
+                "--pressure", "*=warn", "--pressure", "1=critical",
+                "--working-set", "fake-002=17.8", "--working-set", "*=107.5",
+            ]
+        )  # fmt: skip
+        nodes = ff.build_nodes(config)
+        bodies = [HeartbeatPayload(**ff.heartbeat_for(n, config, "10.0.0.2")) for n in nodes]
+        assert [b.memory.pressure for b in bodies] == ["warn", "critical", "warn"]
+        assert [b.memory.gpu_working_set_gb for b in bodies] == [107.5, 107.5, 17.8]
+
+    @pytest.mark.parametrize(
+        "flag",
+        [
+            ["--pressure", "0=hot"],
+            ["--pressure", "critical"],
+            ["--working-set", "0=lots"],
+            ["--working-set", "0=-1"],
+            ["--pressure", "5=critical"],  # no such node
+            ["--working-set", "fake-009=8"],
+        ],
+    )
+    def test_cli_refuses_bad_values_and_unknown_nodes(self, flag):
+        with pytest.raises(SystemExit):
+            ff.parse_args(["--router", "http://r", "--nodes", "2", *flag])
+
+    async def test_the_router_registers_the_pressure(self):
+        app = router_app(ServerSettings())
+        config = ff.FleetConfig(nodes=2, models=MODELS[:1], pressure={"0": "critical"})
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://router") as client:
+            fleet = ff.Fleet(config, client)
+            for node in fleet.nodes:
+                assert await fleet.post(ff.heartbeat_for(node, config, "10.0.0.2"), "hb")
+        pressure = {n.node_id: n.memory.pressure for n in app.state.registry.get_all_nodes()}
+        assert pressure == {"fake-000": "critical", "fake-001": "normal"}
+
+
 def router_app(settings: ServerSettings) -> FastAPI:
     app = FastAPI()
     app.include_router(heartbeat_routes.router)

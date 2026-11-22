@@ -379,3 +379,145 @@ class TestFaults:
         self.set_fault(c, error_rate=1.0, status=500)
         assert c.get("/api/tags").status_code == 200
         assert c.get("/api/ps").status_code == 200
+
+
+class TestMemoryBudget:
+    """``--memory-gb``: evict by model sizes, with the same wait for a busy victim."""
+
+    def backend(self, memory_gb, max_loaded=0):
+        models = [
+            mock.MockModel("a:latest", 10.0),
+            mock.MockModel("b:latest", 8.0),
+            mock.MockModel("c:latest", 12.0),
+        ]
+        return mock.Backend(models, max_loaded=max_loaded, load_ms=0.0, memory_gb=memory_gb)
+
+    def test_the_first_models_that_fit_start_resident(self):
+        assert list(self.backend(20.0).loaded) == ["a:latest", "b:latest"]
+        assert list(self.backend(0.0).loaded) == ["a:latest", "b:latest", "c:latest"]
+
+    def test_the_count_cap_and_the_budget_combine(self):
+        assert list(self.backend(100.0, max_loaded=1).loaded) == ["a:latest"]
+
+    @pytest.mark.asyncio
+    async def test_a_load_evicts_until_the_new_model_fits(self):
+        backend = self.backend(20.0)
+        await backend.acquire("c:latest")  # 12 GB: 10 + 8 + 12 > 20, then 8 + 12 = 20
+        backend.release("c:latest")
+        assert list(backend.loaded) == ["b:latest", "c:latest"]
+
+    @pytest.mark.asyncio
+    async def test_a_load_waits_for_a_busy_victim(self):
+        backend = self.backend(20.0)
+        await backend.acquire("a:latest")
+        await backend.acquire("b:latest")
+        loading = asyncio.create_task(backend.acquire("c:latest"))
+        await asyncio.sleep(0.05)
+        assert not loading.done()
+        assert backend.expiring == {"a:latest"}  # the least recently used
+        backend.release("a:latest")
+        await asyncio.wait_for(loading, 1)
+        assert list(backend.loaded) == ["b:latest", "c:latest"]
+
+    @pytest.mark.asyncio
+    async def test_a_model_bigger_than_the_budget_still_loads_alone(self):
+        backend = self.backend(9.0)
+        assert list(backend.loaded) == []  # a (10 GB) does not fit at start
+        await asyncio.wait_for(backend.acquire("c:latest"), 1)
+        assert list(backend.loaded) == ["c:latest"]
+
+    def test_over_http(self):
+        c = client(memory_gb=6.0, load_ms=1.0)
+        ps = lambda: [m["name"] for m in c.get("/api/ps").json()["models"]]  # noqa: E731
+        assert ps() == ["nomic-embed-text:latest", "llama3.2:3b"]  # 2.0 + 0.3; llava 4.7 waits
+        out = lines(c.post("/api/chat", json={**CHAT, "model": "llava:7b"}))
+        assert out[-1]["load_duration"] > 0
+        assert ps() == ["llava:7b", "nomic-embed-text:latest"]  # 4.7 + 0.3 fits; llama went
+
+
+class TestPrefill:
+    """``--prefill-ms-per-token`` with a per-prefix prompt cache per model."""
+
+    def chat(self, content: str, model: str = "llama3.2:3b") -> dict:
+        return {"model": model, "messages": [{"role": "user", "content": content}]}
+
+    def done(self, c: TestClient, body: dict, stream: bool = True) -> dict:
+        if stream:
+            return lines(c.post("/api/chat", json=body))[-1]
+        return c.post("/api/chat", json={**body, "stream": False}).json()
+
+    def test_off_by_default_reports_the_delay_as_before(self):
+        c = client(delay_ms=5.0)
+        assert self.done(c, self.chat("x" * 4000))["prompt_eval_duration"] == 5_000_000
+
+    @pytest.mark.parametrize("stream", [True, False])
+    def test_a_cold_prompt_pays_for_every_token(self, stream):
+        c = client(prefill_ms_per_token=0.1)
+        done = self.done(c, self.chat("x" * 4000), stream)  # 1000 tokens
+        assert done["prompt_eval_count"] == 1000
+        assert done["prompt_eval_duration"] == pytest.approx(100e6)
+        assert done["total_duration"] >= 100e6
+
+    @pytest.mark.parametrize("stream", [True, False])
+    def test_a_shared_prefix_pays_only_for_the_suffix(self, stream):
+        c = client(prefill_ms_per_token=0.1)
+        self.done(c, self.chat("x" * 4000), stream)
+        follow = {
+            "model": "llama3.2:3b",
+            "messages": [
+                {"role": "user", "content": "x" * 4000},
+                {"role": "assistant", "content": "y" * 400},
+            ],
+        }
+        done = self.done(c, follow, stream)
+        assert done["prompt_eval_count"] == 1100  # full prompt, cached tokens included
+        assert done["prompt_eval_duration"] == pytest.approx(10e6)  # 100 uncached tokens
+
+    def test_an_identical_prompt_still_evaluates_one_token(self):
+        c = client(prefill_ms_per_token=1.0)
+        self.done(c, self.chat("x" * 400))
+        assert self.done(c, self.chat("x" * 400))["prompt_eval_duration"] == pytest.approx(1e6)
+
+    def test_the_cache_is_per_model(self):
+        c = client(prefill_ms_per_token=0.1)
+        self.done(c, self.chat("x" * 4000))
+        other = self.done(c, self.chat("x" * 4000, model="llava:7b"))
+        assert other["prompt_eval_duration"] == pytest.approx(100e6)
+
+    def test_an_unload_empties_the_cache(self):
+        c = client(prefill_ms_per_token=0.1)
+        self.done(c, self.chat("x" * 4000))
+        c.post("/api/generate", json={"model": "llama3.2:3b", "keep_alive": 0})
+        again = self.done(c, self.chat("x" * 4000))
+        assert again["prompt_eval_duration"] == pytest.approx(100e6)
+
+    def test_the_cache_keeps_the_last_slots_prompts(self):
+        backend = mock.Backend([mock.MockModel("a:latest", 1.0)], max_loaded=0, load_ms=0.0)
+        for i in range(mock.PROMPT_CACHE_SLOTS + 1):
+            backend.remember_prompt("a:latest", f"{i}" * 40)
+        assert backend.cached_tokens("a:latest", "0" * 40) == 0  # the oldest went
+        assert backend.cached_tokens("a:latest", "1" * 40 + "z") == 10
+
+
+class TestStreamErrorFault:
+    def test_a_runner_death_arrives_as_a_200_stream_with_one_error_line(self):
+        c = client()
+        c.post("/_mock/fault", json={"stream_error": mock.RUNNER_DIED})
+        resp = c.post("/api/chat", json=CHAT)
+        assert resp.status_code == 200
+        (line,) = lines(resp)
+        message = ollama_stream_error(line)
+        assert message == mock.RUNNER_DIED
+        assert categorize_error(message) not in ("context_too_long", "bad_request")
+
+    def test_unstreamed_it_is_a_500_with_the_text(self):
+        c = client(fault={"stream_error": mock.RUNNER_DIED})
+        resp = c.post("/api/chat", json={**CHAT, "stream": False})
+        assert resp.status_code == 500
+        assert resp.json() == {"error": mock.RUNNER_DIED}
+
+    def test_models_filter_and_release(self):
+        c = client(fault={"stream_error": "boom", "models": ["llava:7b"]})
+        assert len(lines(c.post("/api/chat", json=CHAT))) == 2  # chunk + done
+        assert lines(c.post("/api/chat", json={**CHAT, "model": "llava:7b"})) == [{"error": "boom"}]
+        assert not any(c.app.state.backend.busy.values())

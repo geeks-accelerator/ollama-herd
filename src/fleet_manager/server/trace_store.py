@@ -13,6 +13,7 @@ from pathlib import Path
 
 import aiosqlite
 
+from fleet_manager.common.errors import CLIENT_ERROR_CATEGORIES
 from fleet_manager.common.stats import percentile
 
 logger = logging.getLogger(__name__)
@@ -1432,12 +1433,10 @@ class TraceStore:
                 row["last_ts"] = max(row["last_ts"], ts)
         return out
 
-    # Categories that describe the request, not the backend: a node answering
-    # these is working.  Everything else that fails before the first token
+    # Categories that describe the request, not the backend (one definition,
+    # in common.errors).  Everything else that fails before the first token
     # counts against the backend in ``get_failing_backends``.
-    CLIENT_ERROR_CATEGORIES = frozenset(
-        {"bad_request", "context_too_long", "model_not_found", "permission_error"}
-    )
+    CLIENT_ERROR_CATEGORIES = CLIENT_ERROR_CATEGORIES
 
     async def get_failing_backends(
         self, lookback_s: int = 300, min_failures: int = 3

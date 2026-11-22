@@ -93,8 +93,8 @@ class TestScoring:
         for _ in range(3):
             scorer.failures.record_failure("s2", MODEL, WEDGED)
         results = scorer.score_request(MODEL, {f"s1:{MODEL}": 4})
-        assert [r.node_id for r in results] == ["s1", "s2"]
-        assert results[1].scores_breakdown["failing"] == -ScoringEngine.FAILING_BACKEND_PENALTY
+        # Used only when nothing else is left: with a working node it is gone.
+        assert [r.node_id for r in results] == ["s1"]
 
     async def test_a_failing_node_is_still_a_candidate_when_alone(self):
         settings = ServerSettings()
@@ -105,15 +105,16 @@ class TestScoring:
         scorer = ScoringEngine(settings, registry)
         for _ in range(3):
             scorer.failures.record_failure("s2", MODEL)
-        assert [r.node_id for r in scorer.score_request(MODEL, {})] == ["s2"]
+        results = scorer.score_request(MODEL, {})
+        assert [r.node_id for r in results] == ["s2"]
+        assert results[0].scores_breakdown["failing"] == 1.0
 
     async def test_auto_routing_sees_it_too(self):
         scorer = await self._two_nodes()
         for _ in range(3):
             scorer.failures.record_failure("s2", MODEL)
         ranked = scorer.score_loaded_models(None, {})
-        assert ranked[0][0].node_id == "s1"
-        assert ranked[-1][0].scores_breakdown["failing"] < 0
+        assert [r.node_id for r, _ in ranked] == ["s1"]
 
 
 DONE = "\n".join(
@@ -240,3 +241,46 @@ def test_health_check_names_the_node_and_the_fix():
     assert r.node_id == "s2" and MODEL in r.title
     assert "Restart Ollama on s2" in r.fix
     assert HealthEngine()._check_backend_failing([]) == []
+
+
+class TestFailingVersusEviction:
+    """A failing backend used to be a -100 penalty, outweighed by the swing
+    between a hot model with a pinned conversation (+50 thermal, +20 session)
+    and a working node that has to evict a busy model (+10, eviction -40)."""
+
+    async def test_a_working_node_that_must_evict_beats_a_hot_failing_one(self):
+        from fleet_manager.server.session_affinity import SessionAffinityTracker
+
+        settings = ServerSettings()
+        registry = NodeRegistry(settings)
+        await registry.update_from_heartbeat(
+            make_heartbeat(
+                node_id="hot",
+                memory_total=64.0,
+                loaded_models=[(MODEL, 13.0)],
+                available_models=[MODEL, "other:7b"],
+            )
+        )
+        await registry.update_from_heartbeat(
+            make_heartbeat(
+                node_id="full",
+                memory_total=24.0,
+                memory_used=20.0,
+                loaded_models=[("other:7b", 13.0)],
+                available_models=[MODEL, "other:7b"],
+            )
+        )
+        sessions = SessionAffinityTracker()
+        sessions.remember("conv-1", "hot")
+        scorer = ScoringEngine(settings, registry, sessions=sessions)
+        busy = {"full:other:7b": 2}
+        healthy = {
+            r.node_id: r.score for r in scorer.score_request(MODEL, busy, session_key="conv-1")
+        }
+        assert healthy["hot"] - healthy["full"] > 100  # the old penalty could not close it
+
+        for _ in range(3):
+            scorer.failures.record_failure("hot", MODEL)
+        (winner,) = scorer.score_request(MODEL, busy, session_key="conv-1")
+        assert winner.node_id == "full"
+        assert winner.scores_breakdown["eviction"] < 0

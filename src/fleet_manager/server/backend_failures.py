@@ -15,8 +15,8 @@ ones the retry treats as retryable), and forgets on the first success.  Once a
 backend reaches ``THRESHOLD`` it is *failing* for ``COOL_OFF_S`` after its last
 failure: long enough that a burst of traffic goes elsewhere, short enough that
 one request probes it again soon and a recovered backend gets its traffic back.
-It is a penalty in the scorer, never an elimination, so a fleet whose only node
-is failing still tries it.
+The scorer uses such a node only when nothing else is left (``ScoringEngine._prefer``),
+never refuses it, so a fleet whose only node is failing still tries it.
 """
 
 from __future__ import annotations

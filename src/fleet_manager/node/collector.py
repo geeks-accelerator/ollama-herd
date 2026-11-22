@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 from fleet_manager import __version__
 from fleet_manager.common.binaries import which_extended
-from fleet_manager.common.gpu_memory import detect_gpu_memory
+from fleet_manager.common.gpu_memory import detect_gpu_memory, metal_working_set_gb
 from fleet_manager.common.ollama_client import OllamaClient
 from fleet_manager.common.process_memory import probe_process_memory
 from fleet_manager.common.system_metrics import (
@@ -125,7 +125,7 @@ def _collect_backend_clients(ollama_host: str, router_url: str = ""):
     return probe_backend_clients(ollama_host, router_url)
 
 
-def _ollama_env(name: str) -> str:
+def _ollama_env(name: str, ollama_host: str) -> str:
     """Read an Ollama setting: herd-node's own environment, else Ollama's service.
 
     Ollama is normally started by the OS, not by the shell herd-node runs in, so
@@ -139,11 +139,19 @@ def _ollama_env(name: str) -> str:
       its unit reported 0 and the router sent it one request at a time.
 
     herd-node's own environment still wins when set: it is what an Ollama that
-    herd-node started itself, or one started from the same shell, uses.
+    herd-node started itself, or one started from the same shell, uses -- and
+    the only source for an Ollama on another machine.
+
+    The service configuration is read only when ``ollama_host`` is this
+    machine: launchd or systemd here configure *this* machine's Ollama, and a
+    node serving a remote one would otherwise report the local values as the
+    remote's.
     """
     val = os.environ.get(name, "").strip()
     if val:
         return val
+    if not _is_this_machine(ollama_host):
+        return ""
     if name not in _SERVICE_ENV_CACHE:
         _SERVICE_ENV_CACHE[name] = _service_env(name)
     return _SERVICE_ENV_CACHE[name]
@@ -231,9 +239,17 @@ def _runner_num_parallel() -> int:
     parallelism it actually applied, after its own rules (families it forces to
     1, its default).  That beats any configuration file, wherever Ollama was
     configured.  The largest across runners is the node's value; per-model
-    exceptions are handled router-side (``decode_parallelism_for``).  0 when no
-    Ollama runner is visible (nothing loaded, or a container that can't see
-    host processes): the caller falls back to the configured value.
+    exceptions are handled router-side (``decode_parallelism_for``).
+
+    **Only a value above 1 is evidence.**  Ollama forces serial models
+    (embedders, ``OLLAMA_SERIAL_FAMILIES``) to ``-np 1`` whatever is
+    configured, and the command line names only a blob, not the model, so a
+    runner at 1 cannot tell "configured 1" from "forced 1".  A node whose only
+    resident was an embedder read as 1 while configured for 4.  0 when no
+    runner shows more than 1 (nothing loaded, only serial models, or a
+    container that can't see host processes): the caller falls back to the
+    configured value, and with none the router assumes Ollama's default of 1
+    anyway, so the ambiguous case routes the same.
     """
     try:
         import psutil
@@ -257,7 +273,7 @@ def _runner_num_parallel() -> int:
             if flag in ("-np", "--parallel"):
                 with contextlib.suppress(ValueError):
                     best = max(best, int(value))
-    return best
+    return best if best > 1 else 0
 
 
 @functools.lru_cache(maxsize=1)
@@ -715,6 +731,9 @@ async def collect_heartbeat(
     cpu = get_cpu_metrics()
     memory = get_memory_metrics()
     _add_gpu_memory(memory, gpu_memory_gb)
+    # Read once per process (cached); a cap inside RAM, independent of the
+    # GPU-memory override above, which is memory beside it.
+    memory.gpu_working_set_gb = metal_working_set_gb()
     thermal = get_thermal_metrics()
     disk = get_disk_metrics()
 
@@ -771,7 +790,7 @@ async def collect_heartbeat(
     # configuration (``_ollama_env``: our environment, else Ollama's service).
     # 0 means "unset/unknown"; the router then falls back to Ollama's default.
     max_loaded_models = 0
-    raw_cap = _ollama_env("OLLAMA_MAX_LOADED_MODELS")
+    raw_cap = _ollama_env("OLLAMA_MAX_LOADED_MODELS", ollama_host)
     if raw_cap:
         try:
             parsed = int(raw_cap)
@@ -785,16 +804,18 @@ async def collect_heartbeat(
     # OLLAMA_NUM_PARALLEL — Ollama's per-model decode concurrency.  0 = unknown.
     # 1. Set for herd-node itself: the operator's explicit word (and the only
     #    source a container has).
-    # 2. The -np this machine's Ollama started its running models with: what it
-    #    actually applied.  Only when the Ollama we serve is on this machine:
-    #    runners on this host belong to some other Ollama otherwise (a node
-    #    pointed at a mock or a remote Ollama read the local one's -np 1).
-    # 3. Ollama's service configuration (launchd, systemd), before anything loads.
+    # 2. The -np this machine's Ollama started its running models with, when
+    #    above 1: what it actually applied (a 1 may be forced, see
+    #    _runner_num_parallel).  Only when the Ollama we serve is on this
+    #    machine: runners on this host belong to some other Ollama otherwise (a
+    #    node pointed at a mock or a remote Ollama read the local one's -np 1).
+    # 3. Ollama's service configuration (launchd, systemd), before anything
+    #    loads or when only serial models are loaded; this machine only.
     num_parallel = _positive_int(os.environ.get("OLLAMA_NUM_PARALLEL", ""))
     if not num_parallel and _is_this_machine(ollama_host):
         num_parallel = _runner_num_parallel()
     if not num_parallel:
-        num_parallel = _positive_int(_ollama_env("OLLAMA_NUM_PARALLEL"))
+        num_parallel = _positive_int(_ollama_env("OLLAMA_NUM_PARALLEL", ollama_host))
 
     # MLX backend — the supervisor set drives heartbeat.mlx_servers; each
     # healthy server's model is added to models_available with an mlx: prefix.

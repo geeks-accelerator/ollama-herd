@@ -40,6 +40,7 @@ from fleet_manager.server.routes.routing import (
     embedding_count_mismatch,
     record_routing_rejection,
 )
+from fleet_manager.server.streaming import post_idempotent
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +241,13 @@ async def proxy_to_native_text_server(
     # Forward the request body as-is to the node's native server
     timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
     try:
-        resp = await client.post(kind.path, json=body, timeout=timeout)
+        resp = await post_idempotent(
+            client,
+            kind.path,
+            label=f"{kind.label.capitalize()} on {best.node_id}",
+            json=body,
+            timeout=timeout,
+        )
     except httpx.ReadTimeout:
         err_msg = "ReadTimeout — model may still be downloading" + (
             f" ({size} MB on first request)" if size else " on first request"

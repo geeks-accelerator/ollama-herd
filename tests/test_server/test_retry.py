@@ -35,9 +35,17 @@ def _make_entry(model="phi4:14b", node_id="node-a"):
 
 
 def _mock_scorer(score_fn=None):
+    """A scorer whose ``score_request`` returns ``score_fn(model, depths)``
+    without the nodes the request already failed on: the real scorer removes
+    ``excluded`` itself, and the retry no longer filters after it."""
     scorer = MagicMock()
     if score_fn:
-        scorer.score_request.side_effect = score_fn
+
+        def score_request(model, depths, **kw):
+            excluded = set(kw.get("excluded", ()))
+            return [r for r in score_fn(model, depths) if r.node_id not in excluded]
+
+        scorer.score_request.side_effect = score_request
     else:
         scorer.score_request.return_value = []
     return scorer
@@ -82,7 +90,9 @@ class TestIsRetryableError:
         # retrying a saturated node amplifies the flood (2026-07-15 incident).
         response = MagicMock()
         response.status_code = 503
-        response.text = '{"error":"server busy, please try again.  maximum pending requests exceeded"}'
+        response.text = (
+            '{"error":"server busy, please try again.  maximum pending requests exceeded"}'
+        )
         err = httpx.HTTPStatusError("busy", request=MagicMock(), response=response)
         assert StreamingProxy._is_queue_full_error(err) is True
         assert StreamingProxy._is_retryable_error(err) is False
@@ -136,7 +146,9 @@ class TestStreamWithRetry:
         settings = ServerSettings(max_retries=2)
 
         node_b_result = RoutingResult(
-            node_id="node-b", queue_key="node-b:phi4:14b", score=70.0,
+            node_id="node-b",
+            queue_key="node-b:phi4:14b",
+            score=70.0,
             scores_breakdown={"thermal": 30},
         )
         scorer = _mock_scorer(score_fn=lambda model, depths: [node_b_result])
@@ -207,7 +219,9 @@ class TestStreamWithRetry:
         settings = ServerSettings(max_retries=1)
 
         node_b_result = RoutingResult(
-            node_id="node-b", queue_key="node-b:phi4:14b", score=70.0,
+            node_id="node-b",
+            queue_key="node-b:phi4:14b",
+            score=70.0,
         )
         scorer = _mock_scorer(score_fn=lambda model, depths: [node_b_result])
         entry = _make_entry(node_id="node-a")
@@ -241,9 +255,7 @@ class TestStreamWithRetry:
         response.status_code = 400
 
         async def client_error(node_id, request, pin=True):
-            raise httpx.HTTPStatusError(
-                "bad request", request=MagicMock(), response=response
-            )
+            raise httpx.HTTPStatusError("bad request", request=MagicMock(), response=response)
             yield  # makes this an async generator
 
         proxy.stream_from_node = client_error
@@ -271,9 +283,13 @@ class TestStreamWithRetry:
             nonlocal call_num
             call_num += 1
             node_id = f"node-{chr(97 + call_num)}"  # node-b, node-c
-            return [RoutingResult(
-                node_id=node_id, queue_key=f"{node_id}:{model}", score=50.0,
-            )]
+            return [
+                RoutingResult(
+                    node_id=node_id,
+                    queue_key=f"{node_id}:{model}",
+                    score=50.0,
+                )
+            ]
 
         scorer = _mock_scorer(score_fn=scoring)
         entry = _make_entry(node_id="node-a")
@@ -370,7 +386,9 @@ class TestTraceReliability:
         settings = ServerSettings(max_retries=1)
 
         node_b = RoutingResult(
-            node_id="node-b", queue_key="node-b:phi4:14b", score=70.0,
+            node_id="node-b",
+            queue_key="node-b:phi4:14b",
+            score=70.0,
         )
         scorer = _mock_scorer(score_fn=lambda model, depths: [node_b])
         entry = _make_entry(node_id="node-a")
@@ -383,7 +401,11 @@ class TestTraceReliability:
 
         with pytest.raises(httpx.ConnectError):
             async for _ in proxy._stream_with_retry(
-                entry, "node-a:phi4:14b", queue_mgr, scorer, settings,
+                entry,
+                "node-a:phi4:14b",
+                queue_mgr,
+                scorer,
+                settings,
             ):
                 pass
 
@@ -391,9 +413,7 @@ class TestTraceReliability:
         for _ in range(5):
             await asyncio.sleep(0)
 
-        statuses = [
-            c.kwargs.get("status") for c in trace_store.record_trace.call_args_list
-        ]
+        statuses = [c.kwargs.get("status") for c in trace_store.record_trace.call_args_list]
         assert "failed" in statuses  # terminal outcome recorded
         assert "retried" in statuses  # earlier attempt still recorded
 
@@ -422,7 +442,10 @@ class TestClientDisconnectMidGeneration:
 
         async def route_task():
             async for _ in proxy._stream_with_retry(
-                entry, "node-a:phi4:14b", queue_mgr, _mock_scorer(),
+                entry,
+                "node-a:phi4:14b",
+                queue_mgr,
+                _mock_scorer(),
                 ServerSettings(max_retries=2),
             ):
                 pass

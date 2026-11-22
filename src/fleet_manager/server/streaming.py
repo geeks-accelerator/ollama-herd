@@ -12,12 +12,15 @@ from collections.abc import AsyncIterator, Callable
 import httpx
 
 from fleet_manager.common.errors import (
+    CLIENT_ERROR_STATUS,
     UPSTREAM_INCOMPLETE_MESSAGE,
     backend_error_detail,
+    categorize_error,
     describe_backend_stream_error,
     describe_exception,
     describe_upstream_incomplete,
     error_body,
+    ollama_line_has_output,
     ollama_stream_error,
 )
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
@@ -26,6 +29,25 @@ from fleet_manager.server.registry import NodeRegistry
 from fleet_manager.server.tool_call_repair import recover_tool_call_from_ollama_error
 
 logger = logging.getLogger(__name__)
+
+
+async def post_idempotent(client: httpx.AsyncClient, path: str, *, label: str, **kwargs):
+    """POST an idempotent request (an embedding, a rerank), retrying once when
+    the pooled connection it reused had just been closed by the server.
+
+    ``ReadError`` / ``RemoteProtocolError`` on a kept-alive connection is that
+    case: run 6 lost 3 of about 23,000 vision embeddings to it while the node's
+    server answered in ~20 ms throughout.  One immediate retry opens a fresh
+    connection.  Timeouts and refused connections are not retried here: they
+    say the server is in trouble, not the connection.  Only for requests that
+    are safe to send twice -- never image generation or transcription submit.
+    """
+    try:
+        return await client.post(path, **kwargs)
+    except (httpx.ReadError, httpx.RemoteProtocolError) as e:
+        logger.info(f"{label}: {type(e).__name__} on a reused connection, retrying once")
+        return await client.post(path, **kwargs)
+
 
 # Context protection event tracking (same pattern as VRAM fallbacks in routing.py)
 _context_protection_events: list[dict] = []
@@ -841,9 +863,16 @@ class StreamingProxy:
                 # excluding [...]") after a "retried" trace -- so a request that
                 # failed on its only node left no terminal trace, and a backend
                 # 404 "model not found" reached the client as an opaque 502.
-                queue_depths = queue_manager.get_queue_depths()
-                results = scorer.score_request(entry.request.model, queue_depths)
-                results = [r for r in results if r.node_id not in excluded_nodes]
+                # Exclusion happens inside the scorer, before its "only if
+                # nothing else is left" filters, so a node they set aside (one
+                # that would strand a model, say) is still there for a retry
+                # that has excluded the rest.
+                results = scorer.score_request(
+                    entry.request.model,
+                    queue_manager.get_queue_depths(),
+                    estimated_tokens=entry.request.estimated_tokens or 0,
+                    excluded=excluded_nodes,
+                )
 
                 if not results:
                     queue_manager.mark_failed(current_queue_key, entry)
@@ -1093,6 +1122,11 @@ class StreamingProxy:
         # The message of an {"error": ...} line, which ends a stream instead of
         # done:true.  The OpenAI terminal below tells the client this, not "retry".
         stream_error: str | None = None
+        # Error lines that arrived before anything with output.  Held back:
+        # a stream that sends only an error produced nothing, so it must not
+        # start the response (a 200) -- it is retried on a peer or answered
+        # with the backend's status below.  Sent in order once output appears.
+        held_errors: list[str] = []
 
         async with client.stream("POST", endpoint, json=ollama_body) as response:
             if response.status_code >= 400:
@@ -1107,6 +1141,7 @@ class StreamingProxy:
             ):
                 if not line:
                     continue
+                line_error = None
                 # Extract token counts and thinking/output breakdown
                 try:
                     parsed = json.loads(line)
@@ -1164,17 +1199,35 @@ class StreamingProxy:
                         }
                 except json.JSONDecodeError:
                     logger.warning(f"Malformed JSON from Ollama on {node_id}: {line[:200]}")
-                # Yield in the appropriate format
-                yielded_any = True
-                if request.original_format == RequestFormat.OPENAI:
-                    yield self._ollama_to_openai_sse(
-                        line, request.model, prior_tool_calls=saw_tool_calls
-                    )
-                else:
-                    yield line + "\n"
+                    parsed = None
+                if not yielded_any and line_error and not ollama_line_has_output(parsed):
+                    held_errors.append(line)
+                    continue
+                for out in (*held_errors, line):
+                    yielded_any = True
+                    if request.original_format == RequestFormat.OPENAI:
+                        yield self._ollama_to_openai_sse(
+                            out, request.model, prior_tool_calls=saw_tool_calls
+                        )
+                    else:
+                        yield out + "\n"
+                held_errors.clear()
 
         if not saw_done and not yielded_any:
             backend_error = self._request_backend_error.pop(request.request_id, None)
+            # Only an error, and one about the request (too long, malformed,
+            # not found): answered as the status the backend meant, not
+            # retried -- every peer would refuse it too, and each refusal would
+            # count the peer as failing.  Anything else is the node's trouble.
+            status = CLIENT_ERROR_STATUS.get(categorize_error(backend_error))
+            if backend_error and status:
+                raise httpx.HTTPStatusError(
+                    f"HTTP {status}: {backend_error}",
+                    request=response.request,
+                    response=httpx.Response(
+                        status, json={"error": backend_error}, request=response.request
+                    ),
+                )
             raise EmptyUpstreamStream(
                 f"{node_id} ended the stream with no output"
                 + (f": {backend_error}" if backend_error else "")
@@ -1517,20 +1570,13 @@ class StreamingProxy:
             raise ValueError(f"Node {node_id} not found")
         client = self._get_client(node_id, port=node.vision_embedding_port or 11438)
         request_timeout = httpx.Timeout(connect=10.0, read=timeout, write=10.0, pool=10.0)
-        # One retry for a kept-alive connection the server closed as we reused
-        # it (ReadError / RemoteProtocolError): an embedding is idempotent, and
-        # httpx opens a fresh connection for the second try.  Run 6's full-load
-        # demo lost 3 of ~23,000 vision embeddings this way while the node's
-        # server kept answering in ~20 ms.  Timeouts and refused connections are
-        # not retried: those say the server is in trouble, not the connection.
-        for attempt in (1, 2):
-            try:
-                resp = await client.post("/embed", json=body, timeout=request_timeout)
-                break
-            except (httpx.ReadError, httpx.RemoteProtocolError) as e:
-                if attempt == 2:
-                    raise
-                logger.info(f"Vision embedding on {node_id}: {type(e).__name__}, retrying once")
+        resp = await post_idempotent(
+            client,
+            "/embed",
+            label=f"Vision embedding on {node_id}",
+            json=body,
+            timeout=request_timeout,
+        )
         resp.raise_for_status()
         return resp.json()
 

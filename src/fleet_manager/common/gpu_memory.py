@@ -21,11 +21,16 @@ Linux only.  Reading sysfs needs no extra tools and works inside a container,
 where ``/sys`` is visible; ``nvidia-smi`` exists in a container only under
 ``--gpus``.  Every failure reads as "no GPU memory found", never as 0 GB of a
 GPU that exists, and nothing here raises.
+
+Apple Silicon's limit is the other way round -- a cap inside RAM, not memory
+beside it -- and is reported separately by :func:`metal_working_set_gb`.
 """
 
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import functools
 import logging
 import platform
 import re
@@ -37,6 +42,8 @@ from fleet_manager.models.node import GpuDevice
 
 logger = logging.getLogger(__name__)
 
+METAL_FRAMEWORK = "/System/Library/Frameworks/Metal.framework/Metal"
+OBJC_RUNTIME = "/usr/lib/libobjc.A.dylib"
 DRM_ROOT = Path("/sys/class/drm")
 _CARD = re.compile(r"^card\d+$")  # card0, not connectors like card0-HDMI-A-1
 _GB = 1024**3
@@ -126,3 +133,60 @@ def _nvidia_devices(nvidia_smi: str | None) -> list[GpuDevice]:
             )
         )
     return devices
+
+
+@functools.lru_cache(maxsize=1)
+def metal_working_set_gb() -> float:
+    """Metal's ``recommendedMaxWorkingSetSize`` in GB on Apple Silicon, else 0.0.
+
+    The most memory macOS lets the GPU keep resident, and the budget Ollama
+    fits models against (its log's ``Metal total``).  It is a cap **inside**
+    RAM, not memory beside it, so it is deliberately not a backend of
+    :func:`detect_gpu_memory`: ``gpu_total_gb`` is added to RAM, and adding
+    this would count unified memory twice.  On a 128 GiB M3 Ultra it reads
+    107.5 GiB; on a 24 GB M4 Ollama reports 17.8 GiB, so a node judged by RAM
+    alone accepts models Ollama then spills or swaps.
+
+    Read once through ``ctypes`` (no compile step, no dependency): it changes
+    only with ``iogpu.wired_limit_mb``, which needs a reboot to apply to Ollama
+    anyway.  Apple Silicon only -- on an Intel Mac the default device is a
+    discrete or integrated GPU whose figure means something else.  Every
+    failure reads 0.0 ("not reported"), and nothing here raises.
+    """
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        return 0.0
+    try:
+        size = _metal_recommended_working_set(ctypes.CDLL)
+    except (OSError, AttributeError, ValueError, TypeError) as exc:
+        logger.debug("Metal working set unavailable: %s: %s", type(exc).__name__, exc)
+        return 0.0
+    return round(size / _GB, 2) if size > 0 else 0.0
+
+
+def _metal_recommended_working_set(cdll) -> int:
+    """``[MTLCreateSystemDefaultDevice() recommendedMaxWorkingSetSize]`` in bytes.
+
+    ``restype``/``argtypes`` are set on every function: ctypes defaults to a C
+    ``int`` return, which would truncate the device pointer and the 64-bit
+    size.  Fresh ``CDLL`` handles, so these settings touch no one else's.
+    """
+    metal = cdll(METAL_FRAMEWORK)
+    objc = cdll(OBJC_RUNTIME)
+    create = metal.MTLCreateSystemDefaultDevice
+    create.restype = ctypes.c_void_p
+    create.argtypes = []
+    device = create()
+    if not device:
+        return 0  # no Metal device (a VM, a headless session without one)
+    sel = objc.sel_registerName
+    sel.restype = ctypes.c_void_p
+    sel.argtypes = [ctypes.c_char_p]
+    send = objc.objc_msgSend
+    send.restype = ctypes.c_uint64
+    send.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    try:
+        return int(send(device, sel(b"recommendedMaxWorkingSetSize")))
+    finally:
+        # MTLCreateSystemDefaultDevice returns a +1 reference.  Same void(id, SEL)
+        # shape; the uint64 restype is ignored for a void method.
+        send(device, sel(b"release"))

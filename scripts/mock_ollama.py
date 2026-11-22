@@ -18,7 +18,18 @@ way Ollama fails:
   Loads are scheduled as Ollama schedules them (``Backend``): one at a time, a
   load waits while every resident model is serving, and a request's
   ``keep_alive`` re-arms a resident model an eviction is waiting for.
+  ``--memory-gb G`` caps resident model sizes instead of (or as well as) the
+  count: a load evicts until the models left plus the new one fit in G, with
+  the same wait for a busy victim.  A model bigger than G alone still loads
+  into an empty backend, as Ollama spills it partly to the CPU.
   ``GET /_mock/state`` adds the model being loaded, which ``/api/ps`` omits
+* prompt processing: ``--prefill-ms-per-token`` charges each prompt token
+  (chars / 4) not already in the model's prompt cache, before the first chunk.
+  The cache keeps the last ``PROMPT_CACHE_SLOTS`` prompts per model, like
+  llama-server's slots: a prompt sharing a prefix with one of them pays only
+  for the rest, and an unload empties it.  The done line reports the full
+  ``prompt_eval_count`` (cached tokens included, as Ollama does) and
+  ``prompt_eval_duration`` (``--delay-ms`` plus the prefill time)
 * faults, at startup by flag or at runtime with ``POST /_mock/fault`` (a JSON
   object that *replaces* the current fault; ``{}`` clears it) and read back
   with ``GET /_mock/fault``:
@@ -32,19 +43,26 @@ way Ollama fails:
                         the first); -1 is off
   ``context_limit``     prompt-token estimate (chars / 4) above which Ollama's
                         context-too-long error is returned; 0 is off
+  ``stream_error``      error text a streamed request gets as the only line of a
+                        200 stream (non-streamed: a 500 with that text), e.g.
+                        ``llama runner process has terminated: exit status 2``,
+                        which is not a client error; "" is off
   ``models``            restrict the fault to these models; empty = all
 
     python scripts/mock_ollama.py --port 11500 --delay-ms 20
     python scripts/mock_ollama.py --model llama3.2:3b:2.0 --model nomic-embed-text:0.3 \\
         --chunks 20 --chunk-delay-ms 10 --max-loaded 1 --load-ms 2000
     curl -s localhost:11500/_mock/fault -d '{"die_after_chunks": 5, "models": ["llama3.2:3b"]}'
+    python scripts/mock_ollama.py --model a:7b:15 --model b:7b:12 --memory-gb 24 \\
+        --load-ms 3000 --prefill-ms-per-token 0.5
     FLEET_NODE_OLLAMA_HOST=http://127.0.0.1:11500 herd-node   # registers the models
 
 One process tops out around 200 requests/s, below what the router it measures
 can take; ``--workers`` runs several, so the stand-in is never the bottleneck.
 With ``--workers`` the fault is kept in a temp file every worker reads, so a
-runtime fault reaches all of them; loaded-model (LRU) state stays per worker,
-so run load/eviction experiments with one worker.
+runtime fault reaches all of them; loaded-model (LRU) state and the prompt
+cache stay per worker, so run load, eviction and prefix-cache experiments with
+one worker.
 """
 
 from __future__ import annotations
@@ -70,6 +88,9 @@ from fleet_manager.server.model_knowledge import ModelType, model_type
 
 DEFAULT_MODEL = "mock:latest"
 DEFAULT_SIZE_GB = 0.001  # the 1,000,000-byte model the router-overhead runs used
+# Prompts remembered per model for prefix reuse: llama-server keeps one per slot,
+# and Ollama's default OLLAMA_NUM_PARALLEL on a large machine is 4.
+PROMPT_CACHE_SLOTS = 4
 
 # Ollama's own error texts: the router classifies failures by these
 # (``streaming._is_queue_full_error``, ``_is_model_not_found_error``,
@@ -158,6 +179,7 @@ class Fault:
     latency_ms: float = 0.0
     die_after_chunks: int = -1
     context_limit: int = 0
+    stream_error: str = ""
     models: list[str] = field(default_factory=list)
 
     @classmethod
@@ -236,7 +258,9 @@ class MockConfig:
     chunks: int = 1
     chunk_delay_ms: float = 0.0
     max_loaded: int = 0
+    memory_gb: float = 0.0
     load_ms: float = 0.0
+    prefill_ms_per_token: float = 0.0
     context_length: int = 4096
     embed_dim: int = 768
     seed: int | None = None
@@ -264,16 +288,33 @@ class Backend:
       0``) and waits for that, with no timeout, while the queue behind it waits
       too.  A client that leaves does not end the wait.
 
-    ``/api/ps`` lists a model until it is really gone.  ``max_loaded`` 0 means
-    no cap: nothing is ever evicted for a load.
+    "Needs a slot" is the count cap (``max_loaded``) or the memory budget
+    (``memory_gb``, the sizes of the resident models plus the new one), or
+    both; 0 turns either off, and with both off nothing is ever evicted for a
+    load.  Eviction stops once nothing is left, so a model larger than the
+    whole budget still loads into an empty backend.
+
+    ``/api/ps`` lists a model until it is really gone, and an unload empties
+    the model's prompt cache (``prompts``).
     """
 
-    def __init__(self, models: list[MockModel], max_loaded: int, load_ms: float):
+    def __init__(
+        self,
+        models: list[MockModel],
+        max_loaded: int,
+        load_ms: float,
+        memory_gb: float = 0.0,
+    ):
         self.models = {m.name: m for m in models}
         self.max_loaded = max_loaded
+        self.memory_gb = memory_gb
         self.load_ms = load_ms
-        first = list(self.models)[: max_loaded or None]
-        self.loaded: OrderedDict[str, None] = OrderedDict((name, None) for name in first)
+        self.loaded: OrderedDict[str, None] = OrderedDict()
+        for name in self.models:  # the first models that fit start resident
+            if self._needs_room(name):
+                break
+            self.loaded[name] = None
+        self.prompts: dict[str, list[str]] = {}  # most recent last
         self.busy: Counter[str] = Counter()
         self.expiring: set[str] = set()  # sessionDuration 0: unloads when idle
         self.loading: str | None = None  # in memory, not yet in /api/ps
@@ -301,8 +342,7 @@ class Backend:
     async def _schedule(self, name: str, keep_alive) -> float:
         start = time.perf_counter()
         async with self._pending:
-            full = lambda: self.max_loaded and len(self.loaded) >= self.max_loaded  # noqa: E731
-            while name not in self.loaded and full():
+            while name not in self.loaded and self.loaded and self._needs_room(name):
                 idle = next((n for n in self.loaded if not self.busy[n]), None)
                 victim = idle or next(iter(self.loaded))
                 self.expiring.add(victim)
@@ -321,6 +361,31 @@ class Backend:
                 self.expiring.discard(name)
             self._use(name, keep_alive)
         return time.perf_counter() - start
+
+    def _needs_room(self, name: str) -> bool:
+        """Loading ``name`` now would exceed the count cap or the memory budget."""
+        if self.max_loaded and len(self.loaded) >= self.max_loaded:
+            return True
+        if self.memory_gb:
+            resident = sum(self.models[n].size_gb for n in self.loaded)
+            return resident + self.models[name].size_gb > self.memory_gb + 1e-9
+        return False
+
+    def cached_tokens(self, name: str, prompt: str) -> int:
+        """Tokens of ``prompt`` already in ``name``'s prompt cache: the longest
+        prefix it shares with a remembered prompt, in chars / 4."""
+        cache = self.prompts.get(name, [])
+        shared = max((len(os.path.commonprefix([prompt, p])) for p in cache), default=0)
+        return shared // 4
+
+    def remember_prompt(self, name: str, prompt: str) -> None:
+        if name not in self.loaded:
+            return  # unloaded meanwhile: its cache is gone
+        cache = self.prompts.setdefault(name, [])
+        if prompt in cache:
+            cache.remove(prompt)
+        cache.append(prompt)
+        del cache[:-PROMPT_CACHE_SLOTS]
 
     def _use(self, name: str, keep_alive) -> None:
         self.loaded.move_to_end(name)
@@ -345,6 +410,7 @@ class Backend:
         if name in self.expiring and not self.busy[name]:
             self.expiring.discard(name)
             self.loaded.pop(name, None)
+            self.prompts.pop(name, None)
             waiters, self._waiters = self._waiters, []
             for waiter in waiters:
                 if not waiter.done():
@@ -397,13 +463,18 @@ def _text_of(content) -> str:
     return ""
 
 
-def estimate_prompt_tokens(body: dict) -> int:
-    """Characters / 4, the estimate the router itself uses for context checks."""
-    chars = len(_text_of(body.get("prompt"))) + len(_text_of(body.get("system")))
+def prompt_text(body: dict) -> str:
+    """The prompt as one string, in order: what prefix caching compares."""
+    parts = [_text_of(body.get("system")), _text_of(body.get("prompt"))]
     for message in body.get("messages") or []:
         if isinstance(message, dict):
-            chars += len(_text_of(message.get("content")))
-    return max(1, chars // 4)
+            parts.append(_text_of(message.get("content")))
+    return "".join(parts)
+
+
+def estimate_prompt_tokens(body: dict) -> int:
+    """Characters / 4, the estimate the router itself uses for context checks."""
+    return max(1, len(prompt_text(body)) // 4)
 
 
 def _embedding(text: str, dim: int) -> list[float]:
@@ -411,6 +482,18 @@ def _embedding(text: str, dim: int) -> list[float]:
     vec = [rng.uniform(-1.0, 1.0) for _ in range(dim)]
     norm = sum(v * v for v in vec) ** 0.5 or 1.0
     return [v / norm for v in vec]
+
+
+def _stream_error(stream: bool, status: int, message: str):
+    """A failure Ollama reports mid-request: on a 200 stream, as the stream's only
+    line (``{"error": ...}``); unstreamed, as ``status`` with the text."""
+    if not stream:
+        return _error(status, message)
+
+    async def error_line():
+        yield (json.dumps({"error": message}) + "\n").encode()
+
+    return _NdjsonStream(error_line(), drop=False)
 
 
 async def _no_parts() -> AsyncIterator[bytes]:
@@ -425,7 +508,7 @@ def _error(status: int, message: str) -> JSONResponse:
 def build_app(config: MockConfig | None = None) -> FastAPI:
     config = config or MockConfig()
     models = [MockModel.parse(spec) for spec in config.models]
-    backend = Backend(models, config.max_loaded, config.load_ms)
+    backend = Backend(models, config.max_loaded, config.load_ms, config.memory_gb)
     faults = FaultStore(Fault.from_dict(config.fault), config.fault_file)
     rng = random.Random(config.seed)
     app = FastAPI()
@@ -561,19 +644,16 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
         fault, failure = await admit(name)
         if failure:
             return failure
+        prompt = prompt_text(body)
         prompt_tokens = estimate_prompt_tokens(body)
         if fault and fault.context_limit and prompt_tokens > fault.context_limit:
-            message = context_too_long(prompt_tokens, fault.context_limit)
-            if not stream:
-                return _error(400, message)
-
-            async def error_line():
-                yield (json.dumps({"error": message}) + "\n").encode()
-
-            # Mid-request failures arrive on a 200 stream as an error line.
-            return _NdjsonStream(error_line(), drop=False)
+            return _stream_error(stream, 400, context_too_long(prompt_tokens, fault.context_limit))
+        if fault and fault.stream_error:
+            return _stream_error(stream, 500, fault.stream_error)
 
         load_s = await backend.acquire(name, keep_alive)
+        uncached = max(1, prompt_tokens - backend.cached_tokens(name, prompt))
+        first_ms = config.delay_ms + uncached * config.prefill_ms_per_token  # before chunk 1
         die_after = fault.die_after_chunks if fault else -1
         chunks = max(1, config.chunks)
         texts = ["ok" if i == 0 else " ok" for i in range(chunks)]
@@ -594,9 +674,9 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
                 "total_duration": int(total * 1e9),
                 "load_duration": int(load_s * 1e9),
                 "prompt_eval_count": prompt_tokens,
-                "prompt_eval_duration": int(config.delay_ms * 1e6),
+                "prompt_eval_duration": int(first_ms * 1e6),
                 "eval_count": chunks,
-                "eval_duration": int(max(0.0, total - load_s - config.delay_ms / 1000) * 1e9),
+                "eval_duration": int(max(0.0, total - load_s - first_ms / 1000) * 1e9),
             }
 
         released = False
@@ -611,13 +691,16 @@ def build_app(config: MockConfig | None = None) -> FastAPI:
             if die_after >= 0:
                 return _NdjsonStream(_no_parts(), drop=True, on_close=release)
             try:
-                await asyncio.sleep((config.delay_ms + chunks * config.chunk_delay_ms) / 1000)
+                await asyncio.sleep(first_ms / 1000)
+                backend.remember_prompt(name, prompt)
+                await asyncio.sleep(chunks * config.chunk_delay_ms / 1000)
             finally:
                 release()
             return {**done_line(), **piece("".join(texts))}
 
         async def lines():
-            await asyncio.sleep(config.delay_ms / 1000)
+            await asyncio.sleep(first_ms / 1000)
+            backend.remember_prompt(name, prompt)
             for i, text in enumerate(texts):
                 if i == die_after:
                     return
@@ -689,7 +772,16 @@ def main() -> None:
     p.add_argument("--chunks", type=int, default=1, help="Content chunks per response")
     p.add_argument("--chunk-delay-ms", type=float, default=0.0, help="Between chunks")
     p.add_argument("--max-loaded", type=int, default=0, help="Hot-model cap, LRU (0 = none)")
+    p.add_argument(
+        "--memory-gb", type=float, default=0.0, help="Budget for resident model sizes (0 = none)"
+    )
     p.add_argument("--load-ms", type=float, default=0.0, help="Cold-load time of a model")
+    p.add_argument(
+        "--prefill-ms-per-token",
+        type=float,
+        default=0.0,
+        help="Prompt processing per uncached token (0 = free)",
+    )
     p.add_argument("--context-length", type=int, default=4096, help="Reported context")
     p.add_argument("--embed-dim", type=int, default=768)
     p.add_argument("--seed", type=int, default=None, help="Seed for error_rate draws")
@@ -700,6 +792,7 @@ def main() -> None:
     f.add_argument("--fault-latency-ms", type=float, default=0.0)
     f.add_argument("--die-after-chunks", type=int, default=-1)
     f.add_argument("--context-limit", type=int, default=0)
+    f.add_argument("--stream-error", default="", help="Error text sent as a 200 stream's only line")
     f.add_argument("--fault-model", action="append", default=[], dest="fault_models")
     args = p.parse_args()
 
@@ -711,6 +804,7 @@ def main() -> None:
             "latency_ms": args.fault_latency_ms,
             "die_after_chunks": args.die_after_chunks,
             "context_limit": args.context_limit,
+            "stream_error": args.stream_error,
             "models": args.fault_models,
         }
     )
@@ -720,7 +814,9 @@ def main() -> None:
         chunks=args.chunks,
         chunk_delay_ms=args.chunk_delay_ms,
         max_loaded=args.max_loaded,
+        memory_gb=args.memory_gb,
         load_ms=args.load_ms,
+        prefill_ms_per_token=args.prefill_ms_per_token,
         context_length=args.context_length,
         embed_dim=args.embed_dim,
         seed=args.seed,

@@ -44,6 +44,7 @@ from fleet_manager.server.routes.routing import (
     score_with_fallbacks,
     served_headers,
 )
+from fleet_manager.server.streaming import post_idempotent
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["ollama"])
@@ -944,8 +945,10 @@ async def dispatch_embed(
         for backoff in (*EMBED_RETRY_BACKOFFS_S, None):
             try:
                 client = proxy._get_client(winner.node_id)
-                resp = await client.post(
+                resp = await post_idempotent(
+                    client,
                     "/api/embed",
+                    label=f"Embed on {winner.node_id}",
                     json=embed_body,
                     timeout=_EMBED_TIMEOUT,
                 )
