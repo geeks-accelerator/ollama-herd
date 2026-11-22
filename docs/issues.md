@@ -36,6 +36,17 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### Vision embeddings fail on a dropped keep-alive connection instead of retrying `OPEN` (found 2026-11-22, run 6)
+
+**Severity:** low. During run 6's full-load demo (8 workers each on `qwen2.5:7b` and
+`dinov2-vit-s14`, about 2,160 requests a minute on two M4 Macs) 3 of about 23,000 vision
+embeddings failed with `Vision embedding transport error on s2: ReadError`, logged at
+ERROR. s2's vision server never stopped: its own log shows embeddings at about 20 ms
+before, during and after each failure. The pattern is a reused keep-alive connection the
+server had just closed. An embedding is idempotent, so the router can retry once on
+`ReadError` / `RemoteProtocolError` before the first byte, on the same node or another,
+as chat requests already do (`StreamingProxy`'s retry before the first chunk).
+
 ### A pre-warm that needs an eviction blocks every load on its node for up to 15 minutes `OPEN` (found 2026-11-22, run 6)
 
 **Severity:** high on small Macs under mixed traffic. Run 6, mixed models on two 24 GB M4s
