@@ -619,6 +619,24 @@ class TestCli:
         return _load_script(REPO / "scripts" / "benchmark.py")
 
     @pytest.mark.asyncio
+    async def test_a_missing_requested_model_fails_the_run(self, cli, httpx_mock, tmp_path):
+        """Fail, never shrink: run 6's embeddings arm warned about
+        nomic-embed-text, ran without it, and its report looked complete."""
+        httpx_mock.add_response(
+            url=f"{ROUTER}/fleet/status", json=_status([_node("a", loaded=["m:7b"])])
+        )
+        httpx_mock.add_response(url=f"{ROUTER}/api/tags", json={"models": []})
+        out = tmp_path / "run.json"
+        args = cli.parse_args(
+            ["--url", ROUTER, "--models", "m:7b", "gone:1b", "--requests", "1",
+             "--no-save", "--output", str(out)]
+        )  # fmt: skip
+        with pytest.raises(SystemExit) as e:
+            await cli.run_benchmark(args)
+        assert e.value.code == 2
+        assert not out.exists()
+
+    @pytest.mark.asyncio
     async def test_output_file_and_the_dashboard_post(self, cli, httpx_mock, tmp_path, monkeypatch):
         """Traffic to one URL, the fleet observed (and the run saved) at another."""
         polls = []

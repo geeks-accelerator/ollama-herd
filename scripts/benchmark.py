@@ -219,7 +219,15 @@ async def run_benchmark(args: argparse.Namespace) -> None:
             if names:
                 targets, weights, missing = match_requested(targets, names, weights)
                 if missing:
-                    print(f"Warning: not loaded or on disk anywhere: {', '.join(missing)}")
+                    # Fail, never shrink: a run that quietly drops a requested
+                    # model measures something other than its label says.  Run
+                    # 6's embeddings arm warned, ran without nomic-embed-text,
+                    # and its report looked complete.
+                    print(
+                        f"Error: not loaded or on disk anywhere: {', '.join(missing)}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
         else:
             # Nothing exposes /fleet/status (plain Ollama, llama-swap): the
             # models as named, no nodes to warm or observe.
