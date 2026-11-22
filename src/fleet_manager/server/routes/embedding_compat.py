@@ -148,7 +148,8 @@ async def embed_image(request: Request):
         return await reject(
             404,
             "No vision embedding models available on any node. "
-            'Download a model first: POST /api/pull {"model": "dinov2-vit-s14"}',
+            "Download one on a node: herd-node pull-vision dinov2-vit-s14, "
+            "then restart herd-node",
         )
 
     best = _score_embedding_candidates(candidates)

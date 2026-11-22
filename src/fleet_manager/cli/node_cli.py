@@ -24,6 +24,7 @@ app = typer.Typer(
 
 @app.callback(invoke_without_command=True)
 def start(
+    ctx: typer.Context,
     node_id: str = typer.Option("", help="Node identifier (default: hostname)"),
     ollama_host: str = typer.Option(
         "", help="Local Ollama URL [default: FLEET_NODE_OLLAMA_HOST, else http://localhost:11434]"
@@ -72,6 +73,9 @@ def start(
 ):
     """Start the Herd Node agent on this device."""
     load_env_file()
+    # A subcommand (``herd-node pull-vision ...``) runs instead of the agent.
+    if ctx.invoked_subcommand is not None:
+        return
     from fleet_manager.common.logging_config import configure_console_logging
 
     configure_console_logging(log_level)
@@ -130,6 +134,30 @@ def start(
     show_first_run_notice_if_needed(settings.telemetry, echo=typer.echo)
 
     asyncio.run(agent.start())
+
+
+@app.command("pull-vision")
+def pull_vision(
+    model: str = typer.Argument(..., help="dinov2-vit-s14, siglip2-base or clip-vit-b32"),
+):
+    """Download a vision embedding model (DINOv2, SigLIP, CLIP) onto this node.
+
+    These models run in herd-node's own vision server, not in Ollama, so
+    ``/api/pull`` cannot fetch them.  A running herd-node starts serving the
+    model after a restart.
+    """
+    from fleet_manager.node.embedding_models import VISION_EMBEDDING_MODELS, download_model
+
+    if model not in VISION_EMBEDDING_MODELS:
+        typer.echo(
+            f"Unknown vision embedding model '{model}'. "
+            f"Choose one of: {', '.join(VISION_EMBEDDING_MODELS)}",
+            err=True,
+        )
+        raise typer.Exit(1)
+    path = download_model(model)
+    typer.echo(f"{model} downloaded to {path}")
+    typer.echo("Restart herd-node to serve it.")
 
 
 def main():

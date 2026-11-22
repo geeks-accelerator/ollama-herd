@@ -101,7 +101,7 @@ beat herd on the identical pair. Fixed: a resident Ollama model gets
 `decode_parallelism_for`; cold and `mlx:` models keep the memory bound. Formula dated from
 `b2c4510` (2026-03-07).
 
-### A vision embedding model cannot be fetched remotely, and the router tells you to try a way that fails `OPEN` (found 2026-11-21, run 6)
+### A vision embedding model cannot be fetched remotely, and the router tells you to try a way that fails `PARTIAL` (found 2026-11-21, run 6)
 
 **Severity:** medium. A node with no DINOv2/SigLIP/CLIP weights gets no vision server
 (`agent._ensure_embedding_server` starts one only when weights are cached), and
@@ -117,6 +117,10 @@ Python on each machine and restarting herd-node.
 download the weights (a heartbeat command, as the context optimizer's restarts do), after
 which the node starts its vision server without a restart. Until then the 404 should give
 the advice that works.
+
+**2026-11-22:** the advice is fixed: `herd-node pull-vision <model>` downloads one on the node,
+and `/api/pull` and the embed-image 404 both name it (a 400, no ERROR). Still open: fetching
+it from the router without a shell on the node, and serving it without a restart.
 
 ### A retried request runs outside its new node's worker limit `OPEN` (found 2026-11-21)
 

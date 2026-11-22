@@ -598,6 +598,13 @@ _NON_OLLAMA_MODELS: dict[str, str] = {
     "sd3-medium": "uv tool install diffusionkit (macOS Apple Silicon only)",
     "sd3.5-large": "uv tool install diffusionkit (macOS Apple Silicon only)",
     "qwen3-asr": "pip install 'mlx-qwen3-asr[serve]' (macOS Apple Silicon only)",
+    # Vision embeddings run in herd-node's own server.  Sending these to
+    # Ollama's /api/pull failed ("pull model manifest: file does not exist")
+    # and logged an ERROR -- the advice the embed-image 404 used to give.
+    **{
+        m: f"herd-node pull-vision {m} on the node, then restart herd-node"
+        for m in ("dinov2-vit-s14", "siglip2-base", "clip-vit-b32")
+    },
 }
 
 
