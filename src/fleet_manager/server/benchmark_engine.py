@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
 import itertools
 import json
 import logging
@@ -19,7 +20,7 @@ import struct
 import subprocess
 import time
 import zlib
-from collections.abc import Awaitable, Callable, Collection, Iterable
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1262,8 +1263,9 @@ class LoadResult:
     started_at: str  # UTC ISO 8601: the run clock's zero
     ended_at: str
     seed: int  # what the run's random choices came from: rerun with it to repeat them
-    # What rates are over: the send window in an open loop (arrivals), the load
+    # The load window: the send window in an open loop (arrivals), the load
     # phase in a closed loop.  Never the drain, when nothing new is sent.
+    # ``rate_window`` decides from it which answers count toward rates.
     window_s: float
 
 
@@ -1301,8 +1303,8 @@ async def run_load(
     The drain gives in-flight requests up to ``timeout`` (the per-request
     timeout) to finish; any still running then is cancelled and recorded as a
     ``CANCELLED_AT_DRAIN`` failure.  The fleet is polled until the drain ends,
-    so model loads and evictions in it are seen.  ``LoadResult.window_s``, what
-    rates are over, leaves the drain out.
+    so model loads and evictions in it are seen.  ``LoadResult.window_s``, the
+    window ``rate_window`` counts rates in, leaves the drain out.
 
     The one load loop the CLI and the dashboard runner share.  Three shapes:
 
@@ -1667,6 +1669,9 @@ SNAPSHOT_KEYS = (
     "per_type_results",
     "cancelled_at_drain",
     "schedule_lag_ms",
+    "rate_basis",
+    "rate_span_s",
+    "drained_completed",
 )
 
 
@@ -1681,6 +1686,98 @@ def dashboard_record(report: dict) -> dict:
         **{k: report[k] for k in SNAPSHOT_KEYS if k in report},
     }
     return record
+
+
+# How a report's rates were computed.  "window" counts what finished inside the
+# load phase (``rate_window``).  A report or stored run without ``rate_basis``
+# is legacy: every completed request over the load window, the drain included.
+RATE_BASIS = "window"
+
+
+@dataclass(frozen=True)
+class RateWindow:
+    """Which requests count toward a run's rates, and what they are over.
+
+    ``counted`` lines up with the records ``rate_window`` was given.
+    """
+
+    counted: tuple[bool, ...]
+    span_s: float
+
+    def per_sec(self, amount: float) -> float:
+        return amount / self.span_s if self.span_s > 0 else 0.0
+
+
+def rate_window(records: Sequence[Mapping], window_s: float) -> RateWindow:
+    """The one definition of in-window throughput, over request records
+    (``request_record``, or a saved report's ``requests``).
+
+    **Closed loop**: a successful request counts when it finished inside the
+    load phase, ``started_ms + latency_ms <= window_s * 1000``, and rates are
+    over ``window_s``.  Counting what finished in the drain over the load
+    window made throughput rise with concurrency past saturation (run 6: 66.7
+    tok/s at 16 and 93.3 at 32 on the same two Macs).
+
+    **Open loop** (records carry ``schedule_lag_ms``): ``window_s`` is the
+    arrivals window, so the same rule would drop the last arrivals' answers.
+    Every success sent in the window counts, over the span from the first send
+    to the last counted completion: neither the tail dropped nor the drain
+    divided by the shorter window.
+    """
+    end_ms = window_s * 1000.0
+    open_loop = any(r.get("schedule_lag_ms") is not None for r in records)
+
+    def finished(r: Mapping) -> float:
+        return r["started_ms"] + (r.get("latency_ms") or 0)
+
+    if not open_loop:
+        counted = tuple(bool(r["success"]) and finished(r) <= end_ms for r in records)
+        return RateWindow(counted, window_s)
+    counted = tuple(bool(r["success"]) and r["started_ms"] <= end_ms for r in records)
+    ends = [finished(r) for r, c in zip(records, counted, strict=True) if c]
+    if not ends:
+        return RateWindow(counted, window_s)
+    first = min(r["started_ms"] for r in records)
+    return RateWindow(counted, (max(ends) - first) / 1000.0)
+
+
+def report_chat_tokens_per_sec(report: dict) -> float | None:
+    """Chat tokens per second in a saved report, by ``rate_window`` over its
+    ``requests`` and ``duration_s``: the in-window figure for a legacy report
+    too, whose own ``tokens_per_sec`` counted the drain.  ``None`` without a
+    duration."""
+    duration = report.get("duration_s")
+    if not duration:
+        return None
+    requests = report["requests"]
+    rw = rate_window(requests, duration)
+    tokens = sum(
+        q.get("completion_tokens") or 0
+        for q, c in zip(requests, rw.counted, strict=True)
+        if c and q.get("model_type", "llm") in CHAT_WORKLOADS
+    )
+    return round(rw.per_sec(tokens), 1)
+
+
+def cell_seed(
+    run_seed: int,
+    workload: str,
+    concurrency: int | None,
+    rate: float | None,
+    repetition: int | None,
+) -> int:
+    """One benchmark cell's seed, derived from the run's.
+
+    Worker generators are ``Random(f"{seed}-{k}")``, so cells sharing a seed
+    replay each other's streams: a concurrency-8 cell repeated the
+    concurrency-4 cell's first four workers' prompts exactly and found their
+    prefixes cached.  Hashing the cell's coordinates gives every cell its own
+    prompts while the run stays repeatable from ``run_seed`` alone.  Stable
+    across processes and Python versions (not ``hash()``), in ``run_load``'s
+    seed range.
+    """
+    key = json.dumps([run_seed, workload, concurrency, rate, repetition])
+    return int.from_bytes(hashlib.sha256(key.encode()).digest()[:4], "big") % 2**31
 
 
 def build_report(
@@ -1698,7 +1795,9 @@ def build_report(
     every request (``requests``, in start order), model load/evict events and
     the run manifest (``build_manifest``; ``run`` holds the settings it records).
 
-    ``duration`` is what rates are over (``LoadResult.window_s``).  Tokens,
+    ``duration`` is the load window (``LoadResult.window_s``); rates count only
+    what ``rate_window`` puts inside it (``rate_basis``), and what finished in
+    the drain is ``drained_completed``.  Tokens,
     token rates and TTFT come from chat requests only (``CHAT_WORKLOADS``): an
     embedding is one "token" and its TTFT is its whole latency, so mixing them
     in inflated the one and pulled down the other.  ``per_type_results`` has
@@ -1710,6 +1809,10 @@ def build_report(
     success = [r for r in results if r.success]
     failed = [r for r in results if not r.success]
     chat = [r for r in success if r.model_type in CHAT_WORKLOADS]
+    # Every rate below is over ``in_window`` and ``rw.span_s`` (``rate_window``);
+    # counts, tokens and percentiles keep every answered request.
+    rw = rate_window([request_record(r) for r in results], duration)
+    in_window = [r for r, c in zip(results, rw.counted, strict=True) if c]
 
     total_prompt = sum(r.prompt_tokens for r in chat)
     total_completion = sum(r.completion_tokens for r in chat)
@@ -1718,22 +1821,24 @@ def build_report(
     ttfts = [r.ttft_ms for r in chat if r.ttft_ms > 0]
     lags = [r.schedule_lag_ms for r in results if r.schedule_lag_ms is not None]
 
-    req_s = len(success) / duration if duration > 0 else 0
-    tok_s = total_completion / duration if duration > 0 else 0
+    req_s = rw.per_sec(len(in_window))
+    tok_s = rw.per_sec(
+        sum(r.completion_tokens for r in in_window if r.model_type in CHAT_WORKLOADS)
+    )
 
     per_type = []
     for kind in sorted({r.model_type for r in results}):
         ok = [r for r in success if r.model_type == kind]
+        ok_in = [r for r in in_window if r.model_type == kind]
         entry = {
             "model_type": kind,
             "requests": len(ok),
             "failures": sum(1 for r in failed if r.model_type == kind),
-            "requests_per_sec": round(len(ok) / duration, 2) if duration > 0 else 0,
+            "requests_per_sec": round(rw.per_sec(len(ok_in)), 2),
             **percentile_fields([r.latency_ms for r in ok], "latency"),
         }
         if kind in CHAT_WORKLOADS:
-            tokens = sum(r.completion_tokens for r in ok)
-            entry["tok_s"] = round(tokens / duration, 1) if duration > 0 else 0
+            entry["tok_s"] = round(rw.per_sec(sum(r.completion_tokens for r in ok_in)), 1)
             entry.update(percentile_fields([r.ttft_ms for r in ok if r.ttft_ms > 0], "ttft"))
         per_type.append(entry)
 
@@ -1742,9 +1847,8 @@ def build_report(
     if success:
         for model in sorted(set(r.model for r in success)):
             mr = [r for r in success if r.model == model]
-            m_tok = sum(r.completion_tokens for r in mr)
             m_lat = statistics.mean(r.latency_ms for r in mr)
-            m_tok_s = m_tok / duration if duration > 0 else 0
+            m_tok_s = rw.per_sec(sum(r.completion_tokens for r in in_window if r.model == model))
             m_ttft = (
                 statistics.mean(r.ttft_ms for r in mr if r.ttft_ms > 0)
                 if any(r.ttft_ms > 0 for r in mr)
@@ -1776,7 +1880,13 @@ def build_report(
             nr = [r for r in success if r.node_id == node]
             n_pct = len(nr) / len(success) * 100
             n_tok = sum(r.completion_tokens for r in nr if r.model_type in CHAT_WORKLOADS)
-            n_tok_s = n_tok / duration if duration > 0 else 0
+            n_tok_s = rw.per_sec(
+                sum(
+                    r.completion_tokens
+                    for r in in_window
+                    if r.node_id == node and r.model_type in CHAT_WORKLOADS
+                )
+            )
             per_node.append(
                 {
                     "node_id": node,
@@ -1848,7 +1958,13 @@ def build_report(
         "run_id": f"bench-{int(time.time())}",
         "timestamp": time.time(),
         "duration_s": round(duration, 1),
+        "rate_basis": RATE_BASIS,
+        # What the rates are over: ``duration_s`` in a closed loop; in an open
+        # loop, the first send to the last counted answer.
+        "rate_span_s": round(rw.span_s, 1),
         "total_requests": len(success),
+        # Of the answered: finished after the load phase closed, so in no rate.
+        "drained_completed": len(success) - len(in_window),
         "total_failures": len(failed),
         # Of the failures: still in flight when the drain ran out.
         "cancelled_at_drain": sum(1 for r in failed if r.error == CANCELLED_AT_DRAIN),

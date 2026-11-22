@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from fleet_manager.server import benchmark_engine as engine
 from tests.test_experiments import EXPERIMENTS, load_experiment
 
 fs = load_experiment("fleet-summarize.py", "fleet_summarize")
@@ -374,7 +375,28 @@ def test_in_window_throughput_leaves_out_requests_that_finished_late():
     embed = req(kind="embed", started=0.0, tokens=50)  # not chat
     failed = req(ok=False, started=0.0)
     r = report([inside, late, embed, failed], tps=999.0)
-    assert fs.tokens_per_sec_in_window(r) == round(200 / 240.0, 1)
+    assert fs.report_chat_tokens_per_sec is engine.report_chat_tokens_per_sec  # one definition
     out = fs.arm(r, "herd", PRICES)
     assert out["chat_tokens_per_sec"] == 999.0  # the old figure is kept, comparable
     assert out["chat_tokens_per_sec_in_window"] == round(200 / 240.0, 1)
+
+
+def test_open_loop_report_is_rated_over_send_to_last_answer():
+    """An open-loop report (records carry ``schedule_lag_ms``): the 240 s
+    arrivals window would drop the last arrival's answer under the closed-loop
+    rule; the engine counts it, over first send to last answer."""
+    a = {**req(started=0.0, tokens=200), "schedule_lag_ms": 0.1}  # ends at 6 s
+    b = {**req(started=238_000.0, tokens=300), "schedule_lag_ms": 0.1}  # ends at 244 s
+    out = fs.arm(report([a, b], tps=999.0), "herd", PRICES)
+    assert out["chat_tokens_per_sec_in_window"] == round(500 / 244.0, 1)
+
+
+def test_release_summarizer_uses_the_engine_figure():
+    rel = load_experiment("release-0-12-12-summarize.py", "release_0_12_12_summarize")
+    assert rel.report_chat_tokens_per_sec is engine.report_chat_tokens_per_sec
+    late = req(model="qwen3-coder:30b", started=239_000.0, tokens=300)
+    inside = req(model="qwen3-coder:30b", started=0.0, tokens=240)
+    s = rel.run_summary(report([inside, late], tps=999.0))
+    assert s["chat_tokens_per_sec"] == 999.0
+    assert s["chat_tokens_per_sec_in_window"] == 1.0
+    assert rel.medians([s])["chat_tokens_per_sec_in_window"] == 1.0

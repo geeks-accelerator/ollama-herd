@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 
 from fleet_manager.common.stats import percentile
+from fleet_manager.server.benchmark_engine import report_chat_tokens_per_sec
 
 HERE = Path(__file__).parent
 MODELS = {"qwen3-coder": "coding", "nomic-embed-text": "embeddings", "moondream": "images"}
@@ -56,7 +57,9 @@ def run_summary(report: dict) -> dict:
         "rep": (report.get("manifest") or {}).get("repetition"),
         "sent": len(report["requests"]),
         "failed": len(report["requests"]) - len(ok),
-        "chat_tokens_per_sec": report["tokens_per_sec"],
+        "chat_tokens_per_sec": report["tokens_per_sec"],  # as the report computed it
+        # The engine's in-window figure: comparable whatever the report's rate_basis.
+        "chat_tokens_per_sec_in_window": report_chat_tokens_per_sec(report),
         "ttft_p95_ms": report["ttft_p95_ms"],
         "answered": dict(answered),
         "answered_by_node": {f"{k}@{n}": v for (k, n), v in sorted(by_node.items())},
@@ -69,6 +72,7 @@ def medians(runs: list[dict]) -> dict:
 
     out = {
         "chat_tokens_per_sec": med([r["chat_tokens_per_sec"] for r in runs]),
+        "chat_tokens_per_sec_in_window": med([r["chat_tokens_per_sec_in_window"] for r in runs]),
         "ttft_p95_ms": med([r["ttft_p95_ms"] for r in runs]),
         "failed": sum(r["failed"] for r in runs),
     }

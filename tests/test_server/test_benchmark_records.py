@@ -714,6 +714,7 @@ class TestCli:
         assert len(report["requests"]) == 3
         assert {r["request_id"] for r in report["requests"]} == {"rid"}
         assert report["manifest"]["seed"] == 5 and report["manifest"]["repetition"] == 2
+        assert report["manifest"]["run_seed"] is None
         assert report["manifest"]["workload"]["url"] == "http://proxy.test"
         assert report["manifest"]["workload"]["fleet_url"] == ROUTER
         assert report["model_events"] == [
@@ -785,11 +786,52 @@ class TestCli:
             "--no-think --api openai",
             "--models a=1.5 --sequence alternate",
             "--rate 0",
+            "--seed 1 --run-seed 2",
         ],
     )
     def test_contradictory_options_are_refused(self, cli, argv):
         with pytest.raises(SystemExit):
             cli.parse_args(argv.split())
+
+    def test_seed_keeps_its_meaning(self, cli):
+        assert cli.effective_seed(cli.parse_args(["--seed", "5", "--concurrency", "8"])) == 5
+        assert cli.effective_seed(cli.parse_args([])) is None
+
+    def test_run_seed_gives_each_cell_its_own_seed(self, cli):
+        """Findings item 35: a concurrency-8 cell replayed the concurrency-4
+        cell's first four worker streams exactly, and found them cached."""
+
+        def seed(*argv):
+            return cli.effective_seed(cli.parse_args(["--run-seed", "7", "--models", "m", *argv]))
+
+        c4 = seed("--concurrency", "4", "--repetition", "1")
+        c8 = seed("--concurrency", "8", "--repetition", "1")
+        assert c4 != c8
+        assert c4 != seed("--concurrency", "4", "--repetition", "2")
+        assert c4 == seed("--concurrency", "4", "--repetition", "1")  # repeatable
+        workload = ",".join(engine.DEFAULT_TYPES) + "|m"
+        assert c4 == engine.cell_seed(7, workload, 4, None, 1)
+
+    @pytest.mark.asyncio
+    async def test_the_manifest_records_the_effective_seed(self, cli, httpx_mock, tmp_path):
+        """Rerunning one cell with ``--seed <manifest seed>`` repeats it."""
+        events = [
+            {"choices": [{"delta": {"content": "x"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+        ]
+        text = "".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n"
+        httpx_mock.add_response(
+            url="http://swap.test/v1/chat/completions", text=text, is_reusable=True
+        )
+        out = tmp_path / "cell.json"
+        argv = ["--url", "http://swap.test", "--fleet-url", "none", "--api", "openai",
+                "--models", "a", "--concurrency", "4", "--requests", "1", "--run-seed", "7",
+                "--repetition", "3", "--output", str(out)]  # fmt: skip
+        args = cli.parse_args(argv)
+        await cli.run_benchmark(args)
+        manifest = json.loads(out.read_text())["manifest"]
+        assert manifest["run_seed"] == 7
+        assert manifest["seed"] == cli.effective_seed(args) != 7
 
 
 @pytest.mark.asyncio

@@ -49,6 +49,7 @@ from fleet_manager.server.benchmark_engine import (
     WORKLOAD_TYPES,
     bench_client,
     build_report,
+    cell_seed,
     dashboard_record,
     discover_fleet,
     explicit_targets,
@@ -117,9 +118,11 @@ def print_report(report, targets, nodes_info):
             " (counted as failures)"
         )
     if report["total_requests"]:
+        drained = report.get("drained_completed")
         print(
             f"  Throughput:     {report['requests_per_sec']:.2f} req/s"
             f" | {report['tokens_per_sec']:.1f} completion tok/s (chat requests)"
+            + (f", leaving out {drained} answered after the window" if drained else "")
         )
     per_type = report.get("per_type_results", [])
     if len(per_type) > 1:
@@ -356,7 +359,7 @@ async def run_benchmark(args: argparse.Namespace) -> None:
             concurrency=args.concurrency if shared else None,
             rate=args.rate,
             max_requests=args.requests,
-            seed=args.seed,
+            seed=effective_seed(args),
         )
         print("\r  Done.                                                                         ")
 
@@ -397,7 +400,8 @@ async def run_benchmark(args: argparse.Namespace) -> None:
             run={
                 "label": args.label,
                 "workload": workload,
-                "seed": load.seed,
+                "seed": load.seed,  # the effective seed: rerun with --seed to repeat it
+                "run_seed": args.run_seed,
                 "repetition": args.repetition,
             },
             started_at=load.started_at,
@@ -437,6 +441,15 @@ def _types(value: str) -> list[str]:
             f"unknown type(s) {unknown}; choose from {','.join(WORKLOAD_TYPES)}"
         )
     return types
+
+
+def effective_seed(args: argparse.Namespace) -> int | None:
+    """``--seed`` as given, or this cell's seed from ``--run-seed``
+    (``cell_seed``); ``None`` lets ``run_load`` pick one."""
+    if args.run_seed is None:
+        return args.seed
+    workload = "|".join([",".join(args.types), " ".join(args.models or [])])
+    return cell_seed(args.run_seed, workload, args.concurrency, args.rate, args.repetition)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -512,11 +525,19 @@ Examples:
         "earlier ones finished, instead of fixed concurrency (models: --sequence, "
         "default alternate)",
     )
-    parser.add_argument(
+    seeds = parser.add_mutually_exclusive_group()
+    seeds.add_argument(
         "--seed",
         type=int,
         help="Seed for every random choice (prompts, model sequence, session ids); the "
         "report records the one used, so any run can be repeated (default: a random seed)",
+    )
+    seeds.add_argument(
+        "--run-seed",
+        type=int,
+        help="One seed for a whole run of cells: this cell's seed is derived from it and the "
+        "cell's workload, --concurrency, --rate and --repetition, so no two cells replay "
+        "each other's prompts (and find them cached). The report records both",
     )
     parser.add_argument(
         "--repetition", type=int, help="Which repetition of this arm the run is (recorded)"

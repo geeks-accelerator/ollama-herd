@@ -190,9 +190,7 @@ class TestDrain:
         assert all(r.schedule_lag_ms is not None for r in results)
 
     @pytest.mark.asyncio
-    async def test_a_request_finishing_in_the_drain_counts_but_the_drain_is_not_in_the_rate(
-        self, monkeypatch
-    ):
+    async def test_a_request_finishing_in_the_drain_counts_but_not_in_the_rate(self, monkeypatch):
         monkeypatch.setattr(engine, "send_request", _slow_send(0.4))
         results: list = []
         async with httpx.AsyncClient(base_url=ROUTER) as c:
@@ -203,7 +201,11 @@ class TestDrain:
         assert load.elapsed_s >= 0.75  # the second finished in the drain ...
         assert 0.45 <= load.window_s <= 0.6  # ... and the rates are over the run
         report = build_report(results, load.window_s, [], [], [])
-        assert report["requests_per_sec"] == pytest.approx(2 / load.window_s, abs=0.05)
+        # Answered, but past the window: in the counts, in no rate.  Dividing it
+        # by the load window is what made throughput rise past saturation.
+        assert report["total_requests"] == 2 and report["drained_completed"] == 1
+        assert report["requests_per_sec"] == pytest.approx(1 / load.window_s, abs=0.05)
+        assert report["rate_basis"] == "window"
 
     @pytest.mark.asyncio
     async def test_open_loop_rates_are_over_the_send_window(self, monkeypatch):
@@ -223,6 +225,13 @@ class TestDrain:
             )
         assert len(results) == 3 and load.elapsed_s >= 0.55
         assert load.window_s == pytest.approx(0.3, abs=0.05)  # three arrival slots
+        # Open loop: every answer to a request sent in the window counts, over
+        # the first send to the last answer (about 0.2 s + 0.4 s), not the
+        # 0.3 s arrivals window, which would inflate it, nor dropping the tail.
+        report = build_report(results, load.window_s, [], [], [])
+        assert report["drained_completed"] == 0
+        assert report["rate_span_s"] == pytest.approx(0.6, abs=0.1)
+        assert report["requests_per_sec"] == pytest.approx(3 / 0.6, rel=0.2)
 
     @pytest.mark.asyncio
     async def test_the_fleet_is_polled_through_the_drain(self, monkeypatch):
