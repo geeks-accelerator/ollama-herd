@@ -7,18 +7,26 @@
     "workload": "qwen2.5:7b (Q4_K_M, 5.6 GB loaded, 100% GPU on both): qwen3-coder:30b does not fit a 24 GB M4's GPU, and a first attempt with qwen2.5:14b and 60 s cells was aborted after one cell (about 25-30 s per request, so 2-3 requests per cell; its reports are kept apart, not summarized); about 1,250 prompt and 200 completion tokens per chat request (--prompt-tokens 1250 --max-tokens 200)",
     "telemetry": "off on the router and both nodes",
     "harness": "scripts/benchmark.py at 63a125b",
-    "herd": "ollama-herd 0.12.12 from PyPI on the router and both nodes (the fixes under [Unreleased] are not in this run)",
+    "herd": "ollama-herd 0.12.12 from PyPI on both nodes. Router: 0.12.12 from PyPI (scaling, identical_machines); 6dbf115 from 22:31 UTC (queue-concurrency fix found by this run); 87e3bf0 from the mixed_models switch (load-gate fix found by this run). Neither fix is released; both include the [Unreleased] fixes at 63a125b; 82fdf26 from 03:47 UTC (dashboard fix only, routing identical to 87e3bf0)",
     "prices_usd_per_hour": {
       "M4": 1.23
-    }
+    },
+    "cache_note": "Ollama's llama.cpp keeps up to 8 GiB of earlier prompts in host RAM, and the harness's prompts repeat by seed. Arms run back to back with a reused seed inherited each other's prompt cache (up to 2x more requests): scaling, scaling_fixed, identical_machines, identical_machines_fixed. From saturation on, Ollama was restarted on every Mac before every cell or run (cache empty), and those are the figures to quote"
   },
   "sections": {
     "scaling": {
-      "what": "qwen2.5:7b on s1 alone, then s1 + s2 (s2's herd-node stopped for the one-machine cells, its Ollama left running but unknown to the router); concurrency 1, 2, 4, 8; 120 s per cell; 3 repetitions (seeds 7, 11, 13), each repetition running all one-machine cells, then all two-machine cells",
+      "what": "qwen2.5:7b on s1 alone, then s1 + s2 (s2's herd-node stopped for the one-machine cells, its Ollama left running but unknown to the router); concurrency 1, 2, 4, 8; 120 s per cell; 3 repetitions (seeds 7, 11, 13), each repetition running all one-machine cells, then all two-machine cells; herd 0.12.12 held every node to queue concurrency 1 here (see scaling_fixed)",
       "router": "ollama-herd 0.12.12 from PyPI",
       "model": "qwen2.5:7b",
       "seconds_per_cell": 120,
       "cells": "sc_r*_n*_c*.json"
+    },
+    "scaling_fixed": {
+      "what": "as scaling, same seeds and order, with the router switched to 6dbf115 at 22:31 UTC (the Macs unchanged); /fleet/queue showed qwen2.5:7b concurrency 4 before the first cell",
+      "router": "ollama-herd 6dbf115 (main, unreleased: a resident model gets every slot Ollama admits)",
+      "model": "qwen2.5:7b",
+      "seconds_per_cell": 120,
+      "cells": "scf_r*_n*_c*.json"
     },
     "identical_machines": {
       "what": "one model on two identical M4 Macs, 8 concurrent qwen2.5:7b, 120 s, 3 repetitions per front door (seeds 7, 11, 13), alternating Herd and HAProxy (HAProxy 2.8.30 from Ubuntu 24.04, roundrobin over both Macs' :11434, fleet state polled through the herd router with --fleet-url)",
@@ -30,6 +38,192 @@
         "files": "tie_haproxy_rr_r*.json",
         "router": "HAProxy 2.8 roundrobin"
       }
+    },
+    "identical_machines_fixed": {
+      "what": "as identical_machines, with the router at 6dbf115; HAProxy re-run alternating with it so drift lands on both",
+      "herd": {
+        "files": "tie_herd_fix_r*.json",
+        "router": "ollama-herd 6dbf115 (main, unreleased)"
+      },
+      "haproxy_roundrobin": {
+        "files": "tie_haproxy_rr2_r*.json",
+        "router": "HAProxy 2.8 roundrobin"
+      }
+    },
+    "saturation_np4": {
+      "what": "two Macs past Ollama's 4 slots each: concurrency 16 and 32, qwen2.5:7b, 120 s, 3 repetitions (seeds 7, 11, 13); Ollama restarted on both Macs before every cell. A first attempt without restarts was aborted after 2 cells (cache carry-over: 48 vs 76 requests at 4 slots); its reports are kept apart",
+      "router": "ollama-herd 6dbf115 (main, unreleased)",
+      "model": "qwen2.5:7b",
+      "seconds_per_cell": 120,
+      "cells": "sat_np4_r*_n2_c*.json"
+    },
+    "saturation_np8": {
+      "what": "OLLAMA_NUM_PARALLEL raised 4 -> 8 on both Macs (LaunchDaemon environment edited, Ollama and herd-node restarted; launch args -c 32768 -np 8, herd num_parallel 8, queue concurrency 8 checked); two Macs at concurrency 8, 16, 32 and one Mac (s2's herd-node stopped) at 8, 16; 120 s, 3 repetitions (seeds 7, 11, 13), Ollama restarted before every cell. The driver stopped once at 01:10 (a launchd restart race in the driver, not herd) and resumed for the last 3 cells",
+      "router": "ollama-herd 6dbf115 (main, unreleased)",
+      "model": "qwen2.5:7b",
+      "seconds_per_cell": 120,
+      "cells": "sat_np8_r*_n*_c*.json"
+    },
+    "head_to_head": {
+      "what": "Herd vs HAProxy roundrobin on two identical M4 Macs, OLLAMA_NUM_PARALLEL=4, 8 concurrent qwen2.5:7b, 120 s; Ollama restarted on both Macs before every run (prompt cache empty), each Herd/HAProxy pair on the same new seed (101, 102, 103), alternating, 3 repetitions. The clean version of identical_machines",
+      "herd": {
+        "files": "h2h_herd_r*.json",
+        "router": "ollama-herd 6dbf115 (main, unreleased)"
+      },
+      "haproxy_roundrobin": {
+        "files": "h2h_haproxy_rr_r*.json",
+        "router": "HAProxy 2.8 roundrobin"
+      }
+    },
+    "memory_pressure": {
+      "what": "s1 alone (s2's herd-node stopped), 24 GB: qwen2.5:7b resident, then qwen2.5:14b loaded beside it (3.0 GB left), then a cold gemma3:12b with X-Fleet-No-Fallback; heartbeat memory sampled every 5 s through the router. Router 6dbf115: macOS pressure stayed normal throughout and herd refused gemma3:12b (All 2 nodes eliminated, 503 after the 30 s hold) although evicting either idle model fits it, the load-gate bug fixed in 87e3bf0; repeated on 87e3bf0 as pressure2_s1.json",
+      "files_raw": [
+        "pressure_s1.json",
+        "pressure2_s1.json"
+      ],
+      "router": "ollama-herd 6dbf115 (main, unreleased)"
+    },
+    "embeddings": {
+      "what": "qwen2.5:7b and dinov2-vit-s14 together, 4 and 16 workers per model, 120 s, 3 repetitions each (seeds 241-243, 361-363). nomic-embed-text was requested too, but the harness at 63a125b could not see herd's native text-embedding sidecar and printed 'not loaded or on disk anywhere: nomic-embed-text': this arm has NO text embeddings. Fixed in 6a588a8 and re-run as embeddings_with_nomic",
+      "c4": {
+        "files": "emb_c4_r*.json",
+        "router": "ollama-herd 6dbf115 (main, unreleased)"
+      },
+      "c16": {
+        "files": "emb_c16_r*.json",
+        "router": "ollama-herd 6dbf115 (main, unreleased)"
+      }
+    },
+    "embeddings_with_nomic": {
+      "what": "as embeddings, with native nomic-embed-text actually included (harness 6a588a8): qwen2.5:7b + nomic-embed-text + dinov2-vit-s14, 4 and 16 workers per model, 120 s, 3 repetitions each (seeds 641-643, 761-763), Ollama restarted on both Macs first",
+      "c4": {
+        "files": "emb2_c4_r*.json",
+        "router": "ollama-herd 82fdf26 (main, unreleased: also the dashboard per-node embedding counts)"
+      },
+      "c16": {
+        "files": "emb2_c16_r*.json",
+        "router": "ollama-herd 82fdf26 (main, unreleased: also the dashboard per-node embedding counts)"
+      }
+    },
+    "failure": {
+      "files": "fail_r*.json",
+      "router": "ollama-herd 6dbf115 (main, unreleased)",
+      "keep_requests": true,
+      "what": "two Macs, 8 concurrent qwen2.5:7b for 240 s, 3 repetitions (seeds 301-303), Ollama restarted on both before each; the driver on r1 waited for the run's start, stopped Ollama on s2 about 60 s later and, 90 s after that, killed herd-node -9 and Ollama on s2 (times logged on r1, to the millisecond)",
+      "events": [
+        {
+          "at": "2026-11-22T01:57:49.438+00:00",
+          "what": "stopped Ollama on s2"
+        },
+        {
+          "at": "2026-11-22T01:59:19.663+00:00",
+          "what": "killed herd-node -9 and Ollama on s2 (machine gone)"
+        },
+        {
+          "at": "2026-11-22T02:03:11.480+00:00",
+          "what": "stopped Ollama on s2"
+        },
+        {
+          "at": "2026-11-22T02:04:41.704+00:00",
+          "what": "killed herd-node -9 and Ollama on s2 (machine gone)"
+        },
+        {
+          "at": "2026-11-22T02:08:33.268+00:00",
+          "what": "stopped Ollama on s2"
+        },
+        {
+          "at": "2026-11-22T02:10:03.494+00:00",
+          "what": "killed herd-node -9 and Ollama on s2 (machine gone)"
+        }
+      ]
+    },
+    "sessions": {
+      "what": "4-turn sessions over a shared 1,500-token system prompt, 200-token user turns, 8 sessions at once, qwen2.5:7b, 180 s; herd's session affinity against --round-robin (straight to each Mac's Ollama, no router); Ollama restarted before every run; seeds 401-403",
+      "herd": {
+        "files": "sess_herd_r*.json",
+        "router": "ollama-herd 6dbf115 (main, unreleased)"
+      },
+      "round_robin": {
+        "files": "sess_rr_r*.json",
+        "router": "none (harness --round-robin to each Ollama)"
+      }
+    },
+    "mixed_models": {
+      "what": "qwen2.5:7b, qwen2.5:14b, gemma3:12b, phi4-mini at random per request on two 24 GB Macs (they cannot all be resident), open loop 0.15 requests/s for 180 s, client timeout 300 s, start state s1 qwen2.5:7b and s2 qwen2.5:14b (Ollama restarted, no warmup), seeds 7, 11, 13 for every front door; repetitions 1-3 are seeds 7, 11, 13 (the runs were started without --repetition; the field was added to the reports afterwards, from the seed)",
+      "herd_before_fix": {
+        "files": "mix_herd_6dbf115_s*.json",
+        "router": "ollama-herd 6dbf115 (main, unreleased)",
+        "keep_requests": true
+      },
+      "herd": {
+        "files": "mix_herd_s*.json",
+        "router": "ollama-herd 87e3bf0 (main, unreleased: also the load-gate fix)",
+        "keep_requests": true
+      },
+      "haproxy_leastconn": {
+        "files": "mix_haproxy_lc_s*.json",
+        "router": "HAProxy 2.8 leastconn",
+        "keep_requests": true
+      },
+      "haproxy_roundrobin": {
+        "files": "mix_haproxy_rr_s*.json",
+        "router": "HAProxy 2.8 roundrobin",
+        "keep_requests": true
+      }
+    },
+    "video_demo": {
+      "what": "not a measurement: 8 minutes of qwen2.5:7b and dinov2-vit-s14 at 8 workers each (nomic-embed-text dropped by the harness, as in embeddings) to record the dashboard at full load; 23,420 requests, 3 failed (vision ReadError on s2, a keep-alive race)",
+      "file_raw": "demo.json",
+      "router": "ollama-herd 82fdf26 (main, unreleased: also the dashboard per-node embedding counts)"
+    },
+    "rate_sweep": {
+      "what": "open loop, qwen2.5:7b only, 180 s at 0.1, 0.2, 0.3 and 0.4 requests/s, 2 repetitions (seeds 501, 502), Ollama restarted before every run; router 82fdf26 (dashboard fix only, routing identical to 87e3bf0)",
+      "rate_0_1": {
+        "herd": {
+          "files": "rate_herd_q10_r*.json",
+          "router": "ollama-herd 82fdf26 (main, unreleased: also the dashboard per-node embedding counts)"
+        },
+        "haproxy_roundrobin": {
+          "files": "rate_haproxy_rr_q10_r*.json",
+          "router": "HAProxy 2.8 roundrobin"
+        }
+      },
+      "rate_0_2": {
+        "herd": {
+          "files": "rate_herd_q20_r*.json",
+          "router": "ollama-herd 82fdf26 (main, unreleased: also the dashboard per-node embedding counts)"
+        },
+        "haproxy_roundrobin": {
+          "files": "rate_haproxy_rr_q20_r*.json",
+          "router": "HAProxy 2.8 roundrobin"
+        }
+      },
+      "rate_0_3": {
+        "herd": {
+          "files": "rate_herd_q30_r*.json",
+          "router": "ollama-herd 82fdf26 (main, unreleased: also the dashboard per-node embedding counts)"
+        },
+        "haproxy_roundrobin": {
+          "files": "rate_haproxy_rr_q30_r*.json",
+          "router": "HAProxy 2.8 roundrobin"
+        }
+      },
+      "rate_0_4": {
+        "herd": {
+          "files": "rate_herd_q40_r*.json",
+          "router": "ollama-herd 82fdf26 (main, unreleased: also the dashboard per-node embedding counts)"
+        },
+        "haproxy_roundrobin": {
+          "files": "rate_haproxy_rr_q40_r*.json",
+          "router": "HAProxy 2.8 roundrobin"
+        }
+      }
+    },
+    "soak": {
+      "files": "soak.json",
+      "router": "ollama-herd b2c5d35 (main, unreleased: eeff6d1 vision retry + herd-node pull-vision; the empty-stream retry 2b9ff02 is NOT in it)",
+      "keep_requests": true,
+      "what": "4 hours, open loop 0.12 requests/s: qwen2.5:7b=6, qwen2.5:14b=1, nomic-embed-text=3, dinov2-vit-s14=1, prompt 1,250 / reply 200 tokens, timeout 600 s, seed 777, harness 1445755; /fleet/status every 10 minutes in soak_status.jsonl. Started 05:20 UTC after two false starts: the harness dropped nomic-embed-text at warmup (fixed in 1445755; a 20 s check then answered 4/4 text embeddings), and its chat-only fallback ran on a 24 GB Mac the startup preloader had overloaded (three models, critical pressure, swap, empty streams; docs/issues.md); both Macs were then restarted clean (a herd-node-spawned ollama serve had owned port 11434 on both since about 03:44). Both Macs then held qwen2.5:7b + qwen2.5:14b; each llama-server's prompt cache filled to its 8 GiB default, swap grew past 14 GB on s2 and each Mac went in and out of critical pressure"
     },
     "router_overhead": {
       "what": "scripts/router_overhead.py from r1 with only s1 online: 200 alternating pairs, qwen2.5:14b, 8-token replies, direct to s1's Ollama vs through the router on r1 (router off-node, as in run 2); measured with qwen2.5:14b before the switch to qwen2.5:7b (the overhead is the router's, not the model's)",

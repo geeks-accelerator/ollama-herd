@@ -317,6 +317,113 @@ From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-h
     `b8_three_r1` (OSS `docs/experiments/fleet_run5_results.json`, vision), router log in
     ollama-herd-private `.bench-lambda-2026-11-21-run5/journals/m1-router.log.gz`.
 
+### Run 6 (2026-11-21/22): two Apple M4 Macs on AWS EC2
+
+Two `mac-m4.metal` Dedicated Hosts (Apple M4, 24 GB, 120 GB/s; the M4 Pro first choice had no
+capacity in any of 11 zones), router, HAProxy and harness on a c7i.xlarge in the same subnet,
+Ollama 0.40.13 as a LaunchDaemon, `qwen2.5:7b` (`qwen3-coder:30b` does not fit an M4's GPU),
+about 1,250 prompt and 200 completion tokens per request. Manifest and results:
+`docs/experiments/fleet_run6_manifest.json`, `fleet_run6_results.json`. Figures to quote are the
+cold-cache arms (item 35).
+
+33. **Fixed on `main` (`6dbf115`), found in run 6: herd held every small machine to one request
+    at a time.** `QueueManager._compute_queue_concurrency` took `(available_gb - model size) / 2 GB`,
+    but `available_gb` is read after Ollama loaded the model and the KV for all its slots: on a
+    24 GB M4 (8.47 GB free, 5.22 GB model) that is 1 against Ollama's 4. Per-request decode stayed
+    at 22.4 tok/s at every concurrency while first-token time grew linearly (5.3 s at 1, 83.8 s at
+    8), and herd's own traces showed `queue_ms` 27 s against `backend_ms` 9 s. A resident Ollama
+    model now gets `decode_parallelism_for`. One Mac at concurrency 8 went from 18-20 to 28
+    requests per 120 s, and two Macs scale 2.0x at saturation. Invisible on the 512 GB Mac Studio.
+34. **Fixed on `main` (`87e3bf0`), found in run 6: a full Mac refused a model it could make room
+    for.** The "can it run here at all" gate (`scorer._eliminate`, `_pick_pull_node`) read memory
+    free now, which on unified memory already excludes the loaded models. s1 with `qwen2.5:7b` and
+    `qwen2.5:14b` idle (3.0 GB free) answered a cold `gemma3:12b` with 30 s of `All 2 nodes
+    eliminated` and a 503 "try again shortly". Now the gate adds what evicting frees; the eviction
+    stays a score. Re-run on the fix: `qwen2.5:14b` into a Mac holding `qwen2.5:7b` + `gemma3:12b`
+    (3.5 GB free) answered 200 in 17.7 s. **Side effect, recorded in item 39:** it also let a
+    second load of a model go to a node that must evict, where the old gate's refusal had happened
+    to force a better layout.
+35. **Open, method: Ollama's prompt cache carries between back-to-back runs that reuse a seed.**
+    llama.cpp keeps up to 8 GiB of earlier prompts in host RAM, and the harness's prompts repeat
+    by seed, so a cell run straight after another with the same seed starts warm: `scaling`
+    cells at concurrency 8 ran after concurrency 4 with the same seed (18-29 of 56-60 requests
+    with a first token under 1 s), and a run with seed 13 twenty minutes after another got 71
+    requests against 36-40 cold. The same order was used in runs 2-5, whose scaling cells may be
+    inflated the same way. Run 6 restarted Ollama before every cell from the saturation arm on.
+    Fix: restart Ollama between cells in the method, or a harness seed that varies by cell.
+36. **Fixed in the summarizer (in-window figure), from run 6: `tokens_per_sec` counts requests that
+    finish after the window.** At concurrency 32 on 4 slots the slowest first tokens arrived at
+    151 s in a 120 s cell, and their tokens were divided by 120 s, so the figure kept rising past
+    saturation (two Macs: 66.7 at 16, 93.3 at 32, at the same 4 slots). `fleet-summarize.py` now
+    also reports `chat_tokens_per_sec_in_window` / `tokens_per_sec_in_window`, from requests that
+    finished inside the load phase: 40.0 and 40.0 for those two cells. The old figure stays, so
+    runs 2-5 remain comparable; compare across concurrencies with the in-window one.
+37. **An M4 saturates at 4 parallel requests.** In-window chat throughput, cold cache, three
+    repetitions each: two Macs with 4 slots 40.0 tok/s at concurrency 16 and 32; with
+    `OLLAMA_NUM_PARALLEL=8` (`-c 32768 -np 8`, herd following with concurrency 8 on its own) 40.0
+    at 8 and 36.7 at 16 and 32. One Mac with 8 slots: 18.3, so two Macs are 2.2x one. More slots
+    only slow each request. 4 is the right setting for this class of machine at this workload.
+38. **Cold-cache head-to-head on identical Macs: a tie.** Herd (`6dbf115`) 32, 32, 32 requests
+    against HAProxy roundrobin 32, 32, 32 (40.0 tok/s in-window each), 0 failures, Ollama restarted before
+    every run, each pair on one seed. The earlier gap (0.12.12: 56.7 against 75.0) was item 33 plus
+    item 35's cache order. One model on identical machines is round-robin's best case.
+39. **Open: a pre-warm that must evict blocks every load on its Mac.** Mixed models (seed 13,
+    router `87e3bf0`): the rebalancer pre-warmed `gemma3:12b` onto s1; Ollama had to evict the busy
+    `qwen2.5:7b`, which it does by waiting for it to go idle while loading nothing else; herd kept
+    sending it work, since its load hold only covers loads in its own queues; Ollama's scheduler on
+    s1 logged nothing for 7 minutes and 11 of 27 requests timed out at 300 s. Herd's "fits without
+    evicting" judged by available RAM, Ollama by Metal's working set (17.8 of 24 GiB) and KV x
+    parallel. Evidence and fix directions in `docs/issues.md`.
+40. **Session affinity: +43% on multi-turn traffic.** Four-turn sessions over a 1,500-token system
+    prompt, 8 at once, cold cache: herd 80, 80, 80 requests in 180 s against 51, 56, 64 sent
+    round-robin to each Ollama, 0 failures. Keeping a conversation on the Mac holding its prefix
+    skips its re-prefill; round-robin pays it on most turns.
+41. **Failure handling holds on Macs.** 8 concurrent for 240 s, Ollama stopped on s2 at about 60 s,
+    herd-node killed 90 s later, three repetitions: 4 failures each, exactly the 4 streams in flight
+    on s2 (they cannot be retried after the first chunk); the next requests got `ConnectError` and
+    were retried on s1; the node kill cost nothing.
+42. **First sighting of critical memory pressure on a real fleet.** During the mixed-models arm
+    macOS reported critical pressure on s2, and herd logged `Eliminated s2: critical memory pressure
+    and phi4-mini:latest is not resident (cold load withheld)` while still serving its resident
+    models, as the 2026-10-02 rule intends. The deliberate pressure test on s1 never got past
+    `normal` (3 GB free).
+43. **Fixed on `main`, found in run 6:** the dashboard's embedding cards showed the fleet total on
+    every node (`82fdf26`); the harness could not see herd's native text embeddings and silently
+    ran the embeddings arm without `nomic-embed-text` (`6a588a8`), warmed them at Ollama and
+    dropped them (`1445755`), and now fails instead of shrinking when a requested model is missing
+    (`006de5a`); vision embeddings retry once on a dropped kept-alive connection (`eeff6d1`, 3 of
+    ~23,000 in the full-load demo); `herd-node pull-vision` exists and `/api/pull` names it instead
+    of sending vision models to Ollama (`b2c5d35`); a backend stream that ends with no output is
+    retried on another node (`2b9ff02`, not in any measured router).
+44. **Mixed models on two 24 GB Macs (cold start, open loop 0.15 req/s, four models, three seeds):**
+    Herd completed every request on `6dbf115` (27/27 each, first token p50 11.0 s, p95 46.2 s,
+    3 loads) and on `87e3bf0` in two seeds of three (p50 11.1 s, p95 44.5 s, 4 loads; seed 13 lost
+    11 requests to item 39). HAProxy leastconn completed all with p50 48.4 s and p95 176.9 s and 16
+    loads; roundrobin lost 2 and 9 requests to 300 s timeouts (median 25/27), p50 36.4 s, 11
+    loads. In-window chat throughput: Herd 20.0 / 18.9, leastconn 14.4, roundrobin 16.7 tok/s.
+    Placement is where herd earns its keep on Macs: 3-4 loads against 11-16, a quarter of the
+    first-token time, and no timeouts except the pre-warm stall.
+45. **Rate sweep, one model, two Macs, cold cache (two repetitions):** identical up to 0.2 req/s
+    (first token about 5.4 s either way). Past capacity (~0.27 req/s): at 0.3 Herd p50 23.6 s
+    against 26.6 s and p95 52.5 s against 47.6 s; at 0.4 p50 39.9 s against 61.1 s and p95 127.9 s
+    against 115.7 s. Same in-window throughput (40.0 and 42.2 tok/s) and no failures on either.
+    Herd queues the excess in order, so most requests wait less and the last ones wait longer.
+46. **Native embeddings on Apple, with `nomic-embed-text` this time:** beside `qwen2.5:7b`, 4
+    workers per model gave 5,852 requests per 120 s (median of three; e.g. 1,328 text embeddings at
+    365 ms p50 and 4,513 vision at 105 ms), 16 workers 6,232; 0 failures in all six. Embedding
+    throughput is near its ceiling at 4 workers; more workers mostly add chat.
+47. **Soak: 4 hours, 1,728 requests, 0 failures** (chat on `qwen2.5:7b` and `qwen2.5:14b`,
+    `nomic-embed-text`, DINOv2, 0.12 req/s), herd-node's own memory peak flat at 0.39-0.40 GB on
+    both Macs throughout. **But on a 24 GB Mac Ollama's defaults run into swap:** each
+    `llama-server` keeps up to 8 GiB of prompt cache (`--cache-ram`), which filled within about an
+    hour (26% hit rate on unique prompts); swap reached 14.5 GB on s2 and 11.8 GB on s1, both Macs
+    sat at `warn` pressure and dipped into critical several times, and `qwen2.5:7b` latency rose
+    from 14.3 to about 17 s (first token 5.3 to 7.4 s) before levelling off. Nothing failed. For
+    small Macs set `LLAMA_ARG_CACHE_RAM` (CLAUDE.md, prompt cache gotcha); the EC2 bootstrap
+    should too. Two false starts before it, both recorded: the harness dropped
+    `nomic-embed-text` (fixed), and the startup preloader loaded a third model onto a busy Mac,
+    which swapped and answered with empty streams (open, `docs/issues.md`).
+
 ## Rules for this work
 
 herd is greenfield, so:

@@ -72,3 +72,59 @@ Aggregate completion tokens per second (TTFT p50):
   upstream the router adds 6-7 ms up to 125 req/s, 11 ms at 150, and queues from about 175 req/s
   (p99 104 ms); at 200 req/s it adds ~200 ms and from 300 req/s requests fail. That is one router
   process on one 14-vCPU AMD EPYC-Rome cloud machine, with its event loop at ~80 % of a core at 175/s.
+
+## Run 6: two Apple M4 Macs on AWS EC2 (2026-11-21/22)
+
+Two `mac-m4.metal` Dedicated Hosts (Apple M4, 10-core GPU, 24 GB, 120 GB/s; $1.23/h each with a
+24-hour minimum) in us-east-2a, macOS 26.7.3, Ollama 0.40.13 as a LaunchDaemon with
+`OLLAMA_NUM_PARALLEL=4` and `OLLAMA_CONTEXT_LENGTH=4096`; router, HAProxy 2.8 and the harness on a
+c7i.xlarge in the same subnet. `qwen2.5:7b` (5.6 GB, 100% GPU), ~1,280 prompt and 200 completion
+tokens per request. Scaled down from the planned six-host fleet by decision (the 24-hour minimum
+makes every host a full day's charge), and to the M4 because the M4 Pro had no capacity in any of
+11 zones. Manifest: `fleet_run6_manifest.json`; summary: `fleet_run6_results.json`; findings:
+`docs/plans/fleet-benchmark-findings-2026-11.md` items 33-47.
+
+**Read these numbers with three cautions.** (1) Throughput is **in-window** chat tokens per second
+(`*_in_window`: requests that finished inside the 120 s window); the older `tokens_per_sec` also
+counts requests still running when the window closed and keeps rising past saturation. (2) Only
+arms run with Ollama restarted first (empty prompt cache) are quoted below; earlier arms reused
+seeds back to back and inherited each other's cache, worth up to 2x (finding 35). (3) The router
+changed during the run, as fixes landed: 0.12.12 for the first arms, then `6dbf115` (queue
+concurrency), `87e3bf0` (load gate), `82fdf26`, `b2c5d35`; each arm's router is in the manifest.
+
+**What two M4s do (cold cache, three repetitions, 0 failed requests in every cell):**
+
+| | 1 Mac | 2 Macs |
+|---|---|---|
+| saturated, 8 slots per Mac | 18.3 tok/s | 40.0 tok/s (**2.2x**) |
+| 4 slots per Mac, concurrency 16 / 32 | | 40.0 / 40.0 |
+| 8 slots per Mac, concurrency 16 / 32 | | 36.7 / 36.7 |
+
+An M4 saturates at 4 parallel requests; 8 slots only slow each one (finding 37). Before
+`6dbf115`, herd held each 24 GB Mac to one request at a time (finding 33).
+
+**Herd against HAProxy on the same two Macs:**
+
+| Test | Herd | HAProxy |
+|---|---|---|
+| one model, 8 concurrent, cold cache, 3 pairs | 32 requests, 40.0 tok/s each run | 32, 40.0 (roundrobin) |
+| 4-turn sessions over a 1,500-token prompt, 8 at once | **80** requests (median), first token p50 2.1 s | 56 (round-robin to each Ollama), 4.1 s |
+| four models at random, open loop 0.15 req/s | 27/27, first token p50 11 s, p95 45 s, **3-4 loads** | leastconn 27/27, p50 48 s, p95 177 s, 16 loads; roundrobin 25/27 (300 s timeouts), p50 36 s, 11 loads |
+| one model, open loop 0.1 / 0.2 req/s | first token 5.3 / 5.5 s | 5.5 / 5.7 s |
+| one model, open loop 0.4 req/s (past capacity) | p50 39.9 s, p95 127.9 s | p50 61.1 s, p95 115.7 s |
+
+Identical machines and one model is round-robin's best case, and there herd ties it. Herd pulls
+ahead where placement matters: conversations kept on the Mac holding their prefix (+43%), and
+mixed models served with a quarter of the loads and a quarter of the first-token time. One seed of
+the mixed test on `87e3bf0` lost 11 of 27 requests to a pre-warm that blocked a Mac's loads
+(finding 39, open).
+
+**Embeddings, failure, soak.** Native `nomic-embed-text` and DINOv2 beside chat: about 5,850
+requests per 120 s at 4 workers per model, 0 failures (finding 46). Ollama stopped and herd-node
+killed on one Mac mid-run: only the 4 streams in flight there failed, every time (finding 41).
+Soak: 4 hours, 1,728 requests, 0 failures, herd-node's own memory flat; Ollama's 8 GiB-per-model
+prompt cache pushed both 24 GB Macs into swap and latency up about 20% (finding 47). Router
+overhead over the network: **3.4 ms p50** (200 alternating pairs; `X-Fleet-Overhead-Ms` 3.0 ms).
+
+Cold-load times are from EBS, not a Mac's internal SSD, and are not comparable with a Mac on a
+desk; throughput once loaded is.
