@@ -36,6 +36,25 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### The startup preloader loaded a third model onto a busy 24 GB Mac and sent it into swap `OPEN` (found 2026-11-22, run 6)
+
+**Severity:** high on small Macs. Right after a router restart (05:03 UTC) the preloader logged
+`Pre-warmed gemma3:12b on s1` (the night's most-used model) while the soak then loaded
+`qwen2.5:7b` and `qwen2.5:14b` there: 27.6 GB of models on a 24 GB M4 whose Metal limit is
+17.8 GiB. macOS reported critical pressure (level 4), 1.3 million swap-outs, and Ollama
+answered every request with an empty stream in 0.0 s for ten minutes while herd kept routing
+resident-model traffic to it (critical pressure withholds cold loads only). The empty streams
+are now retried elsewhere (`2b9ff02`); the overload itself is not prevented. Same root cause as
+the pre-warm issue below: herd judges fit by available RAM and its own size estimate, Ollama by
+Metal's working set and `num_ctx x OLLAMA_NUM_PARALLEL`. Also seen: herd-node had started its
+own `ollama serve` on both Macs when the LaunchDaemon's was briefly down (CLAUDE.md, prompt
+cache gotcha), and the LaunchDaemon then crash-looped on the port for hours, harmless here
+but invisible without `launchctl print`.
+
+**Proposed fix:** the same as the pre-warm issue's (c): report Metal's working-set limit in
+the heartbeat and size fit as Ollama does; and stop routing resident traffic to a node in
+critical pressure while another node holds the model.
+
 ### Vision embeddings fail on a dropped keep-alive connection instead of retrying `FIXED` (found 2026-11-22, run 6)
 
 **Severity:** low. During run 6's full-load demo (8 workers each on `qwen2.5:7b` and
