@@ -88,6 +88,25 @@ class ScoringEngine:
             s3 = self._score_queue_depth(depth, node=node, queue_depths=queue_depths)
             breakdown["queue_depth"] = s3
 
+            # Work for *other* models on this node.  Every model on a node
+            # decodes from the same memory bandwidth, so a node serving three
+            # models is busy even when this model's own queue is empty.  Per
+            # model only, two M4s ran 11 streams on one and 5 on the other with
+            # three models hot on both (run 6 video), and streams on the busy
+            # one crawled at 6-10 tok/s.
+            other = sum(
+                d
+                for k, d in queue_depths.items()
+                if k.startswith(f"{node.node_id}:") and k != queue_key
+            )
+            s3o = (
+                self.OTHER_MODEL_LOAD_WEIGHT
+                * self._score_queue_depth(other, node=node, queue_depths=queue_depths)
+                if other
+                else 0.0
+            )
+            breakdown["node_load"] = s3o
+
             s4 = self._score_wait_time(node, model, depth)
             breakdown["wait_time"] = s4
 
@@ -107,7 +126,7 @@ class ScoringEngine:
             s8p = 0.0 if s8 else self._score_prefix_affinity(node, prefix_key, depth)
             breakdown["prefix_affinity"] = s8p
 
-            total = s0 + joins + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s8p
+            total = s0 + joins + s1 + s2 + s3 + s3o + s4 + s5 + s6 + s7 + s8 + s8p
             breakdown["total"] = total
 
             results.append(
@@ -138,6 +157,7 @@ class ScoringEngine:
                 f"thermal={winner.scores_breakdown.get('thermal', 0):.0f}, "
                 f"mem={winner.scores_breakdown.get('memory_fit', 0):.0f}, "
                 f"queue={winner.scores_breakdown.get('queue_depth', 0):.0f}, "
+                f"node_load={winner.scores_breakdown.get('node_load', 0):.0f}, "
                 f"wait={winner.scores_breakdown.get('wait_time', 0):.0f}, "
                 f"affinity={winner.scores_breakdown.get('role_affinity', 0):.0f}, "
                 f"avail={winner.scores_breakdown.get('availability_trend', 0):.0f}, "
@@ -559,6 +579,12 @@ class ScoringEngine:
     # correct: a warm prefix cache is worth a lot, but not worth routing into a
     # node that is about to throttle.
     SESSION_AFFINITY_BONUS = 20.0
+
+    # Other models' queued and in-flight requests on a node count at half the
+    # rate of this model's own (and through the same cap, so at most -15):
+    # enough to send a model that is hot on several nodes to the least busy
+    # one, too little on its own to justify a cold load.
+    OTHER_MODEL_LOAD_WEIGHT = 0.5
 
     # How fast the affinity bonus decays as the pinned node's queue grows.
     # factor = 1 / (1 + depth / SCALE), so depth 0 -> full bonus, depth 2 ->

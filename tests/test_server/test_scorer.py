@@ -184,6 +184,71 @@ class TestScoringEngine:
         results = scorer.score_request("llama3.3:70b", {"busy:llama3.3:70b": 100})
         assert results[0].scores_breakdown["queue_depth"] == -30.0  # capped
 
+    async def test_other_models_load_sends_a_shared_model_to_the_idler_node(
+        self, scorer, registry
+    ):
+        # Run 6: three small models hot on both M4s, 11 streams on one and 5
+        # on the other, because each model's own queue looked balanced.
+        for nid in ("s1", "s2"):
+            hb = make_heartbeat(
+                node_id=nid,
+                memory_total=24.0,
+                memory_used=12.0,
+                loaded_models=[("llama3.2:1b", 2.4), ("gemma3:1b", 1.1), ("qwen2.5:1.5b", 1.9)],
+            )
+            await registry.update_from_heartbeat(hb)
+
+        depths = {
+            "s1:llama3.2:1b": 2,
+            "s1:gemma3:1b": 2,
+            "s1:qwen2.5:1.5b": 4,
+            "s2:llama3.2:1b": 2,
+            "s2:gemma3:1b": 2,
+        }
+        results = scorer.score_request("llama3.2:1b", depths)
+
+        assert results[0].node_id == "s2"
+        by_node = {r.node_id: r.scores_breakdown for r in results}
+        assert by_node["s1"]["queue_depth"] == by_node["s2"]["queue_depth"]
+        # half the queue penalty for the other models' 6 (capped) vs 2 requests
+        assert by_node["s1"]["node_load"] == -15.0
+        assert by_node["s2"]["node_load"] == -6.0
+
+    async def test_other_models_load_is_capped_at_half_the_queue_cap(self, scorer, registry):
+        hb = make_heartbeat(
+            node_id="busy",
+            memory_total=128.0,
+            memory_used=40.0,
+            loaded_models=[("llama3.3:70b", 40.0), ("qwen3:8b", 6.0)],
+        )
+        await registry.update_from_heartbeat(hb)
+
+        results = scorer.score_request("llama3.3:70b", {"busy:qwen3:8b": 100})
+        assert results[0].scores_breakdown["queue_depth"] == 0.0
+        assert results[0].scores_breakdown["node_load"] == -15.0
+
+    async def test_other_models_load_does_not_justify_a_cold_load(self, scorer, registry):
+        # Hot on a node busy with another model, cold on an idle one: the hot
+        # copy still wins while its own queue is empty.
+        hb_busy = make_heartbeat(
+            node_id="busy",
+            memory_total=24.0,
+            memory_used=10.0,
+            loaded_models=[("qwen2.5:1.5b", 1.9), ("phi4-mini:latest", 6.6)],
+        )
+        hb_idle = make_heartbeat(
+            node_id="idle",
+            memory_total=24.0,
+            memory_used=4.0,
+            loaded_models=[],
+            available_models=["qwen2.5:1.5b"],
+        )
+        await registry.update_from_heartbeat(hb_busy)
+        await registry.update_from_heartbeat(hb_idle)
+
+        results = scorer.score_request("qwen2.5:1.5b", {"busy:phi4-mini:latest": 8})
+        assert results[0].node_id == "busy"
+
     async def test_memory_fit_scoring(self, scorer, registry):
         # Node with lots of memory available
         hb_big = make_heartbeat(

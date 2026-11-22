@@ -2003,3 +2003,29 @@ screencast (JPEG quality 92) and encoded to H.264; Playwright's built-in recorde
 and from the router's own machine.** Both halvings above looked like routing cost from the
 client, and both vanished one hop closer. And quote a burst figure and a steady-state figure
 separately: they differ by a third on the same hardware, and neither is wrong.
+
+## 2026-11-22: Four models, two Macs, and conversations that stay home (run 6, videos 3 and 4)
+
+**Evidence.** Same two M4 Macs, router on s1, 16 browser streams.
+
+- *Four small models at once* (qwen2.5:1.5b, llama3.2:1b, gemma3:1b, phi4-mini): about 250 tok/s for
+  the pair against about 660 for one 1.5B model, because each model is its own `llama-server`
+  reading its own weights from the same 120 GB/s. Placement from a warm, uneven start (models left
+  from earlier runs) ran 11 streams on s1 and 5 on s2; herd's queue signal saw each model's queue,
+  never the node's. Added `node_load` (other models' requests at half weight). From a cold start
+  both versions split 8/8 and the A/B showed nothing beyond noise (old 239 and 262, new 265 and
+  265 tok/s) — kept because the warm case is the common one on a real fleet, stated as unproven.
+- *Three models and a 12B on one M4* first: 113 tok/s, 7-8 tok/s per stream. An M4 serving a 12B
+  and a 7B is slow for physics, not placement — in weight bytes per token the split was even.
+- *Conversations*: opening turn 12.1 s to first token, follow-ups 0.5 s, 100% on their Mac (see
+  the OPEN issue on affinity for the run where two moved and paid 9-11 s each).
+- *The prompt cache fooled the first take again*: the reports came from a fixed seed, the test run
+  had cached them on both Macs, and the "opening turn" read 0.64 s. Seed per run.
+- *The router's startup preloader* loaded `qwen2.5:7b` (yesterday's most used) onto s2 within
+  seconds of a router restart, during a run that did not use it — the open preloader issue, seen
+  again.
+
+**Insight: on small unified-memory machines the expensive things are reading weights and reading
+prompts.** Fewer models per node and keeping conversations where their prompt already sits are
+worth more than any load balancing among slots; both are what herd's scorer should weigh, and the
+second is the one it currently undervalues.

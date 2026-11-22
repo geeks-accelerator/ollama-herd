@@ -36,6 +36,14 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### Session affinity gives up a conversation without weighing what re-reading it costs `OPEN` (found 2026-11-22, run 6)
+
+**Evidence.** Eight conversations on two M4 Macs, `qwen2.5:7b`, each opening with a ~1,500-token report and asking four follow-ups (`session:` tags). Follow-ups on the conversation's Mac answered in 0.5 s median; the opening turn, which reads the report, in 12-14 s. In one run two conversations had turn 2 sent to the other Mac while their own was busy, and paid 8.9 s and 11.1 s to re-read the report there: 77% of follow-ups stayed home in that run, 100% in the recorded one.
+
+**Cause.** The affinity bonus (`SESSION_AFFINITY_BONUS`, 20) decays only with queue depth at the pinned node (`1 / (1 + depth / 2)`). It does not know how long the conversation is or how fast the other node prefills, so on hardware where a 2,000-token re-read takes 10 s it gives the conversation away to save a few seconds of queueing.
+
+**Proposed fix.** Scale the bonus, or the depth at which it fades, by the estimated re-prefill time: the request's token estimate over the candidate node's measured prefill rate (the latency store has TTFT per node and model). Measure on the M4 pair before and after: turn-2 TTFT median and p95, and the share of follow-ups that stay.
+
 ### The startup preloader loaded a third model onto a busy 24 GB Mac and sent it into swap `OPEN` (found 2026-11-22, run 6)
 
 **Severity:** high on small Macs. Right after a router restart (05:03 UTC) the preloader logged
