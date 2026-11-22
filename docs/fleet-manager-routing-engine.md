@@ -329,10 +329,14 @@ for each queue:
       .filter(not_in_hard_pause)
       .sort_by(score)
 
-    if candidates.any():
-      requests_to_move = min(queue.pending_depth / 2, 3)
-      move requests_to_move pending requests → best candidate queue
+    for candidate in candidates (model resident there):
+      requests_to_move = min(candidate.free_slots, queue.pending_depth)
+      if requests_to_move > 0:
+        move requests_to_move pending requests → candidate queue
+        break
 ```
+
+`free_slots` is the candidate's concurrency less what is in flight, queued or held there (`QueueManager.free_slots`), so a node that frees up takes as much as it can serve at once. It used to be a fixed three per cycle, which drained a backlog onto a rejoining node at 0.6 requests a second while it could serve 2.6 (run 6).
 
 **Critical invariant:** Only pending requests are moved. In-flight requests complete on the node where they started. A request that has begun generating tokens will never be interrupted or re-routed.
 

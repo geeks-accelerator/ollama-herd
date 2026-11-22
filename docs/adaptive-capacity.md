@@ -211,15 +211,20 @@ Every 5 seconds (heartbeat interval):
   1. AppFingerprinter.collect_snapshot()     → records CPU, mem, net, disk
   2. MeetingDetector.is_in_meeting()         → checks camera + mic
   3. CapacityLearner.observe(cpu, memory)    → computes availability score
-     ├── If meeting detected          → hard pause (0GB ceiling)
-     ├── If sustained high CPU        → reduced ceiling (16GB)
+     ├── If meeting detected          → hard pause (paused)
+     ├── If sustained high CPU        → hard pause (paused)
      ├── If bootstrapping             → no capacity contributed
-     └── Otherwise                    → learned score + ceiling
+     └── Otherwise                    → learned score → mode + ceiling
   4. CapacityInfo included in heartbeat      → sent to router
-  5. Router's ScoringEngine uses ceiling     → respects dynamic capacity
+  5. Router reads it two ways                → memory ceiling + slot cap
 ```
 
-The router never sends requests that would exceed the memory ceiling. If the MacBook's ceiling drops from 64GB to 0GB because a meeting started, the router immediately stops routing new requests to it and rebalances pending requests to other nodes.
+The router reads capacity as two separate things:
+
+- **Memory:** `ceiling_gb` caps the total a model load may use on the node (`NodeState.fit_budget`, which every fit decision uses), so what is free under it is the ceiling less what is loaded.
+- **Back-off:** the mode caps how many requests run at once (`CapacityMetrics.slot_cap`): every slot Ollama admits at `full` and `learned_high`, half at `learned_medium`, one at `learned_low`. This applies to loaded models too; until 2026-11-22 it rode on the memory ceiling by accident of arithmetic and vanished for them.
+
+A paused node (meeting, sustained high CPU, availability below 0.2) is eliminated outright: the router stops routing new requests to it and rebalances pending requests to other nodes. Pre-warms also skip a node whose availability is below `FLEET_PRE_WARM_MIN_AVAILABILITY` (0.60).
 
 ---
 
@@ -242,4 +247,4 @@ The capacity learner's output is included in the node agent's heartbeat as a `ca
 }
 ```
 
-The router reads `ceiling_gb` and uses it as the effective memory ceiling for scoring Signal 2 (Memory Fit) and for elimination in Stage 1.
+The router reads `ceiling_gb` as the memory ceiling for fit (Signal 2, Memory Fit, and elimination in Stage 1, both through `fit_budget`) and `mode` for the concurrency cap (`slot_cap`).

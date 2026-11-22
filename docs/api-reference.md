@@ -1212,6 +1212,7 @@ Lightweight queue status for client-side backoff decisions. Designed for high-fr
     "Studio:gpt-oss:120b": {
       "pending": 2,
       "in_flight": 3,
+      "streamed_chunks": 184220,
       "concurrency": 2,
       "model": "gpt-oss:120b",
       "node_id": "Studio"
@@ -1230,6 +1231,8 @@ Lightweight queue status for client-side backoff decisions. Designed for high-fr
 ```
 
 Use `estimated_wait_ms` to decide whether to send a request now or back off. `queue_depth` = `pending` + `in_flight`.
+
+`streamed_chunks` is cumulative per queue (every chunk the router has streamed for that model on that node); the dashboard reads its change between updates as the live rate. Chunks, not tokens: the exact token count is the trace's.
 
 **MLX-specific fields** (present on `mlx-local:` queue entries):
 
@@ -1452,7 +1455,8 @@ A trace is written as the request finishes (for a stream, after its last chunk),
         "queue_ms": 0.0,
         "upstream_ms": 4180.3,
         "backend_ms": 4172.0,
-        "overhead_ms": 8.9
+        "overhead_ms": 8.9,
+        "prefill_ms": 210.4
       },
       "finish_reason": "stop",
       "estimated_tokens": 118
@@ -1460,6 +1464,8 @@ A trace is written as the request finishes (for a stream, after its last chunk),
   ]
 }
 ```
+
+`timings.prefill_ms` is Ollama's `prompt_eval_duration` for the request, when the backend reported one. The router also keeps it per node and model in the latency store, where it becomes each node's cold prefill rate for session affinity.
 
 ---
 
