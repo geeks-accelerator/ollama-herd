@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from fleet_manager.models.config import ServerSettings
+from fleet_manager.server.queue_manager import QueueDepths
 from fleet_manager.server.registry import NodeRegistry
 from fleet_manager.server.scorer import ScoringEngine
 from tests.conftest import make_heartbeat
@@ -135,12 +136,25 @@ class TestJoiningALoad:
             for r in scorer.score_request("qwen3-coder:30b", busy)
         }
         assert before["n1"] < 0 and before["n2"] < 0
-        busy["n1:qwen3-coder:30b"] = 1  # one coder request already sent to n1
-        results = scorer.score_request("qwen3-coder:30b", busy)
+        busy["n1:qwen3-coder:30b"] = 1  # one coder request already sent to n1, loading
+        loading = QueueDepths(busy, loading=frozenset({"n1:qwen3-coder:30b"}))
+        results = scorer.score_request("qwen3-coder:30b", loading)
         assert results[0].node_id == "n1"
         b = results[0].scores_breakdown
         assert b["eviction"] == before["n1"], "the eviction stays on record for the queue"
         assert b["joins_load"] == -b["eviction"]
+
+    async def test_requests_merely_queued_do_not_cancel_the_eviction_charge(self, scorer, registry):
+        """Findings item 30: a coder request queued behind a resident model on
+        n1 is not a load under way there, so evicting for it still costs."""
+        await registry.update_from_heartbeat(_gpu_heartbeat("n1", loaded=[B]))
+        await registry.update_from_heartbeat(_gpu_heartbeat("n2", loaded=[A]))
+        busy = QueueDepths({f"n1:{B}": 2, f"n2:{A}": 2, "n1:qwen3-coder:30b": 1})
+        by_node = {
+            r.node_id: r.scores_breakdown for r in scorer.score_request("qwen3-coder:30b", busy)
+        }
+        assert by_node["n1"]["joins_load"] == 0.0
+        assert by_node["n1"]["eviction"] < 0
 
 
 @pytest.mark.asyncio

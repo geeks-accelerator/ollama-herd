@@ -94,6 +94,30 @@ def compute_concurrency(available_memory_gb: float, model_size_gb: float) -> int
     return max(_MIN_CONCURRENCY, min(_MAX_CONCURRENCY, slots))
 
 
+class QueueDepths(dict):
+    """Each ``node:model`` queue's depth, as the scorer reads it, plus
+    ``loading``: the queues whose model has a load under way there (an
+    in-flight request that has produced nothing yet).
+
+    Depth alone cannot tell "a load is on its way" from "requests are queued
+    behind a resident model", and the scorer's ``joins_load`` needs the first:
+    it cancels a cold load's eviction charge only to send requests after a
+    load already started, not to stack a churn onto a node that merely has
+    work queued (findings item 30).  A plain dict reads as nothing loading.
+    """
+
+    def __init__(self, depths=(), *, loading: frozenset[str] = frozenset()):
+        super().__init__(depths)
+        self.loading = loading
+
+
+def _load_under_way(q: DeviceModelQueue) -> bool:
+    """Is a request for ``q``'s model at its node and still producing nothing?
+    One definition, for the load hold and the scorer.  Held requests are not
+    in flight, so a backlog waiting its turn never counts as a load."""
+    return any(e.last_progress_at is None for e in q.in_flight.values())
+
+
 @dataclass
 class DeviceModelQueue:
     node_id: str
@@ -251,12 +275,16 @@ class QueueManager:
             except Exception:
                 logger.exception("Error in stale in-flight reaper")
 
-    def get_queue_depths(self) -> dict[str, int]:
-        """Return current depth (pending + held + in flight + direct) for all queues."""
-        return {
-            key: q.pending.qsize() + q.held + len(q.in_flight) + q.direct
-            for key, q in self._queues.items()
-        }
+    def get_queue_depths(self) -> QueueDepths:
+        """Current depth (pending + held + in flight + direct) for all queues,
+        plus which of them have a load under way (``QueueDepths.loading``)."""
+        return QueueDepths(
+            {
+                key: q.pending.qsize() + q.held + len(q.in_flight) + q.direct
+                for key, q in self._queues.items()
+            },
+            loading=frozenset(key for key, q in self._queues.items() if _load_under_way(q)),
+        )
 
     def get_queue_info(self) -> dict[str, dict]:
         """Return detailed queue information for the fleet status endpoint."""
@@ -758,7 +786,7 @@ class QueueManager:
             return False
         if self._idle_room_for(node, q.node_id, q.model, depths):
             return False
-        if any(e.last_progress_at is None for e in q.in_flight.values()):
+        if _load_under_way(q):
             return False  # this model's load is under way: join it
         return time.time() - entry.enqueued_at < _LOAD_WAIT_SECONDS
 

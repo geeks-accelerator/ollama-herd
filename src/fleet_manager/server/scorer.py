@@ -80,14 +80,17 @@ class ScoringEngine:
             queue_key = f"{node.node_id}:{model}"
             depth = queue_depths.get(queue_key, 0)
 
-            # Herd has already sent this model here to load (requests queued or
-            # in flight for it, not resident yet): join that load rather than
-            # start a second one, and a second eviction, on another node.
-            # Concurrent requests for a model with no home each scored the load
-            # as a fresh eviction and sprayed loads across every node.  The
-            # eviction stays in the breakdown: the queue reads it to give the
-            # load its turn (``QueueManager._must_wait``).
-            joins = -s0 if depth and s0 < 0 else 0.0
+            # Herd has already sent this model here to load and the load is
+            # under way (``QueueDepths.loading``): join it rather than start a
+            # second one, and a second eviction, on another node.  Concurrent
+            # requests for a model with no home each scored the load as a
+            # fresh eviction and sprayed loads across every node.  Only a load
+            # under way, not any depth: requests merely queued here kept a
+            # churning node winning while a second card sat idle (findings
+            # item 30).  The eviction stays in the breakdown: the queue reads
+            # it to give the load its turn (``QueueManager._must_wait``).
+            loading = getattr(queue_depths, "loading", frozenset())
+            joins = -s0 if queue_key in loading and s0 < 0 else 0.0
             breakdown["joins_load"] = joins
 
             s1 = self._score_thermal(node, model, evicts=s0 < 0)

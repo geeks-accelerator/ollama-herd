@@ -1486,3 +1486,25 @@ async def test_free_slots_is_concurrency_less_what_is_already_there():
     await _settle()
     assert qm.free_slots("m2:phi4:14b") == 1
     await qm.shutdown()
+
+
+async def test_depths_say_which_queues_have_a_load_under_way():
+    """QueueDepths.loading: an in-flight request that has produced nothing.
+    A request producing tokens, or one only queued, is not a load."""
+    qm = QueueManager()
+    _fixed_concurrency(qm, 1)
+    loading, running, queued = (
+        _make_entry(node_id="m1"),
+        _make_entry(model="gemma3:12b", node_id="m1"),
+        _make_entry(node_id="m1"),
+    )
+    for e in (loading, running, queued):
+        await qm.enqueue(e, _sync_process)
+    await _settle()
+    running.last_progress_at = time.time()
+    depths = qm.get_queue_depths()
+    assert depths["m1:phi4:14b"] == 2, "one in flight, one queued behind it"
+    assert depths.loading == frozenset({"m1:phi4:14b"})
+    loading.last_progress_at = time.time()
+    assert qm.get_queue_depths().loading == frozenset()
+    await qm.shutdown()
