@@ -1479,11 +1479,21 @@ class StreamingProxy:
         if not node:
             raise ValueError(f"Node {node_id} not found")
         client = self._get_client(node_id, port=node.vision_embedding_port or 11438)
-        resp = await client.post(
-            "/embed",
-            json=body,
-            timeout=httpx.Timeout(connect=10.0, read=timeout, write=10.0, pool=10.0),
-        )
+        request_timeout = httpx.Timeout(connect=10.0, read=timeout, write=10.0, pool=10.0)
+        # One retry for a kept-alive connection the server closed as we reused
+        # it (ReadError / RemoteProtocolError): an embedding is idempotent, and
+        # httpx opens a fresh connection for the second try.  Run 6's full-load
+        # demo lost 3 of ~23,000 vision embeddings this way while the node's
+        # server kept answering in ~20 ms.  Timeouts and refused connections are
+        # not retried: those say the server is in trouble, not the connection.
+        for attempt in (1, 2):
+            try:
+                resp = await client.post("/embed", json=body, timeout=request_timeout)
+                break
+            except (httpx.ReadError, httpx.RemoteProtocolError) as e:
+                if attempt == 2:
+                    raise
+                logger.info(f"Vision embedding on {node_id}: {type(e).__name__}, retrying once")
         resp.raise_for_status()
         return resp.json()
 

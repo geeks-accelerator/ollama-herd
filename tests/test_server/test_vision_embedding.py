@@ -472,3 +472,69 @@ class TestEmbeddingConfig:
         settings = ServerSettings()
         assert settings.vision_embedding is True
         assert settings.vision_embedding_timeout == 30.0
+
+
+# ---------------------------------------------------------------------------
+# A dropped kept-alive connection is retried once (run 6)
+# ---------------------------------------------------------------------------
+
+
+class _FlakyClient:
+    """Raises the given errors in turn, then answers."""
+
+    def __init__(self, *errors):
+        self.errors = list(errors)
+        self.calls = 0
+
+    async def post(self, path, json=None, timeout=None):
+        import httpx
+
+        self.calls += 1
+        if self.errors:
+            raise self.errors.pop(0)
+        return httpx.Response(
+            200, json={"embeddings": [[0.1]]}, request=httpx.Request("POST", "http://n/embed")
+        )
+
+
+def _proxy_with(client):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from fleet_manager.server.streaming import StreamingProxy
+
+    registry = MagicMock()
+    registry.get_node.return_value = SimpleNamespace(vision_embedding_port=11438)
+    proxy = StreamingProxy(registry)
+    proxy._get_client = lambda node_id, port=None: client
+    return proxy
+
+
+class TestVisionEmbeddingRetry:
+    @pytest.mark.asyncio
+    async def test_a_dropped_connection_is_retried_once(self):
+        import httpx
+
+        client = _FlakyClient(httpx.ReadError("closed"))
+        result = await _proxy_with(client).embed_image_on_node("s2", {"images": ["x"]})
+        assert result == {"embeddings": [[0.1]]}
+        assert client.calls == 2
+
+    @pytest.mark.asyncio
+    async def test_a_second_drop_fails(self):
+        import httpx
+
+        client = _FlakyClient(httpx.RemoteProtocolError("x"), httpx.ReadError("y"))
+        with pytest.raises(httpx.ReadError):
+            await _proxy_with(client).embed_image_on_node("s2", {"images": ["x"]})
+        assert client.calls == 2
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_is_not_retried(self):
+        """The server is slow, not the connection stale: retrying doubles the wait."""
+        import httpx
+
+        client = _FlakyClient(httpx.ReadTimeout("slow"))
+        with pytest.raises(httpx.ReadTimeout):
+            await _proxy_with(client).embed_image_on_node("s2", {"images": ["x"]})
+        assert client.calls == 1

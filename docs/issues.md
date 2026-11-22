@@ -36,7 +36,7 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
-### Vision embeddings fail on a dropped keep-alive connection instead of retrying `OPEN` (found 2026-11-22, run 6)
+### Vision embeddings fail on a dropped keep-alive connection instead of retrying `FIXED` (found 2026-11-22, run 6)
 
 **Severity:** low. During run 6's full-load demo (8 workers each on `qwen2.5:7b` and
 `dinov2-vit-s14`, about 2,160 requests a minute on two M4 Macs) 3 of about 23,000 vision
