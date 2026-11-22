@@ -36,6 +36,14 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### A node that fails instantly looks idle, so it keeps winning the first attempt `OPEN` (found 2026-11-22, run 6)
+
+**Evidence.** A 24 GB M4 (s2) holding `gpt-oss:20b` (13 GB) and a leftover `qwen2.5:1.5b` (4.9 GB at a 32K context) overran Metal's working set. Ollama's `llama-server` logged `kIOGPUCommandBufferCallbackErrorOutOfMemory`, then "backend is in error state from a previous command buffer failure - recreate the backend to recover", and from then on answered every request with an error in milliseconds while `/api/ps` still listed both models at 100% GPU. herd's empty-stream retry (`2b9ff02`) moved each request to s1 correctly — 29 attempts on s2 marked `retried`, none reached a client as a failure — but every *new* request still went to s2 first: it had nothing queued, because it failed everything at once. All four coding agents ended up sharing s1 and waited 85-326 s for a first token.
+
+**Cause.** Scoring reads queue depth and latency history; a backend that rejects instantly has an empty queue and no slow traces, so it scores as the idlest node. Nothing remembers that this `node:model` failed the last N attempts.
+
+**Proposed fix.** A short-lived penalty (or elimination) for a `node:model` whose recent attempts ended `retried`/`failed` with no output, cleared by a success or after a cool-off; plus a health check naming the node, since the backend needs a restart (it does not recover on its own). Restarting Ollama on s2 cleared it.
+
 ### Session affinity gives up a conversation without weighing what re-reading it costs `OPEN` (found 2026-11-22, run 6)
 
 **Evidence.** Eight conversations on two M4 Macs, `qwen2.5:7b`, each opening with a ~1,500-token report and asking four follow-ups (`session:` tags). Follow-ups on the conversation's Mac answered in 0.5 s median; the opening turn, which reads the report, in 12-14 s. In one run two conversations had turn 2 sent to the other Mac while their own was busy, and paid 8.9 s and 11.1 s to re-read the report there: 77% of follow-ups stayed home in that run, 100% in the recorded one.

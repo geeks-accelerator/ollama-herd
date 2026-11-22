@@ -2029,3 +2029,31 @@ separately: they differ by a third on the same hardware, and neither is wrong.
 prompts.** Fewer models per node and keeping conversations where their prompt already sits are
 worth more than any load balancing among slots; both are what herd's scorer should weigh, and the
 second is the one it currently undervalues.
+
+## 2026-11-22: Chat beside embeddings, and four Claude Code agents on two M4s (run 6, videos 5 and 6)
+
+**Chat + embeddings.** 8 chat streams (`qwen2.5:1.5b`), 3 workers of nomic-embed-text (16 sentences per
+request) and 3 of DINOv2 (4 images per request) at once: about 344 chat tok/s, 64 sentences/s and 23
+images/s across both Macs, 6,740 vectors in 100 s, 0 failed. Projecting the sentence vectors onto their
+top two principal components separated the four topics into four clean clusters within seconds — a
+better demonstration that the embeddings are real than any counter.
+
+**Four coding agents.** Claude Code 2.1.312 headless, `ANTHROPIC_BASE_URL` at the router, `gpt-oss:20b`
+on both Macs at 32K per slot (`-c 131072 -np 4`, 13 GB, fits the M4's 17.8 GB Metal limit with only
+this model loaded). Each agent got a broken project and "run the tests, fix the code, never the
+tests". All four passed (91, 109, 131 on a second attempt, and 147 s), checked by a separate unittest
+run against a byte-identical test file. 33 requests, every agent on one Mac for its whole session,
+opening turn 33-54 s (Claude Code's ~11K-token prompt), later turns 1.1 s median. A single agent alone
+took 123 s and 10 turns.
+
+**What went wrong first, all of it worth knowing:**
+- *A 20B model mistypes long paths.* One agent copied the scratchpad path with one hex digit wrong,
+  got "path does not exist" twice and gave up. Short readable paths fixed it.
+- *Claude Code reads every `CLAUDE.md` above its working directory.* Projects under
+  `ollama-herd-private/` sent that repo's private instructions to the model in every request and grew
+  the prompt from ~11K to 24K tokens. Run demo projects from a folder with nothing above it.
+- *Metal out of memory wedged s2's `llama-server`* and herd kept choosing it first because it failed
+  instantly — see the OPEN issue. Two models at a 32K context on a 24 GB Mac was the trigger; when you
+  raise `OLLAMA_CONTEXT_LENGTH`, unload everything else first.
+- *Four agents from one machine share one session* unless each sends its own `session:` tag: herd's
+  fallback key is client IP plus model, which would pin all four to one Mac.
