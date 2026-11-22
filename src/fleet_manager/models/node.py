@@ -561,9 +561,22 @@ class NodeState(BaseModel):
         return self.memory.available_gb + self.gpu_memory_free_gb()
 
     def memory_for_load_gb(self) -> float:
-        """What a model load may use here: ``model_memory_available_gb``,
-        capped by the learned capacity ceiling when there is one."""
+        """What a model load may use here if Ollama evicts what it must:
+        ``model_memory_available_gb`` plus what the loaded models hold, capped
+        by the learned capacity ceiling when there is one.
+
+        The "can it run here at all" gate.  Whether it fits *without* evicting
+        is ``memory_free_without_evicting_gb``, and what evicting costs is
+        scored (``Scorer._score_eviction``).  Leaving the loaded models out
+        made the gate a no-eviction rule on unified memory, where available
+        RAM already excludes them: two idle models on a 24 GB Mac (3 GB free)
+        refused a third that evicting either would have fitted, with a 503
+        that said "try again shortly" (run 6).  GPU nodes hid it behind their
+        system RAM.
+        """
         available = self.model_memory_available_gb()
+        if self.ollama:
+            available += sum(m.size_gb for m in self.ollama.models_loaded)
         if self.capacity and self.capacity.ceiling_gb > 0:
             available = min(available, self.capacity.ceiling_gb)
         return available

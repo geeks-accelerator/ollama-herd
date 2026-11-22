@@ -84,8 +84,24 @@ class TestFitGate:
         results = scorer.score_request(BIG_MODEL, {})
         assert [r.node_id for r in results] == ["evo-x5"]
 
-    async def test_a_full_gpu_pool_still_refuses(self, scorer, registry):
-        """The pool is shared with what is already loaded there."""
+    async def test_a_pool_too_small_even_after_evicting_refuses(self, scorer, registry):
+        """The pool is shared with what is loaded there, and evicting it all
+        still leaves too little: 2 GB of RAM + 2 GB of pool + 18 GB loaded."""
+        hb = make_heartbeat(
+            node_id="evo-x5",
+            memory_total=32.0,
+            memory_used=30.0,
+            loaded_models=[("other:20b", 18.0)],
+            available_models=[BIG_MODEL, "other:20b"],
+        )
+        hb.ollama.models_loaded[0].size_vram_gb = 18.0
+        hb.memory.gpu_total_gb = 20.0
+        await registry.update_from_heartbeat(hb)
+        assert scorer.score_request(BIG_MODEL, {}) == []
+
+    async def test_a_full_pool_whose_model_can_be_evicted_is_not_refused(self, scorer, registry):
+        """Ollama evicts the loaded model to make room; whether that is worth
+        it is scored (eviction), not refused at the gate."""
         hb = make_heartbeat(
             node_id="evo-x5",
             memory_total=32.0,
@@ -96,7 +112,22 @@ class TestFitGate:
         hb.ollama.models_loaded[0].size_vram_gb = 158.0
         hb.memory.gpu_total_gb = 160.0
         await registry.update_from_heartbeat(hb)
-        assert scorer.score_request(BIG_MODEL, {}) == []
+        assert [r.node_id for r in scorer.score_request(BIG_MODEL, {})] == ["evo-x5"]
+
+    async def test_a_full_mac_evicts_an_idle_model_instead_of_refusing(self, scorer, registry):
+        """Run 6: a 24 GB M4 with qwen2.5:7b and qwen2.5:14b resident and idle
+        had 3 GB free; a cold gemma3:12b got a 503 for 30 s although evicting
+        either model fits it.  Unified memory: available RAM already excludes
+        the loaded models, so the gate must add them back."""
+        hb = make_heartbeat(
+            node_id="s1",
+            memory_total=24.0,
+            memory_used=21.0,
+            loaded_models=[("qwen2.5:7b", 5.5), ("qwen2.5:14b", 12.0)],
+            available_models=["gemma3:12b", "qwen2.5:7b", "qwen2.5:14b"],
+        )
+        await registry.update_from_heartbeat(hb)
+        assert [r.node_id for r in scorer.score_request("gemma3:12b", {})] == ["s1"]
 
 
 class TestSetting:

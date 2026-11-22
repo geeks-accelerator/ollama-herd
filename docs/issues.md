@@ -36,6 +36,19 @@ all three.** Re-triage before planning work off this list.
 
 ## Correctness
 
+### The load gate refused any model that needed an eviction on unified memory `FIXED` (found 2026-11-22, run 6)
+
+`Scorer._eliminate` and `routing._pick_pull_node` eliminated a node when `memory_for_load_gb()`
+was below the model's fit cost, and that figure was available RAM (+ undeclared GPU pool),
+which on a Mac already excludes the loaded models. Run 6's memory-pressure arm: s1 (24 GB
+M4) with `qwen2.5:7b` and `qwen2.5:14b` resident and idle, 3.0 GB free; a cold
+`gemma3:12b` with `X-Fleet-No-Fallback` logged `All 2 nodes eliminated` every 2 s, then
+503 "exists but no node can serve it right now. Try again shortly." after 30 s, although
+evicting either idle model fits it. macOS reported pressure `normal` throughout, so the
+critical-pressure rule never fired. Fixed: `memory_for_load_gb` adds the loaded models'
+`size_gb`; `_score_eviction` already charges for what a load pushes out. Hidden on NVIDIA
+nodes (their figure includes system RAM) and on the 512 GB Mac Studio (never full).
+
 ### Queue concurrency charged a resident model twice, holding small machines to one request `FIXED` (found 2026-11-21, run 6)
 
 `QueueManager._compute_queue_concurrency` computed `(available_gb - model_size_gb) / 2 GB`,
