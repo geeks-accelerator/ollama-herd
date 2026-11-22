@@ -26,16 +26,19 @@ router = APIRouter(tags=["dashboard"])
 # them using trace DB stats (completed, failed, avg_latency) refreshed every
 # 60s — cheap enough to compute but not worth hammering on every 2s SSE tick.
 
-_instant_stats_cache: dict[str, dict] = {}
+_instant_stats_cache: dict[tuple[str, str], dict] = {}
 _instant_stats_ts: float = 0.0
 _INSTANT_STATS_TTL_S: float = 60.0
 
 
-async def _get_instant_model_stats(trace_store) -> dict[str, dict]:
-    """Return per-model stats for instant (non-queued) backends from trace DB.
+async def _get_instant_model_stats(trace_store) -> dict[tuple[str, str], dict]:
+    """Return per-(model, node) stats for instant (non-queued) backends from trace DB.
 
-    Keys are model names; values are {total, completed, failed, avg_latency_ms}.
-    Refreshed at most every 60s; returns stale cache on error.
+    Keys are ``(model, node_id)``; values are {total, completed, failed,
+    avg_latency_ms}.  Per node, because each node gets its own card: keyed by
+    model alone, every node's card showed the fleet total (run 6: 34,140
+    DINOv2 embeddings on both s1 and s2).  Refreshed at most every 60s;
+    returns stale cache on error.
     """
     global _instant_stats_cache, _instant_stats_ts
     now = time.time()
@@ -45,7 +48,7 @@ async def _get_instant_model_stats(trace_store) -> dict[str, dict]:
         cutoff = now - 86400  # last 24h
         cursor = await trace_store._read_db.execute(
             """
-            SELECT model,
+            SELECT model, node_id,
                    COUNT(*) AS total,
                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
                    SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed,
@@ -54,18 +57,18 @@ async def _get_instant_model_stats(trace_store) -> dict[str, dict]:
             WHERE timestamp >= ?
               AND (model LIKE '%embed%'
                    OR (tags IS NOT NULL AND tags LIKE '%"embed"%'))
-            GROUP BY model
+            GROUP BY model, node_id
             """,
             (cutoff,),
         )
         rows = await cursor.fetchall()
-        result: dict[str, dict] = {}
+        result: dict[tuple[str, str], dict] = {}
         for row in rows:
-            result[row[0]] = {
-                "total": row[1] or 0,
-                "completed": row[2] or 0,
-                "failed": row[3] or 0,
-                "avg_latency_ms": round(row[4], 1) if row[4] else 0.0,
+            result[(row[0], row[1])] = {
+                "total": row[2] or 0,
+                "completed": row[3] or 0,
+                "failed": row[4] or 0,
+                "avg_latency_ms": round(row[5], 1) if row[5] else 0.0,
             }
         _instant_stats_cache = result
         _instant_stats_ts = now
@@ -353,7 +356,7 @@ async def dashboard_events(request: Request):
                         if node.text_embedding and node.text_embedding_port > 0:
                             for m in node.text_embedding.models_available:
                                 key = f"{node.node_id}:{m.name}"
-                                st = instant_stats.get(m.name, {})
+                                st = instant_stats.get((m.name, node.node_id), {})
                                 queues[key] = {
                                     "node_id": node.node_id,
                                     "model": m.name,
@@ -374,7 +377,7 @@ async def dashboard_events(request: Request):
                         if node.vision_embedding and node.vision_embedding_port > 0:
                             for m in node.vision_embedding.models_available:
                                 key = f"{node.node_id}:{m.name}"
-                                st = instant_stats.get(m.name, {})
+                                st = instant_stats.get((m.name, node.node_id), {})
                                 queues[key] = {
                                     "node_id": node.node_id,
                                     "model": m.name,
