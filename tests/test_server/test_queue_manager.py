@@ -32,6 +32,7 @@ async def _dummy_process(entry):
     async def stream():
         yield "chunk1\n"
         yield "chunk2\n"
+
     return stream()
 
 
@@ -70,6 +71,7 @@ class TestQueueManager:
         def sync_process(e):
             async def gen():
                 yield "data"
+
             return gen()
 
         await qm.enqueue(entry, sync_process)
@@ -92,6 +94,7 @@ class TestQueueManager:
         def sync_process(e):
             async def gen():
                 yield "data"
+
             return gen()
 
         # Three completions with different stats
@@ -100,7 +103,8 @@ class TestQueueManager:
             await qm.enqueue(entry, sync_process)
             await asyncio.sleep(0.05)
             qm.mark_completed(
-                "studio:phi4:14b", entry,
+                "studio:phi4:14b",
+                entry,
                 latency_ms=latency_ms,
                 prompt_tokens=pt,
                 completion_tokens=ct,
@@ -125,6 +129,7 @@ class TestQueueManager:
         def sync_process(e):
             async def gen():
                 yield "data"
+
             return gen()
 
         await qm.enqueue(entry, sync_process)
@@ -147,6 +152,7 @@ class TestQueueManager:
         def sync_process(e):
             async def gen():
                 yield "data"
+
             return gen()
 
         await qm.enqueue(entry, sync_process)
@@ -166,6 +172,7 @@ class TestQueueManager:
         def sync_process(e):
             async def gen():
                 yield "data"
+
             return gen()
 
         await qm.enqueue(entry, sync_process)
@@ -183,6 +190,7 @@ class TestQueueManager:
             async def gen():
                 await asyncio.sleep(100)  # never completes
                 yield "data"
+
             return gen()
 
         # Enqueue 3 items to source
@@ -234,6 +242,7 @@ class TestQueueManager:
             async def gen():
                 await asyncio.sleep(100)
                 yield "data"
+
             return gen()
 
         await qm.enqueue(entry, process)
@@ -273,6 +282,7 @@ class TestQueueManager:
         def process(e):
             async def gen():
                 yield "ok"
+
             return gen()
 
         await qm.enqueue(e1, process)
@@ -292,9 +302,12 @@ def test_concurrency_never_exceeds_backend_admission_limit():
     from fleet_manager.server.serializers import decode_parallelism_for
 
     class _Ollama:
-        def __init__(self, np): self.num_parallel = np
+        def __init__(self, np):
+            self.num_parallel = np
+
     class _Node:
-        def __init__(self, np): self.ollama = _Ollama(np)
+        def __init__(self, np):
+            self.ollama = _Ollama(np)
 
     assert decode_parallelism_for(_Node(4)) == 4
     assert decode_parallelism_for(_Node(2)) == 2
@@ -328,9 +341,10 @@ def _node_with_meta(num_parallel: int, meta: dict | None):
     )
 
 
-@pytest.mark.parametrize("family", sorted(
-    __import__("fleet_manager.server.serializers", fromlist=["x"]).OLLAMA_SERIAL_FAMILIES
-))
+@pytest.mark.parametrize(
+    "family",
+    sorted(__import__("fleet_manager.server.serializers", fromlist=["x"]).OLLAMA_SERIAL_FAMILIES),
+)
 def test_serial_families_decode_one_at_a_time(family):
     """sched.go forces numParallel=1 for these architectures. On a NUM_PARALLEL=4
     node herd must not run 4 workers that would silently queue inside Ollama."""
@@ -366,9 +380,16 @@ def test_decision_capability_alone_does_not_force_serial():
     from fleet_manager.models.node import ModelTagMeta
     from fleet_manager.server.serializers import decode_parallelism_for
 
-    node = _node_with_meta(4, {"d:1b": ModelTagMeta(
-        family="llama", format="gguf", capabilities=["decision", "completion"],
-    )})
+    node = _node_with_meta(
+        4,
+        {
+            "d:1b": ModelTagMeta(
+                family="llama",
+                format="gguf",
+                capabilities=["decision", "completion"],
+            )
+        },
+    )
     assert decode_parallelism_for(node, "d:1b") == 4
 
 
@@ -377,35 +398,47 @@ def test_real_ollama_metadata_from_the_reference_mac():
     from fleet_manager.models.node import ModelTagMeta
     from fleet_manager.server.serializers import decode_parallelism_for
 
-    node = _node_with_meta(4, {
-        # MLX variant: safetensors, EMPTY family — serial via the format rule.
-        "qwen3.8:27b-mlx": ModelTagMeta(
-            format="safetensors", family="",
-            capabilities=["completion", "vision", "tools", "thinking"],
-        ),
-        # Decision model: serial via its qwen35 family, not via "decision".
-        "nimble:latest": ModelTagMeta(
-            format="gguf", family="qwen35",
-            capabilities=["decision", "tools", "thinking", "completion"],
-        ),
-        "gemma3:27b": ModelTagMeta(
-            format="gguf", family="gemma3", capabilities=["completion", "vision"],
-        ),
-        "nomic-embed-text:latest": ModelTagMeta(
-            format="gguf", family="nomic-bert", capabilities=["embedding"],
-        ),
-    })
+    node = _node_with_meta(
+        4,
+        {
+            # MLX variant: safetensors, EMPTY family — serial via the format rule.
+            "qwen3.8:27b-mlx": ModelTagMeta(
+                format="safetensors",
+                family="",
+                capabilities=["completion", "vision", "tools", "thinking"],
+            ),
+            # Decision model: serial via its qwen35 family, not via "decision".
+            "nimble:latest": ModelTagMeta(
+                format="gguf",
+                family="qwen35",
+                capabilities=["decision", "tools", "thinking", "completion"],
+            ),
+            "gemma3:27b": ModelTagMeta(
+                format="gguf",
+                family="gemma3",
+                capabilities=["completion", "vision"],
+            ),
+            "nomic-embed-text:latest": ModelTagMeta(
+                format="gguf",
+                family="nomic-bert",
+                capabilities=["embedding"],
+            ),
+        },
+    )
     assert decode_parallelism_for(node, "qwen3.8:27b-mlx") == 1
     assert decode_parallelism_for(node, "nimble") == 1
     assert decode_parallelism_for(node, "gemma3:27b") == 4
     assert decode_parallelism_for(node, "nomic-embed-text") == 1
 
 
-@pytest.mark.parametrize("meta", [
-    None,                                     # older agent: no meta at all
-    {},                                       # meta present, model not in it
-    {"m:1b": None},                           # defensive: null entry
-])
+@pytest.mark.parametrize(
+    "meta",
+    [
+        None,  # older agent: no meta at all
+        {},  # meta present, model not in it
+        {"m:1b": None},  # defensive: null entry
+    ],
+)
 def test_missing_metadata_keeps_the_node_limit(meta):
     """Missing data must reproduce today's behavior exactly, never throttle."""
     from fleet_manager.server.serializers import decode_parallelism_for
@@ -427,14 +460,21 @@ def test_two_models_on_one_node_get_their_own_limits():
     from fleet_manager.models.node import ModelTagMeta
     from fleet_manager.server.serializers import decode_parallelism_for
 
-    node = _node_with_meta(4, {
-        "gemma3:27b": ModelTagMeta(
-            family="gemma3", format="gguf", capabilities=["completion", "vision"],
-        ),
-        "qwen3-vl:32b": ModelTagMeta(
-            family="qwen3vl", format="gguf", capabilities=["completion", "vision"],
-        ),
-    })
+    node = _node_with_meta(
+        4,
+        {
+            "gemma3:27b": ModelTagMeta(
+                family="gemma3",
+                format="gguf",
+                capabilities=["completion", "vision"],
+            ),
+            "qwen3-vl:32b": ModelTagMeta(
+                family="qwen3vl",
+                format="gguf",
+                capabilities=["completion", "vision"],
+            ),
+        },
+    )
     assert decode_parallelism_for(node, "gemma3:27b") == 4
     assert decode_parallelism_for(node, "qwen3-vl:32b") == 1
     assert decode_parallelism_for(node) == 4  # no model → node-level, unchanged
@@ -518,14 +558,17 @@ def _fixed_concurrency(qm, n):
 
 async def _slow_process(entry):
     """Like the real process_fns: returns an unconsumed async generator."""
+
     async def gen():
         yield "chunk"
+
     return gen()
 
 
 def _sync_process(entry):
     async def gen():
         yield "chunk"
+
     return gen()
 
 
@@ -725,6 +768,7 @@ async def test_client_abandoning_a_stream_mid_way_frees_the_slot_promptly():
                 qm.mark_failed(key, entry)  # what _stream_with_tracking does
                 raise
             qm.mark_completed(key, entry)
+
         return gen()
 
     a, b = _make_entry(), _make_entry()
@@ -766,6 +810,7 @@ async def test_stream_cancelled_mid_await_still_leaves_the_queue():
             except Exception:
                 qm.mark_failed(key, entry)
                 raise
+
         return gen()
 
     a, b = _make_entry(), _make_entry()
@@ -882,7 +927,9 @@ def _node(node_id, resident, *, available_gb=8.0, gpu_total_gb=0.0, sizes=None):
         node_id=node_id,
         hardware=HardwareProfile(node_id=node_id, memory_total_gb=64.0),
         memory=MemoryMetrics(
-            total_gb=64.0, used_gb=64.0 - available_gb, available_gb=available_gb,
+            total_gb=64.0,
+            used_gb=64.0 - available_gb,
+            available_gb=available_gb,
             gpu_total_gb=gpu_total_gb,
         ),
         ollama=OllamaMetrics(
@@ -1270,3 +1317,41 @@ async def test_a_moved_request_still_leaves_the_queue_when_its_stream_ends():
     m2 = qm._queues["m2:phi4:14b"]
     assert not m2.in_flight and m2.failed_count == 1, "settled where it ran"
     await qm.shutdown()
+
+
+async def test_a_stream_handed_over_as_the_client_leaves_still_frees_its_slot():
+    """The race in ``dispatched_stream``: the route awaits ``is_disconnected()``
+    and the worker hands the stream over during that await, so cancelling the
+    future does nothing.  The stream is never started -- and an async
+    generator that never started ran no ``finally`` on ``aclose()`` -- so the
+    request stayed in flight, holding its slot and counting as a pending load,
+    until the reaper ten minutes later."""
+    from fleet_manager.server.routes.routing import dispatched_stream
+
+    qm = QueueManager()
+    entry = _make_entry()
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def process(e):
+        async def gen():
+            yield "never read"
+
+        return gen()
+
+    await qm.enqueue(entry, lambda e: process(e))
+    await asyncio.sleep(0.05)  # the worker dispatches: the request is in flight
+    key = "studio:phi4:14b"
+    assert entry.request.request_id in qm._queues[key].in_flight
+
+    # Rebuild the hand-over exactly: the stream arrives during the await.
+    stream = qm._settle_on_exit(qm._queues[key], entry, process(entry))
+
+    class Request:
+        async def is_disconnected(self):
+            future.set_result(stream)
+            return True
+
+    assert await dispatched_stream(Request(), future, entry, None, poll_s=0.01) is None
+    assert entry.request.request_id not in qm._queues[key].in_flight
+    assert entry.request.request_id not in qm._queues[key].slots

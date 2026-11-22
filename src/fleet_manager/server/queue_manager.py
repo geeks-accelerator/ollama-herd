@@ -479,9 +479,9 @@ class QueueManager:
                 continue
 
             # Drop our references to the stream before waiting.  The future's
-            # result IS the stream, and a stream is only finalized -- its
-            # GeneratorExit handler calls mark_failed, which releases this very
-            # slot -- once nothing references it.  A streaming client that
+            # result IS the stream, and a stream is only finalized -- the
+            # process_fn's own GeneratorExit handler calls mark_failed, which
+            # releases this very slot -- once nothing references it.  A streaming client that
             # disconnects mid-response leaves its stream suspended at a yield;
             # if this frame still held it, the slot would wait for the reaper
             # (~11 min) and the model's queue would freeze.  Found live.
@@ -724,31 +724,24 @@ class QueueManager:
                 q.stats_samples += 1
             logger.debug(f"Completed {entry.request.request_id[:8]} on {queue_key}")
 
-    async def _settle_on_exit(self, q: DeviceModelQueue, entry: QueueEntry, stream):
-        """Pass ``stream`` through, guaranteeing the request leaves this queue.
+    def _settle_on_exit(self, q: DeviceModelQueue, entry: QueueEntry, stream):
+        """``stream``, guaranteed to take the request out of this queue
+        however it ends: exhausted, failed, cancelled, closed, or dropped.
+        See ``_SettledStream``."""
+        return _SettledStream(self, q, entry, stream)
 
-        The process_fns settle requests themselves (mark_completed/mark_failed)
-        on completion, errors and GeneratorExit -- but not on CancelledError,
-        which is how Starlette ends a streaming response when the client
-        disconnects: it cancels the task, and mid-generation that lands while
-        the stream awaits the backend.  Neither ``except Exception`` nor
-        ``except GeneratorExit`` catches it, so the request never left
-        ``in_flight``, and with workers holding their slot the model's queue
-        froze until the reaper (measured: 641 s).  One guarantee here covers
-        every process_fn, present and future, instead of each re-learning it.
+    def _settle_abandoned(self, q: DeviceModelQueue, entry: QueueEntry) -> None:
+        """Mark a request failed if nothing settled it, and free its slot.
+
+        Where the request is now: a retry moves it to another node's queue
+        (``move_in_flight``).  Idempotent.
         """
         rid = entry.request.request_id
-        try:
-            async for chunk in stream:
-                yield chunk
-        finally:
-            # Where the request is now: a retry moves it to another node's
-            # queue (``move_in_flight``).
-            key = f"{entry.assigned_node}:{entry.request.model}"
-            now_in = self._queues.get(key)
-            if now_in is not None and rid in now_in.in_flight:  # nothing settled it
-                self.mark_failed(key, entry)
-            self._release_slot(q, rid)
+        key = f"{entry.assigned_node}:{entry.request.model}"
+        now_in = self._queues.get(key)
+        if now_in is not None and rid in now_in.in_flight:  # nothing settled it
+            self.mark_failed(key, entry)
+        self._release_slot(q, rid)
 
     @staticmethod
     def _release_slot(q: DeviceModelQueue, request_id: str) -> None:
@@ -848,3 +841,57 @@ class QueueManager:
             for task in q.worker_tasks:
                 if not task.done():
                     task.cancel()
+
+
+class _SettledStream:
+    """A process function's stream, passed through, that always takes its
+    request out of the queue.
+
+    The process functions settle requests themselves (``mark_completed`` /
+    ``mark_failed``) on completion, errors and ``GeneratorExit``, but not on
+    ``CancelledError``, which is how Starlette ends a streaming response when
+    the client disconnects: mid-generation it lands while the stream awaits
+    the backend, and the request never left ``in_flight`` (measured: a 641 s
+    freeze until the reaper).  So this settles on every exit.
+
+    A class, not an async generator, for the stream nobody ever starts: a
+    client that leaves just as the worker hands the stream over gets it
+    unconsumed, and ``aclose()`` on an async generator that never started runs
+    no ``finally``.  Here ``aclose()`` settles either way
+    (``routing.dispatched_stream`` calls it), so the slot is freed instead of
+    waiting ten minutes for the reaper while the request counts as a pending
+    load.  Settling is idempotent.
+    """
+
+    def __init__(self, manager: QueueManager, q: DeviceModelQueue, entry: QueueEntry, stream):
+        self._manager = manager
+        self._q = q
+        self._entry = entry
+        self._stream = stream
+        self._it = None
+        self._settled = False
+
+    def _settle(self) -> None:
+        if not self._settled:
+            self._settled = True
+            self._manager._settle_abandoned(self._q, self._entry)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._it is None:
+            self._it = aiter(self._stream)
+        try:
+            return await anext(self._it)
+        except BaseException:  # StopAsyncIteration, errors, cancellation
+            self._settle()
+            raise
+
+    async def aclose(self) -> None:
+        try:
+            close = getattr(self._it if self._it is not None else self._stream, "aclose", None)
+            if close is not None:
+                await close()
+        finally:
+            self._settle()

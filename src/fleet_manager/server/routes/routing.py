@@ -457,7 +457,11 @@ async def dispatched_stream(request, future, entry, trace_store, *, poll_s: floa
         if done:
             return await first_chunk(request, future.result(), poll_s=poll_s)
         if await request.is_disconnected():
-            future.cancel()
+            if not future.cancel() and future.exception() is None:
+                # The worker handed the stream over during that await: nobody
+                # will read it, so close it, which settles the request and
+                # frees its slot rather than leaving it to the reaper.
+                await future.result().aclose()
             req = entry.request
             logger.info(f"Client left while {req.request_id[:8]} was queued — not dispatching")
             if trace_store is not None:
