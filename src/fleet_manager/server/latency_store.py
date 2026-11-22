@@ -10,6 +10,30 @@ import aiosqlite
 
 from fleet_manager.common.stats import percentile as _percentile
 
+# Prompts shorter than this say little about prefill: the chat template and
+# per-request overhead dominate them.
+_PREFILL_MIN_TOKENS = 256
+
+
+def _cold_prefill_rate(rows) -> float | None:
+    """A node:model's cold prefill rate, in ms per prompt token, from
+    ``(prompt_eval_ms, prompt_tokens)`` rows; None without enough data.
+
+    ``prompt_tokens`` counts the whole prompt, cached tokens included, so a
+    prompt-cache hit reads as impossibly fast prefill.  The 90th percentile of
+    the per-request rate keeps the slow, uncached ones: what re-reading a
+    conversation on a node that does not have it costs.
+    """
+    rates = [
+        ms / tokens
+        for ms, tokens in rows
+        if ms and tokens and tokens >= _PREFILL_MIN_TOKENS and ms > 0
+    ]
+    if len(rates) < 3:
+        return None
+    return _percentile(rates, 90)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,6 +52,7 @@ class LatencyStore:
         self._read_db: aiosqlite.Connection | None = None
         # Synchronous cache for scorer lookups
         self._percentile_cache: dict[str, float] = {}
+        self._prefill_cache: dict[str, float] = {}
 
     async def initialize(self):
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,7 +78,7 @@ class LatencyStore:
             ON latency_observations(node_id, model_name)
         """)
         # Migration: add token tracking columns
-        for col in ("prompt_tokens INTEGER", "completion_tokens INTEGER"):
+        for col in ("prompt_tokens INTEGER", "completion_tokens INTEGER", "prompt_eval_ms REAL"):
             try:
                 await self._db.execute(f"ALTER TABLE latency_observations ADD COLUMN {col}")
             except Exception as e:
@@ -117,14 +142,15 @@ class LatencyStore:
         tokens: int | None = None,
         prompt_tokens: int | None = None,
         completion_tokens: int | None = None,
+        prompt_eval_ms: float | None = None,
     ):
         if not self._db:
             return
         await self._db.execute(
             "INSERT INTO latency_observations "
             "(node_id, model_name, latency_ms, tokens_generated, "
-            "prompt_tokens, completion_tokens, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "prompt_tokens, completion_tokens, prompt_eval_ms, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 node_id,
                 model_name,
@@ -132,14 +158,26 @@ class LatencyStore:
                 tokens,
                 prompt_tokens,
                 completion_tokens,
+                prompt_eval_ms,
                 time.time(),
             ),
         )
         await self._db.commit()
         # Update cache for this pair
+        key = f"{node_id}:{model_name}"
         p75 = await self.get_percentile(node_id, model_name, 75)
         if p75 is not None:
-            self._percentile_cache[f"{node_id}:{model_name}"] = p75
+            self._percentile_cache[key] = p75
+        if prompt_eval_ms is not None:
+            cursor = await self._read_db.execute(
+                "SELECT prompt_eval_ms, prompt_tokens FROM latency_observations "
+                "WHERE node_id = ? AND model_name = ? AND prompt_eval_ms IS NOT NULL "
+                "ORDER BY timestamp DESC LIMIT 500",
+                (node_id, model_name),
+            )
+            rate = _cold_prefill_rate(await cursor.fetchall())
+            if rate is not None:
+                self._prefill_cache[key] = rate
 
     async def get_percentile(
         self, node_id: str, model_name: str, percentile: int = 75
@@ -159,6 +197,11 @@ class LatencyStore:
     def get_cached_percentile(self, node_id: str, model_name: str) -> float | None:
         """Synchronous lookup of cached p75 latency for scorer use."""
         return self._percentile_cache.get(f"{node_id}:{model_name}")
+
+    def get_cached_prefill_ms_per_token(self, node_id: str, model_name: str) -> float | None:
+        """Synchronous lookup of the cold prefill rate, ms per prompt token,
+        for scorer use (``_cold_prefill_rate``); None until measured."""
+        return self._prefill_cache.get(f"{node_id}:{model_name}")
 
     # -- Dashboard query methods --
 
@@ -349,6 +392,26 @@ class LatencyStore:
             samples.setdefault(f"{node_id}:{model_name}", []).append(latency_ms)
         for key, values in samples.items():
             self._percentile_cache[key] = _percentile(values, 75)
+        cursor = await self._read_db.execute(
+            """
+            SELECT node_id, model_name, prompt_eval_ms, prompt_tokens FROM (
+                SELECT node_id, model_name, prompt_eval_ms, prompt_tokens,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY node_id, model_name
+                           ORDER BY timestamp DESC
+                       ) AS rn
+                FROM latency_observations WHERE prompt_eval_ms IS NOT NULL
+            )
+            WHERE rn <= 500
+            """
+        )
+        prefill: dict[str, list[tuple]] = {}
+        for node_id, model_name, ms, tokens in await cursor.fetchall():
+            prefill.setdefault(f"{node_id}:{model_name}", []).append((ms, tokens))
+        for key, rows in prefill.items():
+            rate = _cold_prefill_rate(rows)
+            if rate is not None:
+                self._prefill_cache[key] = rate
         logger.info(f"Loaded p75 latency cache for {len(self._percentile_cache)} node:model pairs")
 
     async def close(self):

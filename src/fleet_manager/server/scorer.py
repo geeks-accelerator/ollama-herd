@@ -133,11 +133,15 @@ class ScoringEngine:
             s7 = self._score_context_fit(node, model, estimated_tokens)
             breakdown["context_fit"] = s7
 
-            s8 = self._score_session_affinity(node, session_key, depth)
+            s8 = self._score_session_affinity(node, session_key, depth, model, estimated_tokens)
             breakdown["session_affinity"] = s8
             # Second tier of signal 8, only when this conversation has no pin
             # here: a node already holding the same system prompt + tools.
-            s8p = 0.0 if s8 else self._score_prefix_affinity(node, prefix_key, depth)
+            s8p = (
+                0.0
+                if s8
+                else self._score_prefix_affinity(node, prefix_key, depth, model, estimated_tokens)
+            )
             breakdown["prefix_affinity"] = s8p
 
             total = s0 + joins + s1 + s2 + s3 + s3o + s4 + s5 + s6 + s7 + s8 + s8p
@@ -647,24 +651,46 @@ class ScoringEngine:
         """
         if depth == 0 or self._latency_store is None:
             return 0.0
-
-        p75_ms = self._latency_store.get_cached_percentile(node.node_id, model)
-        if p75_ms is None:
-            # Cold-start fallback: derive expected tokens/sec from node's
-            # memory bandwidth and model size.  Empirically, prompt-eval
-            # tokens/sec on Apple Silicon scales roughly as bandwidth / model
-            # size, clamped to a sensible floor.
-            model_size = self._estimate_model_size(model, node)
-            bw = node.hardware.memory_bandwidth_gbps
-            if bw > 0:
-                tokens_per_sec = max(10.0, bw * 1.2 / max(1.0, model_size / 10.0))
-            else:
-                tokens_per_sec = max(1.0, 100.0 / max(1.0, model_size))
-            p75_ms = (100.0 / tokens_per_sec) * 1000
-
-        est_wait_s = (depth * p75_ms) / 1000.0
+        est_wait_s = depth * self._seconds_per_request(node, model)
         penalty = min(self._s.score_wait_time_max_penalty, est_wait_s / 10.0)
         return -penalty
+
+    def _fallback_tokens_per_sec(self, node: NodeState, model: str) -> float:
+        """Cold-start throughput estimate before anything is measured: from
+        the node's memory bandwidth and the model's size.  Empirically,
+        prompt-eval tokens/sec on Apple Silicon scales roughly as bandwidth /
+        model size, clamped to a sensible floor."""
+        model_size = self._estimate_model_size(model, node)
+        bw = node.hardware.memory_bandwidth_gbps
+        if bw > 0:
+            return max(10.0, bw * 1.2 / max(1.0, model_size / 10.0))
+        return max(1.0, 100.0 / max(1.0, model_size))
+
+    def _seconds_per_request(self, node: NodeState, model: str) -> float:
+        """How long one request for ``model`` takes on ``node``: the measured
+        p75 latency, else the cold-start estimate for a 100-token request."""
+        p75_ms = (
+            self._latency_store.get_cached_percentile(node.node_id, model)
+            if self._latency_store is not None
+            else None
+        )
+        if p75_ms is not None:
+            return p75_ms / 1000.0
+        return 100.0 / self._fallback_tokens_per_sec(node, model)
+
+    def _reread_seconds(self, node: NodeState, model: str, tokens: int) -> float:
+        """What re-reading a ``tokens``-token conversation costs away from the
+        node that holds its prefix: ``tokens`` at the measured cold prefill
+        rate (``LatencyStore.get_cached_prefill_ms_per_token``), else at the
+        cold-start throughput estimate."""
+        rate = (
+            self._latency_store.get_cached_prefill_ms_per_token(node.node_id, model)
+            if self._latency_store is not None
+            else None
+        )
+        if rate is not None:
+            return tokens * rate / 1000.0
+        return tokens / self._fallback_tokens_per_sec(node, model)
 
     # Sized to outweigh ordinary jitter between comparable nodes without
     # overpowering a real health signal.  Thermal alone contributes up to 50, so
@@ -692,7 +718,14 @@ class ScoringEngine:
     # sharing one popular system prompt from piling onto one node.
     PREFIX_AFFINITY_BONUS = 10.0
 
-    def _score_session_affinity(self, node: NodeState, session_key: str, depth: int = 0) -> float:
+    def _score_session_affinity(
+        self,
+        node: NodeState,
+        session_key: str,
+        depth: int = 0,
+        model: str = "",
+        estimated_tokens: int = 0,
+    ) -> float:
         """Signal 8: keep a conversation on the node holding its warm prefix.
 
         llama.cpp skips already-processed prompt tokens, so a returning turn can
@@ -705,9 +738,18 @@ class ScoringEngine:
         first turn, a stateless call, and a stale conversation all score exactly
         as they did before this signal existed.
         """
-        return self._pin_bonus(node, session_key, self.SESSION_AFFINITY_BONUS, depth)
+        return self._pin_bonus(
+            node, session_key, self.SESSION_AFFINITY_BONUS, depth, model, estimated_tokens
+        )
 
-    def _score_prefix_affinity(self, node: NodeState, prefix_key: str, depth: int = 0) -> float:
+    def _score_prefix_affinity(
+        self,
+        node: NodeState,
+        prefix_key: str,
+        depth: int = 0,
+        model: str = "",
+        estimated_tokens: int = 0,
+    ) -> float:
         """Signal 8, second tier: a new conversation whose leading system prompt
         and tools another conversation already warmed on this node.
 
@@ -716,10 +758,28 @@ class ScoringEngine:
         already is.  Zero without a prefix key (short prompts don't get one —
         see ``prefix_key_for``), so routing is unchanged for everything else.
         """
-        return self._pin_bonus(node, prefix_key, self.PREFIX_AFFINITY_BONUS, depth)
+        return self._pin_bonus(
+            node, prefix_key, self.PREFIX_AFFINITY_BONUS, depth, model, estimated_tokens
+        )
 
-    def _pin_bonus(self, node: NodeState, key: str, bonus: float, depth: int) -> float:
-        """``bonus`` if ``key`` is pinned to ``node``, decayed by its queue depth."""
+    def _pin_bonus(
+        self,
+        node: NodeState,
+        key: str,
+        bonus: float,
+        depth: int,
+        model: str = "",
+        estimated_tokens: int = 0,
+    ) -> float:
+        """``bonus`` if ``key`` is pinned to ``node``, decayed as its queue grows.
+
+        With a token estimate, decayed by what waiting costs against what
+        re-reading the conversation elsewhere costs, both in seconds:
+        ``reread / (reread + wait)``, full with no wait and half when the two
+        are equal.  A depth-only decay gave a long conversation away to save a
+        few seconds of queueing and paid 9-11 s to re-read it on the other Mac
+        (run 6).  Without an estimate (no tokens known), the depth decay.
+        """
         if not key or self._sessions is None:
             return 0.0
         preferred = self._sessions.preferred_node(key)
@@ -736,7 +796,13 @@ class ScoringEngine:
         #
         # Decay can only shrink, never grow, so the deliberate ceiling below
         # thermal's 50 holds by construction.
-        factor = 1.0 / (1.0 + max(0, depth) / self.SESSION_AFFINITY_DECAY_SCALE)
+        if depth <= 0:
+            return bonus
+        if estimated_tokens > 0 and model:
+            wait = depth * self._seconds_per_request(node, model)
+            reread = self._reread_seconds(node, model, estimated_tokens)
+            return bonus * reread / (reread + wait) if reread + wait > 0 else bonus
+        factor = 1.0 / (1.0 + depth / self.SESSION_AFFINITY_DECAY_SCALE)
         return bonus * factor
 
     def _score_role_affinity(self, node: NodeState, model: str) -> float:

@@ -27,6 +27,7 @@ from fleet_manager.common.errors import (
 from fleet_manager.models.request import InferenceRequest, QueueEntry, RequestFormat
 from fleet_manager.server import debug_log
 from fleet_manager.server.registry import NodeRegistry
+from fleet_manager.server.session_affinity import prefix_key_for, session_key_for
 from fleet_manager.server.tool_call_repair import recover_tool_call_from_ollama_error
 
 logger = logging.getLogger(__name__)
@@ -266,7 +267,11 @@ def _ns_to_ms(value) -> float | None:
 
 
 def request_timings(
-    entry: QueueEntry, start_time: float, end_time: float, backend_ms: float | None
+    entry: QueueEntry,
+    start_time: float,
+    end_time: float,
+    backend_ms: float | None,
+    prefill_ms: float | None = None,
 ) -> dict[str, float]:
     """Where a request's time went, in milliseconds.
 
@@ -289,6 +294,8 @@ def request_timings(
         timings["overhead_ms"] = round(
             (end_time - req.created_at) * 1000 - timings["queue_ms"] - backend_ms, 1
         )
+    if prefill_ms is not None:
+        timings["prefill_ms"] = prefill_ms  # Ollama's prompt_eval_duration
     return timings
 
 
@@ -339,6 +346,10 @@ class StreamingProxy:
         # owned by the trace path like _request_done_reason: the part of a
         # request's latency that is not herd's.
         self._request_backend_ms: dict[str, float] = {}
+        # Ollama's prompt_eval_duration per request: the prefill time the
+        # latency store turns into each node's cold prefill rate (session
+        # affinity weighs re-reading a conversation with it).
+        self._request_prefill_ms: dict[str, float] = {}
         # Models we've already warned about an inert num_ctx override for.
         self._inert_override_logged: set[tuple[str, int]] = set()
         # Models the backend has told us cannot serve /api/generate at all —
@@ -566,7 +577,11 @@ class StreamingProxy:
         elapsed_ms = (now - start_time) * 1000
         ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else None
         timings = request_timings(
-            entry, start_time, now, self._request_backend_ms.pop(entry.request.request_id, None)
+            entry,
+            start_time,
+            now,
+            self._request_backend_ms.pop(entry.request.request_id, None),
+            self._request_prefill_ms.pop(entry.request.request_id, None),
         )
         prompt_tokens, completion_tokens = self._request_tokens.get(
             entry.request.request_id, (None, None)
@@ -872,6 +887,8 @@ class StreamingProxy:
                     entry.request.model,
                     queue_manager.get_queue_depths(),
                     estimated_tokens=entry.request.estimated_tokens or 0,
+                    session_key=session_key_for(entry.request),
+                    prefix_key=prefix_key_for(entry.request),
                     excluded=excluded_nodes,
                 )
 
@@ -998,6 +1015,7 @@ class StreamingProxy:
                     elapsed_ms,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
+                    prompt_eval_ms=self._request_prefill_ms.get(request_id),
                 ),
                 name=f"latency-record-{request_id[:8]}",
             )
@@ -1187,6 +1205,9 @@ class StreamingProxy:
                         backend_ms = _ns_to_ms(parsed.get("total_duration"))
                         if backend_ms is not None:
                             self._request_backend_ms[request.request_id] = backend_ms
+                        prefill_ms = _ns_to_ms(parsed.get("prompt_eval_duration"))
+                        if prefill_ms is not None:
+                            self._request_prefill_ms[request.request_id] = prefill_ms
                         # Store extended metadata for headers
                         self._request_meta[request.request_id] = {
                             "backend_ms": backend_ms,
