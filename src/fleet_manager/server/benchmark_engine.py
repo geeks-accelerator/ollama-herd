@@ -241,6 +241,10 @@ class ModelTarget:
     # Loaded on no node, only on disk: not warmed, so its first request
     # includes the load wherever the router puts it.
     on_disk_only: bool = False
+    # Served by a node's native sidecar (fastembed text embeddings), not its
+    # Ollama: not warmed, since warming goes to Ollama, which does not have it
+    # (run 6's soak: "nomic-embed-text on s1: FAILED", dropped from the run).
+    sidecar: bool = False
 
     def __post_init__(self) -> None:
         if not self.workload:
@@ -458,7 +462,9 @@ async def discover_fleet(
         if normalize_model_name(name) not in {normalize_model_name(k) for k in model_map}:
             for node_id, served in text_embed_by_node.items():
                 if normalize_model_name(name) in {normalize_model_name(x) for x in served}:
-                    target(name, 0.0, MIN_CONCURRENCY, model_type="embed").nodes.append(node_id)
+                    target(
+                        name, 0.0, MIN_CONCURRENCY, model_type="embed", sidecar=True
+                    ).nodes.append(node_id)
 
     return list(model_map.values()), nodes_info
 
@@ -1205,8 +1211,8 @@ async def warmup(
     """Warm every node that serves each target, directly; drop targets no node
     could warm.  Only ``WARMED_TYPES`` workloads are warmed (vision as chat, with
     no image: that loads the model).  Not warmed, so their first request includes
-    the load and shows as ``first_ttft_ms`` in the report: image generation and
-    vision embeddings (node sidecars), and a model only on disk
+    the load and shows as ``first_ttft_ms`` in the report: image generation,
+    vision and native text embeddings (node sidecars), and a model only on disk
     (``on_disk_only``), which warming would load on every node that has it.
 
     log_fn: optional callback(message: str) for progress reporting.
@@ -1218,7 +1224,7 @@ async def warmup(
     coros = []
 
     def warmed_here(t: ModelTarget) -> bool:
-        return t.workload in WARMED_TYPES and not t.on_disk_only
+        return t.workload in WARMED_TYPES and not t.on_disk_only and not t.sidecar
 
     for t in targets:
         if not warmed_here(t):

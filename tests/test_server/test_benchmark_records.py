@@ -539,6 +539,7 @@ class TestVision:
             "qwen2.5:7b": ("llm", ["a", "b"]),
             "nomic-embed-text": ("embed", ["a", "b"]),
         }
+        assert next(t for t in targets if t.name == "nomic-embed-text").sidecar
 
     @pytest.mark.asyncio
     async def test_sidecar_embeddings_only_when_asked_for(self, httpx_mock):
@@ -608,6 +609,21 @@ class TestVision:
         kept = await warmup(targets, nodes)
         assert [t.name for t in kept] == ["llava:7b", "dinov2-vit-s14"]
         assert len(httpx_mock.get_requests()) == 1  # only the vision model, at Ollama
+
+    @pytest.mark.asyncio
+    async def test_warmup_leaves_native_text_embeddings_alone(self, httpx_mock):
+        """Run 6's soak: warming sent nomic-embed-text to Ollama, which herd
+        does not serve it from; it FAILED, was dropped, and the weighted run
+        stopped with "weights for models not in the run"."""
+        httpx_mock.add_response(url="http://a.test:11434/api/chat", json={"done": True})
+        nodes = [NodeInfo("a", 1, 1, 0, 1, ollama_url="http://a.test:11434")]
+        targets = [
+            ModelTarget("qwen2.5:7b", 5, 1, nodes=["a"]),
+            ModelTarget("nomic-embed-text", 0, 1, nodes=["a"], model_type="embed", sidecar=True),
+        ]
+        kept = await warmup(targets, nodes)
+        assert [t.name for t in kept] == ["qwen2.5:7b", "nomic-embed-text"]
+        assert len(httpx_mock.get_requests()) == 1  # only the chat model, at Ollama
 
 
 # -- The CLI ---------------------------------------------------------------------
