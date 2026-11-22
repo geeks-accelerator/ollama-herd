@@ -126,5 +126,17 @@ Soak: 4 hours, 1,728 requests, 0 failures, herd-node's own memory flat; Ollama's
 prompt cache pushed both 24 GB Macs into swap and latency up about 20% (finding 47). Router
 overhead over the network: **3.4 ms p50** (200 alternating pairs; `X-Fleet-Overhead-Ms` 3.0 ms).
 
+**Recorded side by side (2026-11-22, `main` at the time, router on s1).** Two measurements made
+while filming, each a single take, so read them as demonstrations rather than repeated cells:
+
+| Test | 1 Mac | 2 Macs |
+|---|---|---|
+| gpt-oss 20B and gemma3 12B alternating, 8 requests one at a time (they cannot share one M4's 17.8 GB working set) | median first token 21.0 s, 233.7 s total (a swap of 20-44 s on every switch) | 554 ms, 39.0 s (one model warm on each Mac) |
+| 96 requests of qwen2.5 1.5B, 300 tokens each, sent at once | 101.6 s (94.6 s in an earlier take) | 58.1 s: 1.6-1.75x, 0 failed |
+
+The recordings, with the rest of run 6's footage, are on the Geeks in the Woods YouTube channel in the
+[Ollama Herd playlist](https://www.youtube.com/playlist?list=PLB5PhrWfq6Hk); every wall page in them is a
+demo page built on herd's API, not part of herd.
+
 Cold-load times are from EBS, not a Mac's internal SSD, and are not comparable with a Mac on a
 desk; throughput once loaded is.

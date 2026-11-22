@@ -1,6 +1,18 @@
 # Run 6: a fleet of Apple machines on AWS EC2 Mac
 
-**Status:** PLAN (2026-11-21). Nothing allocated yet.
+**Status:** DONE, scaled down (2026-11-21/22). Two `mac-m4.metal` hosts (M4, 24 GB) in us-east-2a
+and a c7i.xlarge router, not the six-host mixed fleet below: the 24-hour minimum makes every host a
+full day's charge, and the M4 Pro had no capacity in any of 11 zones. Results: the run 6 section of
+`docs/experiments/fleet-scaling-benchmark.md`, `fleet_run6_manifest.json`, `fleet_run6_results.json`,
+findings items 33-47 in `docs/plans/fleet-benchmark-findings-2026-11.md`. The mixed Apple fleet
+(questions 2, 5 and 6) and MLX were not run.
+
+**Torn down 2026-11-22:** all three instances terminated (their EBS volumes deleted with them), the
+`herd-run6` key pair and security group deleted, both hosts released at 20:48 UTC, a minute after their 24-hour minimum. **Cost,
+about $65:** hosts 2 x 24 h x $1.23 = $59.04, EBS (2 x 200 GB + 40 GB gp3, ~23 h) about $1, the
+router under $5 (at most 23 h at $0.1785/h; it was stopped before the end).
+
+The plan as written follows, unchanged.
 
 Runs 2-5 measured herd on rented NVIDIA machines (Lambda Cloud). Herd's home is Apple Silicon,
 and the only Apple fleet it has been measured on is this repo's own two Macs. This run repeats the

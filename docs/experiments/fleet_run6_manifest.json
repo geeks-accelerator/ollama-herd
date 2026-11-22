@@ -228,6 +228,45 @@
     "router_overhead": {
       "what": "scripts/router_overhead.py from r1 with only s1 online: 200 alternating pairs, qwen2.5:14b, 8-token replies, direct to s1's Ollama vs through the router on r1 (router off-node, as in run 2); measured with qwen2.5:14b before the switch to qwen2.5:7b (the overhead is the router's, not the model's)",
       "file": "fleet_run6_router_overhead.json"
+    },
+    "video_recordings": {
+      "what": "single-take demonstrations recorded with purpose-built pages on herd's API (not part of herd), router on s1 at main; not repeated cells",
+      "model_alternation": {
+        "setup": "gpt-oss:20b and gemma3:12b alternating, 8 requests one at a time, OLLAMA_CONTEXT_LENGTH=4096",
+        "one_mac": {
+          "ttft_median_s": 21.0,
+          "total_s": 233.7
+        },
+        "two_macs": {
+          "ttft_median_s": 0.554,
+          "total_s": 39.0
+        }
+      },
+      "fixed_batch": {
+        "setup": "96 requests of qwen2.5:1.5b, 300 tokens each, sent at once, OLLAMA_NUM_PARALLEL=4",
+        "one_mac_s": [
+          101.6,
+          94.6
+        ],
+        "two_macs_s": 58.1,
+        "failed": 0
+      },
+      "youtube_playlist": "https://www.youtube.com/playlist?list=PLB5PhrWfq6Hk",
+      "published": {
+        "model_alternation": "https://youtu.be/gx9ZTQcytbo",
+        "fixed_batch": "https://youtu.be/IZpzGMjmJd4",
+        "four_coding_agents": "https://youtu.be/OYc-hAGE7fM"
+      },
+      "scheduled": "add-a-Mac 2026-11-23, conversations 2026-11-24, chat+embeddings 2026-11-25, drain-rejoin 2026-11-27, hard kill 2026-12-01, four models 2026-12-03 (9:00 AM Pacific)",
+      "note": "four of the scheduled uploads are 720p and 15 fps to fit a 10 MB browser upload limit; originals in ollama-herd-private/.bench-aws-2026-11-22-run6/; the coding-agents upload fast-forwards its first minute 16x, labelled on screen"
     }
+  },
+  "teardown": {
+    "date": "2026-11-22",
+    "instances": "r1, s1, s2 terminated (EBS deleted on termination)",
+    "deleted": "key pair herd-run6, security group herd-run6",
+    "hosts": "both released 2026-11-22 20:48:43 UTC, after the 24-hour minimum (allocated 2026-11-21 20:47:45 UTC)",
+    "cost_usd_approx": 65,
+    "cost_breakdown": "hosts 59.04 (2 x 24 h x 1.23); EBS ~1; router < 5"
   }
 }
