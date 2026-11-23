@@ -2090,3 +2090,44 @@ cleanly — the run 6 failure result (4 lost per kill), on camera.
 **Insight: film the product's own screen, not only a purpose-built one.** Every custom wall looked
 fine; the first take of herd's dashboard found three check misfires and a counting bug that the
 traces and the walls never showed, because those read different numbers.
+
+## 2026-11-23: Soaking the review and run 6 fixes on the Mac Studio, and what the soak cannot see
+
+**Window:** 2026-11-22 23:49 to 2026-11-23 06:21 UTC (6.5 h) on HEAD `8dd73ec`. Router and node
+restarted at 23:49:18; no `src/` file newer than the router's start, all extras installed, Ollama
+`0.40.13`, one node (`bb`).
+
+**Evidence:**
+- 2,183 traces, **100.00% completed** (2,182 gpt-oss, 1 nomic). **0 WARNING and 0 ERROR** in 33,146
+  router and 8,700 node lines after the node re-registered (only the documented restart pair
+  before it).
+- `timings.prefill_ms` on 2,182 of 2,182 completed chat traces.
+- Fast-mode share by full hour (00-05 UTC): 39.4, 50.9, 50.0, 43.3, 54.2, 48.1% (overlap 2.13, 1.71,
+  1.83, 1.88, 1.52, 2.10), 46.7% over 00:00-06:21. Median TTFT 478-608 ms. Same hours on earlier
+  days: 43.7% / 562 ms (11-17), 46.3% / 545 ms (11-18), 49.8% / 520 ms (11-21) at similar volume
+  (~2,300 requests); 11-19/11-20 ran 66-78% on half the volume. The hour that read 39.4% had the
+  highest overlap. No regression.
+- `memory.gpu_working_set_gb = 464.0`, matching Ollama's `recommendedMaxWorkingSetSize = 498216.21 MB`
+  (464.0 GiB). The M3 Ultra's MTL0 line reads 475136 MiB, which is total, not the working set.
+- herd-node `process_memory`: footprint 0.259 GB, **peak 0.567 GB, flat** across the window (MLX
+  children 17 + 16 GB, separate). No duplicate runners; launch args `-c 524288 -np 4` and
+  `-c 131072 -np 4`, gpt-oss queue concurrency 4.
+- A 1 s poll of `/fleet/queue` per queue key (13,684 samples, 5,194 busy): gpt-oss in_flight
+  1/2/3/4 on 3,366/1,708/105/15 samples; **never above its concurrency of 4, and never pending with
+  free slots for 10 s.** The dashboard's "Running now 7" seen earlier summed every queue
+  including MLX; no single queue breached.
+- Dashboard "Tokens / s, 5 min" present; "now N chunks / s" showed 48-91 while streaming and hid at 0.
+
+**Not exercised, and why:** "FAILING (only choice)", pre-warm skips for a busy model, "Admitted ...",
+"Rebalanced ...", retries, the A6 context-length 400, preloader "needs ~X GB" skips, and session
+affinity (0 in every trace) all had **zero occurrences**. The traffic is one Ollama-format client on
+one node with no failures, so none of their triggers occurred. This soak is evidence of no harm on the
+common path, not of those paths working; they rest on tests and run 6 on the EC2 M4s.
+
+**Found:** `/fleet/queue` dropped `streamed_chunks` (it copies a fixed field list when merging the MLX
+queues); `/fleet/status` had it. Fixed on the MacBook with a test, not yet pushed, so not filed.
+
+**Insight: a single-node soak is a filter, not a test, for routing changes.** Every new behaviour in
+this release is a multi-node or failure-path decision, and a clean one-node fleet never asks those
+questions. The useful claims are the ones it can make: completion, logs, throughput against the same
+hours, memory, slot caps. Say which items it could not see rather than counting their absence as a pass.
