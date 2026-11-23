@@ -257,6 +257,20 @@ class TestFleetStatus:
         fleet = client.get("/fleet/status").json()["fleet"]
         assert (fleet["nodes_online"], fleet["nodes_degraded"]) == (1, 0)
 
+    def test_fleet_queue_exposes_streamed_chunks(self, client):
+        """``/fleet/queue`` copies a fixed field list when it merges the MLX
+        queues, and left out ``streamed_chunks`` while ``/fleet/status`` had it
+        (found soaking 2026-11-23)."""
+        from fleet_manager.server.queue_manager import DeviceModelQueue
+
+        qm = client.app.state.queue_mgr
+        q = qm._queues["studio:phi4:14b"] = DeviceModelQueue(node_id="studio", model="phi4:14b")
+        q.streamed_chunks = 42
+        queues = client.get("/fleet/queue").json()["queues"]
+        assert queues["studio:phi4:14b"]["streamed_chunks"] == 42
+        status_queues = client.get("/fleet/status").json()["queues"]
+        assert status_queues["studio:phi4:14b"]["streamed_chunks"] == 42
+
     def test_fleet_status_exposes_chip_and_bandwidth(self, client):
         """Regression guard: /fleet/status must surface new HardwareProfile
         fields so dashboards and debug tooling can see device-aware scoring

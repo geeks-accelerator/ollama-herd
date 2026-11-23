@@ -427,6 +427,9 @@ async def fleet_queue(request: Request):
             key: {
                 "pending": q["pending"],
                 "in_flight": q["in_flight"],
+                # Cumulative chunks streamed (Ollama queues); its change is the
+                # live rate the dashboard shows. 0 for MLX queues.
+                "streamed_chunks": q.get("streamed_chunks", 0),
                 "concurrency": q.get("concurrency", 1),
                 "model": q["model"],
                 "node_id": q["node_id"],
