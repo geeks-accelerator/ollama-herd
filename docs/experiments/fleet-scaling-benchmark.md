@@ -48,21 +48,29 @@ Aggregate completion tokens per second (TTFT p50):
 
 | Concurrent requests | 1 machine | 2 machines | 4 machines |
 |---|---|---|---|
-| 1 | 67.2 (556 ms) | 77.8 (568 ms) | 77.8 (559 ms) |
-| 2 | 97.2 (869 ms) | 154.9 (566 ms) | 155.1 (568 ms) |
-| 4 | 111.6 (1,425 ms) | 165.7 (882 ms) | 308.4 (566 ms) |
-| 8 | 111.0 (8,429 ms) | 223.0 (1,434 ms) | 326.7 (881 ms) |
-| 16 | | | 437.1 (1,414 ms) |
+| 1 | 66.7 (556 ms) | 76.7 (568 ms) | 76.7 (559 ms) |
+| 2 | 96.7 (869 ms) | 153.3 (566 ms) | 153.3 (568 ms) |
+| 4 | 106.7 (1,425 ms) | 160.0 (882 ms) | 308.3 (566 ms) |
+| 8 | 106.7 (8,429 ms) | 213.3 (1,434 ms) | 316.7 (881 ms) |
+| 16 | | | 426.7 (1,414 ms) |
 
-- **One request is no faster on more machines** (C = 1: 67-78 tok/s everywhere). The one-machine
-  C = 1 arm read 67.2 against 77-78 on the others, on the same machine (`m1`): one of its 41
+**Corrected 2026-11-23 to in-window figures** (requests that finished inside the 120 s window).
+First published as 67.2/97.2/111.6/111.0, 77.8/154.9/165.7/223.0 and 77.8/155.1/308.4/326.7/437.1,
+which divided every completed request, those that finished in the drain included, by the elapsed
+time. This run kept no per-request records, so the figures are `(answered - C) x 200 / 120`: every
+request ran to its 200 tokens, and each of the C workers had exactly one request in the drain, as
+in every run 6 cell and every later arm that kept its records. Run 4 and 5 and the 0.12.12 check
+are recomputed the same way in `legacy_rate_corrections.json` (`legacy-rate-corrections.py`).
+
+- **One request is no faster on more machines** (C = 1: 67-77 tok/s everywhere). The one-machine
+  C = 1 arm read 66.7 against 76.7 on the others, on the same machine (`m1`): one of its 41
   requests took 12.2 s (latency p99) against ~2.6 s everywhere else, with a normal TTFT, so one
   slow generation in Ollama, not routing. (Corrected 2026-11-20; an earlier note blamed a
   different card.)
-- **Saturated, throughput is near-linear in machines:** 111.6 → 223.0 → 437.1 tok/s (2.00x, 3.92x).
+- **Saturated, throughput is near-linear in machines:** 106.7 → 213.3 → 426.7 tok/s (2.00x, 4.00x).
   One machine is flat from 4 to 8 concurrent requests (Ollama's 4 slots); past that, requests wait.
 - **Requests per machine is what matters,** not total concurrency: at 8 concurrent, four machines
-  each have only 2 in flight, so 326.7 tok/s, not 4x.
+  each have only 2 in flight, so 316.7 tok/s, not 4x.
 - **Even placement once every machine had work:** with at least as many concurrent requests as
   machines, every arm split requests within 1-2 of evenly. With fewer (2 machines at C = 1, 4 at
   C = 1 and C = 2) the spare machines served nothing: one request runs on one machine.

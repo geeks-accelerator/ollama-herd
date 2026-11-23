@@ -1,0 +1,785 @@
+{
+ "what": "Recompute the throughput figures runs 2, 4 and 5 and the 0.12.12 check published under the old rate definition, which divided work that finished after the load window by the window.",
+ "rule_check": {
+  "fleet_run4_results.json/failure": {
+   "drained": 8
+  },
+  "fleet_run5_results.json/failure/reps[0]": {
+   "drained": 8
+  },
+  "fleet_run5_results.json/failure/reps[1]": {
+   "drained": 8
+  },
+  "fleet_run5_results.json/failure/reps[2]": {
+   "drained": 8
+  }
+ },
+ "fleet_scaling_results.json": {
+  "N1/c1": {
+   "old": 67.2,
+   "in_window": 66.7,
+   "basis": "rule",
+   "drained": 1
+  },
+  "N1/c2": {
+   "old": 97.2,
+   "in_window": 96.7,
+   "basis": "rule",
+   "drained": 2
+  },
+  "N1/c4": {
+   "old": 111.6,
+   "in_window": 106.7,
+   "basis": "rule",
+   "drained": 4
+  },
+  "N1/c8": {
+   "old": 111.0,
+   "in_window": 106.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "N2/c1": {
+   "old": 77.8,
+   "in_window": 76.7,
+   "basis": "rule",
+   "drained": 1
+  },
+  "N2/c2": {
+   "old": 154.9,
+   "in_window": 153.3,
+   "basis": "rule",
+   "drained": 2
+  },
+  "N2/c4": {
+   "old": 165.7,
+   "in_window": 160.0,
+   "basis": "rule",
+   "drained": 4
+  },
+  "N2/c8": {
+   "old": 223.0,
+   "in_window": 213.3,
+   "basis": "rule",
+   "drained": 8
+  },
+  "N4/c1": {
+   "old": 77.8,
+   "in_window": 76.7,
+   "basis": "rule",
+   "drained": 1
+  },
+  "N4/c2": {
+   "old": 155.1,
+   "in_window": 153.3,
+   "basis": "rule",
+   "drained": 2
+  },
+  "N4/c4": {
+   "old": 308.4,
+   "in_window": 308.3,
+   "basis": "rule",
+   "drained": 4
+  },
+  "N4/c8": {
+   "old": 326.7,
+   "in_window": 316.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "N4/c16": {
+   "old": 437.1,
+   "in_window": 426.7,
+   "basis": "rule",
+   "drained": 16
+  }
+ },
+ "fleet_run4_results.json": {
+  "/scaling/cells[0] machines=1 c=1 rep=1": {
+   "old": 80.0,
+   "in_window": 78.3,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/scaling/cells[0] machines=1 c=1 rep=2": {
+   "old": 80.0,
+   "in_window": 78.3,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/scaling/cells[0] machines=1 c=1 rep=3": {
+   "old": 80.0,
+   "in_window": 78.3,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/scaling/cells[1] machines=1 c=2 rep=1": {
+   "old": 90.0,
+   "in_window": 86.7,
+   "basis": "rule",
+   "drained": 2
+  },
+  "/scaling/cells[1] machines=1 c=2 rep=2": {
+   "old": 90.0,
+   "in_window": 86.7,
+   "basis": "rule",
+   "drained": 2
+  },
+  "/scaling/cells[1] machines=1 c=2 rep=3": {
+   "old": 90.0,
+   "in_window": 86.7,
+   "basis": "rule",
+   "drained": 2
+  },
+  "/scaling/cells[2] machines=1 c=4 rep=1": {
+   "old": 120.0,
+   "in_window": 113.3,
+   "basis": "rule",
+   "drained": 4
+  },
+  "/scaling/cells[2] machines=1 c=4 rep=2": {
+   "old": 120.0,
+   "in_window": 113.3,
+   "basis": "rule",
+   "drained": 4
+  },
+  "/scaling/cells[2] machines=1 c=4 rep=3": {
+   "old": 120.0,
+   "in_window": 113.3,
+   "basis": "rule",
+   "drained": 4
+  },
+  "/scaling/cells[3] machines=1 c=8 rep=1": {
+   "old": 120.0,
+   "in_window": 106.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/scaling/cells[3] machines=1 c=8 rep=2": {
+   "old": 120.0,
+   "in_window": 106.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/scaling/cells[3] machines=1 c=8 rep=3": {
+   "old": 120.0,
+   "in_window": 106.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/scaling/cells[4] machines=2 c=1 rep=1": {
+   "old": 80.0,
+   "in_window": 78.3,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/scaling/cells[4] machines=2 c=1 rep=2": {
+   "old": 80.0,
+   "in_window": 78.3,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/scaling/cells[4] machines=2 c=1 rep=3": {
+   "old": 78.3,
+   "in_window": 76.7,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/scaling/cells[5] machines=2 c=2 rep=1": {
+   "old": 163.3,
+   "in_window": 160.0,
+   "basis": "rule",
+   "drained": 2
+  },
+  "/scaling/cells[5] machines=2 c=2 rep=2": {
+   "old": 170.0,
+   "in_window": 166.7,
+   "basis": "rule",
+   "drained": 2
+  },
+  "/scaling/cells[5] machines=2 c=2 rep=3": {
+   "old": 170.0,
+   "in_window": 166.7,
+   "basis": "rule",
+   "drained": 2
+  },
+  "/scaling/cells[6] machines=2 c=4 rep=1": {
+   "old": 195.0,
+   "in_window": 188.3,
+   "basis": "rule",
+   "drained": 4
+  },
+  "/scaling/cells[6] machines=2 c=4 rep=2": {
+   "old": 163.3,
+   "in_window": 156.7,
+   "basis": "rule",
+   "drained": 4
+  },
+  "/scaling/cells[6] machines=2 c=4 rep=3": {
+   "old": 203.3,
+   "in_window": 196.7,
+   "basis": "rule",
+   "drained": 4
+  },
+  "/scaling/cells[7] machines=2 c=8 rep=1": {
+   "old": 228.3,
+   "in_window": 215.0,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/scaling/cells[7] machines=2 c=8 rep=2": {
+   "old": 238.3,
+   "in_window": 225.0,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/scaling/cells[7] machines=2 c=8 rep=3": {
+   "old": 226.7,
+   "in_window": 213.3,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/scaling/cells[8] machines=2 c=16 rep=1": {
+   "old": 240.0,
+   "in_window": 213.3,
+   "basis": "rule",
+   "drained": 16
+  },
+  "/scaling/cells[8] machines=2 c=16 rep=2": {
+   "old": 240.0,
+   "in_window": 213.3,
+   "basis": "rule",
+   "drained": 16
+  },
+  "/scaling/cells[8] machines=2 c=16 rep=3": {
+   "old": 240.0,
+   "in_window": 213.3,
+   "basis": "rule",
+   "drained": 16
+  },
+  "/scaling/cells[9] machines=4 c=1 rep=1": {
+   "old": 80.0,
+   "in_window": 78.3,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/scaling/cells[9] machines=4 c=1 rep=2": {
+   "old": 80.0,
+   "in_window": 78.3,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/scaling/cells[9] machines=4 c=1 rep=3": {
+   "old": 78.3,
+   "in_window": 76.7,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/scaling/cells[10] machines=4 c=2 rep=1": {
+   "old": 170.0,
+   "in_window": 166.7,
+   "basis": "rule",
+   "drained": 2
+  },
+  "/scaling/cells[10] machines=4 c=2 rep=2": {
+   "old": 170.0,
+   "in_window": 166.7,
+   "basis": "rule",
+   "drained": 2
+  },
+  "/scaling/cells[10] machines=4 c=2 rep=3": {
+   "old": 168.3,
+   "in_window": 165.0,
+   "basis": "rule",
+   "drained": 2
+  },
+  "/scaling/cells[11] machines=4 c=4 rep=1": {
+   "old": 320.0,
+   "in_window": 313.3,
+   "basis": "rule",
+   "drained": 4
+  },
+  "/scaling/cells[11] machines=4 c=4 rep=2": {
+   "old": 340.0,
+   "in_window": 333.3,
+   "basis": "rule",
+   "drained": 4
+  },
+  "/scaling/cells[11] machines=4 c=4 rep=3": {
+   "old": 338.3,
+   "in_window": 331.7,
+   "basis": "rule",
+   "drained": 4
+  },
+  "/scaling/cells[12] machines=4 c=8 rep=1": {
+   "old": 355.0,
+   "in_window": 341.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/scaling/cells[12] machines=4 c=8 rep=2": {
+   "old": 350.0,
+   "in_window": 336.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/scaling/cells[12] machines=4 c=8 rep=3": {
+   "old": 350.0,
+   "in_window": 336.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/scaling/cells[13] machines=4 c=16 rep=1": {
+   "old": 461.7,
+   "in_window": 435.0,
+   "basis": "rule",
+   "drained": 16
+  },
+  "/scaling/cells[13] machines=4 c=16 rep=2": {
+   "old": 463.3,
+   "in_window": 436.7,
+   "basis": "rule",
+   "drained": 16
+  },
+  "/scaling/cells[13] machines=4 c=16 rep=3": {
+   "old": 465.0,
+   "in_window": 438.3,
+   "basis": "rule",
+   "drained": 16
+  },
+  "/scaling/cells[14] machines=4 c=32 rep=1": {
+   "old": 480.0,
+   "in_window": 426.7,
+   "basis": "rule",
+   "drained": 32
+  },
+  "/scaling/cells[14] machines=4 c=32 rep=2": {
+   "old": 480.0,
+   "in_window": 426.7,
+   "basis": "rule",
+   "drained": 32
+  },
+  "/scaling/cells[14] machines=4 c=32 rep=3": {
+   "old": 480.0,
+   "in_window": 426.7,
+   "basis": "rule",
+   "drained": 32
+  },
+  "/failure": {
+   "old": 281.7,
+   "in_window": 275.0,
+   "basis": "records",
+   "drained": 8
+  },
+  "/identical_machines/herd": {
+   "old": 361.7,
+   "in_window": 348.3,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/identical_machines/haproxy_roundrobin": {
+   "old": 363.3,
+   "in_window": 350.0,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/mixed_fleet/rate_0_25/herd": {
+   "old": 50.0,
+   "in_window": 40.0,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_25/haproxy_leastconn": {
+   "old": 45.6,
+   "in_window": 32.1,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_25/haproxy_roundrobin": {
+   "old": 45.6,
+   "in_window": 36.3,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_5/herd_seed7": {
+   "old": 84.4,
+   "in_window": 34.8,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_5/herd_seed8": {
+   "old": 100.0,
+   "in_window": 40.5,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_5/herd_0_12_10_seed7": {
+   "old": 63.3,
+   "in_window": 61.2,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_5/herd_strand_fix_only_seed7": {
+   "old": 70.0,
+   "in_window": 29.2,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_5/haproxy_leastconn_seed7": {
+   "old": 84.4,
+   "in_window": 53.1,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_5/haproxy_leastconn_seed8": {
+   "old": 86.7,
+   "in_window": 32.5,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_5/haproxy_roundrobin_seed7": {
+   "old": 88.9,
+   "in_window": 35.1,
+   "basis": "records",
+   "drained": 0
+  },
+  "/one_large_vs_two_small/large/coder_c1": {
+   "old": 101.7,
+   "in_window": 100.0,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/one_large_vs_two_small/large/coder_c8": {
+   "old": 153.3,
+   "in_window": 140.0,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/one_large_vs_two_small/large/mix": {
+   "old": 141.3,
+   "in_window": 114.1,
+   "basis": "estimate"
+  },
+  "/one_large_vs_two_small/small/coder_c1": {
+   "old": 80.0,
+   "in_window": 78.3,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/one_large_vs_two_small/small/coder_c8": {
+   "old": 230.0,
+   "in_window": 216.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/one_large_vs_two_small/small/mix": {
+   "old": 189.5,
+   "in_window": 162.3,
+   "basis": "estimate"
+  },
+  "/vision/one_machine": {
+   "old": 80.8,
+   "in_window": 76.1,
+   "basis": "estimate"
+  },
+  "/vision/three_machines": {
+   "old": 299.2,
+   "in_window": 294.5,
+   "basis": "estimate"
+  }
+ },
+ "fleet_run5_results.json": {
+  "/failure/reps[0]": {
+   "old": 305.8,
+   "in_window": 299.2,
+   "basis": "records",
+   "drained": 8
+  },
+  "/failure/reps[1]": {
+   "old": 340.0,
+   "in_window": 333.3,
+   "basis": "records",
+   "drained": 8
+  },
+  "/failure/reps[2]": {
+   "old": 320.8,
+   "in_window": 314.2,
+   "basis": "records",
+   "drained": 8
+  },
+  "/identical_machines/herd/reps[0]": {
+   "old": 440.0,
+   "in_window": 426.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/identical_machines/herd/reps[1]": {
+   "old": 440.0,
+   "in_window": 426.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/identical_machines/herd/reps[2]": {
+   "old": 415.0,
+   "in_window": 401.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/identical_machines/haproxy_roundrobin/reps[0]": {
+   "old": 396.7,
+   "in_window": 383.3,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/identical_machines/haproxy_roundrobin/reps[1]": {
+   "old": 400.0,
+   "in_window": 386.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/identical_machines/haproxy_roundrobin/reps[2]": {
+   "old": 401.7,
+   "in_window": 388.3,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/mixed_fleet/rate_0_25/herd/reps[0]": {
+   "old": 50.0,
+   "in_window": 42.4,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_25/herd/reps[1]": {
+   "old": 50.0,
+   "in_window": 49.0,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_25/herd/reps[2]": {
+   "old": 50.0,
+   "in_window": 47.8,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_25/haproxy_leastconn/reps[0]": {
+   "old": 45.6,
+   "in_window": 44.4,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_25/haproxy_leastconn/reps[1]": {
+   "old": 42.2,
+   "in_window": 42.3,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_25/haproxy_leastconn/reps[2]": {
+   "old": 38.9,
+   "in_window": 37.6,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_25/haproxy_roundrobin/reps[0]": {
+   "old": 45.6,
+   "in_window": 44.4,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_25/haproxy_roundrobin/reps[1]": {
+   "old": 44.4,
+   "in_window": 41.6,
+   "basis": "records",
+   "drained": 0
+  },
+  "/mixed_fleet/rate_0_25/haproxy_roundrobin/reps[2]": {
+   "old": 40.0,
+   "in_window": 38.4,
+   "basis": "records",
+   "drained": 0
+  },
+  "/one_large_vs_two_small/large/coder_c1/reps[0]": {
+   "old": 116.7,
+   "in_window": 115.0,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/one_large_vs_two_small/large/coder_c1/reps[1]": {
+   "old": 115.0,
+   "in_window": 113.3,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/one_large_vs_two_small/large/coder_c1/reps[2]": {
+   "old": 115.0,
+   "in_window": 113.3,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/one_large_vs_two_small/large/coder_c8/reps[0]": {
+   "old": 206.7,
+   "in_window": 193.3,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/one_large_vs_two_small/large/coder_c8/reps[1]": {
+   "old": 200.0,
+   "in_window": 186.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/one_large_vs_two_small/large/coder_c8/reps[2]": {
+   "old": 206.7,
+   "in_window": 193.3,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/one_large_vs_two_small/large/mix/reps[0]": {
+   "old": 176.9,
+   "in_window": 149.7,
+   "basis": "estimate"
+  },
+  "/one_large_vs_two_small/large/mix/reps[1]": {
+   "old": 178.1,
+   "in_window": 150.9,
+   "basis": "estimate"
+  },
+  "/one_large_vs_two_small/large/mix/reps[2]": {
+   "old": 178.1,
+   "in_window": 150.9,
+   "basis": "estimate"
+  },
+  "/one_large_vs_two_small/small/coder_c1/reps[0]": {
+   "old": 93.3,
+   "in_window": 91.7,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/one_large_vs_two_small/small/coder_c1/reps[1]": {
+   "old": 93.3,
+   "in_window": 91.7,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/one_large_vs_two_small/small/coder_c1/reps[2]": {
+   "old": 95.0,
+   "in_window": 93.3,
+   "basis": "rule",
+   "drained": 1
+  },
+  "/one_large_vs_two_small/small/coder_c8/reps[0]": {
+   "old": 273.3,
+   "in_window": 260.0,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/one_large_vs_two_small/small/coder_c8/reps[1]": {
+   "old": 271.7,
+   "in_window": 258.3,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/one_large_vs_two_small/small/coder_c8/reps[2]": {
+   "old": 280.0,
+   "in_window": 266.7,
+   "basis": "rule",
+   "drained": 8
+  },
+  "/one_large_vs_two_small/small/mix/reps[0]": {
+   "old": 202.8,
+   "in_window": 175.6,
+   "basis": "estimate"
+  },
+  "/one_large_vs_two_small/small/mix/reps[1]": {
+   "old": 213.0,
+   "in_window": 185.8,
+   "basis": "estimate"
+  },
+  "/one_large_vs_two_small/small/mix/reps[2]": {
+   "old": 210.8,
+   "in_window": 183.6,
+   "basis": "estimate"
+  },
+  "/vision/one_machine/reps[0]": {
+   "old": 98.5,
+   "in_window": 93.8,
+   "basis": "estimate"
+  },
+  "/vision/one_machine/reps[1]": {
+   "old": 94.1,
+   "in_window": 89.4,
+   "basis": "estimate"
+  },
+  "/vision/one_machine/reps[2]": {
+   "old": 98.5,
+   "in_window": 93.9,
+   "basis": "estimate"
+  },
+  "/vision/three_machines/reps[0]": {
+   "old": 363.4,
+   "in_window": 358.7,
+   "basis": "estimate"
+  },
+  "/vision/three_machines/reps[1]": {
+   "old": 346.4,
+   "in_window": 341.7,
+   "basis": "estimate"
+  },
+  "/vision/three_machines/reps[2]": {
+   "old": 383.1,
+   "in_window": 378.4,
+   "basis": "estimate"
+  }
+ },
+ "release_0_12_12_check.json": {
+  "/combined/0.12.11/runs[0]": {
+   "old": 333.1,
+   "in_window": 328.7,
+   "basis": "estimate"
+  },
+  "/combined/0.12.11/runs[1]": {
+   "old": 403.8,
+   "in_window": 399.4,
+   "basis": "estimate"
+  },
+  "/combined/0.12.11/runs[2]": {
+   "old": 401.9,
+   "in_window": 397.5,
+   "basis": "estimate"
+  },
+  "/combined/0.12.12/runs[0]": {
+   "old": 500.4,
+   "in_window": 496.0,
+   "basis": "estimate"
+  },
+  "/combined/0.12.12/runs[1]": {
+   "old": 505.5,
+   "in_window": 501.1,
+   "basis": "estimate"
+  },
+  "/combined/0.12.12/runs[2]": {
+   "old": 503.1,
+   "in_window": 498.7,
+   "basis": "estimate"
+  },
+  "/stranding/0.12.11/runs[0]": {
+   "old": 414.3,
+   "in_window": 409.9,
+   "basis": "estimate"
+  },
+  "/stranding/0.12.11/runs[1]": {
+   "old": 472.1,
+   "in_window": 467.7,
+   "basis": "estimate"
+  },
+  "/stranding/0.12.12/runs[0]": {
+   "old": 383.6,
+   "in_window": 379.2,
+   "basis": "estimate"
+  },
+  "/stranding/0.12.12/runs[1]": {
+   "old": 400.8,
+   "in_window": 396.4,
+   "basis": "estimate"
+  }
+ }
+}

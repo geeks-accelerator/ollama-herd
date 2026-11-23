@@ -25,7 +25,7 @@ sit next to run 5's on the benchmark page.
 
 ## Questions
 
-1. **Does scaling hold on Macs?** Run 2 showed 111 → 223 → 437 tok/s on 1, 2 and 4 identical
+1. **Does scaling hold on Macs?** Run 2 showed 107 → 213 → 427 tok/s (in-window; first published as 111 → 223 → 437) on 1, 2 and 4 identical
    NVIDIA cards. Same test on identical Macs, and Herd against HAProxy on identical machines (run
    5's `identical_machines`).
 2. **Mixed Apple fleet placement.** Four chip classes with 24 to 256 GB of unified memory and 120
