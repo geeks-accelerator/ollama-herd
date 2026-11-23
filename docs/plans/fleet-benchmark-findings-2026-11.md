@@ -301,7 +301,8 @@ From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-h
     the coder 43 times in three normal runs (0 on 0.12.11) and coding requests fell to a median of
     150 from 173. `b6ee0eb` reports them as `direct` instead: 0 such pre-warms. **Open:** with
     `b6ee0eb` coding requests were still 154, 150, 160 against 0.12.11's 162, 183, 173, with total
-    chat throughput equal (mean 400 against 401 tok/s) and image requests up 19%; the difference is
+    chat throughput equal (mean 400 against 401 tok/s, old rate definition; the in-window correction
+    lowers both by the same ~4) and image requests up 19%; the difference is
     all on m1 (router, harness and node on one machine; m2 identical at 76 coding requests every
     run). **Isolating check (same day, router and harness on a fourth A10 with no models, 0.12.11
     and `b6ee0eb` alternating, three runs each, raw data in `.bench-lambda-2026-11-21-vchk2/`):**
@@ -314,7 +315,8 @@ From run 4 on Lambda (2026-11-20, router at `dc5779c`; private notes in ollama-h
     spilled onto a card where the image model runs partly on the CPU.** Combined check (both fixes,
     `213cdb7`, against 0.12.11, alternating, three runs each, router and harness on their own
     machine, raw data in `.bench-lambda-2026-11-21-vchk3/`): image requests sent to the A10s
-    45, 57, 44 → 2, 2, 2; chat throughput 333, 404, 402 → 500, 506, 503 tok/s (median +25%); first-token
+    45, 57, 44 → 2, 2, 2; chat throughput 333, 404, 402 → 500, 506, 503 tok/s (median +25%; in-window, corrected 2026-11-23, about
+    329, 399, 398 → 496, 501, 499); first-token
     p95 648, 575, 577 → 71, 71, 75 ms; coding requests 146, 146, 150 → 174, 176, 176; image
     requests median 4,326 → 5,723; embeddings unchanged (all on the A100); no failures. The
     offloaded copy is still loaded (pre-warm put it there in every run); it just gets no work. `LoadedModel.offloaded`
@@ -459,7 +461,10 @@ herd is greenfield, so:
 ## What the run showed
 
 Scaling is real once the router is allowed to use each machine: `qwen3-coder:30b` went from
-111.7 tok/s on one machine to 220.6 on two and 434.9 on four, with 0 failures. But getting there took
+111.7 tok/s on one machine to 220.6 on two and 434.9 on four, with 0 failures. (Run 1's figures
+use the old rate definition, which counted work finished after the window; its per-request data
+was not kept, so they are not corrected. Run 2's in-window figures are 106.7 → 213.3 → 426.7, see
+`docs/experiments/legacy_rate_corrections.json`.) But getting there took
 a workaround, three of the four tests hit a bug, and the router added 24 ms per request across the
 network:
 

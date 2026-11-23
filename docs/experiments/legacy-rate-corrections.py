@@ -145,6 +145,22 @@ def main() -> None:
             walk_arms(section, f"/{key}", out)
         result[name] = out
 
+    # The mixed workload (0.12.10, same harness as run 2): the coder's rate divided its 200-token
+    # answers by the elapsed time, drain included. Four workers per model; the rule applies to the
+    # coder alone, but the other models shared its machines, so treat it as an estimate.
+    mixed = json.loads((HERE / "mixed_workload_results.json").read_text())
+    out = {}
+    for arm, rep in mixed["arms"].items():
+        for pm in rep["per_model_results"]:
+            if pm["model"] == "qwen3-coder:30b":
+                out[f"/arms/{arm}/qwen3-coder:30b"] = {
+                    "old": pm["tok_s"],
+                    "in_window": from_rule(pm["requests"], 4, 180.0),
+                    "basis": "estimate",
+                    "drained": 4,
+                }
+    result["mixed_workload_results.json"] = out
+
     check = json.loads((HERE / "release_0_12_12_check.json").read_text())
     window = 180.0
     coding_drain = 4 * MAX_TOKENS / window

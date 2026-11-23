@@ -730,6 +730,20 @@
    "basis": "estimate"
   }
  },
+ "mixed_workload_results.json": {
+  "/arms/D2_three_machines/qwen3-coder:30b": {
+   "old": 144.8,
+   "in_window": 164.4,
+   "basis": "estimate",
+   "drained": 4
+  },
+  "/arms/D1_one_machine/qwen3-coder:30b": {
+   "old": 93.3,
+   "in_window": 104.4,
+   "basis": "estimate",
+   "drained": 4
+  }
+ },
  "release_0_12_12_check.json": {
   "/combined/0.12.11/runs[0]": {
    "old": 333.1,

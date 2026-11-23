@@ -25,9 +25,12 @@ same load spread over a small mixed fleet?
 
 | | coder tok/s (TTFT p50) | qwen3.5:9b | embeddings in 180 s | failed |
 |---|---|---|---|---|
-| D2: three machines | **144.8** (936 ms) | 13 requests, TTFT 40 s | 11,325 at 64 ms | 0 |
-| D1: one machine | 93.3 (1,746 ms) | no token in 180 s | none answered | 12 |
+| D2: three machines | **~164** (936 ms) | 13 requests, TTFT 40 s | 11,325 at 64 ms | 0 |
+| D1: one machine | ~104 (1,746 ms) | no token in 180 s | none answered | 12 |
 
+- Coder rates corrected 2026-11-23 to the in-window definition (`docs/experiments/legacy_rate_corrections.json`):
+  first published as 144.8 and 93.3, which divided by the elapsed time, drain included. Approximate,
+  because the other models shared the machines; the gap between the arms is unchanged (about 1.6x).
 - On one 24 GB machine the three models cannot stay loaded together (`qwen3-coder:30b` alone takes
   ~20 GB): Ollama evicts to load the others, and the chat model and embeddings got nothing.
 - On three machines each model stays where it is loaded: the coder on the 24 GB cards, the chat
