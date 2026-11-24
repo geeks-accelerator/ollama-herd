@@ -97,7 +97,9 @@ login:**
 
 1. **The Ollama app**, which reads launchd's user environment. `launchctl setenv` does
    not survive a reboot, so `docs/examples/launchd/com.geeksaccelerator.ollama-env.plist`
-   re-applies it at every login.
+   re-applies it at every login. launchd may start Ollama first, and `setenv` only
+   reaches processes started later, so 30 seconds in the agent also restarts Ollama's
+   login job if its server lacks the variable.
 2. **`herd-node` itself.** If Ollama is not up yet, it starts `ollama serve` with *its
    own* environment. That environment is fixed when launchd spawns `herd-node`, so
    whether it includes the `setenv` value depends on which login agent launchd starts
@@ -113,10 +115,14 @@ login:**
 
 Verified by simulating the worst case, without a reboot: `launchctl unsetenv` (agent
 not yet run), Ollama stopped, then the node agent started. `herd-node`, the `ollama
-serve` it spawned, and gemma3's `llama-server` all carried `LLAMA_ARG_CACHE_RAM=0`. One
-order remains unguaranteed: the Ollama app as a login item racing the env agent. Login
-items normally launch after RunAtLoad agents, but macOS does not promise it. After a
-reboot:
+serve` it spawned, and gemma3's `llama-server` all carried `LLAMA_ARG_CACHE_RAM=0`.
+
+**The app raced the agent and won on the first real reboot** (2026-11-23, Ollama 0.40.17
+on macOS 27.2.1): both started in the same second, and Ollama ran without the variable.
+The agent only set it then; the restart is the fix. Reproduced and verified: with Ollama
+started without it, the agent restores it at the cost of about 1 second of Ollama
+downtime, and leaves an Ollama that already has it alone. Not yet through another real
+reboot. Check about a minute after login:
 
 ```bash
 ps -E -ww -o command= -p $(pgrep -f "ollama serve" | head -1) | tr ' ' '\n' | grep LLAMA_ARG

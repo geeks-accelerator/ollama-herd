@@ -4,7 +4,20 @@
      login: `launchctl setenv` does not survive a reboot.  LLAMA_ARG_CACHE_RAM=0
      disables llama-server's host-RAM prompt cache (default 8 GiB per loaded
      model; 0 hits in 100 lookups on this Mac, 2026-10-04).  See ollama-herd
-     docs/issues.md.  Remove: launchctl bootout gui/$UID/com.geeksaccelerator.ollama-env
+     docs/issues.md.
+
+     Setting the variable is not enough.  launchd does not order login agents and
+     `setenv` only reaches processes started afterwards, so the first real reboot
+     (2026-11-23) lost the race: Ollama started in the same second and ran without
+     it.  So after startup settles, restart Ollama's own login job if its server
+     lacks the variable.  The wait is deliberate: launchd throttles a restart
+     within 10s of the job's start, and Ollama down for those seconds makes
+     herd-node (which checks ~7s into login) spawn its own `ollama serve`.
+     The `^` keeps the check from matching its own command line.
+
+     Loading this agent by hand restarts Ollama, unloading its models, only if its
+     server lacks the variable.
+     Remove: launchctl bootout gui/$UID/com.geeksaccelerator.ollama-env
      && rm this file && launchctl unsetenv LLAMA_ARG_CACHE_RAM -->
 <plist version="1.0">
 <dict>
@@ -12,10 +25,9 @@
   <string>com.geeksaccelerator.ollama-env</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/launchctl</string>
-    <string>setenv</string>
-    <string>LLAMA_ARG_CACHE_RAM</string>
-    <string>0</string>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>launchctl setenv LLAMA_ARG_CACHE_RAM 0; sleep 30; ps eww -Ao command | grep -q "^[^ ]*ollama serve .*LLAMA_ARG_CACHE_RAM=0" || launchctl kickstart -k gui/$(id -u)/com.ollama.ollama</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

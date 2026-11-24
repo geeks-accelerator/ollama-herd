@@ -2182,6 +2182,13 @@ own environment before the env agent runs. Verified by simulation: `unsetenv`, O
 stopped, node agent started. The spawned `ollama serve` and gemma3's `llama-server`
 both carried the value. See `docs/configuration-reference.md`.
 
+**That simulation missed the order that happened.** On the first real reboot
+(2026-11-23) the Ollama app and the env agent started in the same second and Ollama ran
+without the variable; nothing was loaded when it was found. FIXED the same day, verified
+by recreating that order but not yet by another reboot: the agent restarts Ollama's login job 30 seconds in if its server lacks the variable.
+Restarting at once also won the race, but launchd's 10-second throttle kept Ollama down
+for up to 9 seconds, across the moment `herd-node` checks it.
+
 **Proposed:**
 
 1. Measure the hit rate per fleet before choosing a value: `grep -c "found better

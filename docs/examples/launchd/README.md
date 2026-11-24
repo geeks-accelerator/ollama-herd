@@ -46,7 +46,9 @@ plists set `PATH` explicitly. Omit it and MLX servers silently fail to spawn.
 
 `com.geeksaccelerator.ollama-env.plist` re-applies `launchctl setenv
 LLAMA_ARG_CACHE_RAM 0` at every login, because `launchctl setenv` does not survive a
-reboot. That variable disables llama-server's host-RAM prompt cache (default 8 GiB per
+reboot. Login agents have no guaranteed order, so 30 seconds later it also restarts
+Ollama's login job if Ollama started without the variable. To use another value, change
+both places it appears in the command. That variable disables llama-server's host-RAM prompt cache (default 8 GiB per
 loaded model); see `docs/configuration-reference.md` § Ollama environment before using
 it, because the right value depends on the measured hit rate.
 

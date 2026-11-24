@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The example Ollama environment agent no longer depends on login order.** `com.geeksaccelerator.ollama-env.plist`
+  only ran `launchctl setenv`, and launchd does not order login agents, so Ollama could
+  start first and run without `LLAMA_ARG_CACHE_RAM`. It now restarts Ollama's login job
+  if its server lacks the variable. Re-copy the plist if you installed it.
+
 ## [0.12.13] - 2026-11-23
 
 The fixes from run 6 (two Apple M4 Macs on AWS EC2, `docs/experiments/fleet-scaling-benchmark.md`) and a review of the routing code (`docs/plans/review-and-run6-fixes-2026-11.md`). Soaked 15.5 h on a one-node Mac Studio: 5,500 requests, all completed, no warnings or errors, throughput in line with the same hours on earlier days. That soak exercises none of the multi-node or failure paths below; they rest on the tests and run 6. The EC2 scenarios were not re-run on this code.
